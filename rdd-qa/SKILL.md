@@ -38,6 +38,7 @@ description: >
 
 - 向项目的测试目录写入测试代码文件（如 `tests/`、`__tests__/`、`test/` 等，取决于项目约定）
 - 向 `RDD/changes/archive/.../tests/` 目录写入测试用例文档（`.md` 文件）
+- 更新同目录下的 `task.md`（仅更新 QA 列的状态）
 
 **当用户试图让你直接改业务代码时：**
 
@@ -63,18 +64,32 @@ description: >
 
 用户提供了 `requirement.md` 路径。直接读取，跳到需求分析。
 
-### 优先级 B — 自动查找最新归档
+### 优先级 B — 基于 task.md 定位待测试任务
 
-用户没有提供时：
+用户没有指定时，优先通过 task.md 定位任务：
 
 1. 扫描 `RDD/changes/archive/` 目录
 2. 按目录名中的日期排序，找到最新的归档
-3. 读取该目录下的 `requirement.md`
-4. 向用户确认：
+3. 读取该目录下的 `task.md` 和 `requirement.md`
+4. 筛选出 **PM 已完成（✅）、QA 未完成（⬜）** 的 task
+5. 向用户确认：
 
-   > 我在 `RDD/changes/archive/最新目录/requirement.md` 找到了最近归档的需求，内容是 [...简要概述...]。基于这份需求来设计测试吗？
+   > 在 `task.md` 中找到了 [X] 个待测试任务：
+   > - Task N: [标题]
+   > - Task M: [标题]
+   >
+   > 基于这些任务的 requirement.md 来设计测试吗？
 
-### 优先级 C — 找不到任何归档
+**重要**：QA 只通过 task.md 定位任务，只读取 `requirement.md`。`design/` 目录始终不读取。
+
+### 优先级 C — 无 task.md，自动查找归档
+
+task.md 不存在时，回退到手动查找：
+
+1. 读取最新归档的 `requirement.md`
+2. 向用户确认后进入需求分析
+
+### 优先级 D — 找不到任何归档
 
 告知用户当前没有可用的需求文档，引导先去 PM 模式梳理需求：
 
@@ -241,12 +256,15 @@ tests/
    ```
    RDD/changes/archive/2026-04-26-addUserRole/
    ├── requirement.md          (PM 模式归档)
+   ├── task.md                 (PM 模式归档)
    ├── design/                 (CTO 模式归档 — 不读取)
    └── tests/                  (QA 模式归档)
        └── test-cases.md       (测试用例文档)
    ```
 
 2. 将第三步生成的测试用例文档写入 `tests/test-cases.md`。
+
+3. 更新 `task.md`：将已完成测试的 task 的 QA 列从 ⬜ 更新为 ✅。总览表和详情部分同步更新。
 
 ### 5.2 引导下一步
 
@@ -255,6 +273,7 @@ tests/
 > 测试已就绪：
 > - 测试用例文档：`RDD/changes/archive/.../tests/test-cases.md`
 > - 测试代码：[列出测试文件路径]
+> - task.md 已更新：Task N QA → ✅
 > 
 > 接下来你可以：
 > - 输入 **/RDD-DEV** 进入开发模式，开始实现功能并通过这些测试

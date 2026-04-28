@@ -1,0 +1,29 @@
+{
+  "skill_name": "code-compass",
+  "evals": [
+    {
+      "id": 0,
+      "prompt": "帮我生成一个 README，我这边是一个 Python FastAPI 项目，主要做用户认证和数据管理",
+      "expected_output": "路由到 readme-generator 子模块，生成包含项目简介、技术栈（Python/FastAPI）、项目结构、安装运行步骤、API 接口说明的 README.md",
+      "files": []
+    },
+    {
+      "id": 1,
+      "prompt": "/readme",
+      "expected_output": "识别为 /readme 命令，直接路由到 readme-generator，分析当前项目并生成 README.md",
+      "files": []
+    },
+    {
+      "id": 2,
+      "prompt": "帮我写个项目文档吧，我们项目目录下已经有 README.md 了",
+      "expected_output": "路由到 readme-generator，检测到已有 README.md，生成 README-NEW.md",
+      "files": []
+    },
+    {
+      "id": 3,
+      "prompt": "generate a readme for this project",
+      "expected_output": "路由到 readme-generator，自动分析当前目录项目结构，生成完整的英文 README.md 文档",
+      "files": []
+    }
+  ]
+}
