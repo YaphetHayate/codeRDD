@@ -24,6 +24,24 @@
       "prompt": "generate a readme for this project",
       "expected_output": "路由到 readme-generator，自动分析当前目录项目结构，生成完整的英文 README.md 文档",
       "files": []
+    },
+    {
+      "id": 4,
+      "prompt": "/map",
+      "expected_output": "识别为 /map 命令，读取 references/map/map.md，扫描项目源码目录，生成包含目录树概览（文件数/方法数标注）和文件级方法签名摘要的 .code-compass/map.md",
+      "files": []
+    },
+    {
+      "id": 5,
+      "prompt": "帮我生成一下项目全景图，看看代码结构",
+      "expected_output": "根据关键词'项目全景图'路由到 /map 功能，扫描项目源码目录，生成两层结构的 .code-compass/map.md：第一层目录树带注释，第二层按目录分组的文件与方法摘要",
+      "files": []
+    },
+    {
+      "id": 6,
+      "prompt": "生成代码地图，之前已经有 .code-compass/map.md 了",
+      "expected_output": "路由到 /map 功能，检测到已有 .code-compass/map.md，无条件覆盖重新生成。扫描完成后写入新的 .code-compass/map.md",
+      "files": []
     }
   ]
 }
