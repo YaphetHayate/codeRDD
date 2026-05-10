@@ -195,10 +195,9 @@ blocks:
   - 需求C的ID
 analysis_date: YYYY-MM-DD
 status: draft
-tech_stack:
-  - 技术栈1
-  - 技术栈2
-estimated_effort: 小/中/大
+  tech_stack:
+   - 技术栈1
+   - 技术栈2
 ---
 
 # [需求标题] — 设计文档
@@ -284,7 +283,7 @@ estimated_effort: 小/中/大
 
 ```
 需求：[标题] (L1)
-  可行性：✅ 可行  |  工作量：🟢 小 (≤1天)  |  风险：🟢 低
+  可行性：✅ 可行  |  风险：🟢 低
   影响范围：[涉及的 2-3 个文件或模块]
   备注：[如有需要注意的点，一句话说明；没有则省略]
 ```

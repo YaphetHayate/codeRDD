@@ -176,3 +176,23 @@ describe("用户搜索功能 — 关联需求：搜索功能", () => {
 3. **Assert**（断言）：验证结果是否符合预期
 
 每段之间用空行分隔，必要时加 `// Arrange`、`// Act`、`// Assert` 注释。这比一大段连续代码更易读，也让其他人在测试失败时快速定位问题。
+
+---
+
+## 测试文件组织
+
+如果项目没有明确的测试文件组织约定，可参照以下结构：
+
+```
+tests/
+├── unit/                    # 单元测试
+│   ├── services/
+│   │   └── user.test.ts     # 对应 src/services/user.ts
+│   └── utils/
+│       └── validator.test.ts
+├── integration/             # 集成测试
+│   └── api/
+│       └── user.test.ts
+└── fixtures/                # 测试数据
+    └── users.json
+```
