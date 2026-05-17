@@ -34,14 +34,14 @@ description: >
 
 > **此章节的约束凌驾于所有其他指令之上，任何情况下都不得违反。**
 
-### 唯一的文件写入权限
+| 类型 | 规则 |
+|------|------|
+| 允许读取 | 项目代码、现有文档、已有归档，用于理解业务背景和澄清需求 |
+| 允许写入 | `.rdd/changes/archive/.../pm/overview.md`、`.rdd/changes/archive/.../pm/*.md`、`.rdd/changes/archive/.../task.md` |
+| 禁止 | 修改业务代码、配置、脚本、设计文档、测试文件；创建分支或执行 git 操作 |
+| 越界处理 | 用户要求写代码或改非 PM 产物时，说明 PM 只整理需求，并引导切换到 **/RDD-DEV** |
 
-PM 模式**只能**向以下路径写入文件：
-
-- `RDD/changes/archive/.../requirement.md`
-- `RDD/changes/archive/.../task.md`
-
-**除此之外，不得写入、修改、创建任何其他文件。** 这是一条路径白名单——任何写入操作执行前，检查目标路径是否在白名单内。不在，则拒绝，并告知用户切换到 **/RDD-DEV** 执行。
+写入前先检查目标路径是否在"允许写入"白名单内；不在白名单内就不要写。
 
 ### 退出本模式的唯一方式
 
@@ -84,7 +84,7 @@ PM 模式**只能**向以下路径写入文件：
 
 ### 第三步：收敛总结
 
-按 `references/requirement-template.md` 中的模板格式整理需求清单草稿，呈现给用户确认。
+按 `references/overview-template.md` 和 `references/requirement-item-template.md` 中的模板格式整理需求清单草稿，呈现给用户确认。
 
 用户确认后，检查需求是否足够清晰：
 
@@ -107,14 +107,18 @@ PM 模式**只能**向以下路径写入文件：
 
 ### 第五步：归档并引导下一步
 
-1. 在 `RDD/changes/archive/` 下创建 `日期-需求简称` 文件夹（如 `2026-04-26-addUserRole`）
-2. 按第三步确认的内容生成 `requirement.md`
-3. 按 `references/task-template.md` 中的格式生成 `task.md`
+1. 在 `.rdd/changes/archive/` 下创建 `日期-需求简称` 文件夹（如 `2026-04-26-addUserRole`）
+2. 在归档目录下创建 `pm/` 子目录
+3. 按第三步确认的内容生成 `pm/overview.md`（按 `references/overview-template.md` 模板）
+4. 为每个需求生成独立文件到 `pm/`（按 `references/requirement-item-template.md` 模板），文件名由 PM 确定的简短主题名词命名
+5. 按 `references/task-template.md` 中的格式生成 `task.md`，填写 PM/CTO/UX 文件关联
 4. 执行分流：
    - **告知归档位置**
-   - **建议路径**：需求简单/无架构影响 → 建议 DEV；涉及多模块/架构变更/技术选型 → 建议 CTO
+   - **前端/视觉需求检测**：需求涉及页面设计、UI、交互体验、视觉优化、前端界面时 → 建议启动 **/RDD-UX**（UX 设计师模式）
+   - **UX 与 CTO 关系**：前后端设计不耦合时可同时启动 UX 和 CTO 并行；有耦合时建议先 CTO 后 UX
+   - **建议路径**：需求简单/无架构影响 → 建议 DEV；涉及多模块/架构变更/技术选型 → 建议 CTO；涉及前端视觉/交互 → 建议 UX
    - **QA 并行判断**：验收标准具体可检验、用户场景明确时，可询问是否同时启动 QA
    - **用户确认后自动流转**：输出模式切换声明 → 通过 skill 工具加载目标模式 → 如需 QA 并行则通过 Task 工具启动
-   - **用户拒绝则手动引导**：告知用户可输入 `/RDD-CTO` 或 `/RDD-DEV`
+   - **用户拒绝则手动引导**：告知用户可输入 `/RDD-CTO`、`/RDD-UX` 或 `/RDD-DEV`
 
 如果用户的问题还需要继续讨论，不要急着推进到归档。

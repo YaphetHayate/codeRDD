@@ -1,4 +1,6 @@
-# 需求清单模板
+> ⚠️ 本模板已拆分为 overview-template.md（背景/约束/索引）+ requirement-item-template.md（单个需求格式）。保留此文件仅供历史参考。
+
+# 需求清单模板（已废弃）
 
 ## 背景
 

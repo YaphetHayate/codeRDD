@@ -195,6 +195,7 @@ blocks:
   - 需求C的ID
 analysis_date: YYYY-MM-DD
 status: draft
+role: cto
   tech_stack:
    - 技术栈1
    - 技术栈2
@@ -204,7 +205,15 @@ status: draft
 
 ## 一、需求概述
 
-> 从 requirement.md 提取该需求的核心内容，2-3 句话说清楚要做什么。
+> 从对应需求文件提取该需求的核心内容，2-3 句话说清楚要做什么。
+
+## 需求覆盖映射
+
+> 与 UX 文档并行产出时必填，无 UX 参与时可省略。
+
+| 需求 ID | 本文档负责范围 | 对应章节 | 关联文档 |
+|---------|--------------|---------|---------|
+| [ID] | [CTO 负责的范围] | [章节号] | ux/{name}.md (如有) |
 
 ## 一点五、领域 Skill 指导（有匹配 skill 时必填）
 
@@ -220,6 +229,11 @@ status: draft
 
 无匹配 skill 时，如存在领域知识缺口，标注：
 > ⚠️ 领域知识缺口：本需求涉及 [领域] 但无对应 skill 辅助。DEV 实现时需注意此领域下的专业要求。
+
+当需求匹配到 **rdd-ux** skill 时，CTO 设计文档中应标注：
+> 本需求的前端视觉/交互设计由 UX skill 负责（→ ux/{name}.md）。
+> CTO 设计文档聚焦：接口设计、数据模型、模块划分、技术选型。
+> 视觉层面的设计 token、组件规格、交互规格由 UX skill 产出，DEV 实现时以 UX 设计规格为准。
 
 ## 二、技术方案
 
@@ -351,14 +365,18 @@ status: draft
 用于 Phase 4 展示设计文档的归档目录结构：
 
 ```
-RDD/changes/archive/2026-04-26-addUserRole/
-├── requirement.md          (PM 模式归档)
-├── task.md                 (PM 模式归档)
-└── design/                 (CTO 模式归档)
-    ├── 001-用户认证.md
-    ├── 002-权限管理.md
-    ├── 003-审计日志.md
-    └── 004-导出报表.md
+.rdd/changes/archive/2026-05-16-topicName/
+├── pm/                     (PM 模式归档：需求总览与独立需求文件)
+│   ├── overview.md
+│   ├── fixbug.md
+│   └── optimizeCache.md
+├── cto/                    (CTO 模式归档)
+│   ├── fixbug.md
+│   └── optimizeCache.md
+├── ux/                     (UX 模式归档)
+│   ├── fixbug.md
+│   └── optimizeCache.md
+└── task.md                 (PM 模式归档：任务跟踪)
 ```
 
 ---
@@ -370,8 +388,9 @@ RDD/changes/archive/2026-04-26-addUserRole/
 > CTO 模式工作已结束。正在切换到 DEV 模式...
 >
 > 上下文传递：
-> - 归档路径：`RDD/changes/archive/.../`
-> - 设计文档：[列出 design/ 下的文件]
+> - 归档路径：`.rdd/changes/archive/.../`
+> - CTO 设计文档：[列出 cto/ 下的文件]
+> - UX 设计文档：[列出 ux/ 下的文件，如有]
 > - 建议开发顺序：[从设计方案确认总览中提取]
 > - task.md 状态：[哪些 CTO ✅，哪些 ⏭️]
 
