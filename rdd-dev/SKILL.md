@@ -175,7 +175,7 @@ task.md 不存在时，回退到手动查找：
 1. 调用 rdd-engine `/skill-manager query`，传入 role=DEV、任务描述、领域标签、实现需求
 2. skill-manager 推荐 skill → 读取该 skill 的 SKILL.md，参考领域指导
 3. skill-manager 无匹配 → 在拆分计划中标注"⚠️ 领域知识缺口"，并向用户说明风险
-4. 任务完成后调用 `/skill-manager record-use`，记录实际使用的 skill 和产出路径
+4. 任务完成后调用 rdd-engine `/skill-manager record-use`，记录实际使用的 skill 和产出路径
 
 当任务匹配到 skill 时，编码前先读取该 skill 的 SKILL.md 理解领域要点，遇到领域相关的实现决策时遵循 skill 的指导，任务完成后汇报中提及参考了哪个 skill。
 

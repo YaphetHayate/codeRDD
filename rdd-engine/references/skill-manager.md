@@ -135,10 +135,6 @@ skill-manager 维护每个 skill 的评分。评分来自三类信号：
   │   ├── 命中 active skill → 返回推荐
   │   └── 未命中
   │
-  ├── 读取 rdd-engine/skill-registry.md（兼容旧索引）
-  │   ├── 命中 → 同步到 .rdd/skill-manager/index.md → 返回推荐
-  │   └── 未命中
-  │
   ├── discover：调用 find-skills 搜索
   │   ├── 找到 → 评估适用性 → 写入 index.md → 返回推荐
   │   └── 未找到 → 返回领域能力缺口

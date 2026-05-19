@@ -46,7 +46,7 @@ description: >
 1. 调用 rdd-engine `/skill-manager query`，传入 role=EVAL、评价对象、领域标签和评价需求
 2. skill-manager 推荐 skill → 读取该 skill 的 SKILL.md，参考其领域标准辅助评价
 3. skill-manager 无匹配 → 按通用评分标准评价，并在报告中标注领域评价能力缺口
-4. 当某个角色评分为 C/D，或用户明确差评时，调用 `/skill-manager feedback`，把问题证据、涉及角色、使用过的 skill 和归因建议回传给 skill-manager
+4. 当某个角色评分为 C/D，或用户明确差评时，调用 rdd-engine `/skill-manager feedback`，把问题证据、涉及角色、使用过的 skill 和归因建议回传给 skill-manager
 
 ---
 

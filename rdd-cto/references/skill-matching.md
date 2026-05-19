@@ -43,7 +43,7 @@
   │   ├── 读取该 skill 的 SKILL.md
   │   ├── 提取与当前需求相关的领域知识和使用约束
   │   ├── 将领域知识作为设计参考，融入后续深度分析和设计方案
-  │   └── 设计完成后调用 `/skill-manager record-use` 记录使用情况
+  │   └── 设计完成后调用 rdd-engine `/skill-manager record-use` 记录使用情况
   │
   └── skill-manager 无匹配
       ├── 在设计文档中标注：

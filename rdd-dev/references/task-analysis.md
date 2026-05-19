@@ -47,7 +47,7 @@
   │     1. 调用 rdd-engine `/skill-manager query`
   │     2. 推荐 skill → 读取该 skill 的 SKILL.md，实现时参考其领域指导
   │     3. 无匹配 → 在拆分计划中标注"⚠️ 领域知识缺口"
-  │     4. 任务完成后调用 `/skill-manager record-use` 记录使用情况
+  │     4. 任务完成后调用 rdd-engine `/skill-manager record-use` 记录使用情况
   │
   ├── 检查文件冲突
   │   同一并行组内不能有两个任务改同一文件
