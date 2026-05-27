@@ -11,11 +11,11 @@
 从需求出发，沿 RDD 工作流逐层追溯信息在各角色产出物中的传递情况：
 
 ```
-pm/{name}.md            ← PM 产出
+requirement.md          ← PM 产出
     ↓
-cto/{name}.md           ← CTO 产出（需求如何被转化为技术方案）
+design/architecture.md  ← CTO 产出（需求如何被转化为技术方案）
     ↓
-ux/{name}.md            ← UX 产出（视觉/交互需求如何被规格化）
+design/{name}-ux.md    ← UX 产出（视觉/交互需求如何被规格化）
     ↓
 实际代码                 ← DEV 产出（设计方案如何被实现）
     ↓
@@ -45,7 +45,7 @@ tests/test-cases.md     ← QA 产出（需求如何被转化为测试）
 过度设计                    CTO 为简单需求设计了复杂方案        中
 不足设计                    CTO 对复杂需求的设计过于简略        高
 规格与实现脱节              UX 规格写了但 DEV 没有遵循          中
-测试与需求脱节              QA 测试未覆盖 pm/{name}.md 中        高
+测试与需求脱节              QA 测试未覆盖 requirement.md 中     高
                             明确要求的验收标准
 共享盲点                    DEV 和 QA 在同一处遗漏了需求点      高
                             （说明两者可能都参考了同一个文档）

@@ -18,7 +18,7 @@
 ```
 通读文档（设计文档/需求文档）
   │
-├── 【统一文档解读】（cto/ 或 ux/ 目录存在时执行）
+  ├── 【统一文档解读】（design/ 目录存在时执行）
   │   1. 读取所有设计文档 frontmatter，确认 role 和 status
   │   2. 读取各文档的"需求覆盖映射"章节，定位每个需求对应的章节
   │   3. 按角色分别进入正文：
@@ -27,14 +27,12 @@
   │
   │   仅存在 UX 规格而无 CTO 设计时：
   │   - 视觉/交互层面严格遵循 UX 规格
-│   - 技术实现方式由 DEV 基于 pm/ 下的需求文件自行决定
+  │   - 技术实现方式由 DEV 基于 requirement.md 自行决定
   │   - 按需求引导模式的自主决策范围执行
   │
-├── 检查 ux/ 目录下是否存在 UX 设计文件（{name}.md）
+  ├── 检查 design/ 目录下是否存在 UX 设计文件（{name}-ux.md）
   │   ├── 存在 → 读取 UX 设计规格，视觉/交互层面以 UX 规格为准
-  │   └── 不存在 → 检查 task.md 中 UX 状态
-  │       ├── UX = ⬜ 且"UX 设计文件"不是 `无` → 暂停任务分析，提醒用户先走 /RDD-UX 或明确跳过 UX
-  │       └── UX = ⏭️ 或"UX 设计文件"为 `无` → 不影响，按原流程
+  │   └── 不存在 → 不影响，按原流程
   │
   ├── 列出所有实现任务，标注：
   │   - 涉及文件范围
@@ -44,10 +42,13 @@
   │
   ├── Skill 匹配
   │   对有领域标签（非"通用工程"）的任务：
-  │     1. 调用 rdd-engine `/skill-manager query`
-  │     2. 推荐 skill → 读取该 skill 的 SKILL.md，实现时参考其领域指导
-  │     3. 无匹配 → 在拆分计划中标注"⚠️ 领域知识缺口"
-  │     4. 任务完成后调用 rdd-engine `/skill-manager record-use` 记录使用情况
+  │     1. 读取 rdd-dev/skills/index.md（已学习 skill 缓存）匹配
+  │     2. 未命中 → 读取 rdd-engine/skill-registry.md 匹配 skill
+  │     3. 匹配到 → 读取该 skill 的 SKILL.md，实现时参考其领域指导
+  │     4. 未匹配 → 调用 find-skill 尝试发现可用技能
+  │        find-skill 找到 → 将条目追加到 rdd-dev/skills/index.md
+  │                     → 使用并建议用户补充到 rdd-engine/skill-registry.md
+  │        find-skill 未找到 / 不可用 → 在拆分计划中标注"⚠️ 领域知识缺口"
   │
   ├── 检查文件冲突
   │   同一并行组内不能有两个任务改同一文件
@@ -130,9 +131,8 @@
 ```
 Task 2: [任务标题]
   涉及文件：xxx.js, yyy.js
-设计参考：CTO cto/{name}.md + UX ux/{name}.md
+  设计参考：CTO design/{name}-cto.md + UX design/{name}-ux.md
   关联 Skill：pixel-art-sprites（领域指导：调色板策略、像素绘制技法）
   / ⚠️ 领域知识缺口（无匹配 skill，实现时需自行判断）
-  / ⚠️ UX 已明确跳过：无 UX 设计规格，视觉层面按项目现有风格判断
-  / ⛔ UX 仍待处理：暂停 DEV，先进入 /RDD-UX 或由用户明确跳过
+  / ⚠️ 无 UX 设计规格，视觉层面需自行判断
 ```

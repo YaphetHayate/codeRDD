@@ -18,9 +18,13 @@
       特定行业规范等）
       → 自评：是否有足够领域知识出设计方案？
       ├── 有把握 → 跳到领域识别与 Skill 匹配
-      └── 不确定/无 → 调用 rdd-engine `/skill-manager query`
-          ├── 推荐 skill → 读取 skill SKILL.md，提取领域知识融入设计
-          └── 无匹配 → 在设计文档中标注能力缺口，向用户说明
+      └── 不确定/无 → 读取 rdd-cto/skills/index.md（已学习 skill 缓存）匹配
+          ├── 命中 → 读取 skill SKILL.md，提取领域知识融入设计
+          └── 未命中 → 调用 find-skill 搜索相关领域 skill
+          ├── 找到 → 读取 skill SKILL.md，提取领域知识融入设计
+          │         → 将条目追加到 rdd-cto/skills/index.md（避免重复搜索）
+          │         → 并建议用户将新发现的 skill 补充到 rdd-engine/skill-registry.md
+          └── 未找到 → 在技术方向文档中标注能力缺口，向用户说明
 ```
 
 ## 自评约束
