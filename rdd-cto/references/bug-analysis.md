@@ -65,7 +65,7 @@
 ---
 requirement_id: [需求标识]
 priority: [优先级]
-status: draft
+status: active
 role: cto
 ---
 
@@ -90,7 +90,31 @@ role: cto
 ## 四、风险提示（可选）
 
 [如有需要注意的风险]
+
+## 流转控制
+
+- **当前责任人**：DEV
+- **文档状态**：active / deprecated
+
+## 驳回记录
+
+| 轮次 | 日期 | 发起方 | 理由 | 被驳回方回应 | 最终裁决 | 状态 |
+|------|------|--------|------|-------------|----------|------|
+| - | - | - | - | - | - | - |
 ```
 
-3. 更新 `task.md`：CTO 列标记 ✅
-4. 告知用户归档位置，询问是否进入 DEV 模式
+3. 更新 `task.md`：将路由总览中对应行的 `当前责任人` 改为 DEV，`关联设计文档` 填入实际路径
+4. 调用流转脚本查看待处理角色：
+
+   ```powershell
+   rdd-engine/rdd-flow.ps1 -Command next -Format markdown
+   ```
+
+5. 告知用户归档位置，询问是否进入 DEV 模式
+6. 用户确认后调用：
+
+   ```powershell
+   rdd-engine/rdd-flow.ps1 -Command start -Role DEV -Format markdown
+   ```
+
+   将输出的 prompt / handoff packet 作为 DEV 入口上下文

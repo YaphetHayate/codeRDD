@@ -1,7 +1,17 @@
 {
   "permissions": {
     "allow": [
-      "Bash(python __tmp_edit.py)"
+      "Bash(python __tmp_edit.py)",
+      "Bash(npm list:*)",
+      "Bash(npm install:*)",
+      "Bash(tasklist)",
+      "Bash(taskkill:*)",
+      "Bash(npm link:*)",
+      "Bash(ls:*)",
+      "Bash(opencode:*)",
+      "Bash(/c/Users/12892/AppData/Roaming/npm/node_modules/opencode-ai/bin/opencode.exe --version)",
+      "Bash(/c/Users/12892/AppData/Roaming/npm/opencode:*)",
+      "Bash(chmod +x /c/Users/12892/AppData/Roaming/npm/opencode)"
     ]
   }
 }

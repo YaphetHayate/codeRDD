@@ -8,6 +8,11 @@
 
 ### 1.1 理解项目现状
 
+需要理解现有代码时，委托 engine 探索（结果通过全局缓存复用）：
+```powershell
+engine.ps1 -Type explore -Query "分析当前需求涉及的代码模块和现有架构"
+```
+
 深度阅读项目代码，理解现有架构。参照 `code-quality-assessment.md` 评估代码质量问题。需要项目上下文时通过 rdd-engine 获取。
 
 ### 1.2 需求分级
@@ -28,7 +33,7 @@
 
 ### 1.4 L1 批量快速处理
 
-将所有 L1 需求**一次性**输出快速结论（按 `design-guide.md` 的"L1 快速结论格式"）。L1 不进入逐条设计流程，在 `task.md` 中标记 CTO 列为 ⏭️。
+将所有 L1 需求**一次性**输出快速结论（按 `design-guide.md` 的"L1 快速结论格式"）。L1 不进入逐条设计流程，在 `task.md` 路由总览中将对应行的 `当前责任人` 直接改为 DEV。
 
 ---
 
@@ -99,9 +104,9 @@ L2/L3 设计完成后 → 加载 `self-check.md` 执行自检三步（交互点�
 
 ### 2.9 确认完成 → 立即写设计文档
 
-本条需求全部决策点确认后，**立即**写入设计文档：
-- 文件路径：`design/{需求文件名}-cto.md`（需求文件名从 `task.md` 获取，去掉 `.md` 后缀）
-- 模板：按 `design-guide.md` 的"技术方向文档模板"
+本条需求全部决策点确认后，**立即**写入设计文档和附带产物：
+- 主体文档：`design/{需求文件名}-cto.md`（需求文件名从 `task.md` 获取，去掉 `.md` 后缀），按 `design-guide.md` 的"技术方向文档模板"
+- 附带产物：`design/{需求文件名}-cto-decisions.md`，按模板写入决策记录和风险提示
 
 ---
 
@@ -109,7 +114,7 @@ L2/L3 设计完成后 → 加载 `self-check.md` 执行自检三步（交互点�
 
 全部 L2/L3 需求逐条确认并写入完成后：
 
-1. 更新 `task.md`：已设计 task 的 CTO 列从 ⬜ → ✅
+1. 更新 `task.md` 路由总览：已设计需求的行，`当前责任人` 改为 DEV（或 UX），`关联设计文档` 填入实际路径
 2. 按 `design-guide.md` 的"设计方案确认总览格式"做最终汇总
 3. 告知用户文件位置
 
@@ -117,11 +122,29 @@ L2/L3 设计完成后 → 加载 `self-check.md` 执行自检三步（交互点�
 
 ## 第四步：引导下一步
 
-```
-方案已归档到 .rdd/changes/archive/.../design/。建议进入开发模式，是否进入？
+先调用流转脚本查看待处理角色（使用当前归档路径）：
+
+```powershell
+rdd-engine/rdd-flow.ps1 -Command next -Format markdown
 ```
 
-- 用户确认 → 按 `design-guide.md` 的"模式切换上下文传递模板"输出声明并加载 RDD-DEV
+```
+方案已归档到 design/ 目录。建议进入开发模式，是否进入？
+```
+
+- 用户确认 → 调用（如需并行多个 DEV 会话，每个需求独立启动一个会话）：
+
+  ```powershell
+  # 全部 DEV 任务打包到同一个会话
+  rdd-engine/rdd-flow.ps1 -Command start -Role DEV -Format markdown
+
+  # 或逐条独立启动（"一需求一会话"，3 个需求 = 3 个独立 DEV session）
+  rdd-engine/rdd-flow.ps1 -Command start -Role DEV -TaskIndex 0 -Format markdown
+  rdd-engine/rdd-flow.ps1 -Command start -Role DEV -TaskIndex 1 -Format markdown
+  rdd-engine/rdd-flow.ps1 -Command start -Role DEV -TaskIndex 2 -Format markdown
+  ```
+
+  按 `design-guide.md` 的"模式切换上下文传递模板"输出声明，并将 `start` 输出的 prompt / handoff packet 作为 DEV 入口上下文
 - 用户拒绝 → 引导手动输入 `/RDD-DEV` 或继续讨论调整
 
 ---

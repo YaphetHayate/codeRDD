@@ -11,7 +11,7 @@
 从需求出发，沿 RDD 工作流逐层追溯信息在各角色产出物中的传递情况：
 
 ```
-requirement.md          ← PM 产出
+requirements/              ← PM 产出
     ↓
 design/architecture.md  ← CTO 产出（需求如何被转化为技术方案）
     ↓

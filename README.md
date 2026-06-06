@@ -17,6 +17,7 @@ SDD（Specification-Driven Development）驱动的开发工作流，围绕一个
 | 实现 | **做** | [DEV](./rdd-dev/) | 任务拆解、并行开发、代码审查 |
 | 验证 | **验证** | [QA](./rdd-qa/) | 独立测试、质量验证 |
 | 评价 | **评价** | [EVAL](./rdd-eval/) | 交付质量评估、协作效率复盘 |
+| 呈现 | **怎么讲？** | [PSE](./rdd-pse/) | README 维护、项目上下文文档生成 |
 
 ### 核心迭代关系
 
@@ -39,3 +40,4 @@ SDD（Specification-Driven Development）驱动的开发工作流，围绕一个
 - `/RDD-DEV` — 开发实现
 - `/RDD-QA` — 测试验证
 - `/RDD-EVAL` — 交付评价
+- `/RDD-PSE` — 文档维护

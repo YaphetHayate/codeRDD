@@ -1,61 +1,46 @@
-# 委托执行指南
+# 能力-文件映射
 
-engine 被 RDD 角色加载后，按本指南确定子 agent 配置并执行委托。
+> 本文档定义每种引擎能力的 reference 文件和子 agent 配置，供 `engine.ps1` CLI 入口脚本运行时参考。
 
-## 核心原则
+## 映射表
 
-- **不做决策，只做执行。** 引擎不判断"该做什么"，只负责执行。
-- **子 agent 代理。** 所有能力通过 `task` 工具启动子 agent 完成。引擎分析需求、构造 prompt、启动执行、汇总结果。
-- **按需加载。** 引擎不主动触发，由各 RDD 角色在需要时加载。
+| 能力类型 (`-Type`) | Reference 文件 | 子 agent 类型 | 产物位置 |
+|-------------------|---------------|--------------|----------|
+| `context` | `references/context-guide.md` + `references/artifact-template.md` | `explore` | `.rdd/context/` |
+| `skills` | `skill-registry.md` | `general` | stdout |
+| `tools` | `references/` 目录下对应文件（待补充） | `general` | stdout |
+| `explore` | `references/exploration-guide.md` | `explore` | `.rdd/exploration/`（全局缓存） |
+| `handoff` | `references/handoff-guide.md` | n/a | stdout / file |
 
-## 能力映射
+## 能力说明
 
-| 能力 | 子 agent | 参考文件 |
-|------|---------|---------|
-| 项目上下文 | `explore` | `references/context-guide.md` + `references/artifact-template.md` |
-| 技能发现 | `general` | `skill-registry.md` |
-| 项目工具 | `general` | `references/` 下对应文件 |
+### context — 项目上下文生成
 
-## 项目上下文执行
+采样项目代码，分析风格约定、模块结构、项目术语，生成 `.rdd/context/` 下的三类产物：
+- `style.md` — 代码风格约定
+- `structure.md` — 代码结构与模块关系
+- `glossary.md` — 项目术语表
 
-1. 启动 `explore` 子 agent
-2. 子 agent 读取 `references/context-guide.md`（采样策略、生成指南、新鲜度检测）和 `references/artifact-template.md`（产物模板）
-3. 子 agent 按指南执行：检查新鲜度 → 采样代码 → 分析生成 → 写入 `.rdd/context/`
-4. 返回产物路径
+参考指南：`references/context-guide.md`（采样策略、生成指南、新鲜度检测）、`references/artifact-template.md`（产物模板）。
 
-产物存储结构：
-```
-.rdd/
-└── context/
-    ├── meta.json       # 元数据（生成时间、采样文件 hash）
-    ├── style.md        # 代码风格约定
-    ├── structure.md    # 代码结构与模块关系
-    └── glossary.md     # 项目术语表
-```
+### skills — 技能发现
 
-## 技能发现执行
+根据关键词查询 `skill-registry.md`，返回匹配的领域 skill 列表及使用建议。
 
-1. 启动 `general` 子 agent
-2. 子 agent 依次查询：调用角色目录 `skills/index.md` → `skill-registry.md` → `find-skill`
-3. 返回匹配 skill 列表及使用建议
+### tools — 项目工具
 
-## 项目工具执行
+委托子 agent 处理项目级通用任务。当前预留，`references/` 下工具指南待补充。
 
-1. 启动 `general` 子 agent
-2. 子 agent 读取 `references/` 下对应的工具指南
-3. 返回分析结果
+### explore — 代码探索（全局缓存）
 
-## 角色侧统一声明模板
+分析项目代码，结果缓存于 `.rdd/exploration/artifacts/`。通过 `.rdd/exploration/index.json` 索引，后续同主题探索命中缓存后直接返回，无需重复探索。
 
-各 RDD 角色 SKILL.md 中应包含以下声明：
+参考指南：`references/exploration-guide.md`（索引匹配、时效性检查、产物模板）。
 
-```markdown
-## rdd-engine 能力
+### handoff — 阶段交接包
 
-本角色按需使用 rdd-engine 提供的通用能力：
-- **项目上下文** — 委托 engine 生成/读取项目理解产物（代码风格、项目结构、术语表）
-- **技能发现** — 委托 engine 匹配领域 skill
-- **项目工具** — 委托 engine 处理项目级通用任务
+通过 `rdd-flow.ps1` 读取归档目录的 `task.md` 路由总览，按目标角色筛选最小上下文，生成 handoff packet。下游角色优先读取交接包，不默认继承上游长对话或扫描整个归档。
 
-需要以上能力时，加载 rdd-engine 并描述具体需求。
-```
+## CLI 调用方式
+
+通过 `engine.ps1` 脚本调用。详见 `SKILL.md` 或直接运行 `engine.ps1 -Type <type> -Query "<description>"`。

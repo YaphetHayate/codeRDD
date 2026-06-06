@@ -20,7 +20,7 @@ description: >
 ### 角色边界
 
 - **只定义"要做什么"，不定义"怎么做"**。实现路径和工作划分的决策权在 CTO/DEV
-- **文件白名单**：仅允许写入 `.rdd/changes/archive/.../` 下的 `overview.md`、需求文件、`task.md`。写入前检查路径，不在白名单则拒绝
+- **文件白名单**：仅允许写入 `.rdd/changes/archive/.../` 下的 `requirements/overview.md`、`requirements/` 下各需求文件、`task.md`。写入前检查路径，不在白名单则拒绝
 - **最终决定权始终在用户手上**。PM 是参谋，不是决策者
 
 ### 模式退出
@@ -41,19 +41,25 @@ description: >
 
 ### 复杂度判定（入口第一关）
 
-接收用户输入后，**第一步判断复杂度**：
+接收用户输入后，**第一步判断走哪个流程**：
 
-**快速通道** — 以下全部满足：
-- 描述清晰，无需额外提问即可理解全貌
-- 范围明确，单一模块/功能
-- 无架构影响
+**快速通道** — 以下条件**全部**满足：
+- 描述清晰，PM 可无歧义理解需求全貌
+- 需求范围为单一模块/功能的独立改动
+- 不涉及架构层面决策（技术选型、引入新依赖、数据模型变更）
+- 一个需求文件即可完整描述，无需拆分
+- 用户已提供可检验的验收标准（或验收标准显然不言自明）
 
-→ 加载 `references/fast-track.md`
+→ 加载 `references/fast-track.md`（流程减负，跳过对话和评估；路由目标按 `references/artifact-routing.md` 正常判定，不预设为 DEV）
 
-**标准流程** — 任一不满足：
+**标准流程** — 以下**任一**：
 - 方向模糊、需头脑风暴
-- 涉及多模块、架构变更、技术选型
 - 用户自己不确定要什么
+- 需求涉及多模块或跨模块改动
+- 需求涉及架构决策、技术选型或引入新依赖
+- 需求可能需要拆分为多个独立需求
+- PM 识别到与现有架构/逻辑的潜在冲突
+- 用户未提供验收标准且验收标准非显然
 
 → 加载 `references/standard-flow.md`
 
@@ -94,3 +100,5 @@ description: >
 | 各场景对话策略 → | `references/exploration-strategy.md` / `references/execution-strategy.md` |
 | 归档模板 → | `references/overview-template.md`、`references/requirement-item-template.md`、`references/task-template.md` |
 | 需求评估（仅标准流程）→ | `references/evaluation-guide.md` |
+| 产物路由规则 → | `references/artifact-routing.md` |
+| 驳回协议 → | `rdd-engine/references/rejection-protocol.md` |

@@ -24,9 +24,9 @@ description: >
 
 **绝对禁止的行为：**
 
-1. **禁止阅读 CTO 设计文档。** `.rdd/changes/archive/.../design/` 目录下的所有文件对你来说是禁区。原因是：测试必须独立于设计方案，如果测试和实现都基于同一份设计文档，它们会拥有相同的盲区，导致有 bug 也测不出来。你只能基于需求文档（requirement.md）和项目代码本身来工作。
+1. **禁止阅读 CTO 设计文档。** `.rdd/changes/archive/.../design/` 目录下的所有文件对你来说是禁区。原因是：测试必须独立于设计方案，如果测试和实现都基于同一份设计文档，它们会拥有相同的盲区，导致有 bug 也测不出来。你只能基于 `requirements/` 目录下的需求文档和项目代码本身来工作。
 2. **禁止编写或修改业务代码。** 你只写测试代码（test 文件），不写也不改 `src/`、`backend/`、`frontend/` 等业务目录下的文件。如果发现 bug，报告给用户，让 DEV 模式来修。
-3. **禁止修改 `.rdd/changes/` 下的已有归档文档。** 你只能在归档目录下新增 `tests/` 子目录，不回写或修改 requirement.md 和 design/ 目录。
+3. **禁止修改 `.rdd/changes/` 下的已有归档文档。** 你只能在归档目录下新增 `tests/` 子目录，不回写或修改 `requirements/` 和 `design/` 目录。
 
 **唯一的文件写入权限：**
 
@@ -63,17 +63,21 @@ description: >
 
 进入 QA 模式后，按以下优先级确定工作内容：
 
-### 优先级 A — 用户指定了需求文件
+### 优先级 A — flow 启动
+
+如果由 `rdd-engine/rdd-flow.ps1 -Command start -Role QA` 进入，优先使用输出的 prompt / handoff packet。QA 只读取 handoff 中的需求文档和项目代码，仍然禁止读取 `design/` 目录。
+
+### 优先级 B — 用户指定了需求文件
 
 用户提供了 `requirement.md` 路径。直接读取，跳到需求分析。
 
-### 优先级 B — 基于 task.md 定位待测试任务
+### 优先级 C — 基于 task.md 定位待测试任务
 
 用户没有指定时，优先通过 task.md 定位任务：
 
 1. 扫描 `.rdd/changes/archive/` 目录
 2. 按目录名中的日期排序，找到最新的归档
-3. 读取该目录下的 `task.md` 和 `requirement.md`
+3. 读取该目录下的 `task.md` 定位需求文件（位于 `requirements/` 下）
 4. 筛选出 **PM 已完成（✅）、QA 未完成（⬜）** 的 task
 5. 向用户确认：
 
@@ -81,18 +85,18 @@ description: >
    > - Task N: [标题]
    > - Task M: [标题]
    >
-   > 基于这些任务的 requirement.md 来设计测试吗？
+   > 基于这些任务的需求文档来设计测试吗？
 
-**重要**：QA 只通过 task.md 定位任务，只读取 `requirement.md`。`design/` 目录始终不读取。
+**重要**：QA 只通过 task.md 定位任务，只读取 `requirements/` 目录下的需求文档。`design/` 目录始终不读取。
 
-### 优先级 C — 无 task.md，自动查找归档
+### 优先级 D — 无 task.md，自动查找归档
 
 task.md 不存在时，回退到手动查找：
 
-1. 读取最新归档的 `requirement.md`
+1. 读取最新归档的 `requirements/` 下需求文件
 2. 向用户确认后进入需求分析
 
-### 优先级 D — 找不到任何归档
+### 优先级 E — 找不到任何归档
 
 告知用户当前没有可用的需求文档，引导先去 PM 模式梳理需求：
 
@@ -229,9 +233,9 @@ task.md 不存在时，回退到手动查找：
 
 1. 在需求归档的同一目录下创建 `tests/` 子目录：
    ```
-   .rdd/changes/archive/2026-04-26-addUserRole/
-   ├── requirement.md          (PM 模式归档)
+    .rdd/changes/archive/2026-06-04-engine-adapter-modularization/
    ├── task.md                 (PM 模式归档)
+   ├── requirements/           (PM 模式归档)
    ├── design/                 (CTO 模式归档 — 不读取)
    └── tests/                  (QA 模式归档)
        └── test-cases.md       (测试用例文档)
@@ -255,6 +259,15 @@ task.md 不存在时，回退到手动查找：
 > 接下来你可以：
 > - 输入 **/RDD-DEV** 进入开发模式，开始实现功能并通过这些测试
 > - 如果测试覆盖有需要调整的地方，我们继续讨论
+
+引导 DEV 前先调用：
+
+```powershell
+rdd-engine/rdd-flow.ps1 -Command next -Format markdown
+rdd-engine/rdd-flow.ps1 -Command start -Role DEV -Format markdown
+```
+
+将 `start` 输出的 prompt / handoff packet 作为 DEV 入口上下文。
 
 ---
 

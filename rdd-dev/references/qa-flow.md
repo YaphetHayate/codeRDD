@@ -12,7 +12,7 @@
 
 通过 Task 工具启动 QA 子 agent（subagent_type 为 `general`），prompt 包含：
 1. 指令"加载 RDD-QA skill"
-2. 归档路径（如 `.rdd/changes/archive/2026-05-01-xxx/`）
+2. 归档路径（如 `.rdd/changes/archive/2026-06-04-engine-adapter-modularization/`）
 3. 指令"基于 task.md 定位需求条目，执行 QA 流程"
 
 QA 子 agent 完成后，DEV 收到结果并汇总呈现给用户。

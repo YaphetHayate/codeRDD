@@ -46,23 +46,27 @@ description: >
 
 进入 UX 模式后，按以下优先级确定工作内容：
 
-### 优先级 A — 用户指定了需求文件
+### 优先级 A — flow 启动
+
+如果由 `rdd-engine/rdd-flow.ps1 -Command start -Role UX` 进入，优先使用输出的 prompt / handoff packet，只读取 handoff 列出的需求文档和必要参考，不默认扫描整个归档目录。
+
+### 优先级 B — 用户指定了需求文件
 
 用户提供了 `requirement.md` 路径或口述需求 → 直接读取/记录。
 
-### 优先级 B — 基于 task.md 定位待设计任务
+### 优先级 C — 基于 task.md 路由总览定位待设计任务
 
-用户没有指定时，通过 task.md 定位：
+用户没有指定时，通过 task.md 路由目录定位：
 
 1. 扫描 `.rdd/changes/archive/` 目录，按日期找最新归档
 2. 读取 `task.md`
-   - 若 `overview.md` 存在（新结构）：从 `task.md` 的"需求文件"字段定位各需求文件
+   - **新格式（路由总览有"当前责任人"列）**：筛选 `当前责任人 = UX` 的行，读取对应的需求文件
+   - **旧格式（✅⬜ 状态表）**：回退到旧逻辑，筛选 PM✅、UX⬜ 的 task，并从"需求文件"字段定位需求文件
    - 若 `requirement.md` 存在（旧结构）：读取 `requirement.md`
-3. 筛选出 **PM 已完成（✅）、UX 未完成（⬜）** 的 task
-4. 检查 task.md 是否包含"角色参与计划"章节，UX 标记为 ✅参与则确认 UX 被期望参与。不包含时按原流程处理。
-5. 向用户确认工作范围
+3. 检查 task.md 是否包含"角色参与计划"章节，UX 标记为 ✅参与则确认 UX 被期望参与。不包含时按原流程处理。
+4. 向用户确认工作范围
 
-### 优先级 C — 无归档
+### 优先级 D — 无归档
 
 告知用户先去 PM 模式梳理需求。
 
@@ -203,14 +207,32 @@ description: >
 ## Phase 4：归档与引导下一步
 
 1. 将设计规格文档写入 `design/{需求文件名}-ux.md`
-2. 更新 `task.md`：已完成设计 task 的 UX 列从 ⬜ → ✅
-3. 告知用户文件位置后引导：
+2. 设置文档「流转控制」：当前责任人设为 DEV，状态设为 active
+3. 更新 `task.md` 路由总览：已完成需求的行，当前责任人改为 DEV，关联设计文档填入实际路径
+   - 如 task.md 为旧格式（✅⬜ 状态表），回退到旧逻辑：UX 列从 ⬜ → ✅
+4. 调用流转脚本确认下一角色：
+
+   ```powershell
+   rdd-engine/rdd-flow.ps1 -Command next -Format markdown
+   ```
+
+5. 告知用户文件位置后引导：
 
 > 设计规格已归档到 `design/{需求文件名}-ux.md`。建议进入开发模式实施。
 >
 > 接下来你可以：
 > - 输入 **/RDD-DEV** 进入开发模式
 > - 如果设计有需要调整的地方，我们继续讨论
+>
+> 如后续发现设计不合理需打回，走正式驳回协议（加载 `rdd-engine/references/rejection-protocol.md`）。
+
+用户确认进入 DEV 后，调用：
+
+```powershell
+rdd-engine/rdd-flow.ps1 -Command start -Role DEV -Format markdown
+```
+
+将输出的 prompt / handoff packet 作为 DEV 入口上下文。
 
 ---
 

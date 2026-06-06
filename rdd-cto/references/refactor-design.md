@@ -6,7 +6,10 @@
 
 ### 1. 读取全部需求 + 理解现状
 
-从 PM 归档中读取重构需求文件，然后**深入阅读现有代码**——必须理解当前架构的问题所在，才能设计合理的改造方案。
+从 PM 归档中读取重构需求文件，然后**深入阅读现有代码**——必须理解当前架构的问题所在，才能设计合理的改造方案。需要理解代码时委托 engine：
+```powershell
+engine.ps1 -Type explore -Query "分析重构需求涉及的代码模块"
+```
 
 参照 `code-quality-assessment.md` 评估现有代码的系统性问题（循环依赖、模块职责混乱、架构模式不一致等）。
 
@@ -52,5 +55,18 @@
 ### 4. 归档
 
 全部需求确认后：
-1. 更新 `task.md`：CTO 列标记 ✅
-2. 告知归档位置，询问是否进入 DEV 模式
+1. 更新 `task.md` 路由总览：已设计需求的行，`当前责任人` 改为 DEV，`关联设计文档` 填入实际路径
+2. 调用流转脚本查看待处理角色：
+
+   ```powershell
+   rdd-engine/rdd-flow.ps1 -Command next -Format markdown
+   ```
+
+3. 告知归档位置，询问是否进入 DEV 模式
+4. 用户确认后调用：
+
+   ```powershell
+   rdd-engine/rdd-flow.ps1 -Command start -Role DEV -Format markdown
+   ```
+
+   将输出的 prompt / handoff packet 作为 DEV 入口上下文
