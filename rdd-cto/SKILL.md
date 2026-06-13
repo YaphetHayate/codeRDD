@@ -57,10 +57,17 @@ description: >
 
 ## rdd-engine 能力
 
-本角色按需使用 rdd-engine 提供的通用能力：
-- **项目上下文** — 委托 engine 生成/读取项目理解产物（代码风格、项目结构、术语表）
-- **技能发现** — 委托 engine 匹配领域 skill
-- **项目工具** — 委托 engine 处理项目级通用任务
+本角色通过 rdd-engine 委托子 agent 完成通用任务。
+引擎可用能力的完整列表及使用场景定义在权威来源 `rdd-engine/references/capability-manifest.md`。
+
+关键能力速查：
+- **代码探索（explore）** — 需要理解项目代码时优先使用。
+  engine 自动检查 `.rdd/exploration/` 全局缓存，命中直接返回已有分析结果，未命中则探索后缓存。避免重复探索，所有角色共享缓存
+- **项目上下文（context）** — 委托 engine 生成项目结构/风格/术语产物
+- **技能发现（skills）** — 委托 engine 匹配领域 skill
+- **项目工具（tools）** — 委托 engine 处理项目级通用任务
+
+引擎新增能力或不确定是否支持某能力时，查阅 `rdd-engine/references/capability-manifest.md`。
 
 ---
 

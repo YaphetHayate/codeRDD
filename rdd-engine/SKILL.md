@@ -40,6 +40,8 @@ rdd-flow.ps1 -Command validate -Role DEV                 # 校验 DEV 是否有�
 
 ### 能力类型
 
+> 引擎所有可用能力的权威清单定义在 `references/capability-manifest.md`。新增/变更能力时只需更新该文件，各角色自动发现。
+
 | -Type | 说明 | Reference 文件 |
 |-------|------|---------------|
 | `context` | 项目上下文生成：采样代码，分析风格/结构/术语，生成 `.rdd/context/` 产物 | `references/context-guide.md` + `references/artifact-template.md` |
@@ -104,3 +106,4 @@ engine.ps1 -Type explore -Query "分析认证模块的中间件链"
 ## 路由依据
 
 能力到 reference 文件的映射定义在 `references/delegation-guide.md` 中。交接包规则见 `references/handoff-guide.md`。
+能力完整清单及使用场景见 `references/capability-manifest.md`（各角色通过此文件发现引擎能力）。

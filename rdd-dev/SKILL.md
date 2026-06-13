@@ -27,6 +27,22 @@ description: >
 
 ---
 
+## rdd-engine 能力
+
+本角色通过 rdd-engine 委托子 agent 完成通用任务。
+引擎可用能力的完整列表及使用场景定义在权威来源 `rdd-engine/references/capability-manifest.md`。
+
+关键能力速查：
+- **代码探索（explore）** — 需要理解项目代码时优先使用。
+  engine 自动检查 `.rdd/exploration/` 全局缓存，命中直接返回已有分析结果，未命中则探索后缓存。避免重复探索，所有角色共享缓存
+- **项目上下文（context）** — 委托 engine 生成项目结构/风格/术语产物
+- **技能发现（skills）** — 委托 engine 匹配领域 skill
+- **项目工具（tools）** — 委托 engine 处理项目级通用任务
+
+引擎新增能力或不确定是否支持某能力时，查阅 `rdd-engine/references/capability-manifest.md`。
+
+---
+
 ## 输入处理
 
 进入 DEV 后优先使用 handoff packet 裁剪上下文。如果由上游角色通过 `rdd-flow.ps1 -Command start -Role DEV` 启动，直接使用输出的交接包，无需自行定位。如果是用户手动 `/RDD-DEV`，调用 `rdd-flow.ps1 -Command handoff -Role DEV` 自动定位最新归档中的 DEV 任务；脚本不可用时再回退到手动扫描。没有交接包时再按优先级确定任务：A) 用户指定设计文档 → 设计引导模式；B) task.md 定位待开发任务；C) 自动查找文档；D) 用户直接指令（含 bug 检测优先）；E) 无可用信息时提示用户。
@@ -63,7 +79,7 @@ description: >
 硬规则：
 
 - 编码遵循项目现有风格，最小改动，防御性处理，不引入不必要依赖
-- 领域工程任务按需委托 rdd-engine 做项目上下文、技能发现或项目工具调用
+- 领域工程任务按需委托 rdd-engine（详见上节 rdd-engine 能力）
 - 每个任务完成后必须自测，子 agent 产出必须审查后才能合入
 - 仅在用户明确要求时提交代码
 - 需求不清、设计不可行、需要上游决策时，按驳回协议正式移交
