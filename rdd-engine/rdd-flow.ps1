@@ -484,10 +484,23 @@ function Build-NextFlow {
     $roleMap = @{}
     $warnings = @()
 
+    $validRoles = @("PM", "CTO", "UX", "DEV", "QA")
+    $completedCount = 0
+
     foreach ($row in $route.rows) {
         $owner = Clean-Cell $row."当前责任人"
         if ([string]::IsNullOrWhiteSpace($owner) -or $owner -eq "-") {
             $warnings += "Route row has no 当前责任人: $(Clean-Cell $row."需求")"
+            continue
+        }
+
+        if ($owner -ieq "已完成") {
+            $completedCount++
+            continue
+        }
+
+        if ($validRoles -notcontains $owner) {
+            $warnings += "Unknown 当前责任人 '$owner' in row '$(Clean-Cell $row."需求")' (expected one of: $($validRoles -join ', '), 已完成)"
             continue
         }
 
@@ -524,6 +537,7 @@ function Build-NextFlow {
             taskTracker = (Get-RelativePath $route.taskPath)
             generatedAt = (Get-Date).ToString("s")
             roles = $roles
+            completedCount = $completedCount
             warnings = $warnings
             usage = "Choose a role from roles, then run: rdd-engine/rdd-flow.ps1 -Command start -Role <ROLE> -Archive `"$((Get-RelativePath $ArchivePath))`""
         }
@@ -591,6 +605,10 @@ function Convert-NextToMarkdown {
     )
 
     $lines += "- Usage: ``$($data.usage)``"
+
+    if ($data.completedCount -gt 0) {
+        $lines += "- Completed (已闭环): $($data.completedCount) 个需求（当前责任人 = 已完成，不在可启动角色内）"
+    }
 
     $lines += ""
     $lines += "## Available Roles"

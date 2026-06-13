@@ -43,7 +43,7 @@ New-Item -ItemType Directory -Path ".rdd/changes/archive/YYYY-MM-DD-short-name/r
 
 ### 4. 生成 task.md
 
-写入 `task.md`（归档根目录），按 `references/task-template.md` 模板格式。填写角色参与计划和路由总览。
+写入 `task.md`（归档根目录），按 `references/task-template.md` 模板格式。填写路由总览（`当前责任人` 列设为该需求下一条处理角色）。
 
 需求文件列填写 `requirements/{name}.md` 格式。
 
@@ -108,5 +108,5 @@ rdd-engine/rdd-flow.ps1 -Command next -Archive ".rdd/changes/archive/YYYY-MM-DD-
 ## 历史兼容
 
 - 旧归档结构（需求文件在根目录、无 requirements/ 子目录）各角色回退到旧逻辑处理
-- 旧 task.md 格式（无路由总览、使用旧版 ✅⬜ 状态表）各角色回退到旧逻辑
+- 旧 task.md 格式（无路由总览、含已废弃的「角色参与计划」章节或旧版 ✅⬜ 状态表）各角色忽略 `角色参与计划`，从路由总览派生参与信息；无路由总览则回退到旧逻辑
 - 旧 rdd-flow 脚本会先在根目录查找需求文件，找不到时回退到 `requirements/` 子目录

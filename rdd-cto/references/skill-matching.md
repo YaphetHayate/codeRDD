@@ -9,7 +9,7 @@
 阅读需求描述和验收标准，判断是否涉及以下方向（不限于）：
 
 - 视觉设计（UI/UX、布局、配色、交互、组件规范、响应式）→ 匹配 **rdd-ux** skill。CTO 在技术方向文档中标注视觉/交互由 UX 负责（→ design/{name}-ux.md），提醒 DEV 实现时参考 UX 规格。
-  > 注：UX 的启动由 task.md 角色参与计划决定，CTO 不做门控判断。
+  > 注：UX 的启动由 task.md 路由总览决定（`当前责任人 = UX`），CTO 不做门控判断。
 - 像素美术（像素画、精灵图、调色板、sprite）→ 匹配 pixel-art-sprites
 - 特定渲染技术（Canvas、WebGL、SVG）
 - 数据可视化
