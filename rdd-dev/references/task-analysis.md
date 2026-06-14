@@ -2,16 +2,12 @@
 
 > 本文档是 [SKILL.md](../SKILL.md) 的补充材料，包含任务分析阶段的详细流程和规则。
 
-> **⚡ rdd-engine 集成**：必须先执行 `/context` 获取项目理解产物，再继续后续步骤。
-
-执行方式：
+> 需要理解现有代码时，委托 engine 探索（结果通过全局缓存复用）：
+```powershell
+explore.ps1 -Type explore -Query "分析当前任务涉及的代码模块"
 ```
-首先执行 /context 获取项目上下文。
-[加载 rdd-engine skill，执行 /context 指令]
 
-基于产物中的代码风格和项目术语，开始任务拆分...
 代码定位通过 Grep/Glob 工具完成。
-```
 
 ## 分析流程
 
@@ -38,17 +34,6 @@
   │   - 涉及文件范围
   │   - 依赖关系（哪些任务必须在哪些之后）
   │   - 职责类型（数据层/业务层/接口层/工具函数/配置）
-  │   - 领域标签（是否涉及特定领域知识，如像素美术、UX、动画等）
-  │
-  ├── Skill 匹配
-  │   对有领域标签（非"通用工程"）的任务：
-  │     1. 读取 rdd-dev/skills/index.md（已学习 skill 缓存）匹配
-  │     2. 未命中 → 读取 rdd-engine/skill-registry.md 匹配 skill
-  │     3. 匹配到 → 读取该 skill 的 SKILL.md，实现时参考其领域指导
-  │     4. 未匹配 → 调用 find-skill 尝试发现可用技能
-  │        find-skill 找到 → 将条目追加到 rdd-dev/skills/index.md
-  │                     → 使用并建议用户补充到 rdd-engine/skill-registry.md
-  │        find-skill 未找到 / 不可用 → 在拆分计划中标注"⚠️ 领域知识缺口"
   │
   ├── 检查文件冲突
   │   同一并行组内不能有两个任务改同一文件
@@ -124,15 +109,4 @@
 
 ```
 依赖链：T1 → T2 → [T3, T4]（T3/T4 可并行，但必须等 T1 和 T2 都完成）
-```
-
-**Skill 关联信息**：每个任务在拆分计划中应展示匹配的 skill 或领域知识缺口标注：
-
-```
-Task 2: [任务标题]
-  涉及文件：xxx.js, yyy.js
-  设计参考：CTO design/{name}-cto.md + UX design/{name}-ux.md
-  关联 Skill：pixel-art-sprites（领域指导：调色板策略、像素绘制技法）
-  / ⚠️ 领域知识缺口（无匹配 skill，实现时需自行判断）
-  / ⚠️ 无 UX 设计规格，视觉层面需自行判断
 ```

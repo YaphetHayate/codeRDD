@@ -58,9 +58,6 @@ description: >
 关键能力速查：
 - **代码探索（explore）** — 需要理解项目代码时优先使用。
   engine 自动检查 `.rdd/exploration/` 全局缓存，命中直接返回已有分析结果，未命中则探索后缓存。避免重复探索，所有角色共享缓存
-- **项目上下文（context）** — 委托 engine 生成项目结构/风格/术语产物
-- **技能发现（skills）** — 委托 engine 匹配领域 skill
-- **项目工具（tools）** — 委托 engine 处理项目级通用任务
 
 引擎新增能力或不确定是否支持某能力时，查阅 `rdd-engine/references/capability-manifest.md`。
 
@@ -76,7 +73,11 @@ description: >
 
 用户提供了 `requirement.md` 路径。直接读取，跳到需求分析。
 
-### 优先级 C — 基于 task.md 定位待测试任务
+### 优先级 C — 应用层指针消息
+
+收到 `请处理 .rdd/changes/archive/<name>/ 下的需求` → 识别为应用层交接（Plus 模式），运行 `rdd-flow.ps1 -Command handoff -Role QA -Archive "<path>"` 拉取交接包。
+
+### 优先级 D — 基于 task.md 定位待测试任务
 
 用户没有指定时，优先通过 task.md 定位任务：
 
@@ -94,14 +95,14 @@ description: >
 
 **重要**：QA 只通过 task.md 定位任务，只读取 `requirements/` 目录下的需求文档。`design/` 目录始终不读取。
 
-### 优先级 D — 无 task.md，自动查找归档
+### 优先级 E — 无 task.md，自动查找归档
 
 task.md 不存在时，回退到手动查找：
 
 1. 读取最新归档的 `requirements/` 下需求文件
 2. 向用户确认后进入需求分析
 
-### 优先级 E — 找不到任何归档
+### 优先级 F — 找不到任何归档
 
 告知用户当前没有可用的需求文档，引导先去 PM 模式梳理需求：
 
@@ -254,25 +255,9 @@ task.md 不存在时，回退到手动查找：
 
 ### 5.2 引导下一步
 
-测试代码和文档都就位后：
+测试代码和文档都就位后，按 `rdd-engine/references/transition-guide.md` 的**上游协议 4 步硬流程**执行角色交接（路由已更新 → 运行 next → 推荐角色请求确认 → 生成 packet 按模式分支）。
 
-> 测试已就绪：
-> - 测试用例文档：`.rdd/changes/archive/.../tests/test-cases.md`
-> - 测试代码：[列出测试文件路径]
-> - task.md 已更新：Task N QA → ✅
-> 
-> 接下来你可以：
-> - 输入 **/RDD-DEV** 进入开发模式，开始实现功能并通过这些测试
-> - 如果测试覆盖有需要调整的地方，我们继续讨论
-
-引导 DEV 前先调用：
-
-```powershell
-rdd-engine/rdd-flow.ps1 -Command next -Format markdown
-rdd-engine/rdd-flow.ps1 -Command start -Role DEV -Format markdown
-```
-
-将 `start` 输出的 prompt / handoff packet 作为 DEV 入口上下文。
+> 完整流程、模式检测、同会话切换规则见 `rdd-engine/references/transition-guide.md`。
 
 ---
 
@@ -307,7 +292,7 @@ QA 在 DEV 之后工作。测试用例同样基于需求独立生成，用于验
 └──────────────────┴──────────┴──────────┴──────────┴──────────────────────┘
 
 通过率：13/14 (92.9%)
-失败用例详情已标记在测试文件中，建议输入 /RDD-DEV 修复。
+失败用例详情已标记在测试文件中。
 ```
 
 ---

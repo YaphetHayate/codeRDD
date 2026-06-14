@@ -63,9 +63,6 @@ description: >
 关键能力速查：
 - **代码探索（explore）** — 需要理解项目代码时优先使用。
   engine 自动检查 `.rdd/exploration/` 全局缓存，命中直接返回已有分析结果，未命中则探索后缓存。避免重复探索，所有角色共享缓存
-- **项目上下文（context）** — 委托 engine 生成项目结构/风格/术语产物
-- **技能发现（skills）** — 委托 engine 匹配领域 skill
-- **项目工具（tools）** — 委托 engine 处理项目级通用任务
 
 引擎新增能力或不确定是否支持某能力时，查阅 `rdd-engine/references/capability-manifest.md`。
 
@@ -77,8 +74,9 @@ description: >
 
 - **A — flow 启动**：如果由 `rdd-engine/rdd-flow.ps1 -Command start -Role CTO` 进入，优先使用输出的 prompt / handoff packet，只读取 handoff 列出的需求文档
 - **B — 用户指定**：提供 `requirement.md` 路径或口述需求 → 直接读取
-- **C — 自动查找**：用户未提供 → 扫描 `.rdd/changes/archive/`，找最新归档，读取 `task.md`。向用户确认找到的需求
-- **D — 无归档** → 告知用户先去 PM 模式梳理需求
+- **C — 应用层指针消息**：收到 `请处理 .rdd/changes/archive/<name>/ 下的需求` → 识别为应用层交接，运行 `rdd-flow.ps1 -Command handoff -Role CTO -Archive "<path>"` 拉取交接包
+- **D — 自动查找**：用户未提供 → 扫描 `.rdd/changes/archive/`，找最新归档，读取 `task.md`。向用户确认找到的需求
+- **E — 无归档** → 告知用户先去 PM 模式梳理需求
 
 ### 读取 task.md 检查状态
 
@@ -89,7 +87,7 @@ description: >
 - 兼容旧目录结构（`RDD/changes/archive/`）
 - 需要理解现有代码时，委托 engine 探索：
   ```powershell
-  engine.ps1 -Type explore -Query "分析需求涉及的代码模块"
+  explore.ps1 -Type explore -Query "分析需求涉及的代码模块"
   ```
 
 ---
@@ -104,5 +102,5 @@ description: >
 | 技术咨询 → | `references/tech-consultation.md` |
 | 格式与模板 → | `references/design-guide.md` |
 | 分析模板 → | `references/analysis-l2.md`、`references/analysis-l3.md` |
-| 辅助工具 → | `references/capability-self-assessment.md`、`references/skill-matching.md`、`references/code-quality-assessment.md`、`references/industry-research.md`、`references/self-check.md` |
+| 辅助工具 → | `references/code-quality-assessment.md`、`references/industry-research.md`、`references/self-check.md` |
 | 驳回协议 → | `rdd-engine/references/rejection-protocol.md` |

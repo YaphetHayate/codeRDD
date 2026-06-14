@@ -10,7 +10,7 @@
 
 需要理解现有代码时，委托 engine 探索（结果通过全局缓存复用）：
 ```powershell
-engine.ps1 -Type explore -Query "分析当前需求涉及的代码模块和现有架构"
+explore.ps1 -Type explore -Query "分析当前需求涉及的代码模块和现有架构"
 ```
 
 深度阅读项目代码，理解现有架构。参照 `code-quality-assessment.md` 评估代码质量问题。需要项目上下文时通过 rdd-engine 获取。
@@ -25,7 +25,7 @@ engine.ps1 -Type explore -Query "分析当前需求涉及的代码模块和现�
 | **L2 标准** | 任一满足：跨 3+ 文件或模块；需接口或数据模型变更；涉及多需求依赖协调 | 新增功能、API 改造、多模块联动 |
 | **L3 复杂** | 任一满足：需引入新框架/中间件/库；涉及架构层面重构；多需求强耦合或循环依赖；影响核心业务流程 | 架构重构、引入消息队列、核心流程改造 |
 
-分级结果按 `design-guide.md` 的"分级结果呈现格式"展示，附加领域标签列（从 `skill-matching.md` 获取格式）。
+分级结果按 `design-guide.md` 的"分级结果呈现格式"展示。
 
 ### 1.3 确定依赖顺序
 
@@ -47,21 +47,13 @@ engine.ps1 -Type explore -Query "分析当前需求涉及的代码模块和现�
 
 只读当前这一条需求文件。不要把多条需求的内容混在一起处理。
 
-### 2.2 能力自评（按需）
-
-需求涉及非通用工程领域（如特定框架深度使用、特定算法、特定行业规范等）→ 加载 `capability-self-assessment.md` 评估 CTO 自身能力，决定是否需要借助领域 Skill。
-
-### 2.3 领域识别与 Skill 匹配（按需）
-
-需求标注了领域标签 → 加载 `skill-matching.md` 执行匹配流程，将领域知识融入设计。
-
-### 2.4 深度分析（按需）
+### 2.2 深度分析（按需）
 
 - **L2 需求**：加载 `analysis-l2.md`，执行可行性评估 + 依赖分析
 - **L3 需求**：先加载 `analysis-l3.md`，执行完整三维分析
 - **涉及技术选型**（L2/L3 需引入新框架/中间件/库）→ 加载 `industry-research.md` 执行业界调研
 
-### 2.5 技术方向设计（5 问）
+### 2.3 技术方向设计（5 问）
 
 **加载 `design-guide.md`**（获取决策点格式、ASCII 图表库、技术方向文档模板）。
 
@@ -72,11 +64,11 @@ engine.ps1 -Type explore -Query "分析当前需求涉及的代码模块和现�
 4. **配置方案**（怎么配？）→ 配置方式、配置项
 5. **涉及文件**（改哪些？）→ 新建 + 修改的文件清单
 
-### 2.6 自检
+### 2.4 自检
 
 L2/L3 设计完成后 → 加载 `self-check.md` 执行自检三步（交互点识别 → 冲突推演 → 多策略一致性检查）。
 
-### 2.7 交叉校验
+### 2.5 交叉校验
 
 如果前面已经确认了其他需求的设计方案，检查本条方案与已确认方案的：
 - 交互点是否冲突（同一数据/路径/资源配置方向是否矛盾）
@@ -85,7 +77,7 @@ L2/L3 设计完成后 → 加载 `self-check.md` 执行自检三步（交互点�
 
 发现冲突 → 记录，在下一步向用户提出。
 
-### 2.8 逐决策点对话确认
+### 2.6 逐决策点对话确认
 
 **一次只抛出一个决策点**，按 `design-guide.md` 的决策点话术格式：
 
@@ -102,7 +94,7 @@ L2/L3 设计完成后 → 加载 `self-check.md` 执行自检三步（交互点�
 
 **用户确认一个 → 填入设计文档 → 推进下一个。**
 
-### 2.9 确认完成 → 立即写设计文档
+### 2.7 确认完成 → 立即写设计文档
 
 本条需求全部决策点确认后，**立即**写入设计文档和附带产物：
 - 主体文档：`design/{需求文件名}-cto.md`（需求文件名从 `task.md` 获取，去掉 `.md` 后缀），按 `design-guide.md` 的"技术方向文档模板"
@@ -122,30 +114,9 @@ L2/L3 设计完成后 → 加载 `self-check.md` 执行自检三步（交互点�
 
 ## 第四步：引导下一步
 
-先调用流转脚本查看待处理角色（使用当前归档路径）：
+按 `rdd-engine/references/transition-guide.md` 的**上游协议 4 步硬流程**执行角色交接（更新路由 → 运行 next → 推荐角色请求确认 → 生成 packet 按模式分支）。
 
-```powershell
-rdd-engine/rdd-flow.ps1 -Command next -Format markdown
-```
-
-```
-方案已归档到 design/ 目录。建议进入开发模式，是否进入？
-```
-
-- 用户确认 → 调用（如需并行多个 DEV 会话，每个需求独立启动一个会话）：
-
-  ```powershell
-  # 全部 DEV 任务打包到同一个会话
-  rdd-engine/rdd-flow.ps1 -Command start -Role DEV -Format markdown
-
-  # 或逐条独立启动（"一需求一会话"，3 个需求 = 3 个独立 DEV session）
-  rdd-engine/rdd-flow.ps1 -Command start -Role DEV -TaskIndex 0 -Format markdown
-  rdd-engine/rdd-flow.ps1 -Command start -Role DEV -TaskIndex 1 -Format markdown
-  rdd-engine/rdd-flow.ps1 -Command start -Role DEV -TaskIndex 2 -Format markdown
-  ```
-
-  按 `design-guide.md` 的"模式切换上下文传递模板"输出声明，并将 `start` 输出的 prompt / handoff packet 作为 DEV 入口上下文
-- 用户拒绝 → 引导手动输入 `/RDD-DEV` 或继续讨论调整
+> 完整流程、模式检测、同会话切换规则见 `rdd-engine/references/transition-guide.md`。
 
 ---
 

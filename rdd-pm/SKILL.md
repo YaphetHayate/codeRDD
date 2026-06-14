@@ -73,9 +73,6 @@ description: >
 关键能力速查：
 - **代码探索（explore）** — 需要理解项目代码时优先使用。
   engine 自动检查 `.rdd/exploration/` 全局缓存，命中直接返回已有分析结果，未命中则探索后缓存。避免重复探索，所有角色共享缓存
-- **项目上下文（context）** — 委托 engine 生成项目结构/风格/术语产物
-- **技能发现（skills）** — 委托 engine 匹配领域 skill
-- **项目工具（tools）** — 委托 engine 处理项目级通用任务
 
 引擎新增能力或不确定是否支持某能力时，查阅 `rdd-engine/references/capability-manifest.md`。
 

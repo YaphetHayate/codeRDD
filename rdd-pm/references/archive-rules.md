@@ -62,40 +62,23 @@ New-Item -ItemType Directory -Path ".rdd/changes/archive/YYYY-MM-DD-short-name/r
 若需求需要理解现有代码，委托 rdd-engine 执行探索（产物缓存于全局索引，下游角色可复用）：
 
 ```powershell
-engine.ps1 -Type explore -Query "分析 [需求简述] 涉及的代码模块"
+explore.ps1 -Type explore -Query "分析 [需求简述] 涉及的代码模块"
 ```
 
 > engine 的 explore subagent 会按 `rdd-engine/references/exploration-guide.md` 的策略执行：先查 `.rdd/exploration/index.json` 缓存，命中且文件未过期则直接返回；否则探索代码并写入全局缓存。
 >
 > 如果变更范围简单（单文件/单模块），可跳过此步骤。快速通道默认跳过。
 
-### 7. 调用流转脚本并告知用户
+### 7. 执行角色交接
 
-确认归档完成后，更新 `task.md` 路由总览，调用流转脚本查看待处理角色：
+确认归档完成后（task.md 路由总览已更新），按 `rdd-engine/references/transition-guide.md` 的**上游协议 4 步硬流程**执行角色交接：
 
-```powershell
-rdd-engine/rdd-flow.ps1 -Command next -Archive ".rdd/changes/archive/YYYY-MM-DD-short-name" -Format markdown
-```
+1. task.md 路由已设置（Step 1 已在归档步骤完成）
+2. 运行 `next` 展示可流转角色
+3. 推荐角色 + 请求用户确认
+4. 用户确认后运行 `start` 生成交接包，按模式（self-driven / app-driven）分支执行
 
-告知用户：
-- **归档位置**
-- **各需求文档的路由去向**（列明每个需求文件的当前责任人）
-
-> **标准流程额外告知**：
-> - **并行可能**：CTO 和 UX 路由的需求在无耦合时可同时启动
-> - **同角色多需求并行**：每个需求独立启动，用 `-TaskIndex` 区分
->   ```powershell
->   rdd-engine/rdd-flow.ps1 -Command start -Role DEV -TaskIndex 0 -Format markdown
->   rdd-engine/rdd-flow.ps1 -Command start -Role DEV -TaskIndex 1 -Format markdown
->   ```
-> - **可流转角色**：使用 `next` 输出的 roles
-> - **启动引导**：agent 决定并经用户确认后生成启动引导
->   ```powershell
->   rdd-engine/rdd-flow.ps1 -Command start -Role <目标角色> -Format markdown
->   ```
-> - **用户拒绝则手动引导**：告知用户可输入 `/RDD-CTO`、`/RDD-UX` 或 `/RDD-DEV`
-
-> **快速通道差异**：省略并行启动和 `-TaskIndex` 说明，单个需求无并行场景。
+> 完整流程、模式检测、交接包生成方式见 `rdd-engine/references/transition-guide.md`。
 
 ### 8. 完成后
 

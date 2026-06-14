@@ -26,7 +26,7 @@ SDD（Specification-Driven Development）驱动的开发工作流，围绕一个
 
 ### 基础设施
 
-- **[rdd-engine](./rdd-engine/)**：能力总线，为所有角色提供项目上下文、技能发现和工具调用能力
+- **[rdd-engine](./rdd-engine/)**：能力总线，提供代码探索和阶段流转能力
 
 ---
 

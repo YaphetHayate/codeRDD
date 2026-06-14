@@ -104,17 +104,6 @@ role: cto
 ```
 
 3. 更新 `task.md`：将路由总览中对应行的 `当前责任人` 改为 DEV，`关联设计文档` 填入实际路径
-4. 调用流转脚本查看待处理角色：
+4. 按 `rdd-engine/references/transition-guide.md` 的**上游协议 4 步硬流程**执行角色交接（路由已更新 → 运行 next → 推荐角色请求确认 → 生成 packet 按模式分支）。
 
-   ```powershell
-   rdd-engine/rdd-flow.ps1 -Command next -Format markdown
-   ```
-
-5. 告知用户归档位置，询问是否进入 DEV 模式
-6. 用户确认后调用：
-
-   ```powershell
-   rdd-engine/rdd-flow.ps1 -Command start -Role DEV -Format markdown
-   ```
-
-   将输出的 prompt / handoff packet 作为 DEV 入口上下文
+> 完整流程见 `rdd-engine/references/transition-guide.md`。

@@ -1,8 +1,7 @@
 [CmdletBinding()]
 param(
     [string]$Type,
-    [string]$Query,
-    [string]$Mode = "dispatch"
+    [string]$Query
 )
 
 $ErrorActionPreference = "Stop"
@@ -31,44 +30,21 @@ function Write-ErrorResult {
 # === Input validation ===
 
 if ([string]::IsNullOrWhiteSpace($Type)) {
-    Write-ErrorResult "MISSING_TYPE" "-Type is required. Valid values: context, skills, tools" 1
+    Write-ErrorResult "MISSING_TYPE" "-Type is required. Valid value: explore" 1
 }
 
-$validTypes = @("context", "skills", "tools", "explore")
+$validTypes = @("explore")
 if ($validTypes -notcontains $Type) {
-    Write-ErrorResult "INVALID_TYPE" "Unknown type: '$Type'. Valid values: context, skills, tools" 1
+    Write-ErrorResult "INVALID_TYPE" "Unknown type: '$Type'. Valid value: explore" 1
 }
 
 if ([string]::IsNullOrWhiteSpace($Query)) {
     Write-ErrorResult "MISSING_QUERY" "-Query is required and cannot be empty" 1
 }
 
-$validModes = @("dispatch", "direct")
-if ($validModes -notcontains $Mode) {
-    Write-ErrorResult "INVALID_MODE" "Unknown mode: '$Mode'. Valid values: dispatch, direct" 1
-}
-
 # === Reference file mapping ===
 
 $referenceMap = @{
-    "context" = @{
-        files         = @("references/context-guide.md", "references/artifact-template.md")
-        subagentType  = "explore"
-        outputTarget  = ".rdd/context/"
-        description   = "Project context generation: sample code, analyze style/structure/glossary, generate .rdd/context/ artifacts"
-    }
-    "skills" = @{
-        files         = @("skill-registry.md")
-        subagentType  = "general"
-        outputTarget  = "stdout"
-        description   = "Skill discovery: match domain skills from skill-registry by keyword"
-    }
-    "tools" = @{
-        files         = @()
-        subagentType  = "general"
-        outputTarget  = "stdout"
-        description   = "Project tools: delegate general project-level tasks to sub-agent"
-    }
     "explore" = @{
         files         = @("references/exploration-guide.md")
         subagentType  = "explore"
@@ -121,26 +97,18 @@ foreach ($file in $resolvedFiles) {
 
 $prompt = $promptLines -join [System.Environment]::NewLine
 
-# === Execute by mode ===
+# === Dispatch to sub-agent ===
 
-switch ($Mode) {
-    "dispatch" {
-        $result = @{
-            success = $true
-            data    = @{
-                mode         = "dispatch"
-                subagentType = $config.subagentType
-                instructions = @{
-                    prompt          = $prompt
-                    referenceFiles  = $resolvedFiles
-                    outputTarget    = $config.outputTarget
-                }
-            }
+$result = @{
+    success = $true
+    data    = @{
+        subagentType = $config.subagentType
+        instructions = @{
+            prompt          = $prompt
+            referenceFiles  = $resolvedFiles
+            outputTarget    = $config.outputTarget
         }
-        $result | ConvertTo-Json -Depth 6 -Compress
-        exit 0
-    }
-    "direct" {
-        Write-ErrorResult "SUB_AGENT_FAILED" "Direct mode not yet implemented: opencode CLI/API interface is not available" 3
     }
 }
+$result | ConvertTo-Json -Depth 6 -Compress
+exit 0

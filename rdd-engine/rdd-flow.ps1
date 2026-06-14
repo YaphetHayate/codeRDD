@@ -259,12 +259,130 @@ function Resolve-ArchiveFile {
         return $directPath
     }
 
-    $requirementsPath = Join-Path $ArchivePath "requirements" $value
+    $requirementsPath = Join-Path (Join-Path $ArchivePath "requirements") $value
     if (Test-Path -LiteralPath $requirementsPath -PathType Leaf) {
         return $requirementsPath
     }
 
     return $directPath
+}
+
+# === Handoff building blocks ===
+
+function Test-DocEligible {
+    param(
+        $FlowControl,
+        [string]$TargetRole,
+        [string]$Label
+    )
+
+    if ($FlowControl.status -eq "deprecated") {
+        return @{ eligible = $false; reason = "$($Label)Status=deprecated" }
+    }
+    if ($FlowControl.hasPendingRejection) {
+        return @{ eligible = $false; reason = "$($Label)HasPendingRejection" }
+    }
+    if ($FlowControl.owner -and $FlowControl.owner -ne $TargetRole) {
+        return @{ eligible = $false; reason = "$($Label)Owner=$($FlowControl.owner)" }
+    }
+    return @{ eligible = $true; reason = "" }
+}
+
+function Get-RequirementSummary {
+    param(
+        [string]$RequirementPath,
+        [string]$Content
+    )
+
+    return @{
+        path = (Get-RelativePath $RequirementPath)
+        title = (Get-FirstHeading $Content)
+        description = (Get-DocField -Content $Content -Name "描述")
+        acceptance = (Get-DocField -Content $Content -Name "验收标准")
+        priority = (Get-DocField -Content $Content -Name "优先级")
+        impact = (Get-DocField -Content $Content -Name "影响范围")
+        userScenario = (Get-DocField -Content $Content -Name "用户场景")
+        edgeCases = (Get-DocField -Content $Content -Name "边界与异常")
+        dependencies = (Get-DocField -Content $Content -Name "依赖关系")
+    }
+}
+
+function Get-DesignSummary {
+    param(
+        [string]$DesignPath,
+        [string]$Content
+    )
+
+    return @{
+        path = (Get-RelativePath $DesignPath)
+        title = (Get-FirstHeading $Content)
+        overview = (Get-Section -Content $Content -HeadingPattern '.*需求概述.*')
+        technicalPlan = (Get-Section -Content $Content -HeadingPattern '.*技术方案.*')
+        risks = (Get-Section -Content $Content -HeadingPattern '.*风险提示.*')
+        involvedFiles = @(Get-InvolvedFiles $Content)
+    }
+}
+
+function Resolve-TaskRow {
+    param(
+        $Row,
+        [string]$ArchivePath,
+        [string]$TargetRole
+    )
+
+    $routeOwner = Clean-Cell $Row."当前责任人"
+    $requirementCell = Clean-Cell $Row."需求文件"
+    $designCell = Clean-Cell $Row."关联设计文档"
+    $title = Clean-Cell $Row."需求"
+    $remark = Clean-Cell $Row."备注"
+
+    if ($routeOwner -ne $TargetRole) {
+        return @{ outcome = "ignored"; entry = @{ requirement = $requirementCell; reason = "currentOwner=$routeOwner" } }
+    }
+
+    $requirementPath = Resolve-ArchiveFile -ArchivePath $ArchivePath -CellValue $requirementCell
+    if ($null -eq $requirementPath -or -not (Test-Path -LiteralPath $requirementPath -PathType Leaf)) {
+        return @{ outcome = "warning"; entry = "Requirement file not found for row '$title': $requirementCell" }
+    }
+
+    $requirementContent = Read-TextFile $requirementPath
+    $requirementFlow = Get-FlowControl $requirementContent
+    $eligibility = Test-DocEligible -FlowControl $requirementFlow -TargetRole $TargetRole -Label "requirement"
+    if (-not $eligibility.eligible) {
+        return @{ outcome = "ignored"; entry = @{ requirement = (Get-RelativePath $requirementPath); reason = $eligibility.reason } }
+    }
+
+    $designPath = Resolve-ArchiveFile -ArchivePath $ArchivePath -CellValue $designCell
+    $designSummary = $null
+    $workMode = "requirement-guided"
+    $involvedFiles = @()
+
+    if ($TargetRole -ne "QA" -and $designPath -and (Test-Path -LiteralPath $designPath -PathType Leaf)) {
+        $designContent = Read-TextFile $designPath
+        $designFlow = Get-FlowControl $designContent
+        $eligibility = Test-DocEligible -FlowControl $designFlow -TargetRole $TargetRole -Label "design"
+        if (-not $eligibility.eligible) {
+            return @{ outcome = "ignored"; entry = @{ requirement = (Get-RelativePath $requirementPath); design = (Get-RelativePath $designPath); reason = $eligibility.reason } }
+        }
+        $workMode = "design-guided"
+        $involvedFiles = @(Get-InvolvedFiles $designContent)
+        $designSummary = Get-DesignSummary -DesignPath $designPath -Content $designContent
+    }
+    elseif ($TargetRole -eq "DEV" -and $designCell -and $designCell -ne "-") {
+        return @{ outcome = "warning"; entry = "Design file not found for row '$title': $designCell" }
+    }
+
+    $requirementSummary = Get-RequirementSummary -RequirementPath $requirementPath -Content $requirementContent
+
+    return @{ outcome = "task"; entry = @{
+        title = $title
+        workMode = $workMode
+        routeOwner = $routeOwner
+        remark = $remark
+        requirement = $requirementSummary
+        design = $designSummary
+        involvedFiles = @($involvedFiles)
+    }}
 }
 
 function Build-Handoff {
@@ -273,140 +391,18 @@ function Build-Handoff {
         [string]$TargetRole
     )
 
-    $taskPath = Join-Path $ArchivePath "task.md"
-    if (-not (Test-Path -LiteralPath $taskPath -PathType Leaf)) {
-        Write-ErrorResult "TASK_NOT_FOUND" "task.md not found in archive: $ArchivePath" 2
-    }
-
-    $taskContent = Read-TextFile $taskPath
-    $rows = Parse-MarkdownTable -Lines ($taskContent -split "\r?\n") -RequiredHeader "当前责任人"
-    if ($rows.Count -eq 0) {
-        Write-ErrorResult "ROUTE_TABLE_NOT_FOUND" "No route overview table with 当前责任人 was found in task.md" 2
-    }
+    $route = Get-RouteRows -ArchivePath $ArchivePath
 
     $tasks = @()
     $ignored = @()
     $warnings = @()
 
-    foreach ($row in $rows) {
-        $routeOwner = Clean-Cell $row."当前责任人"
-        $requirementCell = Clean-Cell $row."需求文件"
-        $designCell = Clean-Cell $row."关联设计文档"
-        $title = Clean-Cell $row."需求"
-        $remark = Clean-Cell $row."备注"
-
-        if ($routeOwner -ne $TargetRole) {
-            $ignored += @{
-                requirement = $requirementCell
-                reason = "currentOwner=$routeOwner"
-            }
-            continue
-        }
-
-        $requirementPath = Resolve-ArchiveFile -ArchivePath $ArchivePath -CellValue $requirementCell
-        if ($null -eq $requirementPath -or -not (Test-Path -LiteralPath $requirementPath -PathType Leaf)) {
-            $warnings += "Requirement file not found for row '$title': $requirementCell"
-            continue
-        }
-
-        $requirementContent = Read-TextFile $requirementPath
-        $requirementFlow = Get-FlowControl $requirementContent
-
-        if ($requirementFlow.status -eq "deprecated") {
-            $ignored += @{
-                requirement = (Get-RelativePath $requirementPath)
-                reason = "requirementStatus=deprecated"
-            }
-            continue
-        }
-
-        if ($requirementFlow.hasPendingRejection) {
-            $ignored += @{
-                requirement = (Get-RelativePath $requirementPath)
-                reason = "requirementHasPendingRejection"
-            }
-            continue
-        }
-
-        if ($requirementFlow.owner -and $requirementFlow.owner -ne $TargetRole) {
-            $ignored += @{
-                requirement = (Get-RelativePath $requirementPath)
-                reason = "requirementOwner=$($requirementFlow.owner)"
-            }
-            continue
-        }
-
-        $designPath = Resolve-ArchiveFile -ArchivePath $ArchivePath -CellValue $designCell
-        $designSummary = $null
-        $workMode = "requirement-guided"
-        $involvedFiles = @()
-
-        if ($TargetRole -ne "QA" -and $designPath -and (Test-Path -LiteralPath $designPath -PathType Leaf)) {
-            $designContent = Read-TextFile $designPath
-            $designFlow = Get-FlowControl $designContent
-
-            if ($designFlow.status -eq "deprecated") {
-                $ignored += @{
-                    requirement = (Get-RelativePath $requirementPath)
-                    design = (Get-RelativePath $designPath)
-                    reason = "designStatus=deprecated"
-                }
-                continue
-            }
-
-            if ($designFlow.hasPendingRejection) {
-                $ignored += @{
-                    requirement = (Get-RelativePath $requirementPath)
-                    design = (Get-RelativePath $designPath)
-                    reason = "designHasPendingRejection"
-                }
-                continue
-            }
-
-            if ($designFlow.owner -and $designFlow.owner -ne $TargetRole) {
-                $ignored += @{
-                    requirement = (Get-RelativePath $requirementPath)
-                    design = (Get-RelativePath $designPath)
-                    reason = "designOwner=$($designFlow.owner)"
-                }
-                continue
-            }
-
-            $workMode = "design-guided"
-            $involvedFiles = @(Get-InvolvedFiles $designContent)
-            $designSummary = @{
-                path = (Get-RelativePath $designPath)
-                title = (Get-FirstHeading $designContent)
-                overview = (Get-Section -Content $designContent -HeadingPattern '.*需求概述.*')
-                technicalPlan = (Get-Section -Content $designContent -HeadingPattern '.*技术方案.*')
-                risks = (Get-Section -Content $designContent -HeadingPattern '.*风险提示.*')
-                involvedFiles = @($involvedFiles)
-            }
-        }
-        elseif ($TargetRole -eq "DEV" -and $designCell -and $designCell -ne "-") {
-            $warnings += "Design file not found for row '$title': $designCell"
-        }
-
-        $requirementSummary = @{
-            path = (Get-RelativePath $requirementPath)
-            title = (Get-FirstHeading $requirementContent)
-            description = (Get-DocField -Content $requirementContent -Name "描述")
-            acceptance = (Get-DocField -Content $requirementContent -Name "验收标准")
-            priority = (Get-DocField -Content $requirementContent -Name "优先级")
-            impact = (Get-DocField -Content $requirementContent -Name "影响范围")
-            userScenario = (Get-DocField -Content $requirementContent -Name "用户场景")
-            edgeCases = (Get-DocField -Content $requirementContent -Name "边界与异常")
-            dependencies = (Get-DocField -Content $requirementContent -Name "依赖关系")
-        }
-
-        $tasks += @{
-            title = $title
-            workMode = $workMode
-            routeOwner = $routeOwner
-            remark = $remark
-            requirement = $requirementSummary
-            design = $designSummary
-            involvedFiles = @($involvedFiles)
+    foreach ($row in $route.rows) {
+        $result = Resolve-TaskRow -Row $row -ArchivePath $ArchivePath -TargetRole $TargetRole
+        switch ($result.outcome) {
+            "task"    { $tasks += $result.entry }
+            "ignored" { $ignored += $result.entry }
+            "warning" { $warnings += $result.entry }
         }
     }
 
@@ -423,7 +419,7 @@ function Build-Handoff {
             type = "rdd-handoff"
             role = $TargetRole
             archive = (Get-RelativePath $ArchivePath)
-            taskTracker = (Get-RelativePath $taskPath)
+            taskTracker = (Get-RelativePath $route.taskPath)
             generatedAt = (Get-Date).ToString("s")
             instructions = @(
                 "Use this handoff packet as the entry context.",
@@ -726,31 +722,38 @@ function Convert-HandoffToMarkdown {
     return ($lines -join [System.Environment]::NewLine)
 }
 
+# === Output ===
+
+function Write-FlowOutput {
+    param(
+        [string]$Output,
+        [string]$OutFilePath
+    )
+
+    if (-not [string]::IsNullOrWhiteSpace($OutFilePath)) {
+        $target = $OutFilePath
+        if (-not [System.IO.Path]::IsPathRooted($target)) {
+            $target = Join-Path $repoRoot $target
+        }
+        $parent = Split-Path -Parent $target
+        if ($parent -and -not (Test-Path -LiteralPath $parent)) {
+            New-Item -ItemType Directory -Path $parent | Out-Null
+        }
+        Set-Content -LiteralPath $target -Value $Output -Encoding UTF8
+    }
+
+    $Output
+}
+
+# === Command dispatch ===
+
 $archivePath = Resolve-ArchivePath $Archive
 
 switch ($Command) {
     "handoff" {
         $result = Build-Handoff -ArchivePath $archivePath -TargetRole $Role
-        if ($Format -eq "markdown") {
-            $output = Convert-HandoffToMarkdown $result
-        }
-        else {
-            $output = $result | ConvertTo-Json -Depth 12
-        }
-
-        if (-not [string]::IsNullOrWhiteSpace($OutFile)) {
-            $target = $OutFile
-            if (-not [System.IO.Path]::IsPathRooted($target)) {
-                $target = Join-Path $repoRoot $target
-            }
-            $parent = Split-Path -Parent $target
-            if ($parent -and -not (Test-Path -LiteralPath $parent)) {
-                New-Item -ItemType Directory -Path $parent | Out-Null
-            }
-            Set-Content -LiteralPath $target -Value $output -Encoding UTF8
-        }
-
-        $output
+        $output = if ($Format -eq "markdown") { Convert-HandoffToMarkdown $result } else { $result | ConvertTo-Json -Depth 12 }
+        Write-FlowOutput -Output $output -OutFilePath $OutFile
     }
     "validate" {
         $result = Build-Handoff -ArchivePath $archivePath -TargetRole $Role
@@ -768,57 +771,12 @@ switch ($Command) {
     }
     "next" {
         $result = Build-NextFlow -ArchivePath $archivePath
-        if ($Format -eq "markdown") {
-            $output = Convert-NextToMarkdown $result
-        }
-        else {
-            $output = $result | ConvertTo-Json -Depth 12
-        }
-
-        if (-not [string]::IsNullOrWhiteSpace($OutFile)) {
-            $target = $OutFile
-            if (-not [System.IO.Path]::IsPathRooted($target)) {
-                $target = Join-Path $repoRoot $target
-            }
-            $parent = Split-Path -Parent $target
-            if ($parent -and -not (Test-Path -LiteralPath $parent)) {
-                New-Item -ItemType Directory -Path $parent | Out-Null
-            }
-            Set-Content -LiteralPath $target -Value $output -Encoding UTF8
-        }
-
-        $output
+        $output = if ($Format -eq "markdown") { Convert-NextToMarkdown $result } else { $result | ConvertTo-Json -Depth 12 }
+        Write-FlowOutput -Output $output -OutFilePath $OutFile
     }
     "start" {
         $result = Build-StartGuide -ArchivePath $archivePath -TargetRole $Role
-        if ($Format -eq "markdown") {
-            $output = Convert-StartToMarkdown $result
-        }
-        else {
-            $output = $result | ConvertTo-Json -Depth 14
-        }
-
-        if (-not [string]::IsNullOrWhiteSpace($OutFile)) {
-            $target = $OutFile
-            if (-not [System.IO.Path]::IsPathRooted($target)) {
-                $target = Join-Path $repoRoot $target
-            }
-            $parent = Split-Path -Parent $target
-            if ($parent -and -not (Test-Path -LiteralPath $parent)) {
-                New-Item -ItemType Directory -Path $parent | Out-Null
-            }
-            Set-Content -LiteralPath $target -Value $output -Encoding UTF8
-        }
-
-        $output
+        $output = if ($Format -eq "markdown") { Convert-StartToMarkdown $result } else { $result | ConvertTo-Json -Depth 14 }
+        Write-FlowOutput -Output $output -OutFilePath $OutFile
     }
 }
-
-
-
-
-
-
-
-
-

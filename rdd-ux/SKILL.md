@@ -41,9 +41,6 @@ description: >
 关键能力速查：
 - **代码探索（explore）** — 需要理解项目代码时优先使用。
   engine 自动检查 `.rdd/exploration/` 全局缓存，命中直接返回已有分析结果，未命中则探索后缓存。避免重复探索，所有角色共享缓存
-- **项目上下文（context）** — 委托 engine 生成项目结构/风格/术语产物
-- **技能发现（skills）** — 委托 engine 匹配领域 skill
-- **项目工具（tools）** — 委托 engine 处理项目级通用任务
 
 引擎新增能力或不确定是否支持某能力时，查阅 `rdd-engine/references/capability-manifest.md`。
 
@@ -100,14 +97,9 @@ description: >
 判断：
 ├── 能力覆盖（七步设计法适用）→ 进入 Phase 1
 │
-└── 能力不覆盖 → 读取 rdd-ux/skills/index.md（已学习 skill 缓存）匹配
-    ├── 命中 → 集成 skill 方法论辅助设计
-    └── 未命中 → 调用 find-skill 搜索相关领域 skill
-    ├── 找到 → 集成 skill 方法论辅助设计
-    │         → 将条目追加到 rdd-ux/skills/index.md（避免重复搜索）
-    └── 未找到 → 向用户说明：
-        "本次设计涉及 [领域]，我缺少该领域的专业设计方法论。
-         建议补充对应的 skill，或提供该领域的设计参考。"
+└── 能力不覆盖 → 向用户说明：
+    "本次设计涉及 [领域]，我缺少该领域的专业设计方法论。
+     建议提供该领域的设计参考。"
 ```
 
 **自评约束**：只对非常规设计需求做自评（如游戏界面、像素风、3D 场景等）。常规的 Web UI/移动端设计属于 UX 核心能力，不需要触发自评。
@@ -210,33 +202,14 @@ description: >
 
 ## Phase 4：归档与引导下一步
 
+设计规格写入 `design/{需求文件名}-ux.md` 后，更新 `task.md` 路由总览，然后按 `rdd-engine/references/transition-guide.md` 的**上游协议 4 步硬流程**执行角色交接。
+
+> 完整流程、模式检测、同会话切换规则见 `rdd-engine/references/transition-guide.md`。
+
 1. 将设计规格文档写入 `design/{需求文件名}-ux.md`
 2. 设置文档「流转控制」：当前责任人设为 DEV，状态设为 active
 3. 更新 `task.md` 路由总览：已完成需求的行，当前责任人改为 DEV，关联设计文档填入实际路径
    - 如 task.md 为旧格式（✅⬜ 状态表），回退到旧逻辑：UX 列从 ⬜ → ✅
-4. 调用流转脚本确认下一角色：
-
-   ```powershell
-   rdd-engine/rdd-flow.ps1 -Command next -Format markdown
-   ```
-
-5. 告知用户文件位置后引导：
-
-> 设计规格已归档到 `design/{需求文件名}-ux.md`。建议进入开发模式实施。
->
-> 接下来你可以：
-> - 输入 **/RDD-DEV** 进入开发模式
-> - 如果设计有需要调整的地方，我们继续讨论
->
-> 如后续发现设计不合理需打回，走正式驳回协议（加载 `rdd-engine/references/rejection-protocol.md`）。
-
-用户确认进入 DEV 后，调用：
-
-```powershell
-rdd-engine/rdd-flow.ps1 -Command start -Role DEV -Format markdown
-```
-
-将输出的 prompt / handoff packet 作为 DEV 入口上下文。
 
 ---
 

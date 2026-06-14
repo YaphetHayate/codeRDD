@@ -11,7 +11,7 @@
 各角色在 task 中调用：
 
 ```powershell
-engine.ps1 -Type explore -Query "分析认证模块的中间件链和 Token 刷新机制"
+explore.ps1 -Type explore -Query "分析认证模块的中间件链和 Token 刷新机制"
 ```
 
 ---
@@ -172,7 +172,7 @@ engine.ps1 -Type explore -Query "分析认证模块的中间件链和 Token 刷�
 ### 输入来源
 
 1. 解析 Query，提取关键词和意图
-2. 读取项目级上下文 `.rdd/context/`（如存在），了解项目结构后再定位文件
+2. 根据 Query 在源码目录中定位相关文件
 
 ### 探索范围
 
@@ -220,13 +220,3 @@ engine.ps1 -Type explore -Query "分析认证模块的中间件链和 Token 刷�
 [产物正文]
 ```
 
----
-
-## 与项目级上下文的关系
-
-| 产物 | 范围 | 位置 |
-|------|------|------|
-| `style.md` / `structure.md` / `glossary.md` | 项目级 | `.rdd/context/` |
-| `index.json` + `artifacts/` | 跨变更全局共享 | `.rdd/exploration/` |
-
-项目级上下文提供静态结构概览，本能力提供按需、可缓存的深度分析。

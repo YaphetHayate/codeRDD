@@ -27,6 +27,16 @@ DEV 有两种入口方式：
 rdd-engine/rdd-flow.ps1 -Command handoff -Role DEV
 ```
 
+### B3 — 应用层指针消息（app-driven）
+
+收到形如 `请处理 .rdd/changes/archive/<archive-name>/ 下的需求。` 的消息时，识别为应用层交接触发（Plus 模式）。提取归档路径，主动拉取交接包：
+
+```powershell
+rdd-engine/rdd-flow.ps1 -Command handoff -Role DEV -Archive ".rdd/changes/archive/<archive-name>"
+```
+
+**不要将指针消息当作"用户直接下达的开发指令"（优先级 E）处理**——它是一个交接信号，背后有完整的 task.md 路由和交接包。
+
 脚本自动定位最新归档，生成 DEV 的交接包。读取交接包后：
 
 1. 只处理 `tasks` 中列出的需求/设计文档

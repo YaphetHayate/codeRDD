@@ -85,7 +85,7 @@ rdd-engine/rdd-flow.ps1 -Command handoff -Role DEV -Archive ".rdd/changes/archiv
 
 此外，代码探索需求应委托 engine 执行（而非读取 archive 级文件）：
 ```powershell
-engine.ps1 -Type explore -Query "分析..." 
+explore.ps1 -Type explore -Query "分析..." 
 ```
 engine 通过 `exploration-guide.md` 管理全局可复用缓存。
 
@@ -118,7 +118,9 @@ rdd-engine/rdd-flow.ps1 -Command validate -Role DEV -Archive ".rdd/changes/archi
 
 ## 角色引导规则
 
-上游角色完成归档或设计后，不直接写"进入某模式"作为唯一引导，而是先运行：
+> 完整的角色交接协议（模式检测、上游 4 步硬流程、下游三入口识别）见 `transition-guide.md`。本节补充交接包的读取规则。
+
+上游角色完成归档或设计后，按 `transition-guide.md` 的上游协议执行交接（先运行 `next`，推荐角色请求确认，再运行 `start` 生成交接包）。
 
 ```powershell
 rdd-engine/rdd-flow.ps1 -Command next
