@@ -67,14 +67,11 @@ description: >
 
 ## rdd-engine 能力
 
-本角色通过 rdd-engine 委托子 agent 完成通用任务。
-引擎可用能力的完整列表及使用场景定义在权威来源 `rdd-engine/references/capability-manifest.md`。
+本角色通过 rdd-engine 委托通用子任务。引擎能力的权威清单定义在
+`rdd-engine/references/capability-manifest.md`（记录有哪些能力、各自效果、详细指引所在）。
 
-关键能力速查：
-- **代码探索（explore）** — 需要理解项目代码时优先使用。
-  engine 自动检查 `.rdd/exploration/` 全局缓存，命中直接返回已有分析结果，未命中则探索后缓存。避免重复探索，所有角色共享缓存
-
-引擎新增能力或不确定是否支持某能力时，查阅 `rdd-engine/references/capability-manifest.md`。
+需要理解或探索项目代码、定位模块/函数/依赖关系时，必须先读取
+`rdd-engine/references/capability-manifest.md`，按其记录的能力与调用方式执行。
 
 ---
 

@@ -19,7 +19,7 @@ design/{name}-ux.md    ← UX 产出（视觉/交互需求如何被规格化）
     ↓
 实际代码                 ← DEV 产出（设计方案如何被实现）
     ↓
-tests/test-cases.md     ← QA 产出（需求如何被转化为测试）
+tests/cases.md           ← QA 产出（本次变更的测试增量；完整规约在 .rdd/tests/{feature}/cases.md）
     ↓
 测试代码                 ← QA 产出（测试用例如何被执行）
 ```
