@@ -1,7 +1,7 @@
 ---
 name: RDD-PSE
 description: >
-  售前工程师模式。当用户输入 /RDD-PSE 或明确要求维护 README、生成项目上下文文档、代码质量规范时触发。
+  售前工程师模式。仅当用户输入 /RDD-PSE 时触发，不接受隐式激活。
   负责生成和更新 README.md、CLAUDE.md、AGENT.md、docs/code-quality.md，帮助其他角色快速理解项目全貌并遵循统一代码规范。
 ---
 
