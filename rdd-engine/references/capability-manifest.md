@@ -9,7 +9,7 @@
 
 | 能力 | -Type | CLI 命令 | 触发场景 |
 |------|-------|---------|---------|
-| 代码探索（全局缓存） | `explore` | `explore.ps1 -Type explore -Query "..."` | 需要理解项目代码、定位模块/函数/依赖关系时 |
+| 代码探索（全局缓存） | `explore` | `explore.cmd -Type explore -Query "..."` | 需要理解项目代码、定位模块/函数/依赖关系时 |
 
 ---
 
@@ -30,13 +30,13 @@
 
 ```powershell
 # 分析认证模块
-explore.ps1 -Type explore -Query "分析认证模块的中间件链和 Token 刷新机制"
+explore.cmd -Type explore -Query "分析认证模块的中间件链和 Token 刷新机制"
 
 # 理解数据库访问层
-explore.ps1 -Type explore -Query "分析项目 ORM 层的 Repository 模式和事务管理"
+explore.cmd -Type explore -Query "分析项目 ORM 层的 Repository 模式和事务管理"
 
 # 定位特定功能实现
-explore.ps1 -Type explore -Query "搜索并分析用户权限检查的实现逻辑"
+explore.cmd -Type explore -Query "搜索并分析用户权限检查的实现逻辑"
 ```
 
 **缓存特性：**
@@ -54,10 +54,10 @@ explore.ps1 -Type explore -Query "搜索并分析用户权限检查的实现逻�
 
 | Command | CLI 命令 | 说明 |
 |---------|---------|------|
-| `next` | `rdd-flow.ps1 -Command next` | 汇总当前有哪些角色有待处理任务 |
-| `start` | `rdd-flow.ps1 -Command start -Role <PM\|CTO\|UX\|DEV\|QA>` | 为指定角色生成启动 prompt + handoff packet |
-| `handoff` | `rdd-flow.ps1 -Command handoff -Role <DEV>` | 为指定角色生成最小交接包 |
-| `validate` | `rdd-flow.ps1 -Command validate -Role <DEV>` | 校验指定角色是否有可执行任务 |
+| `next` | `rdd-flow.cmd -Command next` | 汇总当前有哪些角色有待处理任务 |
+| `start` | `rdd-flow.cmd -Command start -Role <PM\|CTO\|UX\|DEV\|QA>` | 为指定角色生成启动 prompt + handoff packet |
+| `handoff` | `rdd-flow.cmd -Command handoff -Role <DEV>` | 为指定角色生成最小交接包 |
+| `validate` | `rdd-flow.cmd -Command validate -Role <DEV>` | 校验指定角色是否有可执行任务 |
 
 > 完整规则见 `rdd-engine/references/handoff-guide.md`
 

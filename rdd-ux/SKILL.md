@@ -50,9 +50,9 @@ description: >
 
 | 优先级 | 触发 | 动作 |
 |--------|------|------|
-| A | flow 启动（`rdd-flow.ps1 -Command start -Role UX`） | 使用输出的 prompt / handoff packet，只读 handoff 列出的需求文档 |
+| A | flow 启动（`rdd-flow.cmd -Command start -Role UX`） | 使用输出的 prompt / handoff packet，只读 handoff 列出的需求文档 |
 | B | 用户指定需求文件路径或口述需求 | 直接读取/记录 |
-| C | 应用层指针消息（形如 `请处理 .rdd/changes/archive/<name>/ 下的需求`） | 识别为应用层交接，运行 `rdd-flow.ps1 -Command handoff -Role UX -Archive "<path>"` 拉取交接包 |
+| C | 应用层指针消息（形如 `请处理 .rdd/changes/archive/<name>/ 下的需求`） | 识别为应用层交接，运行 `rdd-flow.cmd -Command handoff -Role UX -Archive "<path>"` 拉取交接包 |
 | D | 用户未提供 | 扫描 `.rdd/changes/archive/`（兼容旧目录 `RDD/changes/archive/`）找最新归档，读 `task.md` 路由定位 `当前责任人 = UX` 的行 |
 | E | 无归档 | 告知用户先去 PM 模式梳理需求 |
 
@@ -132,7 +132,7 @@ Phase 4：归档与角色交接
 
 ### CTO 并行协同
 
-Phase 1 检查 task.md 路由，若存在 `当前责任人 = CTO` 的行（或 `关联设计文档` 引用 CTO 文档），视为 CTO 并行：
+Phase 1 检查 task.md 路由，若存在 `当前责任人 = CTO` 的行（或 `关联设计文档` 集合单元格中包含 CTO 文档路径），视为 CTO 并行：
 
 - **读取 CTO 产物**：CTO 的技术方向（组件库选型、状态管理、CSS 架构）影响 UX 的 Token 适配方式，必须先读取
 - **视觉系统约束**：若 CTO 已定组件库（Ant Design、shadcn/ui 等），UX 的组件设计需兼容该库的视觉规范，而非另起炉灶

@@ -71,9 +71,9 @@ QA 在工作流中的位置不同，但测试设计方法一致：
 
 ### 确认需求来源
 
-- **A — flow 启动**：由 `rdd-engine/rdd-flow.ps1 -Command start -Role QA` 进入 → 优先使用输出的 prompt / handoff packet。只读取 handoff 中的需求文档和项目代码，**仍然禁止读取 `design/`**
+- **A — flow 启动**：由 `rdd-engine/rdd-flow.cmd -Command start -Role QA` 进入 → 优先使用输出的 prompt / handoff packet。只读取 handoff 中的需求文档和项目代码，**仍然禁止读取 `design/`**
 - **B — 用户指定**：提供 `requirement.md` 路径或口述需求 → 直接读取
-- **C — 应用层指针消息**：收到 `请处理 .rdd/changes/archive/<name>/ 下的需求` → 运行 `rdd-flow.ps1 -Command handoff -Role QA -Archive "<path>"` 拉取交接包
+- **C — 应用层指针消息**：收到 `请处理 .rdd/changes/archive/<name>/ 下的需求` → 运行 `rdd-flow.cmd -Command handoff -Role QA -Archive "<path>"` 拉取交接包
 - **D — 基于 task.md 定位**：用户未指定 → 扫描 `.rdd/changes/archive/` 最新归档，读取 `task.md`，筛选 QA 未完成的 task，向用户确认。**只读取 `requirements/`，`design/` 始终不读取**
 - **E — 无 task.md**：回退到直接读取最新归档的 `requirements/`，向用户确认
 - **F — 找不到任何归档**：告知用户当前没有可用需求文档，建议输入 `/RDD-PM` 先梳理需求

@@ -17,6 +17,8 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+$OutputEncoding = [System.Text.Encoding]::UTF8
 $repoRoot = Resolve-Path (Join-Path $PSScriptRoot "..")
 
 function Write-ErrorResult {
@@ -450,7 +452,7 @@ function Get-RoleSkillPath {
 
 function Get-RoleCommand {
     param([string]$TargetRole)
-    return "/RDD-$TargetRole"
+    return "/rdd-$($TargetRole.ToLower())"
 }
 
 function Get-RouteRows {
@@ -535,7 +537,7 @@ function Build-NextFlow {
             roles = $roles
             completedCount = $completedCount
             warnings = $warnings
-            usage = "Choose a role from roles, then run: rdd-engine/rdd-flow.ps1 -Command start -Role <ROLE> -Archive `"$((Get-RelativePath $ArchivePath))`""
+            usage = "Choose a role, then /new to open a new session and run /rdd-<role> (auto-loads skill + handoff). Preview packet here: rdd-engine/rdd-flow.cmd -Command start -Role <ROLE> -Archive `"$((Get-RelativePath $ArchivePath))`""
         }
     }
 }
@@ -557,7 +559,11 @@ function Build-StartGuide {
     }
 
     $promptLines = @(
-        "加载 $roleCommand / $skillPath。",
+        "角色交接：进入 $TargetRole 需要新的会话窗口，以保证上下文纯净。",
+        "",
+        "请在当前会话完成后：",
+        "  1. 按 Ctrl+X N（或输入 /new）开新 session",
+        "  2. 在新 session 输入 $roleCommand（自动加载 $skillPath + 本交接包）",
         "",
         $scopeLine,
         "不要默认扫描整个归档目录；ignored 项不属于本次处理范围。",
@@ -565,7 +571,7 @@ function Build-StartGuide {
         "归档路径：$relativeArchive",
         "目标角色：$TargetRole",
         "",
-        "执行要求：",
+        "新角色启动后执行要求：",
         "1. 先确认 handoff 中的 tasks 和 warnings。",
         "2. 按 task 的 workMode 进入对应工作模式。",
         "3. 如 handoff 为空或 warning 阻塞执行，先向用户说明并请求裁决。",

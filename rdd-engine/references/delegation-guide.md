@@ -23,4 +23,4 @@
 
 ## CLI 调用方式
 
-通过 `explore.ps1` 脚本调用。详见 `SKILL.md` 或直接运行 `explore.ps1 -Type explore -Query "<description>"`。
+通过 `explore.ps1` 脚本调用。详见 `SKILL.md` 或直接运行 `explore.cmd -Type explore -Query "<description>"`。

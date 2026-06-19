@@ -30,7 +30,7 @@ RDD 有两种部署场景，交接行为不同。通过 `.rdd/roles.json` 是否
 ### Step 2 — 运行 next，展示可流转角色
 
 ```powershell
-rdd-engine/rdd-flow.ps1 -Command next -Format markdown
+rdd-engine/rdd-flow.cmd -Command next -Format markdown
 ```
 
 将输出的可流转角色列表展示给用户。
@@ -47,27 +47,31 @@ rdd-engine/rdd-flow.ps1 -Command next -Format markdown
 ### Step 4 — 用户确认后，生成交接包
 
 ```powershell
-rdd-engine/rdd-flow.ps1 -Command start -Role <目标角色> -OutFile ".rdd/handoff/<role>.md"
+rdd-engine/rdd-flow.cmd -Command start -Role <目标角色> -OutFile ".rdd/handoff/<role>.md"
 ```
 
 生成交接包后，**按模式分支**：
 
 #### self-driven（Standalone）
 
-Agent 在同一会话内直接切换角色：
+Agent **不在同一会话内切换角色**——上游长对话会污染下游上下文，"宣布边界"无法真正隔离。改为引导用户开新 session：
 
-1. 加载目标角色 SKILL.md（如 `rdd-dev/SKILL.md`）
-2. 宣布上下文边界：
+1. （可选）落盘交接包便于排查：
+   ```powershell
+   rdd-engine/rdd-flow.cmd -Command start -Role <目标角色> -OutFile ".rdd/handoff/<role>.md"
+   ```
+2. 向用户输出切换指引（入口命令均为 `/rdd-<角色>`，见下文"各角色速查"）：
 
    ```
    ─────────────────────────────────────────
-   上下文边界：以下进入 <角色> 模式
-   以 handoff packet 为唯一入口上下文
-   忽略上游对话中的非产物信息
+   角色切换：进入 <角色> 需要新的会话窗口
+   1. 按 Ctrl+X N（或输入 /new）开新 session
+   2. 在新 session 输入 /rdd-<目标角色>
+      → 自动加载角色 SKILL + 最新交接包
    ─────────────────────────────────────────
    ```
 
-3. 以 packet 中的 tasks/requirement/design 开始工作
+3. 当前会话至此结束交接职责。不要在同会话加载新角色 SKILL，也不要代其开工。
 
 #### app-driven（Plus）
 
@@ -84,29 +88,20 @@ Agent **不尝试加载目标 skill、不宣布上下文边界**——这些由�
 
 ---
 
-## 下游协议（三入口识别）
+## 下游协议（入口识别）
 
-下游角色（DEV/CTO/QA）进入时，按优先级识别入口来源：
+下游角色（DEV/CTO/UX/QA）进入时，按部署模式识别入口来源：
 
-### 入口 B1 — Agent 直接交接（self-driven）
+### 入口 B1 — 新会话角色命令（self-driven）
 
-上游 agent 在同一会话内切换角色，直接传递 handoff packet。
+self-driven 模式下，角色切换一律在新 session 完成，**不在同会话切换**。用户在上游引导下：
 
-- packet 已在上下文中 → 直接使用，无需重新拉取
-- 只处理 packet 中 `tasks` 列出的需求/设计文档
-- 不扫描整个归档目录
+1. `/new`（Ctrl+X N）开新 session
+2. 输入 `/rdd-<角色>` —— 命令自动加载角色 SKILL，并通过 `rdd-flow.cmd -Command handoff` 拉取最新交接包
 
-### 入口 B2 — 用户手动进入
+该入口由 `.opencode/commands/rdd-<角色>.md` 实现。**旧版"同会话宣布边界 / Agent 直接交接"已废弃**——无法真正隔离上游上下文。若用户坚持在同会话进入角色，按命令中的检查清单执行，并提示下次走 `/new`。
 
-用户输入 `/RDD-<角色>` 或明确要求进入某角色。
-
-```powershell
-rdd-engine/rdd-flow.ps1 -Command handoff -Role <self>
-```
-
-脚本自动定位最新归档生成交接包。读取后按 packet 的 tasks 开工。
-
-### 入口 B3 — 应用层指针消息（app-driven）
+### 入口 B2 — 应用层指针消息（app-driven）
 
 收到形如以下的消息：
 
@@ -117,7 +112,7 @@ rdd-engine/rdd-flow.ps1 -Command handoff -Role <self>
 识别为应用层交接触发。提取归档路径，主动拉取交接包：
 
 ```powershell
-rdd-engine/rdd-flow.ps1 -Command handoff -Role <self> -Archive ".rdd/changes/archive/<archive-name>"
+rdd-engine/rdd-flow.cmd -Command handoff -Role <self> -Archive ".rdd/changes/archive/<archive-name>"
 ```
 
 用 packet 作为上下文边界开工。**不要将指针消息当作"用户直接下达的开发指令"（优先级 E）处理**——它是一个交接信号，背后有完整的 task.md 路由和交接包。
@@ -132,18 +127,19 @@ rdd-engine/rdd-flow.ps1 -Command handoff -Role <self> -Archive ".rdd/changes/arc
 2. 不扫描整个归档目录
 3. 不读取 `ignored` 中的文档（除非用户明确要求）
 4. 代码探索从 `involvedFiles` 起步，深入时委托 `explore.ps1`
-5. self-driven 同会话切换时，忽略上游长对话中的非产物信息
+5. self-driven 角色切换走新会话（见入口 B1）；同会话内不切换，避免上游对话污染
 
 ---
 
 ## 各角色速查
 
-| 当前角色 | 典型下游 | 交接触发条件 |
-|---------|---------|-------------|
-| PM | CTO / UX / DEV | 需求归档完成，task.md 路由已设置 |
-| CTO | UX（并行）/ DEV | 设计文档归档完成，路由改为 UX 或 DEV |
-| UX | DEV | 设计规格归档完成，路由改为 DEV |
-| QA | DEV | 测试用例归档完成（测试先行），或测试报告产出（验证模式） |
-| DEV | QA / 已完成 | 实现完成，路由改为 QA；QA 通过后改为"已完成" |
+| 当前角色 | 典型下游 | 交接触发条件 | 下游入口命令 |
+|---------|---------|-------------|-------------|
+| PM | CTO / UX / DEV | 需求归档完成，task.md 路由已设置 | `/rdd-cto` `/rdd-ux` `/rdd-dev` |
+| CTO | UX（并行）/ DEV | 设计文档归档完成，路由改为 UX 或 DEV | `/rdd-ux` `/rdd-dev` |
+| UX | DEV | 设计规格归档完成，路由改为 DEV | `/rdd-dev` |
+| QA | DEV | 测试用例归档完成（测试先行），或测试报告产出（验证模式） | `/rdd-dev` |
+| DEV | QA / 已完成 | 实现完成，路由改为 QA；QA 通过后改为"已完成" | `/rdd-qa` |
 
+> self-driven 模式：进入下游 = 上游引导用户 `/new` 后输入上表入口命令，命令会自动加载 SKILL + handoff。CTO/UX/DEV 入口命令已就绪；QA/EVAL/PSE 按需补充。
 > 同一归档中多个需求路由到同一角色时，用 `-TaskIndex` 逐条独立启动（一需求一会话并行）。

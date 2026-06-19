@@ -4,7 +4,7 @@
 
 > 需要理解现有代码时，委托 engine 探索（结果通过全局缓存复用）：
 ```powershell
-explore.ps1 -Type explore -Query "分析当前任务涉及的代码模块"
+explore.cmd -Type explore -Query "分析当前任务涉及的代码模块"
 ```
 
 代码定位通过 Grep/Glob 工具完成。

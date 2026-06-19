@@ -32,12 +32,24 @@ SDD（Specification-Driven Development）驱动的开发工作流，围绕一个
 
 ## 使用方式
 
-通过斜杠命令激活对应角色：
+角色通过 opencode 自定义命令激活（命令位于 `.opencode/commands/`）。每个角色在自己的会话里工作；切换角色时**开新会话**以保证上下文纯净。
 
-- `/RDD-PM` — 需求定义
-- `/RDD-CTO` — 技术架构
-- `/RDD-UX` — 视觉/交互设计
-- `/RDD-DEV` — 开发实现
-- `/RDD-QA` — 测试验证
-- `/RDD-EVAL` — 交付评价
-- `/RDD-PSE` — 文档维护
+### 角色入口命令
+
+- `/rdd-pm` — 需求定义（流程起点，无交接包）
+- `/rdd-cto` — 技术架构
+- `/rdd-ux` — 视觉/交互设计
+- `/rdd-dev` — 开发实现
+- `/rdd-qa` — 测试验证（待补）
+- `/rdd-eval` — 交付评价（待补）
+- `/rdd-pse` — 文档维护（待补）
+
+### 角色切换流程
+
+```
+当前角色完成产物归档 → rdd-flow.cmd -Command next 推荐下游 → 用户确认
+  → /new（Ctrl+X N）开新会话（清理上下文）
+  → 输入 /rdd-<下游角色> → 自动加载角色 SKILL + 最新交接包 → 干净进入
+```
+
+> 角色切换必须开新会话：opencode 的 agent 无法在同会话内真正隔离上下文，"同会话宣布边界"无法阻止上游对话污染下游。详见 `rdd-engine/references/transition-guide.md`。

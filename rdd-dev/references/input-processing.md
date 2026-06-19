@@ -14,7 +14,7 @@ DEV 有两种入口方式：
 
 ### B1 — Agent 间交接（上游传递）
 
-当上游角色（PM/CTO）通过 `rdd-flow.ps1 -Command start -Role DEV` 启动新会话时，新会话直接使用输出的 handoff packet，无需自行定位。此时：
+当上游角色（PM/CTO）通过 `rdd-flow.cmd -Command start -Role DEV` 启动新会话时，新会话直接使用输出的 handoff packet，无需自行定位。此时：
 - 只处理 packet 中 `tasks` 列出的需求/设计文档
 - 不扫描整个归档目录
 - 多个需求可并行拉起多个 DEV 会话（每个会话带上 `-TaskIndex`，一条需求一个 session）
@@ -24,7 +24,7 @@ DEV 有两种入口方式：
 用户输入 `/RDD-DEV` 但未指定归档时，调用流转脚本自动获取最新归档中的 DEV 任务：
 
 ```powershell
-rdd-engine/rdd-flow.ps1 -Command handoff -Role DEV
+rdd-engine/rdd-flow.cmd -Command handoff -Role DEV
 ```
 
 ### B3 — 应用层指针消息（app-driven）
@@ -32,7 +32,7 @@ rdd-engine/rdd-flow.ps1 -Command handoff -Role DEV
 收到形如 `请处理 .rdd/changes/archive/<archive-name>/ 下的需求。` 的消息时，识别为应用层交接触发（Plus 模式）。提取归档路径，主动拉取交接包：
 
 ```powershell
-rdd-engine/rdd-flow.ps1 -Command handoff -Role DEV -Archive ".rdd/changes/archive/<archive-name>"
+rdd-engine/rdd-flow.cmd -Command handoff -Role DEV -Archive ".rdd/changes/archive/<archive-name>"
 ```
 
 **不要将指针消息当作"用户直接下达的开发指令"（优先级 E）处理**——它是一个交接信号，背后有完整的 task.md 路由和交接包。
@@ -62,7 +62,7 @@ rdd-engine/rdd-flow.ps1 -Command handoff -Role DEV -Archive ".rdd/changes/archiv
 3. 检查路由总览格式：
    - **新格式（路由总览有"当前责任人"列）**：
      - 筛选出 `当前责任人 = DEV` 的行
-     - 读取每行的需求文件和关联设计文档
+      - 读取每行的需求文件和关联设计文档（关联设计文档为集合语义，单元格内多个路径以 `+` 分隔，需逐个读取）
      - 逐条检查需求文件自身 `## 流转控制 > 当前责任人`；若与 `task.md` 不一致，以需求文件为准并修正 `task.md`
    - **旧格式（旧版 ✅⬜ 状态表）**：
      - 回退到旧逻辑：筛选 PM✅、CTO✅/⏭️、DEV⬜ 的 task

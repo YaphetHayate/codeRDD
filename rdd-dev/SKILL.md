@@ -39,7 +39,7 @@ description: >
 
 ## 输入处理
 
-进入 DEV 后优先使用 handoff packet 裁剪上下文。如果由上游角色通过 `rdd-flow.ps1 -Command start -Role DEV` 启动，直接使用输出的交接包，无需自行定位。如果是用户手动 `/RDD-DEV`，调用 `rdd-flow.ps1 -Command handoff -Role DEV` 自动定位最新归档中的 DEV 任务；脚本不可用时再回退到手动扫描。没有交接包时再按优先级确定任务：A) 用户指定设计文档 → 设计引导模式；B) task.md 定位待开发任务；C) 自动查找文档；D) 用户直接指令（含 bug 检测优先）；E) 无可用信息时提示用户。
+进入 DEV 后优先使用 handoff packet 裁剪上下文。如果由上游角色通过 `rdd-flow.cmd -Command start -Role DEV` 启动，直接使用输出的交接包，无需自行定位。如果是用户手动 `/RDD-DEV`，调用 `rdd-flow.cmd -Command handoff -Role DEV` 自动定位最新归档中的 DEV 任务；脚本不可用时再回退到手动扫描。没有交接包时再按优先级确定任务：A) 用户指定设计文档 → 设计引导模式；B) task.md 定位待开发任务；C) 自动查找文档；D) 用户直接指令（含 bug 检测优先）；E) 无可用信息时提示用户。
 
 > 完整优先级判定流程见 `references/input-processing.md`
 

@@ -11,7 +11,7 @@
 各角色在 task 中调用：
 
 ```powershell
-explore.ps1 -Type explore -Query "分析认证模块的中间件链和 Token 刷新机制"
+explore.cmd -Type explore -Query "分析认证模块的中间件链和 Token 刷新机制"
 ```
 
 ---

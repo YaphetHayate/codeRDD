@@ -443,7 +443,7 @@ source_mode: 翻译者 / 创作者 / 混合
 
 - **定稿 mockup**：`design/mockups/final.html`
 - **视觉氛围参考**：`design/mockups/images/reference.png`（如有）
-- **方向探索历史**：`design/mockups/images/`（3 个方向：保守/平衡/激进）
+- **方向探索历史**：`design/mockups/images/`（3 个方向，按设计侧重命名：如 信息优先 / 任务优先 / 体验优先）
 
 > mockup 是视觉参考，本规格文档是精确参数源。
 > 实现时参考 mockup 理解视觉效果（布局比例、配色氛围、视觉层次），具体参数以本文档为准。

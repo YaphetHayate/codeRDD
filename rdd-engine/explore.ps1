@@ -5,6 +5,8 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+$OutputEncoding = [System.Text.Encoding]::UTF8
 $scriptRoot = $PSScriptRoot
 
 filter Write-ResultJson {

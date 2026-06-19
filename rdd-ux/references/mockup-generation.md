@@ -39,46 +39,75 @@
 
 ## Phase 2.5a：方向探索（图片生成）
 
-### 图片生成 prompt 构造
+### 设计原则：方向要有不同的"侧重"，而非不同的"风格浓度"
 
-从 Phase 2 的设计规格草案提取以下维度，构造结构化 prompt：
+三个方向不应只是"保守/平衡/激进"的同轴滑动——那样往往只换来配色或留白的微调，三张图高度相似。每个方向应该回答一个**不同的设计问题**、主导一个**不同的设计维度**（信息架构 / 布局模式 / 信息密度 / 视觉气质），让用户真正在"不同的设计思路"之间做选择。
+
+### 三方向侧重定义
+
+默认采用以下三种设计侧重，每个方向有明确的设计目标、主变量与 prompt 驱动要素：
+
+| 方向 | 设计侧重 | 回答的设计问题 | 主变量 | prompt 驱动要素 |
+|------|---------|---------------|--------|----------------|
+| **A · 信息优先** | 信息密度与任务效率 | 如何让用户在一屏内最高效地获取与操作信息？ | 信息密度 + 布局 | 高密度布局（dashboard / 多栏网格）、紧凑信息组织、数据可视化突出、工具感专业配色（蓝灰/中性）、最小化装饰 |
+| **B · 任务优先** | 任务引导与认知减负 | 如何让用户不被信息淹没、顺畅完成核心任务？ | 信息层级 + 焦点 | 聚焦式/渐进式布局（主操作区放大居中）、清晰视觉层级、适度留白、主次分明、引导性配色 |
+| **C · 体验优先** | 视觉表现与品牌共鸣 | 如何让界面在视觉与情感上打动用户、传递品牌？ | 视觉气质 + 配色 | 富表现力布局（hero / 大留白）、大胆配色或质感、插画/渐变/动效暗示、差异化视觉语言（可含深色模式） |
+
+**按需定制：** 若 Phase 2 的设计分析浮现了更贴合本需求的设计张力（如"列表 vs 卡片"、"桌面效率 vs 移动优先"、"数据展示 vs 操作引导"），UX 可替换默认侧重，改为三个**针对该需求的设计假设**。须满足：① 三个侧重互为不同维度；② 每个侧重能一句话说清"它优化的是什么"。
+
+### 并行生成策略（子代理分发）
+
+三个方向相互独立，**并行生成**而非串行，采用 fork-join 模式：
+
+1. **构造侧重简报**：UX 基于上表为每个方向生成一份侧重简报——设计目标 + 主变量 + prompt 驱动要素 + 来自 Phase 2 的共享参数（内容领域、配色方向、响应式目标）
+2. **并行分发**：一次性派发 3 个子代理（Task 工具，`subagent_type=general`），每个子代理收到一份侧重简报，独立完成"构造 prompt → 调用图片生成工具 → 返回图片路径 + 一句话视觉特征"
+3. **汇聚**：3 个子代理全部返回后，UX 汇总路径，生成对比索引页
+
+> **为何用子代理而非直接并行工具调用**：每个方向的 prompt 构造本身就是有侧重的独立工作（选词、调参、强化本方向的差异点）。子代理的独立上下文让每个方向被认真对待，从执行层面避免"三张图共用一个模板、只换关键词"的同质化——这正是"侧重差异化"的保障。
+
+**子代理任务模板**（每个子代理收到的指令骨架）：
 
 ```
-图片生成 prompt 模板：
+你是视觉稿生成子代理。请基于以下侧重简报生成一张 UI mockup 图片。
 
-A professional [内容领域] web UI design, [布局类型],
-[视觉风格关键词], [配色方向] color palette,
-designed for [响应式目标], clean and modern aesthetic,
-high fidelity UI mockup, screen design.
+## 侧重简报
+- 方向：[A 信息优先 / B 任务优先 / C 体验优先]
+- 设计目标：[一句话]
+- 主变量：[信息密度 / 信息层级 / 视觉气质]
+- prompt 驱动要素：[布局、配色、风格关键词]
+- 共享参数：内容领域=[...]、响应式目标=[...]、Phase 2 配色方向=[...]
 
-布局类型选项：sidebar + main content / single column centered / grid layout / dashboard / hero + features
-视觉风格关键词：minimalist / modern / professional / friendly / bold / elegant
-配色方向：[基于 Phase 2 的主色方向，如 blue-gray professional / warm energetic / dark premium]
-内容领域：[从 requirement.md 推导，如 SaaS dashboard / e-commerce / admin panel]
-响应式目标：desktop-first / mobile-first
+## prompt 结构（按本方向侧重填充）
+A professional [内容领域] web UI design.
+Layout: [由侧重决定的布局类型]
+Information density: [A=dense / B=focused / C=spacious]
+Visual style: [本方向风格关键词]
+Color palette: [Phase 2 配色方向 × 本方向气质]
+Designed for [响应式目标]. High fidelity UI mockup, screen design.
+方向侧重强化句（决定差异的关键）：
+- A：「Maximize information density and data visibility, dense grid, minimal decoration, utility-first professional aesthetic.」
+- B：「Clear visual hierarchy guiding the primary task, prominent main action area, progressive disclosure, calm and focused.」
+- C：「Expressive and brand-driven, generous whitespace, bold color and texture, immersive hero, distinctive visual language.」
 
-重要约束：
+## 约束
+- 仅生成 1 张图片，分辨率 ≥ 1024×768
 - 重点是布局比例、配色氛围、视觉层次
-- UI 中的文字不要求精确渲染，允许近似或占位
-- 避免生成过于艺术化、脱离实际产品视觉的图像
+- UI 文字不要求精确，允许近似/占位
+- 避免过于艺术化、脱离实际产品视觉
+- 严格围绕本方向"设计侧重"，不向其他方向趋同
+
+## 输出
+- 调用图片生成工具生成图片
+- 存储到：.rdd/changes/archive/.../design/mockups/images/direction-{x}-{focus}.png
+- 返回：图片文件名 + 一句话说明本方向视觉特征（供索引页使用）
 ```
-
-### 三方向定义
-
-生成 3 个差异明显的方向，每个方向调整 prompt 的关键参数：
-
-| 方向 | 定位 | prompt 差异 |
-|------|------|------------|
-| **保守** | 贴近行业主流，低风险快速交付 | 标准布局 + 安全配色（蓝/灰）+ minimalist |
-| **平衡** | 主流基础上加入 1-2 个设计亮点 | 标准布局 + 亮点配色 + modern + 一个视觉特色（如渐变/卡片阴影/动效暗示） |
-| **激进** | 大胆探索，差异化竞争 | 非常规布局 + 大胆配色 + bold + 强视觉特征（如深色模式/大面积留白/非常规网格） |
 
 ### 图片生成约束
 
 - **分辨率**：按工具能力选择最高可用，建议至少 1024×768 以上
-- **数量**：3 张（每方向 1 张）
+- **数量**：3 张（每方向 1 张，并行生成）
 - **存储路径**：`.rdd/changes/archive/.../design/mockups/images/`
-- **命名**：`direction-a-conservative.png` / `direction-b-balanced.png` / `direction-c-bold.png`
+- **命名**：`direction-a-{focus}.png` / `direction-b-{focus}.png` / `direction-c-{focus}.png`（`{focus}` 为该方向侧重关键词的英文 slug，如 `info-density` / `task-focus` / `experience`）
 
 ### 对比索引页生成
 
@@ -102,12 +131,12 @@ high fidelity UI mockup, screen design.
 </head>
 <body>
   <h1>视觉稿方向对比</h1>
-  <p style="text-align:center;color:#6b7280;">选择最满意的方向后，在 CLI 中告知 UX（如"选平衡方案"）</p>
+  <p style="text-align:center;color:#6b7280;">选择最满意的方向后，在 CLI 中告知 UX（如"选 B 方案"或"选任务优先方案"）</p>
   <div class="grid">
     <div class="variant">
-      <img src="images/direction-a-conservative.png" alt="保守方案">
+      <img src="images/direction-a-info-density.png" alt="信息优先方案">
       <div class="variant-info">
-        <p class="variant-name">A · 保守方案</p>
+        <p class="variant-name">A · 信息优先</p>
         <p class="variant-desc">[具体差异描述]</p>
       </div>
     </div>
@@ -197,7 +226,7 @@ mockup 统一用内联 CSS，不依赖外部 CDN 或框架运行时——保证�
 
 跳过 Phase 2.5a，直接进入 HTML 生成：
 
-1. 基于 Phase 2 设计规格草案，按三方向（保守/平衡/激进）生成 3 个 HTML mockup
+1. 基于 Phase 2 设计规格草案，按三方向侧重（信息优先 / 任务优先 / 体验优先，或本次定制的三个设计假设）生成 3 个 HTML mockup
 2. 生成 `index.html` 并排展示（用 iframe 嵌入 3 个 HTML）
 3. 用户选择方向后，进入迭代精修（同 2.5b 的迭代流程）
 
@@ -215,13 +244,13 @@ mockup 统一用内联 CSS，不依赖外部 CDN 或框架运行时——保证�
 ├── {name}-ux.md                    # 设计规格（权威参数）
 └── mockups/                         # 视觉稿目录
     ├── images/                      # 图片生成产物
-    │   ├── direction-a-conservative.png
-    │   ├── direction-b-balanced.png
-    │   ├── direction-c-bold.png
+    │   ├── direction-a-info-density.png
+    │   ├── direction-b-task-focus.png
+    │   ├── direction-c-experience.png
     │   └── reference.png            # 选定方向的图片（视觉氛围参考）
-    ├── direction-a-conservative.html
-    ├── direction-b-balanced.html
-    ├── direction-c-bold.html
+    ├── direction-a-info-density.html
+    ├── direction-b-task-focus.html
+    ├── direction-c-experience.html
     ├── final-v1.html                # 迭代版本（如有）
     ├── final-v2.html                # 迭代版本（如有）
     ├── final.html                   # 定稿
