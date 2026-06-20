@@ -12,7 +12,7 @@ $ErrorActionPreference = "Stop"
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 $OutputEncoding = [System.Text.Encoding]::UTF8
 $scriptRoot = $PSScriptRoot
-$repoRoot = (Resolve-Path (Join-Path $scriptRoot "../..")).Path
+$repoRoot = git rev-parse --show-toplevel
 
 # Jaccard token-overlap threshold. Query must share at least this fraction of
 # tokens with an entry.key to be considered a cache hit candidate.

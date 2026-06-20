@@ -19,7 +19,7 @@ param(
 $ErrorActionPreference = "Stop"
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 $OutputEncoding = [System.Text.Encoding]::UTF8
-$repoRoot = Resolve-Path (Join-Path $PSScriptRoot "../..")
+$repoRoot = git rev-parse --show-toplevel
 
 function Write-ErrorResult {
     param(
@@ -79,7 +79,7 @@ function Get-RelativePath {
     param([string]$Path)
 
     $fullPath = (Resolve-Path -LiteralPath $Path).Path
-    $root = $repoRoot.Path.TrimEnd("\", "/") + [System.IO.Path]::DirectorySeparatorChar
+    $root = $repoRoot.TrimEnd("\", "/") + [System.IO.Path]::DirectorySeparatorChar
     if ($fullPath.StartsWith($root, [System.StringComparison]::OrdinalIgnoreCase)) {
         return $fullPath.Substring($root.Length).Replace("\", "/")
     }

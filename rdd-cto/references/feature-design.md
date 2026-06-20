@@ -12,7 +12,7 @@
 
 需要理解现有代码时，委托 engine 探索（结果通过全局缓存复用）：
 ```powershell
-$r = git rev-parse --show-toplevel; & "$r\rdd-engine\scripts\explore.cmd" -Type explore -Query "分析当前需求涉及的代码模块和现有架构"
+$rdd = (Get-ChildItem (git rev-parse --show-toplevel) -Recurse -Directory -Depth 3 -Filter 'rdd-engine' | Select-Object -First 1).FullName; & "$rdd\scripts\explore.cmd" -Type explore -Query "分析当前需求涉及的代码模块和现有架构"
 ```
 
 深度阅读项目代码，理解现有架构。参照 `code-quality-assessment.md` 评估代码质量问题。需要项目上下文时通过 rdd-engine 获取。

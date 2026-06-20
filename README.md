@@ -1,4 +1,4 @@
-# codeRDD — Requirement-Driven Development Skill
+﻿# codeRDD — Requirement-Driven Development Skill
 
 ## 设计理念
 
@@ -47,7 +47,7 @@ SDD（Specification-Driven Development）驱动的开发工作流，围绕一个
 ### 角色切换流程
 
 ```
-当前角色完成产物归档 → $r = git rev-parse --show-toplevel; & "$r\rdd-engine\scripts\rdd-flow.cmd" -Command next 推荐下游 → 用户确认
+当前角色完成产物归档 → $rdd = (Get-ChildItem (git rev-parse --show-toplevel) -Recurse -Directory -Depth 3 -Filter 'rdd-engine' | Select-Object -First 1).FullName; & "$rdd\scripts\rdd-flow.cmd" -Command next 推荐下游 → 用户确认
   → /new（Ctrl+X N）开新会话（清理上下文）
   → 输入 /rdd-<下游角色> → 自动加载角色 SKILL + 最新交接包 → 干净进入
 ```

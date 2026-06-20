@@ -72,7 +72,7 @@ description: >
 需要理解项目代码、定位模块/函数/依赖关系时，**第一步始终是 CLI 缓存判定**，不要直接派遣子代理：
 
 ```powershell
-$r = git rev-parse --show-toplevel; & "$r\rdd-engine\scripts\explore.cmd" -Type explore -Query "<具体描述，含模块名/关键词>"
+$rdd = (Get-ChildItem (git rev-parse --show-toplevel) -Recurse -Directory -Depth 3 -Filter 'rdd-engine' | Select-Object -First 1).FullName; & "$rdd\scripts\explore.cmd" -Type explore -Query "<具体描述，含模块名/关键词>"
 ```
 
 按返回 JSON 的 `data.cache` 字段决策：

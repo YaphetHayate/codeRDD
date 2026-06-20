@@ -1,4 +1,4 @@
----
+﻿---
 description: RDD 角色 UX（设计师）。请在 /new 开新会话后输入；自动加载角色 SKILL 与最新交接包。
 ---
 
@@ -10,7 +10,7 @@ description: RDD 角色 UX（设计师）。请在 /new 开新会话后输入；
 
 下方交接包由 rdd-engine 从最新归档自动生成。**以此作为唯一入口上下文**，忽略本会话中此前任何无关内容：
 
-!`$r = git rev-parse --show-toplevel; & "$r\rdd-engine\scripts\rdd-flow.cmd" -Command handoff -Role UX -Format markdown`
+!`$rdd = (Get-ChildItem (git rev-parse --show-toplevel) -Recurse -Directory -Depth 3 -Filter 'rdd-engine' | Select-Object -First 1).FullName; & "$rdd\scripts\rdd-flow.cmd" -Command handoff -Role UX -Format markdown`
 
 > 若上方提示 `NO_ARCHIVES` / `ARCHIVE_ROOT_NOT_FOUND`，说明尚无归档交接包——向用户确认是否需要先以 `/rdd-pm` 走 PM 归档，不要自行编造任务。
 

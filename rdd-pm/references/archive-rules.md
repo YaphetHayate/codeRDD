@@ -62,7 +62,7 @@ New-Item -ItemType Directory -Path ".rdd/changes/archive/YYYY-MM-DD-short-name/r
 若需求需要理解现有代码，委托 rdd-engine 执行探索（产物缓存于全局索引，下游角色可复用）：
 
 ```powershell
-$r = git rev-parse --show-toplevel; & "$r\rdd-engine\scripts\explore.cmd" -Type explore -Query "分析 [需求简述] 涉及的代码模块"
+$rdd = (Get-ChildItem (git rev-parse --show-toplevel) -Recurse -Directory -Depth 3 -Filter 'rdd-engine' | Select-Object -First 1).FullName; & "$rdd\scripts\explore.cmd" -Type explore -Query "分析 [需求简述] 涉及的代码模块"
 ```
 
 > engine 的 explore subagent 会按 `rdd-engine/references/exploration-guide.md` 的策略执行：先查 `.rdd/exploration/index.json` 缓存，命中且文件未过期则直接返回；否则探索代码并写入全局缓存。

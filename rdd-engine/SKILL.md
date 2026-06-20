@@ -1,4 +1,4 @@
----
+﻿---
 name: rdd-engine
 description: >
   RDD 通用能力总线。所有 RDD 角色按需调用 scripts/explore.ps1 CLI 脚本，启动子 agent 完成委托并返回结果。
@@ -20,7 +20,7 @@ engine 通过 CLI 脚本提供服务：
 ### 代码探索
 
 ```powershell
-$r = git rev-parse --show-toplevel; & "$r\rdd-engine\scripts\explore.cmd" -Type explore -Query "<description>"
+$rdd = (Get-ChildItem (git rev-parse --show-toplevel) -Recurse -Directory -Depth 3 -Filter 'rdd-engine' | Select-Object -First 1).FullName; & "$rdd\scripts\explore.cmd" -Type explore -Query "<description>"
 ```
 
 返回 JSON：
@@ -30,16 +30,16 @@ $r = git rev-parse --show-toplevel; & "$r\rdd-engine\scripts\explore.cmd" -Type 
 ### 探索产物注册（worker 探索完成后调用）
 
 ```powershell
-$r = git rev-parse --show-toplevel; & "$r\rdd-engine\scripts\explore.cmd" -Type register -Key "<semantic key>" -Path "<artifact path>" -Brief "<summary>" -Files "<comma-separated files>"
+$rdd = (Get-ChildItem (git rev-parse --show-toplevel) -Recurse -Directory -Depth 3 -Filter 'rdd-engine' | Select-Object -First 1).FullName; & "$rdd\scripts\explore.cmd" -Type register -Key "<semantic key>" -Path "<artifact path>" -Brief "<summary>" -Files "<comma-separated files>"
 ```
 
 ### 流转交接
 
 ```powershell
-$r = git rev-parse --show-toplevel; & "$r\rdd-engine\scripts\rdd-flow.cmd" -Command next -Archive <path>     # 不传 -Archive 则自动发现最新归档
-$r = git rev-parse --show-toplevel; & "$r\rdd-engine\scripts\rdd-flow.cmd" -Command start -Role CTO -TaskIndex 0       # 单需求启动
-$r = git rev-parse --show-toplevel; & "$r\rdd-engine\scripts\rdd-flow.cmd" -Command handoff -Role DEV                  # 自动定位最新归档
-$r = git rev-parse --show-toplevel; & "$r\rdd-engine\scripts\rdd-flow.cmd" -Command validate -Role DEV                 # 校验 DEV 是否有任务
+$rdd = (Get-ChildItem (git rev-parse --show-toplevel) -Recurse -Directory -Depth 3 -Filter 'rdd-engine' | Select-Object -First 1).FullName; & "$rdd\scripts\rdd-flow.cmd" -Command next -Archive <path>     # 不传 -Archive 则自动发现最新归档
+$rdd = (Get-ChildItem (git rev-parse --show-toplevel) -Recurse -Directory -Depth 3 -Filter 'rdd-engine' | Select-Object -First 1).FullName; & "$rdd\scripts\rdd-flow.cmd" -Command start -Role CTO -TaskIndex 0       # 单需求启动
+$rdd = (Get-ChildItem (git rev-parse --show-toplevel) -Recurse -Directory -Depth 3 -Filter 'rdd-engine' | Select-Object -First 1).FullName; & "$rdd\scripts\rdd-flow.cmd" -Command handoff -Role DEV                  # 自动定位最新归档
+$rdd = (Get-ChildItem (git rev-parse --show-toplevel) -Recurse -Directory -Depth 3 -Filter 'rdd-engine' | Select-Object -First 1).FullName; & "$rdd\scripts\rdd-flow.cmd" -Command validate -Role DEV                 # 校验 DEV 是否有任务
 ```
 
 `-Archive` 为可选参数，不传时脚本自动发现最新归档。传入含 `...` 占位符或不存在路径时，自动回退到自动发现。
@@ -86,9 +86,9 @@ $r = git rev-parse --show-toplevel; & "$r\rdd-engine\scripts\rdd-flow.cmd" -Comm
 
 ```powershell
 # PM 归档后有 3 个需求路由到 DEV，并行拉起 3 个独立 DEV 会话：
-$r = git rev-parse --show-toplevel; & "$r\rdd-engine\scripts\rdd-flow.cmd" -Command start -Role DEV -TaskIndex 0
-$r = git rev-parse --show-toplevel; & "$r\rdd-engine\scripts\rdd-flow.cmd" -Command start -Role DEV -TaskIndex 1
-$r = git rev-parse --show-toplevel; & "$r\rdd-engine\scripts\rdd-flow.cmd" -Command start -Role DEV -TaskIndex 2
+$rdd = (Get-ChildItem (git rev-parse --show-toplevel) -Recurse -Directory -Depth 3 -Filter 'rdd-engine' | Select-Object -First 1).FullName; & "$rdd\scripts\rdd-flow.cmd" -Command start -Role DEV -TaskIndex 0
+$rdd = (Get-ChildItem (git rev-parse --show-toplevel) -Recurse -Directory -Depth 3 -Filter 'rdd-engine' | Select-Object -First 1).FullName; & "$rdd\scripts\rdd-flow.cmd" -Command start -Role DEV -TaskIndex 1
+$rdd = (Get-ChildItem (git rev-parse --show-toplevel) -Recurse -Directory -Depth 3 -Filter 'rdd-engine' | Select-Object -First 1).FullName; & "$rdd\scripts\rdd-flow.cmd" -Command start -Role DEV -TaskIndex 2
 ```
 
 ### 输出格式
@@ -106,10 +106,10 @@ stdout 输出纯 JSON：
 
 ```powershell
 # 代码探索（命中缓存零子代理返回，未命中返回 rdd-explore dispatch prompt）
-$r = git rev-parse --show-toplevel; & "$r\rdd-engine\scripts\explore.cmd" -Type explore -Query "分析认证模块的中间件链"
+$rdd = (Get-ChildItem (git rev-parse --show-toplevel) -Recurse -Directory -Depth 3 -Filter 'rdd-engine' | Select-Object -First 1).FullName; & "$rdd\scripts\explore.cmd" -Type explore -Query "分析认证模块的中间件链"
 
 # worker 探索完成后注册产物
-$r = git rev-parse --show-toplevel; & "$r\rdd-engine\scripts\explore.cmd" -Type register -Key "认证中间件链" -Path ".rdd/exploration/artifacts/auth-middleware.md" -Brief "JWT 签发→验证→权限检查" -Files "src/auth/middleware.ts,src/auth/jwt.ts"
+$rdd = (Get-ChildItem (git rev-parse --show-toplevel) -Recurse -Directory -Depth 3 -Filter 'rdd-engine' | Select-Object -First 1).FullName; & "$rdd\scripts\explore.cmd" -Type register -Key "认证中间件链" -Path ".rdd/exploration/artifacts/auth-middleware.md" -Brief "JWT 签发→验证→权限检查" -Files "src/auth/middleware.ts,src/auth/jwt.ts"
 ```
 
 ## 路由依据

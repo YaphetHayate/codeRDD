@@ -30,7 +30,7 @@ RDD 有两种部署场景，交接行为不同。通过 `.rdd/roles.json` 是否
 ### Step 2 — 运行 next，展示可流转角色
 
 ```powershell
-$r = git rev-parse --show-toplevel; & "$r\rdd-engine\scripts\rdd-flow.cmd" -Command next -Format markdown
+$rdd = (Get-ChildItem (git rev-parse --show-toplevel) -Recurse -Directory -Depth 3 -Filter 'rdd-engine' | Select-Object -First 1).FullName; & "$rdd\scripts\rdd-flow.cmd" -Command next -Format markdown
 ```
 
 将输出的可流转角色列表展示给用户。
@@ -56,7 +56,7 @@ $r = git rev-parse --show-toplevel; & "$r\rdd-engine\scripts\rdd-flow.cmd" -Comm
 ### Step 4 — 用户确认后，生成交接包
 
 ```powershell
-$r = git rev-parse --show-toplevel; & "$r\rdd-engine\scripts\rdd-flow.cmd" -Command start -Role <目标角色> -OutFile ".rdd/handoff/<role>.md"
+$rdd = (Get-ChildItem (git rev-parse --show-toplevel) -Recurse -Directory -Depth 3 -Filter 'rdd-engine' | Select-Object -First 1).FullName; & "$rdd\scripts\rdd-flow.cmd" -Command start -Role <目标角色> -OutFile ".rdd/handoff/<role>.md"
 ```
 
 生成交接包后，**按模式分支**：
@@ -67,7 +67,7 @@ Agent **不在同一会话内切换角色**——上游长对话会污染下游�
 
 1. （可选）落盘交接包便于排查：
    ```powershell
-   $r = git rev-parse --show-toplevel; & "$r\rdd-engine\scripts\rdd-flow.cmd" -Command start -Role <目标角色> -OutFile ".rdd/handoff/<role>.md"
+   $rdd = (Get-ChildItem (git rev-parse --show-toplevel) -Recurse -Directory -Depth 3 -Filter 'rdd-engine' | Select-Object -First 1).FullName; & "$rdd\scripts\rdd-flow.cmd" -Command start -Role <目标角色> -OutFile ".rdd/handoff/<role>.md"
    ```
 2. 向用户输出切换指引（入口命令均为 `/rdd-<角色>`，见下文"各角色速查"）：
 
@@ -106,7 +106,7 @@ Agent **不尝试加载目标 skill、不宣布上下文边界**——这些由�
 self-driven 模式下，角色切换一律在新 session 完成，**不在同会话切换**。用户在上游引导下：
 
 1. `/new`（Ctrl+X N）开新 session
-2. 输入 `/rdd-<角色>` —— 命令自动加载角色 SKILL，并通过 `$r = git rev-parse --show-toplevel; & "$r\rdd-engine\scripts\rdd-flow.cmd" -Command handoff` 拉取最新交接包
+2. 输入 `/rdd-<角色>` —— 命令自动加载角色 SKILL，并通过 `$rdd = (Get-ChildItem (git rev-parse --show-toplevel) -Recurse -Directory -Depth 3 -Filter 'rdd-engine' | Select-Object -First 1).FullName; & "$rdd\scripts\rdd-flow.cmd" -Command handoff` 拉取最新交接包
 
 该入口由 `.opencode/commands/rdd-<角色>.md` 实现。**旧版"同会话宣布边界 / Agent 直接交接"已废弃**——无法真正隔离上游上下文。若用户坚持在同会话进入角色，按命令中的检查清单执行，并提示下次走 `/new`。
 
@@ -121,7 +121,7 @@ self-driven 模式下，角色切换一律在新 session 完成，**不在同会
 识别为应用层交接触发。提取归档路径，主动拉取交接包：
 
 ```powershell
-$r = git rev-parse --show-toplevel; & "$r\rdd-engine\scripts\rdd-flow.cmd" -Command handoff -Role <self> -Archive ".rdd/changes/archive/<archive-name>"
+$rdd = (Get-ChildItem (git rev-parse --show-toplevel) -Recurse -Directory -Depth 3 -Filter 'rdd-engine' | Select-Object -First 1).FullName; & "$rdd\scripts\rdd-flow.cmd" -Command handoff -Role <self> -Archive ".rdd/changes/archive/<archive-name>"
 ```
 
 用 packet 作为上下文边界开工。**不要将指针消息当作"用户直接下达的开发指令"（优先级 E）处理**——它是一个交接信号，背后有完整的 task.md 路由和交接包。
@@ -135,7 +135,7 @@ $r = git rev-parse --show-toplevel; & "$r\rdd-engine\scripts\rdd-flow.cmd" -Comm
 1. 只读 handoff packet 列出的需求/设计文档
 2. 不扫描整个归档目录
 3. 不读取 `ignored` 中的文档（除非用户明确要求）
-4. 代码探索从 `involvedFiles` 起步，深入时委托 `$r = git rev-parse --show-toplevel; & "$r\rdd-engine\scripts\explore.cmd"`
+4. 代码探索从 `involvedFiles` 起步，深入时委托 `$rdd = (Get-ChildItem (git rev-parse --show-toplevel) -Recurse -Directory -Depth 3 -Filter 'rdd-engine' | Select-Object -First 1).FullName; & "$rdd\scripts\explore.cmd"`
 5. self-driven 角色切换走新会话（见入口 B1）；同会话内不切换，避免上游对话污染
 
 ---
