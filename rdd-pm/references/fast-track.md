@@ -46,8 +46,8 @@
 - **步骤 7**（告知用户）：省略并行启动和 `-TaskIndex` 说明，单个需求无并行场景
 
 ```powershell
-rdd-engine/scripts/rdd-flow.cmd -Command next -Archive ".rdd/changes/archive/YYYY-MM-DD-short-name" -Format markdown
-rdd-engine/scripts/rdd-flow.cmd -Command start -Role <目标角色> -Archive ".rdd/changes/archive/YYYY-MM-DD-short-name" -Format markdown
+$r = git rev-parse --show-toplevel; & "$r\rdd-engine\scripts\rdd-flow.cmd" -Command next -Archive ".rdd/changes/archive/YYYY-MM-DD-short-name" -Format markdown
+$r = git rev-parse --show-toplevel; & "$r\rdd-engine\scripts\rdd-flow.cmd" -Command start -Role <目标角色> -Archive ".rdd/changes/archive/YYYY-MM-DD-short-name" -Format markdown
 ```
 
 ### 3. 完成后

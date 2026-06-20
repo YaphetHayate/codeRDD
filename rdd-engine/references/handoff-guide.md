@@ -15,46 +15,46 @@
 查看当前归档有哪些角色有待处理任务：
 
 ```powershell
-rdd-engine/scripts/rdd-flow.cmd -Command next
+$r = git rev-parse --show-toplevel; & "$r\rdd-engine\scripts\rdd-flow.cmd" -Command next
 ```
 
 生成目标角色启动引导（全部任务）：
 
 ```powershell
-rdd-engine/scripts/rdd-flow.cmd -Command start -Role CTO
+$r = git rev-parse --show-toplevel; & "$r\rdd-engine\scripts\rdd-flow.cmd" -Command start -Role CTO
 ```
 
 生成目标角色启动引导（单需求，"一需求一会话"）：
 
 ```powershell
-rdd-engine/scripts/rdd-flow.cmd -Command start -Role DEV -TaskIndex 0
-rdd-engine/scripts/rdd-flow.cmd -Command start -Role DEV -TaskIndex 1
+$r = git rev-parse --show-toplevel; & "$r\rdd-engine\scripts\rdd-flow.cmd" -Command start -Role DEV -TaskIndex 0
+$r = git rev-parse --show-toplevel; & "$r\rdd-engine\scripts\rdd-flow.cmd" -Command start -Role DEV -TaskIndex 1
 ```
 
 生成目标角色交接包：
 
 ```powershell
-rdd-engine/scripts/rdd-flow.cmd -Command handoff -Role DEV
+$r = git rev-parse --show-toplevel; & "$r\rdd-engine\scripts\rdd-flow.cmd" -Command handoff -Role DEV
 ```
 
 可选输出 Markdown：
 
 ```powershell
-rdd-engine/scripts/rdd-flow.cmd -Command handoff -Role DEV -Format markdown
+$r = git rev-parse --show-toplevel; & "$r\rdd-engine\scripts\rdd-flow.cmd" -Command handoff -Role DEV -Format markdown
 ```
 
 写入文件：
 
 ```powershell
-rdd-engine/scripts/rdd-flow.cmd -Command handoff -Role DEV -OutFile ".rdd/handoff/dev.json"
+$r = git rev-parse --show-toplevel; & "$r\rdd-engine\scripts\rdd-flow.cmd" -Command handoff -Role DEV -OutFile ".rdd/handoff/dev.json"
 ```
 
 指定具体归档路径（精确匹配）：
 
 ```powershell
-rdd-engine/scripts/rdd-flow.cmd -Command next -Archive ".rdd/changes/archive/2026-06-04-engine-adapter-modularization"
-rdd-engine/scripts/rdd-flow.cmd -Command start -Role CTO -Archive ".rdd/changes/archive/2026-06-04-engine-adapter-modularization"
-rdd-engine/scripts/rdd-flow.cmd -Command handoff -Role DEV -Archive ".rdd/changes/archive/2026-06-04-engine-adapter-modularization"
+$r = git rev-parse --show-toplevel; & "$r\rdd-engine\scripts\rdd-flow.cmd" -Command next -Archive ".rdd/changes/archive/2026-06-04-engine-adapter-modularization"
+$r = git rev-parse --show-toplevel; & "$r\rdd-engine\scripts\rdd-flow.cmd" -Command start -Role CTO -Archive ".rdd/changes/archive/2026-06-04-engine-adapter-modularization"
+$r = git rev-parse --show-toplevel; & "$r\rdd-engine\scripts\rdd-flow.cmd" -Command handoff -Role DEV -Archive ".rdd/changes/archive/2026-06-04-engine-adapter-modularization"
 ```
 
 ## 交接包内容
@@ -85,7 +85,7 @@ rdd-engine/scripts/rdd-flow.cmd -Command handoff -Role DEV -Archive ".rdd/change
 
 此外，代码探索需求应委托 engine 执行（而非读取 archive 级文件）：
 ```powershell
-rdd-engine/scripts/explore.cmd -Type explore -Query "分析..." 
+$r = git rev-parse --show-toplevel; & "$r\rdd-engine\scripts\explore.cmd" -Type explore -Query "分析..." 
 ```
 engine 通过 `exploration-guide.md` 管理全局可复用缓存。
 
@@ -103,7 +103,7 @@ engine 通过 `exploration-guide.md` 管理全局可复用缓存。
 ## 校验命令
 
 ```powershell
-rdd-engine/scripts/rdd-flow.cmd -Command validate -Role DEV -Archive ".rdd/changes/archive/2026-06-04-engine-adapter-modularization"
+$r = git rev-parse --show-toplevel; & "$r\rdd-engine\scripts\rdd-flow.cmd" -Command validate -Role DEV -Archive ".rdd/changes/archive/2026-06-04-engine-adapter-modularization"
 ```
 
 `validate` 只返回任务数量、忽略数量和 warning 数量，用于快速检查流转是否可执行。
@@ -124,20 +124,20 @@ rdd-engine/scripts/rdd-flow.cmd -Command validate -Role DEV -Archive ".rdd/chang
 上游角色完成归档或设计后，按 `transition-guide.md` 的上游协议执行交接（先运行 `next`，推荐角色请求确认，再运行 `start` 生成交接包）。
 
 ```powershell
-rdd-engine/scripts/rdd-flow.cmd -Command next
+$r = git rev-parse --show-toplevel; & "$r\rdd-engine\scripts\rdd-flow.cmd" -Command next
 ```
 
 当前 agent 根据流程状态和用户确认决定目标角色后，再运行：
 
 ```powershell
-rdd-engine/scripts/rdd-flow.cmd -Command start -Role <推荐角色> -Format markdown
+$r = git rev-parse --show-toplevel; & "$r\rdd-engine\scripts\rdd-flow.cmd" -Command start -Role <推荐角色> -Format markdown
 ```
 
 如需并行拉起多个会话（多个同角色需求），每个需求独立启动：
 
 ```powershell
-rdd-engine/scripts/rdd-flow.cmd -Command start -Role DEV -TaskIndex 0 -Format markdown
-rdd-engine/scripts/rdd-flow.cmd -Command start -Role DEV -TaskIndex 1 -Format markdown
+$r = git rev-parse --show-toplevel; & "$r\rdd-engine\scripts\rdd-flow.cmd" -Command start -Role DEV -TaskIndex 0 -Format markdown
+$r = git rev-parse --show-toplevel; & "$r\rdd-engine\scripts\rdd-flow.cmd" -Command start -Role DEV -TaskIndex 1 -Format markdown
 ```
 
 将 `start` 输出的 prompt 作为新角色入口提示。**self-driven 模式下不在同一会话内切换**——上游 agent 完成交接包后，引导用户 `/new`（Ctrl+X N）开新 session，再输入 `/rdd-<角色>` 入口命令（命令自动加载 SKILL + 注入 handoff，见 `transition-guide.md` 入口 B1）。同会话切换无法真正隔离上游上下文，已废弃。

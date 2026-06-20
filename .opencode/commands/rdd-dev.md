@@ -1,4 +1,4 @@
----
+﻿---
 description: RDD 角色 DEV（开发实现者）。请在 /new 开新会话后输入；自动加载角色 SKILL 与最新交接包。
 ---
 
@@ -10,7 +10,7 @@ description: RDD 角色 DEV（开发实现者）。请在 /new 开新会话后�
 
 下方交接包由 rdd-engine 从最新归档自动生成。**以此作为唯一入口上下文**，忽略本会话中此前任何无关内容：
 
-!`rdd-engine/scripts/rdd-flow.cmd -Command handoff -Role DEV -Format markdown`
+!`$r = git rev-parse --show-toplevel; & "$r\rdd-engine\scripts\rdd-flow.cmd" -Command handoff -Role DEV -Format markdown`
 
 > 若上方提示 `NO_ARCHIVES` / `ARCHIVE_ROOT_NOT_FOUND`，说明尚无归档交接包——向用户确认是否需要先以 `/rdd-pm` 走 PM 归档，不要自行编造任务。
 
@@ -19,5 +19,5 @@ description: RDD 角色 DEV（开发实现者）。请在 /new 开新会话后�
 1. 确认 handoff 中的 `tasks` 与 `warnings`；为空或被 warning 阻塞 → 先向用户说明并请求裁决，不擅自开工
 2. 只读取 tasks 列出的需求/设计文档，不扫描整个归档目录，不读 `ignored` 项
 3. 按 task 的 `workMode`（design-guided / requirement-guided）进入对应工作模式
-4. 代码探索从 `involvedFiles` 起步，深入时委托 `rdd-engine/scripts/explore.cmd`
+4. 代码探索从 `involvedFiles` 起步，深入时委托 `$r = git rev-parse --show-toplevel; & "$r\rdd-engine\scripts\explore.cmd"`
 5. 流转状态变更须同时同步 `task.md` 路由总览与文档自身的流转控制

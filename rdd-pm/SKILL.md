@@ -1,4 +1,4 @@
----
+﻿---
 name: RDD-PM
 description: >
   产品经理模式。仅当用户输入 /RDD-PM 时触发，不接受隐式激活。
@@ -72,7 +72,7 @@ description: >
 需要理解项目代码、定位模块/函数/依赖关系时，**第一步始终是 CLI 缓存判定**，不要直接派遣子代理：
 
 ```powershell
-rdd-engine/scripts/explore.cmd -Type explore -Query "<具体描述，含模块名/关键词>"
+$r = git rev-parse --show-toplevel; & "$r\rdd-engine\scripts\explore.cmd" -Type explore -Query "<具体描述，含模块名/关键词>"
 ```
 
 按返回 JSON 的 `data.cache` 字段决策：

@@ -1,4 +1,4 @@
----
+﻿---
 name: RDD-QA
 description: >
   测试工程师模式。仅当用户输入 /RDD-QA 时触发，不接受隐式激活。
@@ -62,7 +62,7 @@ QA 在工作流中的位置不同，但测试设计方法一致：
 需要理解项目代码、定位模块/函数/依赖关系时，**第一步始终是 CLI 缓存判定**，不要直接派遣子代理：
 
 ```powershell
-rdd-engine/scripts/explore.cmd -Type explore -Query "<具体描述，含模块名/关键词>"
+$r = git rev-parse --show-toplevel; & "$r\rdd-engine\scripts\explore.cmd" -Type explore -Query "<具体描述，含模块名/关键词>"
 ```
 
 按返回 JSON 的 `data.cache` 字段决策：
@@ -81,9 +81,9 @@ rdd-engine/scripts/explore.cmd -Type explore -Query "<具体描述，含模块�
 
 ### 确认需求来源
 
-- **A — flow 启动**：由 `rdd-engine/scripts/rdd-flow.cmd -Command start -Role QA` 进入 → 优先使用输出的 prompt / handoff packet。只读取 handoff 中的需求文档和项目代码，**仍然禁止读取 `design/`**
+- **A — flow 启动**：由 `$r = git rev-parse --show-toplevel; & "$r\rdd-engine\scripts\rdd-flow.cmd" -Command start -Role QA` 进入 → 优先使用输出的 prompt / handoff packet。只读取 handoff 中的需求文档和项目代码，**仍然禁止读取 `design/`**
 - **B — 用户指定**：提供 `requirement.md` 路径或口述需求 → 直接读取
-- **C — 应用层指针消息**：收到 `请处理 .rdd/changes/archive/<name>/ 下的需求` → 运行 `rdd-engine/scripts/rdd-flow.cmd -Command handoff -Role QA -Archive "<path>"` 拉取交接包
+- **C — 应用层指针消息**：收到 `请处理 .rdd/changes/archive/<name>/ 下的需求` → 运行 `$r = git rev-parse --show-toplevel; & "$r\rdd-engine\scripts\rdd-flow.cmd" -Command handoff -Role QA -Archive "<path>"` 拉取交接包
 - **D — 基于 task.md 定位**：用户未指定 → 扫描 `.rdd/changes/archive/` 最新归档，读取 `task.md`，筛选 QA 未完成的 task，向用户确认。**只读取 `requirements/`，`design/` 始终不读取**
 - **E — 无 task.md**：回退到直接读取最新归档的 `requirements/`，向用户确认
 - **F — 找不到任何归档**：告知用户当前没有可用需求文档，建议输入 `/RDD-PM` 先梳理需求

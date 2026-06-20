@@ -13,7 +13,7 @@
 | 角色 | 承载 | 职责 | 是否可写缓存 |
 |------|------|------|-------------|
 | **缓存仲裁（CLI）** | `explore.ps1`（确定性脚本） | 读 index、token 匹配、SHA-256 时效校验、命中直接返回产物 / 未命中生成 dispatch prompt；register 时算哈希、写 index | 读写 index 与 artifact（程序化） |
-| **探索 worker** | `rdd-explore` 子代理（可写） | 收到 miss dispatch prompt 后：探索代码、按模板写 artifact、调用 `rdd-engine/scripts/explore.cmd -Type register` 注册、返回摘要 | 写 artifact + 调 register |
+| **探索 worker** | `rdd-explore` 子代理（可写） | 收到 miss dispatch prompt 后：探索代码、按模板写 artifact、调用 `$r = git rev-parse --show-toplevel; & "$r\rdd-engine\scripts\explore.cmd" -Type register` 注册、返回摘要 | 写 artifact + 调 register |
 
 > **关键约束**：worker 必须是**可写**子代理（需写 artifact、调 register）。内置的只读 `explore` / `general` 探索子代理无法完成注册，**禁止用于代码探索**。详见各角色 SKILL 的硬规则。
 
@@ -24,7 +24,7 @@
 ### 角色侧：第一步始终是 CLI 探索
 
 ```powershell
-rdd-engine/scripts/explore.cmd -Type explore -Query "分析认证模块的中间件链和 Token 刷新机制"
+$r = git rev-parse --show-toplevel; & "$r\rdd-engine\scripts\explore.cmd" -Type explore -Query "分析认证模块的中间件链和 Token 刷新机制"
 ```
 
 返回 JSON，根据 `data.cache` 字段决定下一步：
@@ -35,7 +35,7 @@ rdd-engine/scripts/explore.cmd -Type explore -Query "分析认证模块的中间
 ### worker 侧：探索完成后注册
 
 ```powershell
-rdd-engine/scripts/explore.cmd -Type register -Key "认证中间件链和 Token 刷新" `
+$r = git rev-parse --show-toplevel; & "$r\rdd-engine\scripts\explore.cmd" -Type register -Key "认证中间件链和 Token 刷新" `
   -Path ".rdd/exploration/artifacts/auth-middleware.md" `
   -Brief "JWT 签发→验证→权限检查的中间件链，含 Token 刷新逻辑" `
   -Files "src/auth/middleware.ts,src/auth/jwt.ts,src/auth/session.ts"
@@ -292,7 +292,7 @@ CLI 始终输出纯 ASCII JSON（非 ASCII 字符转义为 `\uXXXX`），保证�
 ### 完成步骤
 
 1. 按正文模板写 artifact 到 `.rdd/exploration/artifacts/{topic-slug}.md`
-2. 调用 `rdd-engine/scripts/explore.cmd -Type register` 注册（传入实际分析过的文件列表）
+2. 调用 `$r = git rev-parse --show-toplevel; & "$r\rdd-engine\scripts\explore.cmd" -Type register` 注册（传入实际分析过的文件列表）
 3. 返回一句话摘要给调用方角色
 
 ---

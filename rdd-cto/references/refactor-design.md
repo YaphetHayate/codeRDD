@@ -12,7 +12,7 @@
 
 从 PM 归档中读取重构需求文件，然后**深入阅读现有代码**——必须理解当前架构的问题所在，才能设计合理的改造方案。需要理解代码时委托 engine：
 ```powershell
-rdd-engine/scripts/explore.cmd -Type explore -Query "分析重构需求涉及的代码模块"
+$r = git rev-parse --show-toplevel; & "$r\rdd-engine\scripts\explore.cmd" -Type explore -Query "分析重构需求涉及的代码模块"
 ```
 
 参照 `code-quality-assessment.md` 评估现有代码的系统性问题（循环依赖、模块职责混乱、架构模式不一致等）。

@@ -32,10 +32,10 @@ worker 探索完成后调用，计算文件 SHA-256 并追加进 index。CLI 直
 
 ```powershell
 # 缓存判定（第一步始终调用）
-rdd-engine/scripts/explore.cmd -Type explore -Query "分析认证模块的中间件链"
+$r = git rev-parse --show-toplevel; & "$r\rdd-engine\scripts\explore.cmd" -Type explore -Query "分析认证模块的中间件链"
 
 # 产物注册（worker 探索完成后）
-rdd-engine/scripts/explore.cmd -Type register -Key "..." -Path "..." -Brief "..." -Files "..."
+$r = git rev-parse --show-toplevel; & "$r\rdd-engine\scripts\explore.cmd" -Type register -Key "..." -Path "..." -Brief "..." -Files "..."
 ```
 
 详见 `SKILL.md` 或 `references/exploration-guide.md`。

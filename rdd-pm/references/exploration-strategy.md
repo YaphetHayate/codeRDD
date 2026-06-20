@@ -83,7 +83,7 @@
 1. **识别关联工具**：用户想法是否涉及某个已有工具的能力？
 2. **委托 engine 探索**：需要理解现有代码时，第一步做缓存判定（详见 PM SKILL「rdd-engine 能力：代码探索」硬规则）：
    ```powershell
-   rdd-engine/scripts/explore.cmd -Type explore -Query "分析 [需求简述] 涉及的代码模块和现有能力"
+   $r = git rev-parse --show-toplevel; & "$r\rdd-engine\scripts\explore.cmd" -Type explore -Query "分析 [需求简述] 涉及的代码模块和现有能力"
    ```
    - 返回 `cache:"hit"` → 直接用产物，零子代理。
    - 返回 `cache:"miss"` → 派遣 `rdd-explore` 子代理（可写 worker），用返回的 prompt。
