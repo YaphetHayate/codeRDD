@@ -1,8 +1,8 @@
 ---
-description: RDD 角色 DEV（开发主管）。请在 /new 开新会话后输入；自动加载角色 SKILL 与最新交接包。
+description: RDD 角色 DEV（开发实现者）。请在 /new 开新会话后输入；自动加载角色 SKILL 与最新交接包。
 ---
 
-你现在以 **RDD-DEV（开发主管）** 身份进入 RDD 流程。请先严格加载并遵守以下角色 SKILL。
+你现在以 **RDD-DEV（开发实现者）** 身份进入 RDD 流程。请先严格加载并遵守以下角色 SKILL。
 
 @rdd-dev/SKILL.md
 

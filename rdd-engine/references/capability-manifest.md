@@ -9,39 +9,56 @@
 
 | 能力 | -Type | CLI 命令 | 触发场景 |
 |------|-------|---------|---------|
-| 代码探索（全局缓存） | `explore` | `explore.cmd -Type explore -Query "..."` | 需要理解项目代码、定位模块/函数/依赖关系时 |
+| 代码探索（缓存判定） | `explore` | `explore.cmd -Type explore -Query "..."` | 需要理解项目代码、定位模块/函数/依赖关系时 |
+| 产物注册 | `register` | `explore.cmd -Type register -Key "..." -Path "..." -Brief "..." -Files "..."` | `rdd-explore` worker 探索完成后注册产物 |
 
 ---
 
 ## 能力详解
 
-### 代码探索（explore）— 全局缓存
+### 代码探索（explore）— 缓存判定
 
-**这是引擎核心能力。任何角色需要理解项目代码时，优先使用此能力。**
+**这是引擎核心能力。任何角色需要理解项目代码时，第一步始终调用此能力。**
 
-**核心机制：先查缓存 → 未命中则探索 → 写入缓存**
+**核心机制：先查缓存 → 命中零子代理返回 / 未命中生成 worker dispatch prompt**
 
-1. engine 读取 `.rdd/exploration/index.json`，语义匹配 Query 意图
-2. 命中 → 检查涉及文件的 SHA-256 哈希，文件未变则直接返回缓存内容（无需重复探索）
-3. 未命中 / 文件已变 → 启动 `explore` 子 agent 探索代码，产物写入 `.rdd/exploration/artifacts/`，更新 index
-4. 返回探索结果摘要 + 产物正文
+1. 角色调用 `explore.cmd -Type explore -Query "..."`
+2. engine 读取 `.rdd/exploration/index.json`，对 Query 与每条 `entry.key` 做 token 匹配（Jaccard 相似度 ≥ 0.35）
+3. 命中候选 → 检查涉及文件的 SHA-256 哈希
+   - 全部一致 → **`cache:"hit"`**：直接返回 artifact 正文（**不派遣任何子代理**）
+   - 任一变更 → 移除 stale 条目，落到 miss
+4. 未命中 → **`cache:"miss"`**：返回 `{action:"dispatch-subagent", subagentHint:"rdd-explore", prompt:"<内嵌完整协议的 worker 指令>"}`，调用方取 `prompt` 派遣 `rdd-explore` 子代理
 
 **调用示例：**
 
 ```powershell
-# 分析认证模块
+# 第一步：缓存判定（始终先调这一步）
 explore.cmd -Type explore -Query "分析认证模块的中间件链和 Token 刷新机制"
 
-# 理解数据库访问层
-explore.cmd -Type explore -Query "分析项目 ORM 层的 Repository 模式和事务管理"
-
-# 定位特定功能实现
-explore.cmd -Type explore -Query "搜索并分析用户权限检查的实现逻辑"
+# 返回 cache:hit  → 直接用 data.artifact，零子代理
+# 返回 cache:miss → 用 data.prompt 派遣 rdd-explore（可写 worker）
 ```
 
+> **硬约束**：禁止用内置只读 `explore` / `general` 子代理做代码探索——它们无法写 artifact、无法注册缓存，物理上无法完成协议。
+
+### 产物注册（register）— worker 完成探索后调用
+
+`rdd-explore` worker 探索完代码、写好 artifact 后，调用此能力注册产物：
+
+```powershell
+explore.cmd -Type register `
+  -Key "认证中间件链和 Token 刷新" `
+  -Path ".rdd/exploration/artifacts/auth-middleware.md" `
+  -Brief "JWT 签发→验证→权限检查的中间件链，含 Token 刷新逻辑" `
+  -Files "src/auth/middleware.ts,src/auth/jwt.ts"
+```
+
+register 会计算每个文件的 SHA-256，按 key 去重后追加进 index。
+
 **缓存特性：**
-- 全局共享：PM 探索过的结果，CTO/DEV/QA 无需重新探索
-- 自动失效：涉及文件变更后 SHA-256 不匹配，自动重新探索
+- 全局共享：PM 探索过的结果，CTO/DEV/QA/UX 无需重新探索
+- 自动失效：涉及文件变更后 SHA-256 不匹配，`explore` 自动移除 stale 条目
+- 零子代理命中：命中缓存时不派遣任何子代理，触发成本最低
 - 索引文件：`.rdd/exploration/index.json`，产物目录：`.rdd/exploration/artifacts/`
 
 > 完整执行流程见 `rdd-engine/references/exploration-guide.md`

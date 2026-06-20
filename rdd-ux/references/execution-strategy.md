@@ -13,14 +13,20 @@
 1. 按 `../references/self-check.md` 完成交付前自检
 2. 将设计规格写入 `design/{需求文件名}-ux.md`（需求文件名从 task.md 的"需求文件"字段获取，去掉 `.md` 后缀）
 3. 设置文档 `## 流转控制`：当前责任人 = DEV，状态 = active
-4. 更新 task.md 路由总览：已完成需求的行，当前责任人改为 DEV，关联设计文档追加自身设计文档路径（与单元格已有路径 `+` 连接、去重，移除 `(待产出)` 占位，不覆盖他人路径）
-   - 旧格式（✅⬜ 状态表）：UX 列从 ⬜ → ✅
+4. 更新 task.md 路由总览：**本次锁定完成的那条需求**对应的行，当前责任人改为 DEV，关联设计文档追加自身设计文档路径（与单元格已有路径 `+` 连接、去重，移除 `(待产出)` 占位，不覆盖他人路径）
+   - 旧格式（✅⬜ 状态表）：该行 UX 列从 ⬜ → ✅
 5. 更新 `.rdd/design-system/` 累积资产（详见 SKILL.md「设计系统累积视角」）：
    - 新增的 Primitive/Semantic Token 追加到 `tokens.md`
    - 新增的组件追加到 `components.md`
    - 目录不存在时创建并写入本次设计的基础 Token 和组件清单
 6. 如有 Phase 2.5 视觉稿产物（`mockups/final.html` 和 `mockups/images/reference.png`），将路径写入设计规格文档的「视觉稿参考」章节
 7. 呈现给用户确认后，按 `../../rdd-engine/references/transition-guide.md` 的**上游协议 4 步硬流程**执行角色交接（next → 推荐 → 确认 → handoff packet）
+
+**推荐角色分支**：
+- **UX 仍有待办**（`next` 显示 UX `taskCount > 0`）→ 推荐重入 UX（新会话）处理下一条。话术补充："本条设计已闭环，UX 还有 N 条待设计，建议 `/new` 开新会话继续。"
+- **UX 已清空** → 交下游 DEV
+
+> 单条深耕模式下，本会话只归档锁定的一条需求；剩余需求留给后续会话分别处理，靠 task.md 路由自然延续，无需重新拉 handoff。
 
 ---
 

@@ -15,9 +15,10 @@ DEV 有两种入口方式：
 ### B1 — Agent 间交接（上游传递）
 
 当上游角色（PM/CTO）通过 `rdd-flow.cmd -Command start -Role DEV` 启动新会话时，新会话直接使用输出的 handoff packet，无需自行定位。此时：
+- 一次会话只实现一条需求（与 CTO/UX 对称）。`-TaskIndex` 指定单条启动，未指定时 handoff 列出全部 DEV 任务，锁定一条深耕
 - 只处理 packet 中 `tasks` 列出的需求/设计文档
 - 不扫描整个归档目录
-- 多个需求可并行拉起多个 DEV 会话（每个会话带上 `-TaskIndex`，一条需求一个 session）
+- 多个需求可通过多个 `/new` 会话各自带 `-TaskIndex` 并行（一条需求一个 session）
 
 ### B2 — 用户手动进入（路径 B）
 
@@ -39,11 +40,12 @@ rdd-engine/rdd-flow.cmd -Command handoff -Role DEV -Archive ".rdd/changes/archiv
 
 脚本自动定位最新归档，生成 DEV 的交接包。读取交接包后：
 
-1. 只处理 `tasks` 中列出的需求/设计文档
-2. 不默认扫描整个归档目录
+1. **锁定单条**：handoff 仅 1 条 DEV 任务 → 直接处理；多条时锁定一条深耕（推荐依赖根/优先级高的，其余留待后续 `/new` 会话）。一次会话只实现一条需求
+2. 只处理锁定任务对应的需求/设计文档，不默认扫描整个归档目录
 3. 不读取 `ignored` 中的文档，除非依赖缺失、验收标准不清或用户明确要求
 4. 代码探索从交接包 `involvedFiles` 和对应需求/设计文档开始
 5. 按 task 的 `workMode` 进入设计引导或需求引导模式
+6. 设计文档（UX 规格）「视觉稿参考」章节登记的 mockup（如 `design/mockups/final.html`）必须读取作为视觉参考，不属扫描禁令范围；具体参数以规格文档为准
 
 ### 脚本返回值处理
 

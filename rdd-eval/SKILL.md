@@ -33,13 +33,23 @@ description: >
 
 ---
 
-## rdd-engine 能力
+## rdd-engine 能力：代码探索（硬规则）
 
-本角色通过 rdd-engine 委托通用子任务。引擎能力的权威清单定义在
-`rdd-engine/references/capability-manifest.md`（记录有哪些能力、各自效果、详细指引所在）。
+需要理解项目代码、定位模块/函数/依赖关系时，**第一步始终是 CLI 缓存判定**，不要直接派遣子代理：
 
-需要理解或探索项目代码、定位模块/函数/依赖关系时，必须先读取
-`rdd-engine/references/capability-manifest.md`，按其记录的能力与调用方式执行。
+```powershell
+rdd-engine/explore.cmd -Type explore -Query "<具体描述，含模块名/关键词>"
+```
+
+按返回 JSON 的 `data.cache` 字段决策：
+
+- `cache: "hit"` → **直接使用 `data.artifact`，不派遣任何子代理**。产物已含职责、接口、依赖、风险。
+- `cache: "miss"` → 派遣 **`rdd-explore`** 子代理（可写 worker），把 `data.prompt` 作为其指令。worker 会探索代码、写 artifact、注册缓存并返回摘要。
+
+**硬约束：**
+- 禁止用内置只读 `explore` / `general` 子代理做代码探索——它们无法写 artifact、无法注册缓存，物理上无法完成协议。
+- 探索 Query 要具体（"分析 X 模块的 Y 机制"），便于 token 匹配命中已有缓存。
+- 能力完整说明见 `rdd-engine/references/capability-manifest.md`。
 
 ## 输入处理
 

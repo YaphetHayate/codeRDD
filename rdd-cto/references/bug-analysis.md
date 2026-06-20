@@ -106,4 +106,8 @@ role: cto
 3. 更新 `task.md`：将路由总览中对应行的 `当前责任人` 改为 DEV，`关联设计文档` 追加自身设计文档路径（与单元格已有路径 `+` 连接、去重，移除 `(待产出)` 占位，不覆盖他人路径）
 4. 按 `rdd-engine/references/transition-guide.md` 的**上游协议 4 步硬流程**执行角色交接（路由已更新 → 运行 next → 推荐角色请求确认 → 生成 packet 按模式分支）。
 
-> 完整流程见 `rdd-engine/references/transition-guide.md`。
+**推荐角色分支**：
+- **CTO 仍有待办**（`next` 显示 CTO `taskCount > 0`）→ 推荐重入 CTO（新会话）处理下一条。话术补充："本条 Bug 已闭环，CTO 还有 N 条待处理，建议 `/new` 开新会话继续。"
+- **CTO 已清空** → 交下游 DEV
+
+> 完整流程、模式检测、同会话切换规则见 `rdd-engine/references/transition-guide.md`。

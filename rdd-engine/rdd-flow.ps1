@@ -236,6 +236,25 @@ function Get-InvolvedFiles {
     return @($files.ToArray())
 }
 
+function Get-MockupPaths {
+    param([string]$Content)
+
+    $files = New-Object System.Collections.Generic.List[string]
+    $section = Get-Section -Content $Content -HeadingPattern '.*视觉稿参考.*'
+    if ([string]::IsNullOrWhiteSpace($section)) {
+        return @()
+    }
+
+    foreach ($match in [regex]::Matches($section, '`([^`]+)`')) {
+        $value = Clean-Cell $match.Groups[1].Value
+        if ($value -and -not $files.Contains($value)) {
+            $files.Add($value)
+        }
+    }
+
+    return @($files.ToArray())
+}
+
 function Resolve-ArchiveFile {
     param(
         [string]$ArchivePath,
@@ -322,6 +341,7 @@ function Get-DesignSummary {
         technicalPlan = (Get-Section -Content $Content -HeadingPattern '.*技术方案.*')
         risks = (Get-Section -Content $Content -HeadingPattern '.*风险提示.*')
         involvedFiles = @(Get-InvolvedFiles $Content)
+        mockups = @(Get-MockupPaths $Content)
     }
 }
 
@@ -699,6 +719,9 @@ function Convert-HandoffToMarkdown {
         $lines += "- Requirement: ``$($task.requirement.path)``"
         if ($task.design) {
             $lines += "- Design: ``$($task.design.path)``"
+        }
+        if ($task.design -and $task.design.mockups.Count -gt 0) {
+            $lines += "- Mockups: " + (($task.design.mockups | ForEach-Object { "``$_``" }) -join ", ")
         }
         if ($task.requirement.acceptance) {
             $lines += "- Acceptance: $($task.requirement.acceptance)"

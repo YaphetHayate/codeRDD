@@ -44,6 +44,15 @@ rdd-engine/rdd-flow.cmd -Command next -Format markdown
 是否确认进入？
 ```
 
+**单条深耕模式下的重入分支**：CTO/UX/DEV 一次会话只深耕一条需求。归档单条后若 `next` 显示**本角色**仍有 `taskCount > 0`（其余待处理需求），优先推荐**重入本角色**（新会话）处理下一条，而非直接交下游：
+
+```
+本次需求已闭环。<本角色> 还有 N 条待处理，建议 /new 开新会话继续本角色处理下一条；
+若希望先推进已就绪的下游任务，也可选择进入 <下游角色>。
+```
+
+仅当本角色已清空，或用户主动选择推进下游时，才按正常下游推荐。
+
 ### Step 4 — 用户确认后，生成交接包
 
 ```powershell
@@ -143,3 +152,10 @@ rdd-engine/rdd-flow.cmd -Command handoff -Role <self> -Archive ".rdd/changes/arc
 
 > self-driven 模式：进入下游 = 上游引导用户 `/new` 后输入上表入口命令，命令会自动加载 SKILL + handoff。CTO/UX/DEV 入口命令已就绪；QA/EVAL/PSE 按需补充。
 > 同一归档中多个需求路由到同一角色时，用 `-TaskIndex` 逐条独立启动（一需求一会话并行）。
+
+### 单条深耕与 handoff 语义
+
+CTO/UX/DEV 采用单条深耕：每会话锁定一条需求做透。引擎返回的完整 handoff（含本角色全部 tasks）由 agent 在 SKILL 层负责锁定一条——这些"同角色但本会话不做"的需求**不属于** packet 的 `ignored`（`ignored` 指派给其他角色），而是本角色待办、留待后续会话。
+
+- agent 锁定一条后，剩余 task 不需要重新拉 packet，靠 task.md 路由自然延续：归档一条推进一行，下个会话 `handoff` 自然读到剩余待办
+- 多条 L2/L3 想并行时，可开多个新会话，各自用 `-TaskIndex` 指定不同索引独立启动（一需求一会话）；不想并行则按重入分支逐条串行
