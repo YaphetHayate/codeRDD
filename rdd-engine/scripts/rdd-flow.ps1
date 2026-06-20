@@ -19,7 +19,7 @@ param(
 $ErrorActionPreference = "Stop"
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 $OutputEncoding = [System.Text.Encoding]::UTF8
-$repoRoot = Resolve-Path (Join-Path $PSScriptRoot "..")
+$repoRoot = Resolve-Path (Join-Path $PSScriptRoot "../..")
 
 function Write-ErrorResult {
     param(
@@ -557,7 +557,7 @@ function Build-NextFlow {
             roles = $roles
             completedCount = $completedCount
             warnings = $warnings
-            usage = "Choose a role, then /new to open a new session and run /rdd-<role> (auto-loads skill + handoff). Preview packet here: rdd-engine/rdd-flow.cmd -Command start -Role <ROLE> -Archive `"$((Get-RelativePath $ArchivePath))`""
+            usage = "Choose a role, then /new to open a new session and run /rdd-<role> (auto-loads skill + handoff). Preview packet here: rdd-engine/scripts/rdd-flow.cmd -Command start -Role <ROLE> -Archive `"$((Get-RelativePath $ArchivePath))`""
         }
     }
 }

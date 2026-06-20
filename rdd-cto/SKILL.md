@@ -60,7 +60,7 @@ description: >
 需要理解项目代码、定位模块/函数/依赖关系时，**第一步始终是 CLI 缓存判定**，不要直接派遣子代理：
 
 ```powershell
-rdd-engine/explore.cmd -Type explore -Query "<具体描述，含模块名/关键词>"
+rdd-engine/scripts/explore.cmd -Type explore -Query "<具体描述，含模块名/关键词>"
 ```
 
 按返回 JSON 的 `data.cache` 字段决策：
@@ -79,9 +79,9 @@ rdd-engine/explore.cmd -Type explore -Query "<具体描述，含模块名/关键
 
 ### 确认需求来源
 
-- **A — flow 启动**：如果由 `rdd-engine/rdd-flow.cmd -Command start -Role CTO` 进入，优先使用输出的 prompt / handoff packet，只读取 handoff 列出的需求文档
+- **A — flow 启动**：如果由 `rdd-engine/scripts/rdd-flow.cmd -Command start -Role CTO` 进入，优先使用输出的 prompt / handoff packet，只读取 handoff 列出的需求文档
 - **B — 用户指定**：提供 `requirement.md` 路径或口述需求 → 直接读取
-- **C — 应用层指针消息**：收到 `请处理 .rdd/changes/archive/<name>/ 下的需求` → 识别为应用层交接，运行 `rdd-flow.cmd -Command handoff -Role CTO -Archive "<path>"` 拉取交接包
+- **C — 应用层指针消息**：收到 `请处理 .rdd/changes/archive/<name>/ 下的需求` → 识别为应用层交接，运行 `rdd-engine/scripts/rdd-flow.cmd -Command handoff -Role CTO -Archive "<path>"` 拉取交接包
 - **D — 自动查找**：用户未提供 → 扫描 `.rdd/changes/archive/`，找最新归档，读取 `task.md`。向用户确认找到的需求
 - **E — 无归档** → 告知用户先去 PM 模式梳理需求
 
@@ -93,7 +93,7 @@ rdd-engine/explore.cmd -Type explore -Query "<具体描述，含模块名/关键
 - 全部完成（无 CTO 待处理的需求）→ 告知用户，询问是否调整
 - 从路由总览判断 UX 是否并行：扫描所有行，若存在 `当前责任人 = UX` 的行（或 `关联设计文档` 集合单元格中包含 UX 设计文档路径），在技术方向文档中注明"UX 并行设计中"
 - 兼容旧目录结构（`RDD/changes/archive/`）
-- 需要理解现有代码时，按上方「rdd-engine 能力：代码探索」硬规则执行（先 `explore.cmd -Type explore` 缓存判定，命中零子代理，未命中派 `rdd-explore`）
+- 需要理解现有代码时，按上方「rdd-engine 能力：代码探索」硬规则执行（先 `rdd-engine/scripts/explore.cmd -Type explore` 缓存判定，命中零子代理，未命中派 `rdd-explore`）
 
 ---
 

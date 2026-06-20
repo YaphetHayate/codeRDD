@@ -41,7 +41,7 @@ description: >
 需要理解项目代码、定位模块/函数/依赖关系时，**第一步始终是 CLI 缓存判定**，不要直接派遣子代理：
 
 ```powershell
-rdd-engine/explore.cmd -Type explore -Query "<具体描述，含模块名/关键词>"
+rdd-engine/scripts/explore.cmd -Type explore -Query "<具体描述，含模块名/关键词>"
 ```
 
 按返回 JSON 的 `data.cache` 字段决策：
@@ -62,9 +62,9 @@ rdd-engine/explore.cmd -Type explore -Query "<具体描述，含模块名/关键
 
 | 优先级 | 触发 | 动作 |
 |--------|------|------|
-| A | flow 启动（`rdd-flow.cmd -Command start -Role UX`） | 使用输出的 prompt / handoff packet，只读 handoff 列出的需求文档 |
+| A | flow 启动（`rdd-engine/scripts/rdd-flow.cmd -Command start -Role UX`） | 使用输出的 prompt / handoff packet，只读 handoff 列出的需求文档 |
 | B | 用户指定需求文件路径或口述需求 | 直接读取/记录 |
-| C | 应用层指针消息（形如 `请处理 .rdd/changes/archive/<name>/ 下的需求`） | 识别为应用层交接，运行 `rdd-flow.cmd -Command handoff -Role UX -Archive "<path>"` 拉取交接包 |
+| C | 应用层指针消息（形如 `请处理 .rdd/changes/archive/<name>/ 下的需求`） | 识别为应用层交接，运行 `rdd-engine/scripts/rdd-flow.cmd -Command handoff -Role UX -Archive "<path>"` 拉取交接包 |
 | D | 用户未提供 | 扫描 `.rdd/changes/archive/`（兼容旧目录 `RDD/changes/archive/`）找最新归档，读 `task.md` 路由定位 `当前责任人 = UX` 的行 |
 | E | 无归档 | 告知用户先去 PM 模式梳理需求 |
 

@@ -1,4 +1,4 @@
-# 引擎能力清单
+﻿# 引擎能力清单
 
 > **定位**：rdd-engine 所有可用能力的权威清单。各 RDD 角色通过本文档发现和使用引擎能力。
 > **维护规则**：引擎新增/变更能力时，只需更新本文件（+ `explore.ps1`），各角色自动发现，无需逐个更新 SKILL.md。
@@ -9,8 +9,8 @@
 
 | 能力 | -Type | CLI 命令 | 触发场景 |
 |------|-------|---------|---------|
-| 代码探索（缓存判定） | `explore` | `explore.cmd -Type explore -Query "..."` | 需要理解项目代码、定位模块/函数/依赖关系时 |
-| 产物注册 | `register` | `explore.cmd -Type register -Key "..." -Path "..." -Brief "..." -Files "..."` | `rdd-explore` worker 探索完成后注册产物 |
+| 代码探索（缓存判定） | `explore` | `rdd-engine/scripts/explore.cmd -Type explore -Query "..."` | 需要理解项目代码、定位模块/函数/依赖关系时 |
+| 产物注册 | `register` | `rdd-engine/scripts/explore.cmd -Type register -Key "..." -Path "..." -Brief "..." -Files "..."` | `rdd-explore` worker 探索完成后注册产物 |
 
 ---
 
@@ -22,7 +22,7 @@
 
 **核心机制：先查缓存 → 命中零子代理返回 / 未命中生成 worker dispatch prompt**
 
-1. 角色调用 `explore.cmd -Type explore -Query "..."`
+1. 角色调用 `rdd-engine/scripts/explore.cmd -Type explore -Query "..."`
 2. engine 读取 `.rdd/exploration/index.json`，对 Query 与每条 `entry.key` 做 token 匹配（Jaccard 相似度 ≥ 0.35）
 3. 命中候选 → 检查涉及文件的 SHA-256 哈希
    - 全部一致 → **`cache:"hit"`**：直接返回 artifact 正文（**不派遣任何子代理**）
@@ -33,7 +33,7 @@
 
 ```powershell
 # 第一步：缓存判定（始终先调这一步）
-explore.cmd -Type explore -Query "分析认证模块的中间件链和 Token 刷新机制"
+rdd-engine/scripts/explore.cmd -Type explore -Query "分析认证模块的中间件链和 Token 刷新机制"
 
 # 返回 cache:hit  → 直接用 data.artifact，零子代理
 # 返回 cache:miss → 用 data.prompt 派遣 rdd-explore（可写 worker）
@@ -46,7 +46,7 @@ explore.cmd -Type explore -Query "分析认证模块的中间件链和 Token 刷
 `rdd-explore` worker 探索完代码、写好 artifact 后，调用此能力注册产物：
 
 ```powershell
-explore.cmd -Type register `
+rdd-engine/scripts/explore.cmd -Type register `
   -Key "认证中间件链和 Token 刷新" `
   -Path ".rdd/exploration/artifacts/auth-middleware.md" `
   -Brief "JWT 签发→验证→权限检查的中间件链，含 Token 刷新逻辑" `
@@ -71,10 +71,10 @@ register 会计算每个文件的 SHA-256，按 key 去重后追加进 index。
 
 | Command | CLI 命令 | 说明 |
 |---------|---------|------|
-| `next` | `rdd-flow.cmd -Command next` | 汇总当前有哪些角色有待处理任务 |
-| `start` | `rdd-flow.cmd -Command start -Role <PM\|CTO\|UX\|DEV\|QA>` | 为指定角色生成启动 prompt + handoff packet |
-| `handoff` | `rdd-flow.cmd -Command handoff -Role <DEV>` | 为指定角色生成最小交接包 |
-| `validate` | `rdd-flow.cmd -Command validate -Role <DEV>` | 校验指定角色是否有可执行任务 |
+| `next` | `rdd-engine/scripts/rdd-flow.cmd -Command next` | 汇总当前有哪些角色有待处理任务 |
+| `start` | `rdd-engine/scripts/rdd-flow.cmd -Command start -Role <PM\|CTO\|UX\|DEV\|QA>` | 为指定角色生成启动 prompt + handoff packet |
+| `handoff` | `rdd-engine/scripts/rdd-flow.cmd -Command handoff -Role <DEV>` | 为指定角色生成最小交接包 |
+| `validate` | `rdd-engine/scripts/rdd-flow.cmd -Command validate -Role <DEV>` | 校验指定角色是否有可执行任务 |
 
 > 完整规则见 `rdd-engine/references/handoff-guide.md`
 

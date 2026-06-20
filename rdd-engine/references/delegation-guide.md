@@ -1,4 +1,4 @@
-# 能力-文件映射
+﻿# 能力-文件映射
 
 > 本文档定义每种引擎能力的 reference 文件和子 agent 配置，供 `explore.ps1` CLI 入口脚本运行时参考。
 
@@ -32,10 +32,10 @@ worker 探索完成后调用，计算文件 SHA-256 并追加进 index。CLI 直
 
 ```powershell
 # 缓存判定（第一步始终调用）
-explore.cmd -Type explore -Query "分析认证模块的中间件链"
+rdd-engine/scripts/explore.cmd -Type explore -Query "分析认证模块的中间件链"
 
 # 产物注册（worker 探索完成后）
-explore.cmd -Type register -Key "..." -Path "..." -Brief "..." -Files "..."
+rdd-engine/scripts/explore.cmd -Type register -Key "..." -Path "..." -Brief "..." -Files "..."
 ```
 
 详见 `SKILL.md` 或 `references/exploration-guide.md`。

@@ -1,4 +1,4 @@
-# 探索型场景对话策略
+﻿# 探索型场景对话策略
 
 > **前提**：本文件中的对话策略由标准流程第二步调用。PM 的判断力（何时守门员/教练/顾问、如何提问）→ 见 `pm-judgment-guide.md`。
 
@@ -83,7 +83,7 @@
 1. **识别关联工具**：用户想法是否涉及某个已有工具的能力？
 2. **委托 engine 探索**：需要理解现有代码时，第一步做缓存判定（详见 PM SKILL「rdd-engine 能力：代码探索」硬规则）：
    ```powershell
-   rdd-engine/explore.cmd -Type explore -Query "分析 [需求简述] 涉及的代码模块和现有能力"
+   rdd-engine/scripts/explore.cmd -Type explore -Query "分析 [需求简述] 涉及的代码模块和现有能力"
    ```
    - 返回 `cache:"hit"` → 直接用产物，零子代理。
    - 返回 `cache:"miss"` → 派遣 `rdd-explore` 子代理（可写 worker），用返回的 prompt。

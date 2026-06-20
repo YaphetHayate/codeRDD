@@ -10,7 +10,7 @@ description: RDD 角色 CTO（技术架构师）。请在 /new 开新会话后�
 
 下方交接包由 rdd-engine 从最新归档自动生成。**以此作为唯一入口上下文**，忽略本会话中此前任何无关内容：
 
-!`rdd-engine/rdd-flow.cmd -Command handoff -Role CTO -Format markdown`
+!`rdd-engine/scripts/rdd-flow.cmd -Command handoff -Role CTO -Format markdown`
 
 > 若上方提示 `NO_ARCHIVES` / `ARCHIVE_ROOT_NOT_FOUND`，说明尚无归档交接包——向用户确认是否需要先以 `/rdd-pm` 走 PM 归档，不要自行编造任务。
 

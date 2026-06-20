@@ -12,7 +12,7 @@ $ErrorActionPreference = "Stop"
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 $OutputEncoding = [System.Text.Encoding]::UTF8
 $scriptRoot = $PSScriptRoot
-$repoRoot = (Resolve-Path (Join-Path $scriptRoot "..")).Path
+$repoRoot = (Resolve-Path (Join-Path $scriptRoot "../..")).Path
 
 # Jaccard token-overlap threshold. Query must share at least this fraction of
 # tokens with an entry.key to be considered a cache hit candidate.
@@ -191,7 +191,7 @@ function Remove-EntryByPath {
 
 # === Dispatch prompt (cache miss) ===
 
-function Get-ExplorationGuidePath { Join-Path $scriptRoot "references/exploration-guide.md" }
+function Get-ExplorationGuidePath { Join-Path $scriptRoot "../references/exploration-guide.md" }
 
 function Build-DispatchPrompt {
     param([string]$QueryText)
@@ -212,7 +212,7 @@ function Build-DispatchPrompt {
         "Artifacts directory: $(Get-ArtifactsDir)",
         "",
         "Follow the protocol below strictly. On finish, call:",
-        "  explore.cmd -Type register -Key `"<semantic key, Chinese ok>`" -Path `"<repo-relative artifact path>`" -Brief `"<one-line summary>`" -Files `"<comma-separated repo-relative file paths>`"",
+        "  rdd-engine/scripts/explore.cmd -Type register -Key `"<semantic key, Chinese ok>`" -Path `"<repo-relative artifact path>`" -Brief `"<one-line summary>`" -Files `"<comma-separated repo-relative file paths>`"",
         "",
         "--- exploration-guide.md ---",
         $guide

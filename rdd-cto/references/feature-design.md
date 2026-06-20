@@ -1,4 +1,4 @@
-# 功能设计流程
+﻿# 功能设计流程
 
 > **前提**：本流程由 SKILL.md 场景路由触发。适用于 PM 归档为新功能/迭代增强的场景。CTO 角色为**架构师**。
 >
@@ -12,7 +12,7 @@
 
 需要理解现有代码时，委托 engine 探索（结果通过全局缓存复用）：
 ```powershell
-explore.cmd -Type explore -Query "分析当前需求涉及的代码模块和现有架构"
+rdd-engine/scripts/explore.cmd -Type explore -Query "分析当前需求涉及的代码模块和现有架构"
 ```
 
 深度阅读项目代码，理解现有架构。参照 `code-quality-assessment.md` 评估代码质量问题。需要项目上下文时通过 rdd-engine 获取。

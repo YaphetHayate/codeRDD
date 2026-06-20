@@ -1,7 +1,7 @@
 ---
 name: rdd-engine
 description: >
-  RDD 通用能力总线。所有 RDD 角色按需调用 explore.ps1 CLI 脚本，启动子 agent 完成委托并返回结果。
+  RDD 通用能力总线。所有 RDD 角色按需调用 scripts/explore.ps1 CLI 脚本，启动子 agent 完成委托并返回结果。
 ---
 
 # rdd-engine
@@ -11,14 +11,16 @@ engine 通过 CLI 脚本提供服务：
 - `explore.ps1`：代码探索能力。`-Type explore` 做缓存命中判定（token 匹配 + SHA-256 校验），命中直接返回产物（零子代理），未命中生成 worker dispatch prompt；`-Type register` 由 worker 探索完成后注册产物到缓存。
 - `rdd-flow.ps1`：阶段流转与上下文交接，生成最小 handoff packet
 
-> **调用入口统一用 `.cmd` 包装器**（`rdd-flow.cmd` / `explore.cmd`，与 `.ps1` 同目录）。`.cmd` 内部以 `powershell -ExecutionPolicy Bypass -File` 调用 `.ps1`，绕过 Windows 默认的 `Restricted` 执行策略。**不要直接调用 `.ps1`**——在 ExecutionPolicy=Restricted 的环境下会被系统拦截。下方所有示例均使用 `.cmd`。
+> **脚本位置**：所有 `.cmd` / `.ps1` 位于 `scripts/` 子目录（与 `SKILL.md` 同级的 `scripts/`，非 skill 根目录），遵循 skill 标准结构。完整路径：`rdd-engine/scripts/explore.cmd`、`rdd-engine/scripts/rdd-flow.cmd`（仓库根相对）。
+>
+> **调用入口统一用 `.cmd` 包装器**（`scripts/rdd-flow.cmd` / `scripts/explore.cmd`，与同名 `.ps1` 同目录）。`.cmd` 内部以 `powershell -ExecutionPolicy Bypass -File` 调用 `.ps1`，绕过 Windows 默认的 `Restricted` 执行策略。**不要直接调用 `.ps1`**——在 ExecutionPolicy=Restricted 的环境下会被系统拦截。下方所有示例均使用仓库根相对的完整路径 `rdd-engine/scripts/*.cmd`。
 
 ## 调用方式
 
 ### 代码探索
 
 ```powershell
-explore.cmd -Type explore -Query "<description>"
+rdd-engine/scripts/explore.cmd -Type explore -Query "<description>"
 ```
 
 返回 JSON：
@@ -28,16 +30,16 @@ explore.cmd -Type explore -Query "<description>"
 ### 探索产物注册（worker 探索完成后调用）
 
 ```powershell
-explore.cmd -Type register -Key "<semantic key>" -Path "<artifact path>" -Brief "<summary>" -Files "<comma-separated files>"
+rdd-engine/scripts/explore.cmd -Type register -Key "<semantic key>" -Path "<artifact path>" -Brief "<summary>" -Files "<comma-separated files>"
 ```
 
 ### 流转交接
 
 ```powershell
-rdd-flow.cmd -Command next -Archive <path>     # 不传 -Archive 则自动发现最新归档
-rdd-flow.cmd -Command start -Role CTO -TaskIndex 0       # 单需求启动
-rdd-flow.cmd -Command handoff -Role DEV                  # 自动定位最新归档
-rdd-flow.cmd -Command validate -Role DEV                 # 校验 DEV 是否有任务
+rdd-engine/scripts/rdd-flow.cmd -Command next -Archive <path>     # 不传 -Archive 则自动发现最新归档
+rdd-engine/scripts/rdd-flow.cmd -Command start -Role CTO -TaskIndex 0       # 单需求启动
+rdd-engine/scripts/rdd-flow.cmd -Command handoff -Role DEV                  # 自动定位最新归档
+rdd-engine/scripts/rdd-flow.cmd -Command validate -Role DEV                 # 校验 DEV 是否有任务
 ```
 
 `-Archive` 为可选参数，不传时脚本自动发现最新归档。传入含 `...` 占位符或不存在路径时，自动回退到自动发现。
@@ -84,9 +86,9 @@ rdd-flow.cmd -Command validate -Role DEV                 # 校验 DEV 是否有�
 
 ```powershell
 # PM 归档后有 3 个需求路由到 DEV，并行拉起 3 个独立 DEV 会话：
-rdd-flow.cmd -Command start -Role DEV -TaskIndex 0
-rdd-flow.cmd -Command start -Role DEV -TaskIndex 1
-rdd-flow.cmd -Command start -Role DEV -TaskIndex 2
+rdd-engine/scripts/rdd-flow.cmd -Command start -Role DEV -TaskIndex 0
+rdd-engine/scripts/rdd-flow.cmd -Command start -Role DEV -TaskIndex 1
+rdd-engine/scripts/rdd-flow.cmd -Command start -Role DEV -TaskIndex 2
 ```
 
 ### 输出格式
@@ -104,10 +106,10 @@ stdout 输出纯 JSON：
 
 ```powershell
 # 代码探索（命中缓存零子代理返回，未命中返回 rdd-explore dispatch prompt）
-explore.cmd -Type explore -Query "分析认证模块的中间件链"
+rdd-engine/scripts/explore.cmd -Type explore -Query "分析认证模块的中间件链"
 
 # worker 探索完成后注册产物
-explore.cmd -Type register -Key "认证中间件链" -Path ".rdd/exploration/artifacts/auth-middleware.md" -Brief "JWT 签发→验证→权限检查" -Files "src/auth/middleware.ts,src/auth/jwt.ts"
+rdd-engine/scripts/explore.cmd -Type register -Key "认证中间件链" -Path ".rdd/exploration/artifacts/auth-middleware.md" -Brief "JWT 签发→验证→权限检查" -Files "src/auth/middleware.ts,src/auth/jwt.ts"
 ```
 
 ## 路由依据

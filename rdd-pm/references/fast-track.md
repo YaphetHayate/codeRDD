@@ -1,4 +1,4 @@
-# 快速通道：流程减负
+﻿# 快速通道：流程减负
 
 > **前提**：本流程由 SKILL.md 复杂度判定触发。PM 的判断力（快速通道中的姿态为固定顾问）→ 见 `pm-judgment-guide.md` > 快速通道 vs 标准流程。
 
@@ -46,8 +46,8 @@
 - **步骤 7**（告知用户）：省略并行启动和 `-TaskIndex` 说明，单个需求无并行场景
 
 ```powershell
-rdd-engine/rdd-flow.cmd -Command next -Archive ".rdd/changes/archive/YYYY-MM-DD-short-name" -Format markdown
-rdd-engine/rdd-flow.cmd -Command start -Role <目标角色> -Archive ".rdd/changes/archive/YYYY-MM-DD-short-name" -Format markdown
+rdd-engine/scripts/rdd-flow.cmd -Command next -Archive ".rdd/changes/archive/YYYY-MM-DD-short-name" -Format markdown
+rdd-engine/scripts/rdd-flow.cmd -Command start -Role <目标角色> -Archive ".rdd/changes/archive/YYYY-MM-DD-short-name" -Format markdown
 ```
 
 ### 3. 完成后

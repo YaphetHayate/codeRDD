@@ -31,7 +31,7 @@ description: >
 需要理解项目代码、定位模块/函数/依赖关系时，**第一步始终是 CLI 缓存判定**，不要直接派遣子代理：
 
 ```powershell
-rdd-engine/explore.cmd -Type explore -Query "<具体描述，含模块名/关键词>"
+rdd-engine/scripts/explore.cmd -Type explore -Query "<具体描述，含模块名/关键词>"
 ```
 
 按返回 JSON 的 `data.cache` 字段决策：
@@ -48,7 +48,7 @@ rdd-engine/explore.cmd -Type explore -Query "<具体描述，含模块名/关键
 
 ## 输入处理
 
-进入 DEV 后优先使用 handoff packet 裁剪上下文。如果由上游角色通过 `rdd-flow.cmd -Command start -Role DEV` 启动，直接使用输出的交接包，无需自行定位。如果是用户手动 `/RDD-DEV`，调用 `rdd-flow.cmd -Command handoff -Role DEV` 自动定位最新归档中的 DEV 任务；脚本不可用时再回退到手动扫描。没有交接包时再按优先级确定任务：A) 用户指定设计文档 → 设计引导模式；B) task.md 定位待开发任务；C) 自动查找文档；D) 用户直接指令（含 bug 检测优先）；E) 无可用信息时提示用户。
+进入 DEV 后优先使用 handoff packet 裁剪上下文。如果由上游角色通过 `rdd-engine/scripts/rdd-flow.cmd -Command start -Role DEV` 启动，直接使用输出的交接包，无需自行定位。如果是用户手动 `/RDD-DEV`，调用 `rdd-engine/scripts/rdd-flow.cmd -Command handoff -Role DEV` 自动定位最新归档中的 DEV 任务；脚本不可用时再回退到手动扫描。没有交接包时再按优先级确定任务：A) 用户指定设计文档 → 设计引导模式；B) task.md 定位待开发任务；C) 自动查找文档；D) 用户直接指令（含 bug 检测优先）；E) 无可用信息时提示用户。
 
 > 完整优先级判定流程见 `references/input-processing.md`
 
@@ -81,7 +81,7 @@ rdd-engine/explore.cmd -Type explore -Query "<具体描述，含模块名/关键
 硬规则：
 
 - 编码遵循项目现有风格，最小改动，防御性处理，不引入不必要依赖
-- 需要理解代码时按上方「rdd-engine 能力：代码探索」硬规则执行（先 `explore.cmd` 缓存判定，禁止直接派只读 explore）
+- 需要理解代码时按上方「rdd-engine 能力：代码探索」硬规则执行（先 `rdd-engine/scripts/explore.cmd` 缓存判定，禁止直接派只读 explore）
 - 每个任务完成后必须自测通过
 - 仅在用户明确要求时提交代码
 - 需求不清、设计不可行、需要上游决策时，按驳回协议正式移交
