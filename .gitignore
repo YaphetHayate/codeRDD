@@ -1,3 +1,7 @@
 .idea/
 __pycache__/
 node_modules/
+
+# RDD workflow runtime data
+.rdd/changes/
+.rdd/handoff/

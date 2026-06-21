@@ -70,4 +70,26 @@
 
 ---
 
+## 5. 代码探索决策
+
+Agent 需要理解代码时，按场景选择探索手段，不要混用：
+
+| 场景 | 用什么 | 理由 |
+|------|--------|------|
+| 单符号定位（"X 定义在哪"） | 内置 `explore` subagent | 只读、快、fresh context 适合轻量搜索 |
+| 主题级理解（"X 模块如何工作"） | `rdd_explore` 工具 | 缓存命中零成本；miss 时自行探索 + `rdd_explore_register` 注册 |
+| 大规模探索（fresh context 隔离） | `rdd-explore` subagent | 通过 Task 工具派遣，写 artifact + 注册 |
+
+### rdd_explore 工具边界
+
+- **不要**把单符号定位委托给 `rdd_explore`：缓存粒度是主题级，单符号查询永远 miss，浪费一次 RPC
+- **不要**在 cache miss 后跳过注册：不调 `rdd_explore_register` 的探索产物无法被后续会话命中，等于白做
+- **不要**用 `rdd-explore` subagent 做简单定位：它是可写 worker（fresh context 成本高），仅用于 miss 后的深度探索
+
+### 注册时的文件列表
+
+`rdd_explore_register` 的 `files` 参数只列**实际读过并分析**的文件。这些文件的 SHA-256 会被记录——任一变更触发缓存失效。列太多无关文件会降低缓存寿命；漏列关键文件会导致缓存过期不失效。
+
+---
+
 *本规范由 PSE 角色维护。如发现规范与项目实际风格冲突，以项目实际约定为准并通过 PSE 更新本文档。*
