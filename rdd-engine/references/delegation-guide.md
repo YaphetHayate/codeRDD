@@ -12,17 +12,17 @@
 
 ## 能力说明
 
-### explore — 代码探索缓存判定
+### explore — 代码探索（时效过滤 + candidates 返回）
 
-`explore.ps1` 是**自包含缓存仲裁**：自己读 index、做 token 匹配、校验 SHA-256。
-- 命中（`cache:"hit"`）→ 直接返回 artifact 正文，**不派遣任何子代理**。
-- 未命中（`cache:"miss"`）→ 返回 `rdd-explore` worker 的 dispatch prompt（内嵌完整协议），调用方据此派遣。
+`explore.ps1` 是**自包含缓存仲裁**：自己读 index、做 SHA-256 时效校验、返回 candidates。**不做语义匹配**——语义判断交给调用方 LLM。
+- 返回 `{ candidates, dispatchPrompt }`。candidates 是全部通过时效校验的条目（含 `tags` / `brief` / `summaryPath` / `fullPath`）。
+- 调用方 LLM 扫描 candidates 的 `tags` + `brief` 自主判断：命中 → Read `summaryPath`；无匹配 → 用 `dispatchPrompt` 派遣 `rdd-explore` worker。
 
-> **关键**：`rdd-explore` 是**可写**子代理（需写 artifact + 调 register）。内置只读 `explore`/`general` 子代理无法完成注册，禁止用于代码探索。
+> **关键**：`rdd-explore` 是**可写**子代理（需写摘要 + 完整记录 + 调 register）。内置只读 `explore`/`general` 子代理无法完成注册，禁止用于代码探索。
 
 ### register — 产物注册
 
-worker 探索完成后调用，计算文件 SHA-256 并追加进 index。CLI 直接写 index，无需子代理。
+worker 探索完成后调用，校验摘要/完整记录配对、计算文件 SHA-256、写入 tags，追加进 index。CLI 直接写 index，无需子代理。
 
 ### handoff — 阶段交接包
 
@@ -31,11 +31,11 @@ worker 探索完成后调用，计算文件 SHA-256 并追加进 index。CLI 直
 ## CLI 调用方式
 
 ```powershell
-# 缓存判定（第一步始终调用）
+# 时效过滤，返回 candidates（第一步始终调用）
 $rdd = (Get-ChildItem (git rev-parse --show-toplevel) -Recurse -Directory -Depth 3 -Filter 'rdd-engine' | Select-Object -First 1).FullName; & "$rdd\scripts\explore.cmd" -Type explore -Query "分析认证模块的中间件链"
 
 # 产物注册（worker 探索完成后）
-$rdd = (Get-ChildItem (git rev-parse --show-toplevel) -Recurse -Directory -Depth 3 -Filter 'rdd-engine' | Select-Object -First 1).FullName; & "$rdd\scripts\explore.cmd" -Type register -Key "..." -Path "..." -Brief "..." -Files "..."
+$rdd = (Get-ChildItem (git rev-parse --show-toplevel) -Recurse -Directory -Depth 3 -Filter 'rdd-engine' | Select-Object -First 1).FullName; & "$rdd\scripts\explore.cmd" -Type register -Key "..." -Tags "..." -Path "..." -Brief "..." -Files "..."
 ```
 
 详见 `SKILL.md` 或 `references/exploration-guide.md`。

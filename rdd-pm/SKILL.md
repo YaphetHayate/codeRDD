@@ -69,20 +69,20 @@ description: >
 
 ## rdd-engine 能力：代码探索（硬规则）
 
-需要理解项目代码、定位模块/函数/依赖关系时，**第一步始终是 CLI 缓存判定**，不要直接派遣子代理：
+需要理解项目代码、定位模块/函数/依赖关系时，**第一步始终是 CLI 探索**，不要直接派遣子代理：
 
 ```powershell
 $rdd = (Get-ChildItem (git rev-parse --show-toplevel) -Recurse -Directory -Depth 3 -Filter 'rdd-engine' | Select-Object -First 1).FullName; & "$rdd\scripts\explore.cmd" -Type explore -Query "<具体描述，含模块名/关键词>"
 ```
 
-按返回 JSON 的 `data.cache` 字段决策：
+返回全部 fresh candidates（`data.candidates`）。**你（调用方 LLM）扫描 candidates 的 `tags` + `brief`，结合 Query 自主判断**：
 
-- `cache: "hit"` → **直接使用 `data.artifact`，不派遣任何子代理**。产物已含职责、接口、依赖、风险。
-- `cache: "miss"` → 派遣 **`rdd-explore`** 子代理（可写 worker），把 `data.prompt` 作为其指令。worker 会探索代码、写 artifact、注册缓存并返回摘要。
+- **命中** → Read `data.candidates[].summaryPath`（摘要）；需深入细节再 Read `fullPath`（完整记录）。
+- **无匹配** → 用 `data.dispatchPrompt` 派遣 **`rdd-explore`** 子代理（可写 worker）。worker 会探索代码、打 tags、写摘要 + 完整记录、注册缓存并返回摘要。
 
 **硬约束：**
-- 禁止用内置只读 `explore` / `general` 子代理做代码探索——它们无法写 artifact、无法注册缓存，物理上无法完成协议。
-- 探索 Query 要具体（"分析 X 模块的 Y 机制"），便于 token 匹配命中已有缓存。
+- 禁止用内置只读 `explore` / `general` 子代理做代码探索——它们无法写产物、无法注册缓存，物理上无法完成协议。
+- 脚本不做语义匹配，只做时效过滤；tags 是 LLM 判断命中/未命中的依据。
 - 能力完整说明见 `rdd-engine/references/capability-manifest.md`。
 
 ---

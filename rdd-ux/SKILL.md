@@ -26,7 +26,7 @@ description: >
 
 **五条禁令：** ① 不写业务代码文件（设计规格中的代码片段仅作说明）；② 不改配置文件、样式文件、脚本；③ 不创建分支、不执行 git 操作；④ 不主动提议"我顺手改了"——再简单的改动也写成设计规格交给 DEV；⑤ 不跳过讨论直接归档——每个设计决策必须经用户确认。
 
-**文件白名单：** 仅写入 `.rdd/changes/archive/.../design/` 下的 `.md` 设计文档、同目录 `task.md` 的路由字段（`当前责任人`、`关联设计文档`、备注）、`.rdd/design-system/` 下的 `tokens.md` 和 `components.md`（设计系统累积资产），以及 `.rdd/changes/archive/.../design/mockups/` 下的 `.html` 和 `.png` 视觉稿文件（Phase 2.5 产物）。
+**文件白名单：** 仅写入 `.rdd/changes/archive/.../design/` 下的 `.md` 设计文档、同目录 `task.md` 的路由字段（`当前责任人`、`关联设计文档`、备注）、`.rdd/design-system/` 下的 `tokens.md` 和 `components.md`（设计系统累积资产），以及 `.rdd/changes/archive/.../design/mockups/` 下的 `.html`、`.png` 视觉稿文件与 `manifest.json`（对比页数据源，Phase 2.5 产物）。
 
 > 视觉稿 HTML/CSS 仅为设计产出物，不是业务代码。五条禁令中的"不写业务代码文件"不限制视觉稿生成。
 
@@ -38,20 +38,20 @@ description: >
 
 ## rdd-engine 能力：代码探索（硬规则）
 
-需要理解项目代码、定位模块/函数/依赖关系时，**第一步始终是 CLI 缓存判定**，不要直接派遣子代理：
+需要理解项目代码、定位模块/函数/依赖关系时，**第一步始终是 CLI 探索**，不要直接派遣子代理：
 
 ```powershell
 $rdd = (Get-ChildItem (git rev-parse --show-toplevel) -Recurse -Directory -Depth 3 -Filter 'rdd-engine' | Select-Object -First 1).FullName; & "$rdd\scripts\explore.cmd" -Type explore -Query "<具体描述，含模块名/关键词>"
 ```
 
-按返回 JSON 的 `data.cache` 字段决策：
+返回全部 fresh candidates（`data.candidates`）。**你（调用方 LLM）扫描 candidates 的 `tags` + `brief`，结合 Query 自主判断**：
 
-- `cache: "hit"` → **直接使用 `data.artifact`，不派遣任何子代理**。产物已含职责、接口、依赖、风险。
-- `cache: "miss"` → 派遣 **`rdd-explore`** 子代理（可写 worker），把 `data.prompt` 作为其指令。worker 会探索代码、写 artifact、注册缓存并返回摘要。
+- **命中** → Read `data.candidates[].summaryPath`（摘要）；需深入细节再 Read `fullPath`（完整记录）。
+- **无匹配** → 用 `data.dispatchPrompt` 派遣 **`rdd-explore`** 子代理（可写 worker）。worker 会探索代码、打 tags、写摘要 + 完整记录、注册缓存并返回摘要。
 
 **硬约束：**
-- 禁止用内置只读 `explore` / `general` 子代理做代码探索——它们无法写 artifact、无法注册缓存，物理上无法完成协议。
-- 探索 Query 要具体（"分析 X 模块的 Y 机制"），便于 token 匹配命中已有缓存。
+- 禁止用内置只读 `explore` / `general` 子代理做代码探索——它们无法写产物、无法注册缓存，物理上无法完成协议。
+- 脚本不做语义匹配，只做时效过滤；tags 是 LLM 判断命中/未命中的依据。
 - 能力完整说明见 `rdd-engine/references/capability-manifest.md`。
 
 ---
@@ -122,16 +122,24 @@ Phase 2：视觉分析 / 设计创建
   ├── 关键决策点（布局 / 配色 / 交互 / 信息密度）需与用户讨论
   └── 产出：设计规格草案（Token + 布局 + 组件 + 交互 + 内容策略）
 
-Phase 2.5：视觉稿生成（主动询问，用户确认才进入）
-  ├── 询问用户："是否需要生成视觉稿？（推荐，帮助直观感受设计效果）"
-  │   ├── 用户拒绝 → 直接进入 Phase 3
-  │   └── 用户确认 → 加载 references/mockup-generation.md
-  ├── 检测图片生成工具是否可用
-  │   ├── 可用 → 双阶段流程
-  │   │   ├── 2.5a：图片生成 3 个方向 → 用户选择
-  │   │   └── 2.5b：HTML 精确实现选定方向 → 迭代确认
-  │   └── 不可用 → 降级为纯 HTML（告知视觉质量受限）
-  └── 产出：final.html（精确实现）+ reference.png（视觉氛围参考，如有）
+Phase 2.5：视觉稿生成（必要性感知 + 主动提醒）
+  ├── 必要性自评（任一命中即"有必要"，倾向默认生成）：
+  │     ① 创作者模式（无参考图，视觉形态未知）
+  │     ② Phase 2 存在未决的关键视觉决策（布局/配色/信息密度/视觉气质）
+  │     ③ 涉及全新页面或核心组件（非微调、非复用既有样式）
+  │     ④ 视觉对产品价值影响大（品牌/首屏/营销/情感化场景）
+  │     ⑤ 出现视觉方向分歧信号（用户反复纠结"好不好看/哪种风格"）
+  ├── 有必要（推荐生成，opt-out 倾向）：
+  │     在 Phase 2 末尾预告并主动告知"我将生成视觉稿直观确认设计效果，不需要可回复『跳过』"
+  │     ├── 用户明确跳过 → 直接进入 Phase 3
+  │     └── 用户确认/未拒绝 → 加载 references/mockup-generation.md
+  │         ├── 素材类型场景匹配（创作者·氛围探索→image / 数据密集·复杂交互→html / 翻译者→html 复刻）
+  │         ├── 方向探索（fork-join 并行：ux-mockup-a/b/c 子代理，各绑不同 model 增大差异化）
+  │         ├── 用户选定方向 → 精确实现与迭代（2.5b）
+  │         └── 对比展示用固定模板 + manifest.json（不再每次重写框架）
+  ├── 无必要：
+  │     一句话说明跳过理由（如"本次为既有样式微调，视觉已确定"），保留"随时说『生成视觉稿』即可补做"
+  └── 产出：final.html（精确实现）+ reference.png（image 源素材时，视觉氛围参考）
 
 Phase 3：设计规格产出
   ├── 加载 references/spec-template.md

@@ -65,7 +65,7 @@ New-Item -ItemType Directory -Path ".rdd/changes/archive/YYYY-MM-DD-short-name/r
 $rdd = (Get-ChildItem (git rev-parse --show-toplevel) -Recurse -Directory -Depth 3 -Filter 'rdd-engine' | Select-Object -First 1).FullName; & "$rdd\scripts\explore.cmd" -Type explore -Query "分析 [需求简述] 涉及的代码模块"
 ```
 
-> engine 的 explore subagent 会按 `rdd-engine/references/exploration-guide.md` 的策略执行：先查 `.rdd/exploration/index.json` 缓存，命中且文件未过期则直接返回；否则探索代码并写入全局缓存。
+> engine 按 `rdd-engine/references/exploration-guide.md` 的策略执行：返回全部 fresh candidates（已通过时效校验），PM 扫 tags 判断后 Read 摘要或派 worker 探索并写入全局缓存。
 >
 > 如果变更范围简单（单文件/单模块），可跳过此步骤。快速通道默认跳过。
 

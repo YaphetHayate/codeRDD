@@ -8,7 +8,7 @@ description: >
 
 engine 通过 CLI 脚本提供服务：
 
-- `explore.ps1`：代码探索能力。`-Type explore` 做缓存命中判定（token 匹配 + SHA-256 校验），命中直接返回产物（零子代理），未命中生成 worker dispatch prompt；`-Type register` 由 worker 探索完成后注册产物到缓存。
+- `explore.ps1`：代码探索能力。`-Type explore` 做时效过滤（SHA-256 校验剔除 stale），返回全部 fresh candidates + dispatch prompt（**不做语义匹配**，由调用方 LLM 扫 tags 判断）；`-Type register` 由 worker 探索完成后注册产物到缓存（含 tags + 摘要配对校验）。
 - `rdd-flow.ps1`：阶段流转与上下文交接，生成最小 handoff packet
 
 > **脚本位置**：所有 `.cmd` / `.ps1` 位于 `scripts/` 子目录（与 `SKILL.md` 同级的 `scripts/`，非 skill 根目录），遵循 skill 标准结构。完整路径：`rdd-engine/scripts/explore.cmd`、`rdd-engine/scripts/rdd-flow.cmd`（仓库根相对）。
@@ -23,14 +23,15 @@ engine 通过 CLI 脚本提供服务：
 $rdd = (Get-ChildItem (git rev-parse --show-toplevel) -Recurse -Directory -Depth 3 -Filter 'rdd-engine' | Select-Object -First 1).FullName; & "$rdd\scripts\explore.cmd" -Type explore -Query "<description>"
 ```
 
-返回 JSON：
-- `data.cache = "hit"` → 直接用 `data.artifact`，**不派遣子代理**
-- `data.cache = "miss"` → 用 `data.prompt` 派遣 `rdd-explore` 子代理（可写 worker）
+返回 JSON（始终返回 candidates + dispatchPrompt）：
+- 扫描 `data.candidates` 的 `tags` + `brief`，结合 Query 判断相关性
+- **命中** → Read `data.candidates[].summaryPath`（摘要）；需深入细节再 Read `fullPath`
+- **无匹配** → 用 `data.dispatchPrompt` 派遣 `rdd-explore` 子代理（可写 worker）
 
 ### 探索产物注册（worker 探索完成后调用）
 
 ```powershell
-$rdd = (Get-ChildItem (git rev-parse --show-toplevel) -Recurse -Directory -Depth 3 -Filter 'rdd-engine' | Select-Object -First 1).FullName; & "$rdd\scripts\explore.cmd" -Type register -Key "<semantic key>" -Path "<artifact path>" -Brief "<summary>" -Files "<comma-separated files>"
+$rdd = (Get-ChildItem (git rev-parse --show-toplevel) -Recurse -Directory -Depth 3 -Filter 'rdd-engine' | Select-Object -First 1).FullName; & "$rdd\scripts\explore.cmd" -Type register -Key "<semantic key>" -Tags "<module/feature/synonym keywords, comma-separated>" -Path "<artifact path>" -Brief "<summary>" -Files "<comma-separated files>"
 ```
 
 ### 流转交接
@@ -48,10 +49,11 @@ $rdd = (Get-ChildItem (git rev-parse --show-toplevel) -Recurse -Directory -Depth
 
 | 参数 | 必需 | 默认值 | 说明 |
 |------|------|--------|------|
-| `-Type` | 是 | — | 能力类型：`explore`（缓存判定）/ `register`（注册产物） |
-| `-Query` | `explore` 必需 | — | 需求描述，用于 token 匹配缓存 |
-| `-Key` | `register` 必需 | — | 语义 key（中文可用），用于后续匹配 |
-| `-Path` | `register` 必需 | — | artifact 文件路径（repo-relative） |
+| `-Type` | 是 | — | 能力类型：`explore`（时效过滤）/ `register`（注册产物） |
+| `-Query` | `explore` 必需 | — | 需求描述，传递给 dispatchPrompt |
+| `-Key` | `register` 必需 | — | 语义 key（中文可用），标识探索主题 |
+| `-Tags` | `register` 必需 | — | 逗号分隔的关键词标签（模块名/功能名/同义词，中英文），LLM 判断命中的核心依据 |
+| `-Path` | `register` 必需 | — | 完整记录文件路径（repo-relative，需配对 `{slug}.summary.md`） |
 | `-Brief` | `register` 必需 | — | 一句话摘要 |
 | `-Files` | `register` 必需 | — | 逗号分隔的已分析文件路径列表 |
 
@@ -59,10 +61,10 @@ $rdd = (Get-ChildItem (git rev-parse --show-toplevel) -Recurse -Directory -Depth
 
 > 引擎所有可用能力的权威清单定义在 `references/capability-manifest.md`。新增/变更能力时只需更新该文件（+ `explore.ps1`），各角色自动发现。
 
-| -Type | 说明 | Reference 文件 |
+| `-Type` | 说明 | Reference 文件 |
 |-------|------|---------------|
-| `explore` | 缓存判定：token 匹配 index + SHA-256 校验，命中返回产物（零子代理），未命中返回 `rdd-explore` dispatch prompt | `references/exploration-guide.md` |
-| `register` | 注册产物：worker 探索完成后，计算文件哈希并追加进 index | `references/exploration-guide.md` |
+| `explore` | 时效过滤：SHA-256 校验剔除 stale，返回全部 fresh candidates + dispatch prompt（语义判断由调用方 LLM 扫 tags 完成） | `references/exploration-guide.md` |
+| `register` | 注册产物：worker 探索完成后，校验摘要配对、写入 tags、计算文件哈希并追加进 index | `references/exploration-guide.md` |
 
 ### 流转命令
 
@@ -96,8 +98,8 @@ $rdd = (Get-ChildItem (git rev-parse --show-toplevel) -Recurse -Directory -Depth
 stdout 输出纯 JSON：
 
 ```json
-// 正常
-{ "success": true, "data": { "subagentType": "...", "instructions": {...} } }
+// 正常（explore 返回 candidates + dispatchPrompt）
+{ "success": true, "data": { "query": "...", "candidates": [...], "dispatchPrompt": "..." } }
 // 错误
 { "success": false, "error": { "code": "...", "message": "..." } }
 ```
@@ -105,11 +107,11 @@ stdout 输出纯 JSON：
 ### 示例
 
 ```powershell
-# 代码探索（命中缓存零子代理返回，未命中返回 rdd-explore dispatch prompt）
+# 代码探索（返回 candidates，调用方 LLM 扫 tags 判断，无匹配时用 dispatchPrompt 派 worker）
 $rdd = (Get-ChildItem (git rev-parse --show-toplevel) -Recurse -Directory -Depth 3 -Filter 'rdd-engine' | Select-Object -First 1).FullName; & "$rdd\scripts\explore.cmd" -Type explore -Query "分析认证模块的中间件链"
 
-# worker 探索完成后注册产物
-$rdd = (Get-ChildItem (git rev-parse --show-toplevel) -Recurse -Directory -Depth 3 -Filter 'rdd-engine' | Select-Object -First 1).FullName; & "$rdd\scripts\explore.cmd" -Type register -Key "认证中间件链" -Path ".rdd/exploration/artifacts/auth-middleware.md" -Brief "JWT 签发→验证→权限检查" -Files "src/auth/middleware.ts,src/auth/jwt.ts"
+# worker 探索完成后注册产物（含 tags + 配对校验）
+$rdd = (Get-ChildItem (git rev-parse --show-toplevel) -Recurse -Directory -Depth 3 -Filter 'rdd-engine' | Select-Object -First 1).FullName; & "$rdd\scripts\explore.cmd" -Type register -Key "认证中间件链" -Tags "认证,鉴权,auth,jwt,中间件" -Path ".rdd/exploration/artifacts/auth-middleware.md" -Brief "JWT 签发→验证→权限检查" -Files "src/auth/middleware.ts,src/auth/jwt.ts"
 ```
 
 ## 路由依据

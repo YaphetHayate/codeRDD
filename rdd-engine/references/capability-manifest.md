@@ -9,56 +9,62 @@
 
 | 能力 | -Type | CLI 命令 | 触发场景 |
 |------|-------|---------|---------|
-| 代码探索（缓存判定） | `explore` | `$rdd = (Get-ChildItem (git rev-parse --show-toplevel) -Recurse -Directory -Depth 3 -Filter 'rdd-engine' | Select-Object -First 1).FullName; & "$rdd\scripts\explore.cmd" -Type explore -Query "..."` | 需要理解项目代码、定位模块/函数/依赖关系时 |
-| 产物注册 | `register` | `$rdd = (Get-ChildItem (git rev-parse --show-toplevel) -Recurse -Directory -Depth 3 -Filter 'rdd-engine' | Select-Object -First 1).FullName; & "$rdd\scripts\explore.cmd" -Type register -Key "..." -Path "..." -Brief "..." -Files "..."` | `rdd-explore` worker 探索完成后注册产物 |
+| 代码探索（时效过滤） | `explore` | `$rdd = (Get-ChildItem (git rev-parse --show-toplevel) -Recurse -Directory -Depth 3 -Filter 'rdd-engine' | Select-Object -First 1).FullName; & "$rdd\scripts\explore.cmd" -Type explore -Query "..."` | 需要理解项目代码、定位模块/函数/依赖关系时 |
+| 产物注册 | `register` | `$rdd = (Get-ChildItem (git rev-parse --show-toplevel) -Recurse -Directory -Depth 3 -Filter 'rdd-engine' | Select-Object -First 1).FullName; & "$rdd\scripts\explore.cmd" -Type register -Key "..." -Tags "..." -Path "..." -Brief "..." -Files "..."` | `rdd-explore` worker 探索完成后注册产物 |
 
 ---
 
 ## 能力详解
 
-### 代码探索（explore）— 缓存判定
+### 代码探索（explore）— 时效过滤 + candidates 返回
 
 **这是引擎核心能力。任何角色需要理解项目代码时，第一步始终调用此能力。**
 
-**核心机制：先查缓存 → 命中零子代理返回 / 未命中生成 worker dispatch prompt**
+**核心机制：脚本做时效过滤 → 返回 candidates → 调用方 LLM 扫 tags 自主判断**
 
 1. 角色调用 `$rdd = (Get-ChildItem (git rev-parse --show-toplevel) -Recurse -Directory -Depth 3 -Filter 'rdd-engine' | Select-Object -First 1).FullName; & "$rdd\scripts\explore.cmd" -Type explore -Query "..."`
-2. engine 读取 `.rdd/exploration/index.json`，对 Query 与每条 `entry.key` 做 token 匹配（Jaccard 相似度 ≥ 0.35）
-3. 命中候选 → 检查涉及文件的 SHA-256 哈希
-   - 全部一致 → **`cache:"hit"`**：直接返回 artifact 正文（**不派遣任何子代理**）
-   - 任一变更 → 移除 stale 条目，落到 miss
-4. 未命中 → **`cache:"miss"`**：返回 `{action:"dispatch-subagent", subagentHint:"rdd-explore", prompt:"<内嵌完整协议的 worker 指令>"}`，调用方取 `prompt` 派遣 `rdd-explore` 子代理
+2. engine 读取 `.rdd/exploration/index.json`，对每条 entry 做 SHA-256 时效校验
+   - 哈希不匹配 / 文件被删 → 自动移除 stale 条目
+   - 全部通过 → 纳入 candidates
+3. 返回 `{ candidates, dispatchPrompt }`。candidates 每条含 `key` / `tags` / `brief` / `summaryPath` / `fullPath`
+4. **调用方 LLM 扫描 candidates 的 tags + brief，结合 Query 自主判断**：
+   - 命中 → Read `summaryPath`（摘要）；需深入细节再 Read `fullPath`（完整记录）
+   - 无匹配 → 用 `dispatchPrompt` 派遣 `rdd-explore` 子代理
 
 **调用示例：**
 
 ```powershell
-# 第一步：缓存判定（始终先调这一步）
+# 第一步：获取 candidates（始终先调这一步）
 $rdd = (Get-ChildItem (git rev-parse --show-toplevel) -Recurse -Directory -Depth 3 -Filter 'rdd-engine' | Select-Object -First 1).FullName; & "$rdd\scripts\explore.cmd" -Type explore -Query "分析认证模块的中间件链和 Token 刷新机制"
 
-# 返回 cache:hit  → 直接用 data.artifact，零子代理
-# 返回 cache:miss → 用 data.prompt 派遣 rdd-explore（可写 worker）
+# 返回 candidates → 调用方 LLM 扫 tags 判断
+# 命中 → Read data.candidates[].summaryPath
+# 无匹配 → 用 data.dispatchPrompt 派遣 rdd-explore（可写 worker）
 ```
 
-> **硬约束**：禁止用内置只读 `explore` / `general` 子代理做代码探索——它们无法写 artifact、无法注册缓存，物理上无法完成协议。
+> **脚本不做语义匹配**。tags 是 LLM 的阅读语言，保持完整语义，不被脚本拆解。
+>
+> **硬约束**：禁止用内置只读 `explore` / `general` 子代理做代码探索——它们无法写产物、无法注册缓存，物理上无法完成协议。
 
 ### 产物注册（register）— worker 完成探索后调用
 
-`rdd-explore` worker 探索完代码、写好 artifact 后，调用此能力注册产物：
+`rdd-explore` worker 探索完代码、写好摘要 + 完整记录后，调用此能力注册产物：
 
 ```powershell
 $rdd = (Get-ChildItem (git rev-parse --show-toplevel) -Recurse -Directory -Depth 3 -Filter 'rdd-engine' | Select-Object -First 1).FullName; & "$rdd\scripts\explore.cmd" -Type register `
   -Key "认证中间件链和 Token 刷新" `
+  -Tags "认证,鉴权,登录,auth,jwt,token,中间件,middleware" `
   -Path ".rdd/exploration/artifacts/auth-middleware.md" `
   -Brief "JWT 签发→验证→权限检查的中间件链，含 Token 刷新逻辑" `
   -Files "src/auth/middleware.ts,src/auth/jwt.ts"
 ```
 
-register 会计算每个文件的 SHA-256，按 key 去重后追加进 index。
+register 会校验 `{slug}.md` 与 `{slug}.summary.md` 配对存在、计算每个文件的 SHA-256、按 key 去重后追加进 index。
 
 **缓存特性：**
 - 全局共享：PM 探索过的结果，CTO/DEV/QA/UX 无需重新探索
 - 自动失效：涉及文件变更后 SHA-256 不匹配，`explore` 自动移除 stale 条目
-- 零子代理命中：命中缓存时不派遣任何子代理，触发成本最低
+- 三层结构：index（索引）→ summary（摘要，命中时读）→ full record（完整记录，按需读）
 - 索引文件：`.rdd/exploration/index.json`，产物目录：`.rdd/exploration/artifacts/`
 
 > 完整执行流程见 `rdd-engine/references/exploration-guide.md`

@@ -3,6 +3,7 @@ param(
     [string]$Type,
     [string]$Query,
     [string]$Key,
+    [string]$Tags,
     [string]$Path,
     [string]$Brief,
     [string]$Files
@@ -13,10 +14,6 @@ $ErrorActionPreference = "Stop"
 $OutputEncoding = [System.Text.Encoding]::UTF8
 $scriptRoot = $PSScriptRoot
 $repoRoot = git rev-parse --show-toplevel
-
-# Jaccard token-overlap threshold. Query must share at least this fraction of
-# tokens with an entry.key to be considered a cache hit candidate.
-$MatchThreshold = 0.35
 
 # === Output encoding ===
 # Emit pure-ASCII JSON so any caller (PowerShell, cmd, bash, opencode, Claude)
@@ -85,43 +82,15 @@ function Get-FileSha256 {
     return "sha256:$($h.Hash.ToLowerInvariant())"
 }
 
-# === Tokenizer: CJK per-char + Latin alphanumeric words ===
-
-function Get-Tokens {
-    param([string]$Text)
-    if ([string]::IsNullOrWhiteSpace($Text)) { return @() }
-    $lower = $Text.ToLowerInvariant()
-    $set = New-Object 'System.Collections.Generic.HashSet[string]'
-
-    foreach ($ch in $lower.ToCharArray()) {
-        $code = [int]$ch
-        if (($code -ge 0x4E00 -and $code -le 0x9FFF) -or
-            ($code -ge 0x3400 -and $code -le 0x4DBF)) {
-            [void]$set.Add($ch.ToString())
-        }
+# Derive the paired summary path from a full-record path.
+# ".rdd/exploration/artifacts/auth.md" -> ".rdd/exploration/artifacts/auth.summary.md"
+function Get-SummaryPath {
+    param([string]$FullPath)
+    if ([string]::IsNullOrWhiteSpace($FullPath)) { return $FullPath }
+    if ($FullPath -match '\.md$') {
+        return ($FullPath -replace '\.md$', '.summary.md')
     }
-    foreach ($m in [regex]::Matches($lower, '[a-z0-9]+')) {
-        [void]$set.Add($m.Value)
-    }
-    return @($set)
-}
-
-function Get-JaccardSimilarity {
-    param([string]$A, [string]$B)
-    $ta = Get-Tokens $A
-    $tb = Get-Tokens $B
-    if ($ta.Count -eq 0 -or $tb.Count -eq 0) { return 0.0 }
-
-    $setB = New-Object 'System.Collections.Generic.HashSet[string]'
-    foreach ($t in $tb) { [void]$setB.Add($t) }
-
-    $inter = 0
-    foreach ($t in $ta) {
-        if ($setB.Contains($t)) { $inter++ }
-    }
-    $union = $ta.Count + $tb.Count - $inter
-    if ($union -le 0) { return 0.0 }
-    return [double]$inter / [double]$union
+    return $FullPath + '.summary.md'
 }
 
 # === Index IO ===
@@ -153,6 +122,21 @@ function Convert-ToFilesHashtable {
     return $ht
 }
 
+# Normalize a tags value (from JSON or CLI) into a clean string array.
+function Convert-ToTagsArray {
+    param($Value)
+    if (-not $Value) { return @() }
+    if ($Value -is [string]) {
+        return (($Value -split "[,;]") | ForEach-Object { $_.Trim() } | Where-Object { $_ -ne "" })
+    }
+    $arr = @()
+    foreach ($item in $Value) {
+        $s = [string]$item
+        if (-not [string]::IsNullOrWhiteSpace($s)) { $arr += $s.Trim() }
+    }
+    return $arr
+}
+
 function Write-Index {
     param([array]$Entries)
     $dir = Get-ExplorationDir
@@ -171,8 +155,9 @@ function Write-Index {
     foreach ($e in $Entries) {
         $clean += @{
             key   = $e.key
-            path  = $e.path
+            tags  = @(Convert-ToTagsArray $e.tags)
             brief = $e.brief
+            path  = $e.path
             files = (Convert-ToFilesHashtable $e.files)
         }
     }
@@ -180,16 +165,47 @@ function Write-Index {
     [System.IO.File]::WriteAllText((Get-IndexPath), $payload, (New-Object System.Text.UTF8Encoding($false)))
 }
 
-function Remove-EntryByPath {
-    param([array]$Entries, [string]$Path)
-    $kept = @()
-    foreach ($e in $Entries) {
-        if ($e.path -ne $Path) { $kept += $e }
+# === Fresh-candidate selection ===
+# Returns fresh entries (SHA-256 still valid + artifact file present).
+# Stale entries (hash mismatch / file deleted) are reported for index cleanup.
+function Select-FreshEntries {
+    param([array]$Entries)
+
+    $fresh = @()
+    $stalePaths = @()
+
+    foreach ($entry in $Entries) {
+        $isStale = $false
+        $entryFiles = Convert-ToFilesHashtable $entry.files
+
+        foreach ($k in $entryFiles.Keys) {
+            $current = Get-FileSha256 -AbsPath (Resolve-RepoPath $k)
+            if ($null -eq $current -or $current -ne $entryFiles[$k]) {
+                $isStale = $true
+                break
+            }
+        }
+
+        # Artifact file itself must still exist.
+        if (-not $isStale) {
+            $artifactAbs = Resolve-RepoPath $entry.path
+            if (-not (Test-Path -LiteralPath $artifactAbs -PathType Leaf)) {
+                $isStale = $true
+            }
+        }
+
+        if ($isStale) {
+            $stalePaths += $entry.path
+        }
+        else {
+            $fresh += $entry
+        }
     }
-    return $kept
+
+    return @{ Fresh = $fresh; StalePaths = $stalePaths }
 }
 
-# === Dispatch prompt (cache miss) ===
+# === Dispatch prompt (always returned for caller LLM to use on no-match) ===
 
 function Get-ExplorationGuidePath { Join-Path $scriptRoot "../references/exploration-guide.md" }
 
@@ -212,7 +228,8 @@ function Build-DispatchPrompt {
         "Artifacts directory: $(Get-ArtifactsDir)",
         "",
         "Follow the protocol below strictly. On finish, call:",
-        "  rdd-engine/scripts/explore.cmd -Type register -Key `"<semantic key, Chinese ok>`" -Path `"<repo-relative artifact path>`" -Brief `"<one-line summary>`" -Files `"<comma-separated repo-relative file paths>`"",
+        "  rdd-engine/scripts/explore.cmd -Type register -Key `"<semantic key, Chinese ok>`" -Tags `"<comma-separated module/feature/synonym keywords, Chinese and English>`" -Path `"<repo-relative FULL record path>`" -Brief `"<one-line summary>`" -Files `"<comma-separated repo-relative file paths>`"",
+        "Note: the full record and its paired summary ({slug}.summary.md) must both be written before registering.",
         "",
         "--- exploration-guide.md ---",
         $guide
@@ -229,6 +246,8 @@ if ($Type -notin @("explore", "register")) {
 }
 
 # === Type: explore ===
+# Returns ALL fresh candidates (SHA-256 valid). The caller LLM inspects
+# tags + brief to decide relevance itself. Semantic matching is NOT done here.
 
 if ($Type -eq "explore") {
     if ([string]::IsNullOrWhiteSpace($Query)) {
@@ -236,67 +255,40 @@ if ($Type -eq "explore") {
     }
 
     $entries = Read-Index
+    $result = Select-FreshEntries -Entries $entries
+    $freshEntries = $result.Fresh
+    $stalePaths = $result.StalePaths
 
-    $bestEntry = $null
-    $bestScore = 0.0
-    foreach ($entry in $entries) {
-        $score = Get-JaccardSimilarity -A $Query -B $entry.key
-        if ($score -gt $bestScore) {
-            $bestScore = $score
-            $bestEntry = $entry
+    # Clean up stale entries so the index stays fresh.
+    if ($stalePaths.Count -gt 0) {
+        $kept = @()
+        foreach ($e in $entries) {
+            if ($stalePaths -notcontains $e.path) { $kept += $e }
+        }
+        Write-Index -Entries $kept
+    }
+
+    # Build candidate snapshot for the caller LLM.
+    $candidates = @()
+    foreach ($entry in $freshEntries) {
+        $candidates += @{
+            key         = $entry.key
+            tags        = @(Convert-ToTagsArray $entry.tags)
+            brief       = $entry.brief
+            summaryPath = (Get-SummaryPath $entry.path)
+            fullPath    = $entry.path
         }
     }
 
-    if ($bestEntry -and $bestScore -ge $MatchThreshold) {
-        $stale = $false
-        $bestFiles = Convert-ToFilesHashtable $bestEntry.files
-        foreach ($k in $bestFiles.Keys) {
-            $current = Get-FileSha256 -AbsPath (Resolve-RepoPath $k)
-            if ($null -eq $current -or $current -ne $bestFiles[$k]) {
-                $stale = $true
-                break
-            }
-        }
-
-        if (-not $stale) {
-            $artifactAbs = Resolve-RepoPath $bestEntry.path
-            if (Test-Path -LiteralPath $artifactAbs -PathType Leaf) {
-                $content = [System.IO.File]::ReadAllText($artifactAbs, [System.Text.Encoding]::UTF8)
-                $filesOut = Convert-ToFilesHashtable $bestEntry.files
-                ConvertTo-PortableJson @{
-                    success = $true
-                    data    = @{
-                        cache      = "hit"
-                        key        = $bestEntry.key
-                        path       = $bestEntry.path
-                        brief      = $bestEntry.brief
-                        files      = $filesOut
-                        matchScore = $bestScore
-                        artifact   = $content
-                    }
-                }
-                exit 0
-            }
-            $stale = $true
-        }
-
-        if ($stale) {
-            Write-Index -Entries (Remove-EntryByPath -Entries $entries -Path $bestEntry.path)
-        }
-    }
-
-    # cache miss -> dispatch
     ConvertTo-PortableJson @{
         success = $true
         data    = @{
-            cache        = "miss"
-            action       = "dispatch-subagent"
-            subagentHint = "rdd-explore"
-            query        = $Query
-            matchScore   = $bestScore
-            prompt       = (Build-DispatchPrompt -QueryText $Query)
+            query         = $Query
+            candidates    = $candidates
+            staleRemoved  = $stalePaths.Count
+            dispatchPrompt = (Build-DispatchPrompt -QueryText $Query)
         }
-    }
+    } -Depth 6
     exit 0
 }
 
@@ -312,6 +304,18 @@ if ($Type -eq "register") {
         Write-ErrorResult "ARTIFACT_NOT_FOUND" "Artifact file not found: $Path (resolved: $artifactAbs)" 1
     }
     $normPath = Get-NormalizedRelPath $artifactAbs
+
+    # The paired summary file ({slug}.summary.md) MUST exist before registering.
+    $summaryRel = Get-SummaryPath $normPath
+    $summaryAbs = Resolve-RepoPath $summaryRel
+    if (-not (Test-Path -LiteralPath $summaryAbs -PathType Leaf)) {
+        Write-ErrorResult "SUMMARY_NOT_FOUND" "Paired summary file not found. Expected: $summaryRel (full record and summary must be written together)." 1
+    }
+
+    $tagList = Convert-ToTagsArray $Tags
+    if ($tagList.Count -eq 0) {
+        Write-ErrorResult "MISSING_TAGS" "-Tags is required (comma-separated module/feature/synonym keywords, Chinese and English)." 1
+    }
 
     $fileList = @()
     if (-not [string]::IsNullOrWhiteSpace($Files)) {
@@ -336,8 +340,9 @@ if ($Type -eq "register") {
     }
     $kept += @{
         key   = $Key
-        path  = $normPath
+        tags  = $tagList
         brief = $Brief
+        path  = $normPath
         files = $filesMap
     }
 
@@ -346,11 +351,13 @@ if ($Type -eq "register") {
     ConvertTo-PortableJson @{
         success = $true
         data    = @{
-            registered = $true
-            key        = $Key
-            path       = $normPath
-            filesCount = $fileList.Count
+            registered  = $true
+            key         = $Key
+            path        = $normPath
+            summaryPath = $summaryRel
+            tagsCount   = $tagList.Count
+            filesCount  = $fileList.Count
         }
-    }
+    } -Depth 4
     exit 0
 }

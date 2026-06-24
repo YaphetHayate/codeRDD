@@ -1,0 +1,346 @@
+<!DOCTYPE html>
+<!--
+  RDD-UX 视觉稿方向对比框架（固定模板，请勿逐次重写）
+
+  使用方式（二选一，由 UX 选择）：
+    A. 解耦模式：UX 复制本文件为 index.html，并生成同目录 manifest.json。
+       浏览器需能 fetch 本地文件（http server 或允许 file:// fetch 的浏览器）。
+    B. 内嵌模式（默认，file:// 直接可用）：UX 复制本文件为 index.html，
+       并把 manifest.json 内容粘贴进下方 <script id="rdd-manifest"> 标签。
+       本模式双击即可打开，无需启动 server。
+
+  manifest.json 结构：
+    {
+      "title": "视觉稿方向对比",
+      "hint":  "选择最满意的方向后，在 CLI 中告知 UX（如\"选 B\"或\"选任务优先\"）",
+      "variants": [
+        { "id":"a", "name":"A · 信息优先", "desc":"...", "type":"image", "src":"images/direction-a.png" },
+        { "id":"b", "name":"B · 任务优先", "desc":"...", "type":"html",   "src":"direction-b.html" }
+      ]
+    }
+
+  type=image → 渲染 <img>；type=html → 渲染 <iframe>。两种卡片可混排。
+-->
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>视觉稿方向对比</title>
+<style>
+  :root {
+    --bg: #f4f5f7;
+    --surface: #ffffff;
+    --text: #1f2329;
+    --text-sub: #646a73;
+    --text-mute: #8f959e;
+    --border: #e5e6eb;
+    --primary: #3370ff;
+    --primary-soft: #e8f0ff;
+    --shadow: 0 1px 4px rgba(0,0,0,0.08), 0 4px 16px rgba(0,0,0,0.04);
+    --radius: 10px;
+    --radius-sm: 6px;
+    --media-h: 560px;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
+                 "Microsoft YaHei", Roboto, Helvetica, Arial, sans-serif;
+    -webkit-font-smoothing: antialiased;
+    line-height: 1.5;
+  }
+
+  /* ---- 顶部栏 ---- */
+  .topbar {
+    background: var(--surface);
+    border-bottom: 1px solid var(--border);
+    padding: 18px 32px;
+    position: sticky; top: 0; z-index: 10;
+  }
+  .topbar h1 { margin: 0; font-size: 18px; font-weight: 600; }
+  .topbar .hint { margin: 6px 0 0; font-size: 13px; color: var(--text-sub); }
+  .topbar .actions { margin-top: 12px; display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+
+  .btn {
+    border: 1px solid var(--border);
+    background: var(--surface);
+    color: var(--text-sub);
+    border-radius: var(--radius-sm);
+    padding: 6px 12px;
+    font-size: 13px;
+    cursor: pointer;
+    transition: all .15s ease;
+    user-select: none;
+  }
+  .btn:hover { border-color: var(--primary); color: var(--primary); }
+  .btn.is-active { background: var(--primary-soft); border-color: var(--primary); color: var(--primary); }
+
+  /* ---- 画廊 ---- */
+  main { padding: 24px 32px 64px; max-width: 1920px; margin: 0 auto; }
+  .gallery { display: grid; gap: 20px; grid-template-columns: repeat(3, 1fr); }
+  .gallery.layout-stack { grid-template-columns: 1fr; }
+  @media (max-width: 1280px) { .gallery { grid-template-columns: repeat(2, 1fr); } }
+  @media (max-width: 860px)  { .gallery { grid-template-columns: 1fr; } }
+
+  /* ---- 卡片 ---- */
+  .variant {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    overflow: hidden;
+    box-shadow: var(--shadow);
+    display: flex; flex-direction: column;
+    transition: border-color .15s ease, transform .15s ease;
+  }
+  .variant.is-selected { border-color: var(--primary); box-shadow: 0 0 0 2px var(--primary-soft), var(--shadow); }
+
+  .variant-head { padding: 14px 16px 10px; }
+  .variant-name { margin: 0; font-size: 15px; font-weight: 600; display: flex; align-items: center; gap: 8px; }
+  .variant-name .badge {
+    font-size: 11px; font-weight: 500; color: var(--text-mute);
+    background: var(--bg); border: 1px solid var(--border);
+    border-radius: 4px; padding: 1px 6px;
+  }
+  .variant-desc { margin: 6px 0 0; font-size: 12.5px; color: var(--text-sub); }
+
+  .variant-media {
+    position: relative;
+    height: var(--media-h);
+    background: #fafafa;
+    border-top: 1px solid var(--border);
+    overflow: hidden;
+  }
+  .variant-media img, .variant-media iframe {
+    display: block; width: 100%; height: 100%; border: 0; background: #fff;
+  }
+  /* 图片等比自适应，居中 */
+  .variant-media.is-image { display: flex; align-items: center; justify-content: center; padding: 12px; }
+  .variant-media.is-image img { width: 100%; height: auto; max-height: 100%; object-fit: contain; }
+
+  .variant-foot {
+    padding: 10px 16px 14px;
+    display: flex; gap: 8px; align-items: center; justify-content: space-between;
+  }
+  .variant-foot .pick {
+    border: 1px solid var(--primary); background: var(--surface); color: var(--primary);
+    border-radius: var(--radius-sm); padding: 6px 14px; font-size: 13px; cursor: pointer;
+    transition: all .15s ease;
+  }
+  .variant-foot .pick:hover { background: var(--primary); color: #fff; }
+  .variant.is-selected .variant-foot .pick { background: var(--primary); color: #fff; }
+
+  /* ---- 状态条 ---- */
+  .statusbar {
+    position: fixed; left: 0; right: 0; bottom: 0; z-index: 20;
+    background: var(--surface); border-top: 1px solid var(--border);
+    padding: 12px 32px; display: flex; gap: 12px; align-items: center;
+    transform: translateY(100%); transition: transform .2s ease;
+    box-shadow: 0 -2px 12px rgba(0,0,0,0.06);
+  }
+  .statusbar.is-visible { transform: translateY(0); }
+  .statusbar .status-text { font-size: 13px; color: var(--text-sub); flex: 1; }
+  .statusbar .status-text strong { color: var(--text); }
+
+  /* ---- 空状态 / 错误 ---- */
+  .notice { padding: 48px; text-align: center; color: var(--text-sub); }
+  .notice code {
+    background: var(--bg); border: 1px solid var(--border); border-radius: 4px;
+    padding: 2px 6px; font-family: ui-monospace, "SFMono-Regular", Consolas, monospace; font-size: 12px;
+  }
+  .notice .err { color: #d93025; }
+</style>
+</head>
+<body>
+
+<header class="topbar">
+  <h1 id="gallery-title">视觉稿方向对比</h1>
+  <p class="hint" id="gallery-hint"></p>
+  <div class="actions">
+    <button class="btn" id="toggle-layout" title="切换网格 / 单列大图">网格 / 单列</button>
+    <button class="btn" id="toggle-fullscreen" title="全屏查看">全屏</button>
+  </div>
+</header>
+
+<main>
+  <div id="gallery" class="gallery">
+    <p class="notice">加载中…</p>
+  </div>
+</main>
+
+<footer class="statusbar" id="statusbar">
+  <span class="status-text" id="status-text"></span>
+  <button class="btn" id="status-clear">清除选择</button>
+</footer>
+
+<!-- 内嵌 manifest（内嵌模式用）：UX 把 manifest.json 内容粘贴到这里即可，file:// 双击可用 -->
+<script id="rdd-manifest" type="application/json"></script>
+
+<script>
+(function () {
+  "use strict";
+
+  var STATE = {
+    manifest: null,
+    selectedId: null,
+    layout: "grid"   // "grid" | "stack"
+  };
+
+  var els = {
+    title:    document.getElementById("gallery-title"),
+    hint:     document.getElementById("gallery-hint"),
+    gallery:  document.getElementById("gallery"),
+    statusbar:document.getElementById("statusbar"),
+    statusText:document.getElementById("status-text"),
+    statusClear:document.getElementById("status-clear"),
+    btnLayout: document.getElementById("toggle-layout"),
+    btnFs:     document.getElementById("toggle-fullscreen")
+  };
+
+  // 读取 manifest：优先内嵌 script（file:// 可靠），缺失则 fetch 同目录 manifest.json
+  function readManifest() {
+    var inline = document.getElementById("rdd-manifest");
+    if (inline && inline.textContent.trim()) {
+      try { return Promise.resolve(JSON.parse(inline.textContent)); }
+      catch (e) { return Promise.reject(new Error("内嵌 manifest JSON 解析失败：" + e.message)); }
+    }
+    // fetch 在 file:// 下可能被浏览器拦截；失败时给出可操作提示
+    return fetch("manifest.json", { cache: "no-store" })
+      .then(function (r) {
+        if (!r.ok) throw new Error("manifest.json 请求失败（HTTP " + r.status + "）");
+        return r.json();
+      });
+  }
+
+  function renderEmpty(html) {
+    els.gallery.innerHTML = '<p class="notice">' + html + "</p>";
+  }
+
+  function renderError(msg) {
+    var hint = location.protocol === "file:"
+      ? '<br><br>提示：当前为本地文件直接打开（file://），浏览器可能禁止读取 manifest.json。'
+        + '<br>解决：把 manifest 内容粘贴进 <code>&lt;script id="rdd-manifest"&gt;</code>，'
+        + '或用本地服务打开（如 <code>npx serve</code>）。'
+      : "";
+    renderEmpty('<span class="err">无法载入对比数据。</span><br>' + msg + hint);
+  }
+
+  function mediaHtml(variant) {
+    // type=image → <img> 等比居中；type=html → <iframe> 内嵌 mockup
+    if (variant.type === "image") {
+      return '<div class="variant-media is-image">'
+        + '<img src="' + escAttr(variant.src) + '" alt="' + escAttr(variant.name) + '"></div>';
+    }
+    if (variant.type === "html") {
+      return '<div class="variant-media">'
+        + '<iframe src="' + escAttr(variant.src) + '" title="' + escAttr(variant.name)
+        + '" loading="lazy" referrerpolicy="no-referrer"></iframe></div>';
+    }
+    return '<div class="variant-media"><p class="notice">未知素材类型：<code>'
+      + escAttr(variant.type) + "</code></p></div>";
+  }
+
+  function cardHtml(v) {
+    var sel = (v.id === STATE.selectedId) ? " is-selected" : "";
+    var badge = v.focus ? ' <span class="badge">' + escAttr(v.focus) + "</span>" : "";
+    return '<section class="variant' + sel + '" data-id="' + escAttr(v.id) + '">'
+      + '<div class="variant-head">'
+      +   '<h2 class="variant-name">' + escHtml(v.name) + badge + "</h2>"
+      +   (v.desc ? '<p class="variant-desc">' + escHtml(v.desc) + "</p>" : "")
+      + "</div>"
+      + mediaHtml(v)
+      + '<div class="variant-foot">'
+      +   '<span style="font-size:12px;color:var(--text-mute)">素材：' + escHtml(v.type || "?") + "</span>"
+      +   '<button class="pick" data-action="pick">选择此方向</button>'
+      + "</div>"
+      + "</section>";
+  }
+
+  function render() {
+    var m = STATE.manifest;
+    if (!m) return;
+    if (els.title.textContent.trim() === "视觉稿方向对比") {
+      // 兜底标题：仅当模板默认值未被 manifest 覆盖时保留
+    }
+    if (m.title) els.title.textContent = m.title;
+    if (m.hint != null) els.hint.textContent = m.hint;
+
+    var variants = (m.variants || []).filter(function (v) { return v && v.src; });
+    if (!variants.length) { renderEmpty("manifest 中没有可展示的方向。"); return; }
+
+    els.gallery.className = "gallery" + (STATE.layout === "stack" ? " layout-stack" : "");
+    els.gallery.innerHTML = variants.map(cardHtml).join("");
+    syncSelected();
+  }
+
+  function selectVariant(id, name) {
+    STATE.selectedId = id;
+    syncSelected();
+    els.statusText.innerHTML = '已记录选择：<strong>' + escHtml(name) + "</strong>"
+      + ' — 回到 CLI 告知 UX（如“选 ' + escHtml(id) + "”或“选" + escHtml(name) + '”）';
+    els.statusbar.classList.add("is-visible");
+  }
+
+  function clearSelection() {
+    STATE.selectedId = null;
+    syncSelected();
+    els.statusbar.classList.remove("is-visible");
+  }
+
+  function syncSelected() {
+    var cards = els.gallery.querySelectorAll(".variant");
+    Array.prototype.forEach.call(cards, function (c) {
+      c.classList.toggle("is-selected", c.getAttribute("data-id") === STATE.selectedId);
+    });
+  }
+
+  // HTML/属性转义，防止 manifest 中的内容破坏结构
+  function escHtml(s) {
+    return String(s == null ? "" : s).replace(/[&<>]/g, function (ch) {
+      return ch === "&" ? "&amp;" : (ch === "<" ? "&lt;" : "&gt;");
+    });
+  }
+  function escAttr(s) { return escHtml(s).replace(/"/g, "&quot;"); }
+
+  function bindEvents() {
+    els.gallery.addEventListener("click", function (e) {
+      var btn = e.target.closest ? e.target.closest('[data-action="pick"]') : null;
+      if (!btn) return;
+      var card = btn.closest(".variant");
+      if (!card) return;
+      selectVariant(card.getAttribute("data-id"), card.querySelector(".variant-name").textContent.trim());
+    });
+    els.statusClear.addEventListener("click", clearSelection);
+
+    els.btnLayout.addEventListener("click", function () {
+      STATE.layout = (STATE.layout === "grid") ? "stack" : "grid";
+      els.btnLayout.classList.toggle("is-active", STATE.layout === "stack");
+      els.gallery.className = "gallery" + (STATE.layout === "stack" ? " layout-stack" : "");
+    });
+
+    els.btnFs.addEventListener("click", function () {
+      if (document.fullscreenElement) { document.exitFullscreen(); }
+      else if (document.documentElement.requestFullscreen) { document.documentElement.requestFullscreen(); }
+    });
+  }
+
+  function init() {
+    bindEvents();
+    readManifest()
+      .then(function (m) {
+        STATE.manifest = m || {};
+        render();
+      })
+      .catch(renderError);
+  }
+
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", init);
+  } else {
+    init();
+  }
+})();
+</script>
+</body>
+</html>
