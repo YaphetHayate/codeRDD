@@ -74,23 +74,63 @@ $rdd = (Get-ChildItem (git rev-parse --show-toplevel) -Recurse -Directory -Depth
 | `-Role` | 否 | `DEV` | 目标角色：`PM` / `CTO` / `UX` / `DEV` / `QA` |
 | `-Archive` | 否 | 自动发现 | 归档路径，不传则自动取最新归档 |
 | `-TaskIndex` | 否 | `-1` | 0-based 任务索引，>=0 时只筛选该条任务（"一需求一会话"） |
+| `-TaskId` | 否 | `-1` | task.json 中的任务 id，>=1 时按 id 筛选单条 |
 | `-Format` | 否 | `json` | 输出格式：`json` / `markdown` |
 | `-OutFile` | 否 | stdout | 写入文件路径 |
 
 | Command | 说明 |
 |---------|------|
-| `next` | 根据 `task.md` 汇总有哪些角色有待处理任务 |
+| `next` | 根据 task.json 汇总有哪些角色有待处理任务 |
 | `start` | 为指定角色生成启动 prompt 和 handoff packet |
 | `handoff` | 为指定角色生成最小交接包 |
 | `validate` | 校验指定角色是否有可执行任务 |
+| `show` | 读取 task.json 任务路由（支持 `-Role` 过滤、`-TaskId` 精确查找） |
+| `init` | PM 归档时创建 task.json（`-TasksFile` 指定 JSON 文件） |
+| `add-task` | 向已有 task.json 追加单条任务 |
+| `set-route` | 覆盖指定任务的 `currentOwners` |
+| `advance` | 推进路由（替换语义：移除 `-From` 角色，加入 `-To` 角色） |
+| `add-design` | 追加设计文档到指定任务 |
+| `reject` | 发起驳回（`currentOwners` 改为被驳回方 + 写备注） |
+| `complete` | 标记任务已闭环（`lifecycle=completed`） |
+| `reopen` | 重新激活已闭环任务 |
+| `deprecate` | 标记任务废弃（`lifecycle=deprecated`） |
+| `check` | 校验 task.json schema + 与文档流转控制一致性 |
+| `migrate` | 将旧 task.md 转为 task.json |
+
+> 完整的路由操作协议见 `rdd-engine/references/task-routing.md`。
+
+### 自动开窗脚本（start-role）
+
+为下游角色一键开启新 Windows Terminal 窗口并预填角色激活命令，免去手动 `/new` + 敲命令。上游 agent 完成路由推进后调用：
+
+```powershell
+$rdd = (Get-ChildItem (git rev-parse --show-toplevel) -Recurse -Directory -Depth 3 -Filter 'rdd-engine' | Select-Object -First 1).FullName; & "$rdd\scripts\start-role.cmd" -Role <下游角色> -TaskId <n>
+```
+
+| 参数 | 必需 | 默认值 | 说明 |
+|------|------|--------|------|
+| `-Role` | 是 | — | 目标角色：`PM`/`CTO`/`UX`/`DEV`/`QA`/`EVAL`/`PSE` |
+| `-TaskId` | 否 | `-1` | >=1 时 TaskId 模式，prompt 含 `TaskId=<n> task=<task.json绝对路径>` |
+| `-TaskJson` | 否 | 自动发现 | 显式指定 task.json 路径（不传则取 `.rdd/changes/archive/` 最新归档） |
+| `-Handoff` | 否 | — | 传入交接包文件路径，启用 Handoff 模式（覆盖 TaskId） |
+| `-Project` | 否 | git root | 项目根，非 git 环境必须显式指定 |
+| `-DryRun` | 否 | — | 只打印将执行的命令，不开窗 |
+
+**三种 prompt 模式**（按 Handoff > TaskId > 纯角色 优先）：
+- `-Handoff <path>` → `/rdd-<role> handoff=<abs>`
+- `-TaskId <n>` → `/rdd-<role> TaskId=<n> task=<abs>`（推荐）
+- 都不传 → `/rdd-<role>`（目标角色自行拉 handoff）
+
+脚本不校验 TaskId 有效性，由目标角色拉 handoff 时自行判断。详见 `references/transition-guide.md` 入口 B0。
 
 ### 单需求并行示例
 
 ```powershell
-# PM 归档后有 3 个需求路由到 DEV，并行拉起 3 个独立 DEV 会话：
-$rdd = (Get-ChildItem (git rev-parse --show-toplevel) -Recurse -Directory -Depth 3 -Filter 'rdd-engine' | Select-Object -First 1).FullName; & "$rdd\scripts\rdd-flow.cmd" -Command start -Role DEV -TaskIndex 0
-$rdd = (Get-ChildItem (git rev-parse --show-toplevel) -Recurse -Directory -Depth 3 -Filter 'rdd-engine' | Select-Object -First 1).FullName; & "$rdd\scripts\rdd-flow.cmd" -Command start -Role DEV -TaskIndex 1
-$rdd = (Get-ChildItem (git rev-parse --show-toplevel) -Recurse -Directory -Depth 3 -Filter 'rdd-engine' | Select-Object -First 1).FullName; & "$rdd\scripts\rdd-flow.cmd" -Command start -Role DEV -TaskIndex 2
+# PM 归档后有 3 个需求路由到 DEV，脚本自动开 3 个窗口并行：
+$rdd = (Get-ChildItem (git rev-parse --show-toplevel) -Recurse -Directory -Depth 3 -Filter 'rdd-engine' | Select-Object -First 1).FullName
+& "$rdd\scripts\start-role.cmd" -Role DEV -TaskId 1
+& "$rdd\scripts\start-role.cmd" -Role DEV -TaskId 2
+& "$rdd\scripts\start-role.cmd" -Role DEV -TaskId 3
 ```
 
 ### 输出格式

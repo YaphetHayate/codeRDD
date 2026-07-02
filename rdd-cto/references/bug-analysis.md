@@ -103,7 +103,7 @@ role: cto
 | - | - | - | - | - | - | - |
 ```
 
-3. 更新 `task.md`：将路由总览中对应行的 `当前责任人` 改为 DEV，`关联设计文档` 追加自身设计文档路径（与单元格已有路径 `+` 连接、去重，移除 `(待产出)` 占位，不覆盖他人路径）
+3. 调用 rdd-flow add-design 追加设计文档路径，然后 advance -From CTO -To DEV 推进路由
 4. 按 `rdd-engine/references/transition-guide.md` 的**上游协议 4 步硬流程**执行角色交接（路由已更新 → 运行 next → 推荐角色请求确认 → 生成 packet 按模式分支）。
 
 **推荐角色分支**：

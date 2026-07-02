@@ -93,4 +93,70 @@ Agent 需要理解代码时，按场景选择探索手段，不要混用：
 
 ---
 
+## 6. PowerShell 脚本约定
+
+rdd-engine 的 CLI 脚本在 Windows 上运行，生成代码（含 `.ps1` 脚本本体、Agent 生成的临时脚本）时必须遵守以下约定，否则会踩已知的 PS 5.1 / Windows 陷阱。
+
+### 6.1 `.ps1` 必须保存为 UTF-8 with BOM
+
+PS 5.1 解析**无 BOM 的 UTF-8** 中文脚本时，中文字节会让解析器错位，静默吞掉后续函数定义，报莫名其妙的 `CommandNotFoundException`（函数明明在文件里却"不被识别"）。
+
+- 含中文（注释、字符串、Write-Host 提示）的 `.ps1` 一律 UTF-8 with BOM（首 3 字节 `239,187,191`）
+- 验证方式：`[System.IO.File]::ReadAllBytes($path)[0..2]` 应为 `239,187,191`
+- 纯 ASCII 脚本不受影响，但统一带 BOM 可避免后续新增中文时遗漏
+
+### 6.2 cmd wrapper 必须用 `.cmd` 而非 `.ps1` 作为入口
+
+Windows 默认 ExecutionPolicy=Restricted，`.ps1` 不能直接执行。所有 rdd-engine 脚本都通过薄壳 `.cmd` 包装：
+
+```cmd
+@echo off
+chcp 65001 >nul
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0<script>.ps1" %*
+```
+
+调用方一律走 `.cmd`，不要直接调 `.ps1`。
+
+### 6.3 `Start-Process` 启动外部程序：跳过 `.ps1`
+
+`Start-Process` / `wt.exe` 无法将 `.ps1` 作为可执行文件直接启动，会报错 `0x800700c1`（ERROR_BAD_EXEFORMAT）。定位可执行文件时用白名单后缀：
+
+```powershell
+foreach ($name in @("opencode.cmd", "opencode.exe", "opencode.bat")) {
+    $found = Get-Command $name -ErrorAction SilentlyContinue
+    if ($found) { return $found.Name }
+}
+```
+
+显式跳过 `.ps1`（`Where-Object { $_.Extension -ne ".ps1" }`）。
+
+### 6.4 cmd 传参禁用中文
+
+cmd → powershell → 目标程序的参数链路经过 GBK→UTF-8 转码，中文几乎必乱码。需要向 cmd 传参的字符串（如 `--prompt` 内容）必须纯 ASCII：
+
+- 路径用绝对路径，不含中文目录名时安全
+- 提示性文字（如 `-TaskId` 的附加说明）用英文，中文放被引用的文件里由目标角色 Read
+
+### 6.5 `Sort-Object` 单元素返回的陷阱
+
+`$sorted = $collection | Sort-Object` 在 `$collection` 仅一个元素时返回**标量**而非数组，此时 `$sorted[0]` 会索引字符串的首字符而非第一个元素。
+
+- 用 `Select-Object -First 1` 替代 `[0]` 索引：
+  ```powershell
+  return $collection | Sort-Object -Descending | Select-Object -First 1
+  ```
+- 或强制数组化：`@($collection | Sort-Object)[0]`
+
+### 6.6 调用方路径约定
+
+文档、SKILL 中调用 rdd-engine 脚本时，统一用仓库根定位，避免依赖当前工作目录：
+
+```powershell
+$rdd = (Get-ChildItem (git rev-parse --show-toplevel) -Recurse -Directory -Depth 3 -Filter 'rdd-engine' | Select-Object -First 1).FullName; & "$rdd\scripts\<script>.cmd" ...
+```
+
+不要写相对路径（`.\rdd-engine\...`），上游 agent 可能在任意子目录下执行。
+
+---
+
 *本规范由 PSE 角色维护。如发现规范与项目实际风格冲突，以项目实际约定为准并通过 PSE 更新本文档。*

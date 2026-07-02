@@ -26,7 +26,7 @@ description: >
 
 **五条禁令：** ① 不写业务代码文件（设计规格中的代码片段仅作说明）；② 不改配置文件、样式文件、脚本；③ 不创建分支、不执行 git 操作；④ 不主动提议"我顺手改了"——再简单的改动也写成设计规格交给 DEV；⑤ 不跳过讨论直接归档——每个设计决策必须经用户确认。
 
-**文件白名单：** 仅写入 `.rdd/changes/archive/.../design/` 下的 `.md` 设计文档、同目录 `task.md` 的路由字段（`当前责任人`、`关联设计文档`、备注）、`.rdd/design-system/` 下的 `tokens.md` 和 `components.md`（设计系统累积资产），以及 `.rdd/changes/archive/.../design/mockups/` 下的 `.html`、`.png` 视觉稿文件与 `manifest.json`（对比页数据源，Phase 2.5 产物）。
+**文件白名单：** 仅写入 `.rdd/changes/archive/.../design/` 下的 `.md` 设计文档、`.rdd/design-system/` 下的 `tokens.md` 和 `components.md`（设计系统累积资产），以及 `.rdd/changes/archive/.../design/mockups/` 下的 `.html`、`.png` 视觉稿文件与 `manifest.json`（对比页数据源，Phase 2.5 产物）。task.json 路由操作通过 CLI 命令完成（见 `rdd-engine/references/task-routing.md`）。
 
 > 视觉稿 HTML/CSS 仅为设计产出物，不是业务代码。五条禁令中的"不写业务代码文件"不限制视觉稿生成。
 
@@ -62,15 +62,16 @@ $rdd = (Get-ChildItem (git rev-parse --show-toplevel) -Recurse -Directory -Depth
 
 | 优先级 | 触发 | 动作 |
 |--------|------|------|
+| A0 | 脚本开窗指针（`/rdd-ux TaskId=<n> task=<task.json路径>` 或 `/rdd-ux handoff=<路径>`） | TaskId 模式：按指针调 `$rdd = (Get-ChildItem (git rev-parse --show-toplevel) -Recurse -Directory -Depth 3 -Filter 'rdd-engine' | Select-Object -First 1).FullName; & "$rdd\scripts\rdd-flow.cmd" -Command handoff -Role UX -Archive <task.json所在归档> -TaskId <n>` 拉单条；Handoff 模式：直接 Read 交接包。TaskId 无效（已完成/废弃）告知用户 |
 | A | flow 启动（`$rdd = (Get-ChildItem (git rev-parse --show-toplevel) -Recurse -Directory -Depth 3 -Filter 'rdd-engine' | Select-Object -First 1).FullName; & "$rdd\scripts\rdd-flow.cmd" -Command start -Role UX`） | 使用输出的 prompt / handoff packet，只读 handoff 列出的需求文档 |
 | B | 用户指定需求文件路径或口述需求 | 直接读取/记录 |
 | C | 应用层指针消息（形如 `请处理 .rdd/changes/archive/<name>/ 下的需求`） | 识别为应用层交接，运行 `$rdd = (Get-ChildItem (git rev-parse --show-toplevel) -Recurse -Directory -Depth 3 -Filter 'rdd-engine' | Select-Object -First 1).FullName; & "$rdd\scripts\rdd-flow.cmd" -Command handoff -Role UX -Archive "<path>"` 拉取交接包 |
-| D | 用户未提供 | 扫描 `.rdd/changes/archive/`（兼容旧目录 `RDD/changes/archive/`）找最新归档，读 `task.md` 路由定位 `当前责任人 = UX` 的行 |
+| D | 用户未提供 | 扫描 `.rdd/changes/archive/` 找最新归档，调用 `rdd-flow show -Role UX` 定位 UX 待处理任务 |
 | E | 无归档 | 告知用户先去 PM 模式梳理需求 |
 
-**路由总览格式兼容：**
-- 新格式（有"当前责任人"列）：筛选 `当前责任人 = UX` 的行，读取对应需求文件；若需求文档自身 `## 流转控制 > 当前责任人` 与 task.md 不一致，以需求文件为准并修正 task.md
-- 旧格式（✅⬜ 状态表）：筛选 PM✅、UX⬜ 的 task，从"需求文件"字段定位
+**任务路由操作遵循 `rdd-engine/references/task-routing.md`：**
+- 用 `show -Role UX` 定位待处理任务；锁定后用 `advance` 推进路由、`add-design` 追加设计文档
+- 若需求文档自身 `## 流转控制 > 当前责任人` 与 task.json 不一致，以需求文档为准并通过 CLI 修正
 
 **锁定单条：**
 若筛选出多条 UX 待处理需求，锁定**一条**作为本次会话的深耕对象：
@@ -87,7 +88,7 @@ $rdd = (Get-ChildItem (git rev-parse --show-toplevel) -Recurse -Directory -Depth
 是否确认锁定 [标题 X]？
 ```
 
-- **强相关簇判定**：PM 在 `task.md` 备注栏标注的复合需求 + 需求文件「依赖关系」字段指向彼此 + 预估涉及页面/组件高度重叠（综合判断，任一显著命中即可建议合并）
+- **强相关簇判定**：PM 在 task.json `remark` 字段标注的复合需求 + 需求文件「依赖关系」字段指向彼此 + 预估涉及页面/组件高度重叠（综合判断，任一显著命中即可建议合并）
 - **锁定后约束**：只读锁定需求的内容；**中途换条**——未归档草稿可放弃重新锁定，一旦写盘归档则不换，需走驳回流程
 
 **工作模式判定：**
@@ -172,9 +173,9 @@ Phase 4：归档与角色交接
 
 ### CTO 并行协同 + 前序设计影响扫描
 
-Phase 1 检查 task.md 路由，感知同归档内其他设计的状态，把已产出的设计方向作为本次 UX 设计的约束。分两种情况：
+Phase 1 调用 `rdd-flow show` 检查路由，感知同归档内其他设计的状态，把已产出的设计方向作为本次 UX 设计的约束。分两种情况：
 
-**A. CTO 正在并行设计（`当前责任人 = CTO` 的行，或 `关联设计文档` 单元格含 CTO 文档路径但尚未归档）**：
+**A. CTO 正在并行设计（currentOwners 含 CTO 的任务，或 designDocs 中有 CTO 文档但 status=pending）**：
 - CTO 的技术方向（组件库选型、状态管理、CSS 架构）影响 UX 的 Token 适配方式，关注其进行中的方向
 - 若 CTO 已定组件库（Ant Design、shadcn/ui 等），UX 的组件设计需兼容该库的视觉规范，而非另起炉灶
 - UX 设计中发现 CTO 技术方向与视觉需求冲突（如组件库不支持自定义主题）时，按 `rdd-engine/references/rejection-protocol.md` 正式反馈，不私下妥协

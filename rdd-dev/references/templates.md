@@ -37,7 +37,7 @@ QA 测试报告：
 ```
 已提交到分支 [分支名]，commit: [commit message]
 改动文件：X 个，新增：Y 个
-task.md 已更新：Task N DEV → ✅
+task.json 已更新：Task N advance → DEV
 ```
 
 ## 提交规范

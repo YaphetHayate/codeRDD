@@ -13,7 +13,7 @@
 通过 Task 工具启动 QA 子 agent（subagent_type 为 `general`），prompt 包含：
 1. 指令"加载 RDD-QA skill"
 2. 归档路径（如 `.rdd/changes/archive/2026-06-04-engine-adapter-modularization/`）
-3. 指令"基于 task.md 定位需求条目，执行 QA 流程"（流水线模式：用 `-TaskIndex` 指定本条需求单需求测试）
+3. 指令"基于 task.json 定位需求条目，执行 QA 流程"（流水线模式：用 `-TaskIndex` 指定本条需求单需求测试）
 
 QA 子 agent 完成后，DEV 收到结果并汇总呈现给用户。
 
@@ -34,7 +34,7 @@ QA 子 agent 完成后，DEV 收到结果并汇总呈现给用户。
 
 QA 验证通过（或用户显式跳过 QA）后，将本次涉及的每个需求标记为完成态：
 
-1. 更新 `task.md` 路由总览：对应行 `当前责任人` 改为 `已完成`
+1. 调用 rdd-flow complete 标记任务闭环
 2. 同步更新各需求文档 `## 流转控制 > 当前责任人` 为 `已完成`（以文档自身为准，两处须一致）
 3. 后续若发现问题，将 `已完成` 改回对应角色（如 `DEV`）即可重启流转
 

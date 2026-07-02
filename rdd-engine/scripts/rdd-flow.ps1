@@ -1,6 +1,6 @@
 ﻿[CmdletBinding()]
 param(
-    [ValidateSet("handoff", "validate", "next", "start")]
+    [ValidateSet("handoff", "validate", "next", "start", "show", "init", "add-task", "set-route", "advance", "add-design", "reject", "complete", "reopen", "deprecate", "check", "migrate")]
     [string]$Command = "handoff",
 
     [ValidateSet("PM", "CTO", "UX", "DEV", "QA")]
@@ -9,6 +9,18 @@ param(
     [string]$Archive,
 
     [int]$TaskIndex = -1,
+    [int]$TaskId = -1,
+
+    [string]$Tasks,
+    [string]$TasksFile,
+    [string]$Title,
+    [string]$Requirement,
+    [string]$CurrentOwners,
+    [string]$To,
+    [string]$From,
+    [Alias("Path")]
+    [string]$DesignPath,
+    [string]$Reason,
 
     [ValidateSet("json", "markdown")]
     [string]$Format = "json",
@@ -21,6 +33,11 @@ $ErrorActionPreference = "Stop"
 $OutputEncoding = [System.Text.Encoding]::UTF8
 $repoRoot = git rev-parse --show-toplevel
 
+function ConvertTo-PortableJson {
+    param($Object, [int]$Depth = 6)
+    return ($Object | ConvertTo-Json -Depth $Depth -Compress)
+}
+
 function Write-ErrorResult {
     param(
         [string]$Code,
@@ -28,13 +45,10 @@ function Write-ErrorResult {
         [int]$ExitCode = 1
     )
 
-    @{
+    ConvertTo-PortableJson @{
         success = $false
-        error = @{
-            code = $Code
-            message = $Message
-        }
-    } | ConvertTo-Json -Depth 6 -Compress
+        error   = @{ code = $Code; message = $Message }
+    } -Depth 3
     exit $ExitCode
 }
 
@@ -288,6 +302,121 @@ function Resolve-ArchiveFile {
     return $directPath
 }
 
+# === task.json data layer ===
+
+function Get-TaskJsonPath { param([string]$ArchivePath); Join-Path $ArchivePath "task.json" }
+function Get-TaskMdPath    { param([string]$ArchivePath); Join-Path $ArchivePath "task.md" }
+
+function Test-TaskJsonExists {
+    param([string]$ArchivePath)
+    return (Test-Path -LiteralPath (Get-TaskJsonPath $ArchivePath) -PathType Leaf)
+}
+
+function Read-TaskJson {
+    param([string]$ArchivePath)
+    $p = Get-TaskJsonPath $ArchivePath
+    if (-not (Test-Path -LiteralPath $p -PathType Leaf)) { return $null }
+    $raw = [System.IO.File]::ReadAllText($p, [System.Text.Encoding]::UTF8)
+    return ($raw | ConvertFrom-Json)
+}
+
+function Write-TaskJson {
+    param(
+        [string]$ArchivePath,
+        $Data
+    )
+
+    $dir = $ArchivePath
+    if (-not (Test-Path -LiteralPath $dir)) {
+        New-Item -ItemType Directory -Path $dir -Force | Out-Null
+    }
+
+    $cleanTasks = @()
+    foreach ($t in $Data.tasks) {
+        $designDocs = @()
+        if ($t.designDocs) {
+            foreach ($d in $t.designDocs) {
+                $designDocs += @{ path = $d.path; status = $d.status }
+            }
+        }
+        $cleanTasks += @{
+            id           = $t.id
+            title        = $t.title
+            requirement  = $t.requirement
+            currentOwners = @($t.currentOwners)
+            designDocs   = $designDocs
+            remark       = $t.remark
+            lifecycle    = $t.lifecycle
+        }
+    }
+
+    $payload = @{
+        version     = $Data.version
+        archive     = $Data.archive
+        generatedAt = (Get-Date).ToString("s")
+        tasks       = $cleanTasks
+    } | ConvertTo-Json -Depth 8
+
+    [System.IO.File]::WriteAllText(
+        (Get-TaskJsonPath $ArchivePath),
+        $payload,
+        (New-Object System.Text.UTF8Encoding($false))
+    )
+}
+
+function Convert-OwnersArrayToString {
+    param([array]$Owners)
+    if ($Owners -and $Owners.Count -gt 0) {
+        return ($Owners -join "+")
+    }
+    return ""
+}
+
+function Convert-DesignDocsToString {
+    param([array]$DesignDocs)
+    if (-not $DesignDocs -or $DesignDocs.Count -eq 0) { return "-" }
+    $parts = @()
+    foreach ($d in $DesignDocs) {
+        if ($d.status -eq "pending") {
+            $parts += "$($d.path) (待产出)"
+        }
+        else {
+            $parts += $d.path
+        }
+    }
+    return ($parts -join " + ")
+}
+
+# Convert task.json tasks into the same row format produced by Parse-MarkdownTable,
+# so the entire existing pipeline (Resolve-TaskRow, Build-Handoff, etc.) works unchanged.
+function Convert-TasksToRows {
+    param($Tasks)
+
+    $rows = @()
+    foreach ($t in $Tasks) {
+        $lifecycle = if ($t.lifecycle) { $t.lifecycle } else { "active" }
+        $owners = if ($lifecycle -eq "completed") {
+            "已完成"
+        }
+        elseif ($lifecycle -eq "deprecated") {
+            (Convert-OwnersArrayToString $t.currentOwners)
+        }
+        else {
+            (Convert-OwnersArrayToString $t.currentOwners)
+        }
+
+        $rows += [pscustomobject]@{
+            TaskId        = $t.id
+            "需求"         = $t.title
+            "需求文件"     = $t.requirement
+            "当前责任人"   = $owners
+            "关联设计文档" = (Convert-DesignDocsToString $t.designDocs)
+            "备注"         = if ($t.remark) { $t.remark } else { "-" }
+        }
+    }
+    return $rows
+}
+
 # === Handoff building blocks ===
 
 function Test-DocEligible {
@@ -397,12 +526,13 @@ function Resolve-TaskRow {
     $requirementSummary = Get-RequirementSummary -RequirementPath $requirementPath -Content $requirementContent
 
     return @{ outcome = "task"; entry = @{
-        title = $title
-        workMode = $workMode
-        routeOwner = $routeOwner
-        remark = $remark
+        id          = if ($null -ne $Row.TaskId) { [int]$Row.TaskId } else { 0 }
+        title       = $title
+        workMode    = $workMode
+        routeOwner  = $routeOwner
+        remark      = $remark
         requirement = $requirementSummary
-        design = $designSummary
+        design      = $designSummary
         involvedFiles = @($involvedFiles)
     }}
 }
@@ -428,7 +558,14 @@ function Build-Handoff {
         }
     }
 
-    if ($TaskIndex -ge 0) {
+    if ($TaskId -ge 1) {
+        $filtered = @($tasks | Where-Object { $_.id -eq $TaskId })
+        if ($filtered.Count -eq 0) {
+            Write-ErrorResult "TASK_ID_NOT_FOUND" "TaskId $TaskId not found among resolved tasks" 2
+        }
+        $tasks = $filtered
+    }
+    elseif ($TaskIndex -ge 0) {
         if ($TaskIndex -ge $tasks.Count) {
             Write-ErrorResult "TASK_INDEX_OUT_OF_RANGE" "TaskIndex $TaskIndex is out of range (max $($tasks.Count - 1))" 2
         }
@@ -478,9 +615,22 @@ function Get-RoleCommand {
 function Get-RouteRows {
     param([string]$ArchivePath)
 
-    $taskPath = Join-Path $ArchivePath "task.md"
+    # Primary: task.json
+    $jsonPath = Get-TaskJsonPath $ArchivePath
+    if (Test-Path -LiteralPath $jsonPath -PathType Leaf) {
+        $data = Read-TaskJson -ArchivePath $ArchivePath
+        if ($null -ne $data -and $data.tasks) {
+            return @{
+                taskPath = $jsonPath
+                rows     = @(Convert-TasksToRows -Tasks $data.tasks)
+            }
+        }
+    }
+
+    # Legacy fallback: task.md
+    $taskPath = Get-TaskMdPath $ArchivePath
     if (-not (Test-Path -LiteralPath $taskPath -PathType Leaf)) {
-        Write-ErrorResult "TASK_NOT_FOUND" "task.md not found in archive: $ArchivePath" 2
+        Write-ErrorResult "TASK_NOT_FOUND" "Neither task.json nor task.md found in archive: $ArchivePath" 2
     }
 
     $taskContent = Read-TextFile $taskPath
@@ -491,7 +641,7 @@ function Get-RouteRows {
 
     return @{
         taskPath = $taskPath
-        rows = $rows
+        rows     = $rows
     }
 }
 
@@ -527,6 +677,7 @@ function Build-NextFlow {
         }
 
         $roleMap[$owner].Add([pscustomobject]@{
+            id = if ($null -ne $row.TaskId) { [int]$row.TaskId } else { 0 }
             title = Clean-Cell $row."需求"
             requirement = Clean-Cell $row."需求文件"
             design = Clean-Cell $row."关联设计文档"
@@ -595,7 +746,7 @@ function Build-StartGuide {
         "1. 先确认 handoff 中的 tasks 和 warnings。",
         "2. 按 task 的 workMode 进入对应工作模式。",
         "3. 如 handoff 为空或 warning 阻塞执行，先向用户说明并请求裁决。",
-        "4. 流转状态更新必须同时同步 task.md 和文档自身的流转控制。"
+        "4. 流转状态更新必须同时同步 task.json 和文档自身的流转控制。"
     )
 
     return @{
@@ -774,6 +925,598 @@ function Write-FlowOutput {
     $Output
 }
 
+# === task.json command handlers ===
+
+function Parse-OwnersString {
+    param([string]$OwnersStr)
+    if ([string]::IsNullOrWhiteSpace($OwnersStr)) { return @() }
+    return @(($OwnersStr -split "\+") | ForEach-Object { $_.Trim() } | Where-Object { $_ -ne "" })
+}
+
+function Get-NextTaskId {
+    param($Tasks)
+    $maxId = 0
+    foreach ($t in $Tasks) { if ([int]$t.id -gt $maxId) { $maxId = [int]$t.id } }
+    return $maxId + 1
+}
+
+function Find-TaskById {
+    param($Tasks, [int]$Id)
+    foreach ($t in $Tasks) { if ([int]$t.id -eq $Id) { return $t } }
+    return $null
+}
+
+# Deep-copy PSCustomObject task data into clean hashtables for safe modification.
+function Convert-TaskDataToHashtable {
+    param($Data)
+    $tasks = @()
+    foreach ($t in $Data.tasks) {
+        $designDocs = @()
+        if ($t.designDocs) {
+            foreach ($d in $t.designDocs) {
+                $designDocs += @{ path = [string]$d.path; status = [string]$d.status }
+            }
+        }
+        $tasks += @{
+            id           = [int]$t.id
+            title        = [string]$t.title
+            requirement  = [string]$t.requirement
+            currentOwners = @($t.currentOwners)
+            designDocs   = $designDocs
+            remark       = if ($t.remark) { [string]$t.remark } else { "" }
+            lifecycle    = if ($t.lifecycle) { [string]$t.lifecycle } else { "active" }
+        }
+    }
+    return @{
+        version = if ($Data.version) { [int]$Data.version } else { 1 }
+        archive = [string]$Data.archive
+        tasks   = $tasks
+    }
+}
+
+function Read-TaskJsonEditable {
+    param([string]$ArchivePath)
+    $data = Read-TaskJson -ArchivePath $ArchivePath
+    if ($null -eq $data) { return $null }
+    return (Convert-TaskDataToHashtable $data)
+}
+
+# --- show ---
+
+function Invoke-Show {
+    param(
+        [string]$ArchivePath,
+        [string]$FilterRole
+    )
+    $data = Read-TaskJson -ArchivePath $ArchivePath
+    if ($null -eq $data) {
+        Write-ErrorResult "TASK_JSON_NOT_FOUND" "task.json not found in archive: $ArchivePath. Use 'init' to create one." 1
+    }
+
+    $tasks = @($data.tasks)
+
+    if (-not [string]::IsNullOrWhiteSpace($FilterRole)) {
+        $tasks = @($tasks | Where-Object {
+            $_.lifecycle -ne "completed" -and $_.lifecycle -ne "deprecated" -and
+            @($_.currentOwners) -contains $FilterRole
+        })
+    }
+
+    if ($TaskId -ge 1) {
+        $tasks = @($tasks | Where-Object { [int]$_.id -eq $TaskId })
+    }
+
+    return @{
+        success = $true
+        data    = @{
+            type      = "rdd-task-show"
+            archive   = $data.archive
+            taskCount = $tasks.Count
+            tasks     = $tasks
+        }
+    }
+}
+
+# --- init ---
+
+function Invoke-Init {
+    param([string]$ArchivePath)
+
+    if (Test-TaskJsonExists -ArchivePath $ArchivePath) {
+        Write-ErrorResult "TASK_JSON_EXISTS" "task.json already exists. Use 'add-task' to append, or delete it first." 1
+    }
+
+    $tasksJson = $null
+    if (-not [string]::IsNullOrWhiteSpace($TasksFile)) {
+        $filePath = $TasksFile
+        if (-not [System.IO.Path]::IsPathRooted($filePath)) { $filePath = Join-Path $repoRoot $filePath }
+        if (-not (Test-Path -LiteralPath $filePath -PathType Leaf)) {
+            Write-ErrorResult "TASKS_FILE_NOT_FOUND" "Tasks file not found: $filePath" 1
+        }
+        $tasksJson = [System.IO.File]::ReadAllText($filePath, [System.Text.Encoding]::UTF8)
+    }
+    else {
+        $tasksJson = $Tasks
+    }
+    if ([string]::IsNullOrWhiteSpace($tasksJson)) {
+        Write-ErrorResult "MISSING_TASKS" "-Tasks (inline JSON) or -TasksFile (file path) is required" 1
+    }
+
+    # NOTE: Do NOT wrap ConvertFrom-Json in @() — PS 5.1 merges array elements when piped through @().
+    $inputTasks = ConvertFrom-Json $tasksJson
+    if ($inputTasks -isnot [array]) { $inputTasks = @($inputTasks) }
+
+    $cleanTasks = @()
+    $nextId = 1
+    foreach ($t in $inputTasks) {
+        $designDocs = @()
+        if ($t.designDocs) {
+            foreach ($d in $t.designDocs) {
+                $designDocs += @{ path = [string]$d.path; status = if ($d.status) { [string]$d.status } else { "pending" } }
+            }
+        }
+        $owners = @()
+        if ($t.currentOwners) { $owners = @($t.currentOwners) }
+        $cleanTasks += @{
+            id           = $nextId
+            title        = [string]$t.title
+            requirement  = [string]$t.requirement
+            currentOwners = $owners
+            designDocs   = $designDocs
+            remark       = if ($t.remark) { [string]$t.remark } else { "" }
+            lifecycle    = if ($t.lifecycle) { [string]$t.lifecycle } else { "active" }
+        }
+        $nextId++
+    }
+
+    $archiveName = Split-Path $ArchivePath -Leaf
+    $data = @{ version = 1; archive = $archiveName; tasks = $cleanTasks }
+    Write-TaskJson -ArchivePath $ArchivePath -Data $data
+
+    return @{
+        success = $true
+        data    = @{
+            initialized = $true
+            archive     = $archiveName
+            path        = (Get-RelativePath (Get-TaskJsonPath $ArchivePath))
+            taskCount   = $cleanTasks.Count
+        }
+    }
+}
+
+# --- add-task ---
+
+function Invoke-AddTask {
+    param([string]$ArchivePath)
+
+    $data = Read-TaskJsonEditable -ArchivePath $ArchivePath
+    if ($null -eq $data) { Write-ErrorResult "TASK_JSON_NOT_FOUND" "task.json not found. Use 'init' first." 1 }
+
+    if ([string]::IsNullOrWhiteSpace($Title))       { Write-ErrorResult "MISSING_TITLE" "-Title is required" 1 }
+    if ([string]::IsNullOrWhiteSpace($Requirement)) { Write-ErrorResult "MISSING_REQUIREMENT" "-Requirement is required" 1 }
+    if ([string]::IsNullOrWhiteSpace($CurrentOwners)) { Write-ErrorResult "MISSING_CURRENT_OWNERS" "-CurrentOwners is required (e.g. DEV or CTO+UX)" 1 }
+
+    $owners = Parse-OwnersString $CurrentOwners
+    if ($owners.Count -eq 0) { Write-ErrorResult "INVALID_CURRENT_OWNERS" "-CurrentOwners parsed to empty array" 1 }
+
+    $newId = Get-NextTaskId -Tasks $data.tasks
+    $data.tasks += @{
+        id           = $newId
+        title        = $Title
+        requirement  = $Requirement
+        currentOwners = $owners
+        designDocs   = @()
+        remark       = if ($Remark) { $Remark } else { "" }
+        lifecycle    = "active"
+    }
+
+    Write-TaskJson -ArchivePath $ArchivePath -Data $data
+
+    return @{
+        success = $true
+        data    = @{
+            added   = $true
+            taskId  = $newId
+            title   = $Title
+            owners  = $owners
+        }
+    }
+}
+
+# --- set-route ---
+
+function Invoke-SetRoute {
+    param([string]$ArchivePath)
+
+    $data = Read-TaskJsonEditable -ArchivePath $ArchivePath
+    if ($null -eq $data) { Write-ErrorResult "TASK_JSON_NOT_FOUND" "task.json not found." 1 }
+
+    if ($TaskId -lt 1)                 { Write-ErrorResult "MISSING_TASK_ID" "-TaskId is required" 1 }
+    if ([string]::IsNullOrWhiteSpace($To)) { Write-ErrorResult "MISSING_TO" "-To is required (e.g. DEV or CTO+UX)" 1 }
+
+    $task = $null
+    $taskIndex = -1
+    for ($i = 0; $i -lt $data.tasks.Count; $i++) {
+        if ([int]$data.tasks[$i].id -eq $TaskId) { $task = $data.tasks[$i]; $taskIndex = $i; break }
+    }
+    if ($null -eq $task) { Write-ErrorResult "TASK_NOT_FOUND" "TaskId $TaskId not found" 1 }
+
+    $owners = Parse-OwnersString $To
+    if ($owners.Count -eq 0) { Write-ErrorResult "INVALID_TO" "-To parsed to empty array" 1 }
+
+    $data.tasks[$taskIndex].currentOwners = $owners
+    if ($task.lifecycle -eq "completed") { $data.tasks[$taskIndex].lifecycle = "active" }
+
+    Write-TaskJson -ArchivePath $ArchivePath -Data $data
+
+    return @{
+        success = $true
+        data    = @{
+            taskId       = $TaskId
+            currentOwners = $owners
+            lifecycle    = $data.tasks[$taskIndex].lifecycle
+        }
+    }
+}
+
+# --- advance ---
+
+function Invoke-Advance {
+    param([string]$ArchivePath)
+
+    $data = Read-TaskJsonEditable -ArchivePath $ArchivePath
+    if ($null -eq $data) { Write-ErrorResult "TASK_JSON_NOT_FOUND" "task.json not found." 1 }
+
+    if ($TaskId -lt 1)                   { Write-ErrorResult "MISSING_TASK_ID" "-TaskId is required" 1 }
+    if ([string]::IsNullOrWhiteSpace($From)) { Write-ErrorResult "MISSING_FROM" "-From is required (the role advancing)" 1 }
+    if ([string]::IsNullOrWhiteSpace($To))   { Write-ErrorResult "MISSING_TO" "-To is required (the target role)" 1 }
+
+    $task = $null
+    $taskIndex = -1
+    for ($i = 0; $i -lt $data.tasks.Count; $i++) {
+        if ([int]$data.tasks[$i].id -eq $TaskId) { $task = $data.tasks[$i]; $taskIndex = $i; break }
+    }
+    if ($null -eq $task) { Write-ErrorResult "TASK_NOT_FOUND" "TaskId $TaskId not found" 1 }
+
+    $owners = @($task.currentOwners)
+    if ($owners -notcontains $From) {
+        Write-ErrorResult "FROM_NOT_OWNER" "'$From' is not in currentOwners of TaskId $($TaskId): $($owners -join '+')" 1
+    }
+
+    $newOwners = @()
+    foreach ($o in $owners) { if ($o -ne $From) { $newOwners += $o } }
+    if ($newOwners -notcontains $To) { $newOwners += $To }
+
+    $data.tasks[$taskIndex].currentOwners = $newOwners
+
+    Write-TaskJson -ArchivePath $ArchivePath -Data $data
+
+    return @{
+        success = $true
+        data    = @{
+            taskId       = $TaskId
+            currentOwners = $newOwners
+            advancedFrom = $From
+            advancedTo   = $To
+        }
+    }
+}
+
+# --- add-design ---
+
+function Invoke-AddDesign {
+    param([string]$ArchivePath)
+
+    $data = Read-TaskJsonEditable -ArchivePath $ArchivePath
+    if ($null -eq $data) { Write-ErrorResult "TASK_JSON_NOT_FOUND" "task.json not found." 1 }
+
+    if ($TaskId -lt 1)                           { Write-ErrorResult "MISSING_TASK_ID" "-TaskId is required" 1 }
+    if ([string]::IsNullOrWhiteSpace($DesignPath)) { Write-ErrorResult "MISSING_DESIGN_PATH" "-Path is required (design doc path)" 1 }
+
+    $task = $null
+    $taskIndex = -1
+    for ($i = 0; $i -lt $data.tasks.Count; $i++) {
+        if ([int]$data.tasks[$i].id -eq $TaskId) { $task = $data.tasks[$i]; $taskIndex = $i; break }
+    }
+    if ($null -eq $task) { Write-ErrorResult "TASK_NOT_FOUND" "TaskId $TaskId not found" 1 }
+
+    $designDocs = @($task.designDocs)
+    $found = $false
+    for ($i = 0; $i -lt $designDocs.Count; $i++) {
+        if ($designDocs[$i].path -eq $DesignPath) {
+            $designDocs[$i].status = "ready"
+            $found = $true
+            break
+        }
+    }
+    if (-not $found) {
+        $designDocs += @{ path = $DesignPath; status = "ready" }
+    }
+
+    $data.tasks[$taskIndex].designDocs = $designDocs
+
+    Write-TaskJson -ArchivePath $ArchivePath -Data $data
+
+    return @{
+        success = $true
+        data    = @{
+            taskId    = $TaskId
+            designDocs = $designDocs
+            added     = $true
+        }
+    }
+}
+
+# --- reject ---
+
+function Invoke-Reject {
+    param([string]$ArchivePath)
+
+    $data = Read-TaskJsonEditable -ArchivePath $ArchivePath
+    if ($null -eq $data) { Write-ErrorResult "TASK_JSON_NOT_FOUND" "task.json not found." 1 }
+
+    if ($TaskId -lt 1)                   { Write-ErrorResult "MISSING_TASK_ID" "-TaskId is required" 1 }
+    if ([string]::IsNullOrWhiteSpace($From)) { Write-ErrorResult "MISSING_FROM" "-From is required (rejecting role)" 1 }
+    if ([string]::IsNullOrWhiteSpace($To))   { Write-ErrorResult "MISSING_TO" "-To is required (rejected-to role)" 1 }
+    if ([string]::IsNullOrWhiteSpace($Reason)) { Write-ErrorResult "MISSING_REASON" "-Reason is required" 1 }
+
+    $task = $null
+    $taskIndex = -1
+    for ($i = 0; $i -lt $data.tasks.Count; $i++) {
+        if ([int]$data.tasks[$i].id -eq $TaskId) { $task = $data.tasks[$i]; $taskIndex = $i; break }
+    }
+    if ($null -eq $task) { Write-ErrorResult "TASK_NOT_FOUND" "TaskId $TaskId not found" 1 }
+
+    $data.tasks[$taskIndex].currentOwners = @($To)
+    $rejectSummary = "$From 打回 $To：$Reason"
+    if ([string]::IsNullOrWhiteSpace($task.remark) -or $task.remark -eq "-") {
+        $data.tasks[$taskIndex].remark = $rejectSummary
+    }
+    else {
+        $data.tasks[$taskIndex].remark = "$($task.remark) | $rejectSummary"
+    }
+
+    Write-TaskJson -ArchivePath $ArchivePath -Data $data
+
+    return @{
+        success = $true
+        data    = @{
+            taskId       = $TaskId
+            currentOwners = @($To)
+            rejectedBy   = $From
+            rejectedTo   = $To
+            remark       = $data.tasks[$taskIndex].remark
+        }
+    }
+}
+
+# --- complete / reopen / deprecate ---
+
+function Invoke-Complete {
+    param([string]$ArchivePath)
+
+    $data = Read-TaskJsonEditable -ArchivePath $ArchivePath
+    if ($null -eq $data) { Write-ErrorResult "TASK_JSON_NOT_FOUND" "task.json not found." 1 }
+    if ($TaskId -lt 1)   { Write-ErrorResult "MISSING_TASK_ID" "-TaskId is required" 1 }
+
+    $taskIndex = -1
+    for ($i = 0; $i -lt $data.tasks.Count; $i++) {
+        if ([int]$data.tasks[$i].id -eq $TaskId) { $taskIndex = $i; break }
+    }
+    if ($taskIndex -lt 0) { Write-ErrorResult "TASK_NOT_FOUND" "TaskId $TaskId not found" 1 }
+
+    $data.tasks[$taskIndex].lifecycle = "completed"
+    Write-TaskJson -ArchivePath $ArchivePath -Data $data
+
+    return @{ success = $true; data = @{ taskId = $TaskId; lifecycle = "completed" } }
+}
+
+function Invoke-Reopen {
+    param([string]$ArchivePath)
+
+    $data = Read-TaskJsonEditable -ArchivePath $ArchivePath
+    if ($null -eq $data) { Write-ErrorResult "TASK_JSON_NOT_FOUND" "task.json not found." 1 }
+    if ($TaskId -lt 1)   { Write-ErrorResult "MISSING_TASK_ID" "-TaskId is required" 1 }
+    if ([string]::IsNullOrWhiteSpace($To)) { Write-ErrorResult "MISSING_TO" "-To is required (role to reopen to)" 1 }
+
+    $taskIndex = -1
+    for ($i = 0; $i -lt $data.tasks.Count; $i++) {
+        if ([int]$data.tasks[$i].id -eq $TaskId) { $taskIndex = $i; break }
+    }
+    if ($taskIndex -lt 0) { Write-ErrorResult "TASK_NOT_FOUND" "TaskId $TaskId not found" 1 }
+
+    $data.tasks[$taskIndex].lifecycle = "active"
+    $data.tasks[$taskIndex].currentOwners = Parse-OwnersString $To
+    Write-TaskJson -ArchivePath $ArchivePath -Data $data
+
+    return @{ success = $true; data = @{ taskId = $TaskId; lifecycle = "active"; currentOwners = $data.tasks[$taskIndex].currentOwners } }
+}
+
+function Invoke-Deprecate {
+    param([string]$ArchivePath)
+
+    $data = Read-TaskJsonEditable -ArchivePath $ArchivePath
+    if ($null -eq $data) { Write-ErrorResult "TASK_JSON_NOT_FOUND" "task.json not found." 1 }
+    if ($TaskId -lt 1)   { Write-ErrorResult "MISSING_TASK_ID" "-TaskId is required" 1 }
+
+    $taskIndex = -1
+    for ($i = 0; $i -lt $data.tasks.Count; $i++) {
+        if ([int]$data.tasks[$i].id -eq $TaskId) { $taskIndex = $i; break }
+    }
+    if ($taskIndex -lt 0) { Write-ErrorResult "TASK_NOT_FOUND" "TaskId $TaskId not found" 1 }
+
+    $data.tasks[$taskIndex].lifecycle = "deprecated"
+    Write-TaskJson -ArchivePath $ArchivePath -Data $data
+
+    return @{ success = $true; data = @{ taskId = $TaskId; lifecycle = "deprecated" } }
+}
+
+# --- check ---
+
+function Invoke-Check {
+    param([string]$ArchivePath)
+
+    $data = Read-TaskJson -ArchivePath $ArchivePath
+    if ($null -eq $data) { Write-ErrorResult "TASK_JSON_NOT_FOUND" "task.json not found. Use 'init' to create one." 1 }
+
+    $issues = @()
+    $validRoles = @("PM", "CTO", "UX", "DEV", "QA")
+    $validLifecycle = @("active", "deprecated", "completed")
+    $validStatus = @("pending", "ready")
+
+    foreach ($t in $data.tasks) {
+        $taskId = if ($t.id) { [int]$t.id } else { 0 }
+        $taskLabel = "Task $taskId"
+
+        if (-not $t.title) { $issues += "${taskLabel}: missing title" }
+        if (-not $t.requirement) { $issues += "${taskLabel}: missing requirement path" }
+        else {
+            $reqAbs = Join-Path $ArchivePath $t.requirement
+            if (-not (Test-Path -LiteralPath $reqAbs -PathType Leaf)) {
+                $issues += "${taskLabel}: requirement file not found: $($t.requirement)"
+            }
+        }
+
+        if (-not $t.currentOwners -and $t.lifecycle -ne "completed") {
+            $issues += "${taskLabel}: currentOwners is empty but lifecycle is not 'completed'"
+        }
+        if ($t.currentOwners) {
+            foreach ($o in $t.currentOwners) {
+                if ($validRoles -notcontains $o) {
+                    $issues += "${taskLabel}: invalid owner '$o' (expected one of: $($validRoles -join ', '))"
+                }
+            }
+        }
+
+        if ($t.lifecycle -and $validLifecycle -notcontains $t.lifecycle) {
+            $issues += "${taskLabel}: invalid lifecycle '$($t.lifecycle)' (expected one of: $($validLifecycle -join ', '))"
+        }
+
+        if ($t.designDocs) {
+            foreach ($d in $t.designDocs) {
+                if ($validStatus -notcontains $d.status) {
+                    $issues += "${taskLabel}: invalid designDoc status '$($d.status)' for $($d.path)"
+                }
+                if ($d.status -eq "ready") {
+                    $docAbs = Join-Path $ArchivePath $d.path
+                    if (-not (Test-Path -LiteralPath $docAbs -PathType Leaf)) {
+                        $issues += "${taskLabel}: designDoc marked ready but file not found: $($d.path)"
+                    }
+                }
+            }
+        }
+    }
+
+    # Consistency check: requirement doc flow control vs currentOwners
+    foreach ($t in $data.tasks) {
+        if ($t.lifecycle -eq "completed" -or $t.lifecycle -eq "deprecated") { continue }
+        if (-not $t.requirement) { continue }
+        $reqAbs = Join-Path $ArchivePath $t.requirement
+        if (-not (Test-Path -LiteralPath $reqAbs -PathType Leaf)) { continue }
+
+        $content = Read-TextFile $reqAbs
+        $flow = Get-FlowControl $content
+        if ($flow.owner) {
+            $taskOwners = @($t.currentOwners) -join "+"
+            if ($flow.owner -ne $taskOwners) {
+                $issues += "Task $($t.id): currentOwners='$taskOwners' but requirement doc 当前责任人='$($flow.owner)' (doc takes precedence)"
+            }
+        }
+    }
+
+    return @{
+        success = $true
+        data    = @{
+            type        = "rdd-task-check"
+            archive     = $data.archive
+            taskCount   = @($data.tasks).Count
+            issueCount  = $issues.Count
+            issues      = $issues
+        }
+    }
+}
+
+# --- migrate ---
+
+function Invoke-Migrate {
+    param([string]$ArchivePath)
+
+    if (Test-TaskJsonExists -ArchivePath $ArchivePath) {
+        Write-ErrorResult "TASK_JSON_EXISTS" "task.json already exists. Delete it first if you want to re-migrate." 1
+    }
+
+    $taskMdPath = Get-TaskMdPath $ArchivePath
+    if (-not (Test-Path -LiteralPath $taskMdPath -PathType Leaf)) {
+        Write-ErrorResult "TASK_MD_NOT_FOUND" "task.md not found in archive: $ArchivePath" 1
+    }
+
+    $taskContent = Read-TextFile $taskMdPath
+    $rows = Parse-MarkdownTable -Lines ($taskContent -split "\r?\n") -RequiredHeader "当前责任人"
+    if ($rows.Count -eq 0) {
+        Write-ErrorResult "ROUTE_TABLE_NOT_FOUND" "No route overview table with 当前责任人 was found in task.md" 2
+    }
+
+    $cleanTasks = @()
+    $nextId = 1
+    foreach ($row in $rows) {
+        $ownerCell = Clean-Cell $row."当前责任人"
+        $designCell = Clean-Cell $row."关联设计文档"
+
+        $lifecycle = "active"
+        $owners = @()
+        if ($ownerCell -ieq "已完成") {
+            $lifecycle = "completed"
+        }
+        else {
+            $owners = Parse-OwnersString $ownerCell
+        }
+
+        $designDocs = @()
+        if ($designCell -and $designCell -ne "-") {
+            $parts = $designCell -split "\+"
+            foreach ($part in $parts) {
+                $trimmed = $part.Trim()
+                $isPending = $false
+                if ($trimmed -match '\(待产出\)') {
+                    $isPending = $true
+                    $trimmed = ($trimmed -replace '\s*\(待产出\)\s*', '').Trim()
+                }
+                if ($trimmed) {
+                    $designDocs += @{ path = $trimmed; status = if ($isPending) { "pending" } else { "ready" } }
+                }
+            }
+        }
+
+        $remarkValue = Clean-Cell $row."备注"
+        if ($remarkValue -eq "-") { $remarkValue = "" }
+
+        $cleanTasks += @{
+            id           = $nextId
+            title        = Clean-Cell $row."需求"
+            requirement  = Clean-Cell $row."需求文件"
+            currentOwners = $owners
+            designDocs   = $designDocs
+            remark       = $remarkValue
+            lifecycle    = $lifecycle
+        }
+        $nextId++
+    }
+
+    $archiveName = Split-Path $ArchivePath -Leaf
+    $data = @{ version = 1; archive = $archiveName; tasks = $cleanTasks }
+    Write-TaskJson -ArchivePath $ArchivePath -Data $data
+
+    return @{
+        success = $true
+        data    = @{
+            migrated = $true
+            archive  = $archiveName
+            path     = (Get-RelativePath (Get-TaskJsonPath $ArchivePath))
+            taskCount = $cleanTasks.Count
+        }
+    }
+}
+
 # === Command dispatch ===
 
 $archivePath = Resolve-ArchivePath $Archive
@@ -781,12 +1524,12 @@ $archivePath = Resolve-ArchivePath $Archive
 switch ($Command) {
     "handoff" {
         $result = Build-Handoff -ArchivePath $archivePath -TargetRole $Role
-        $output = if ($Format -eq "markdown") { Convert-HandoffToMarkdown $result } else { $result | ConvertTo-Json -Depth 12 }
+        $output = if ($Format -eq "markdown") { Convert-HandoffToMarkdown $result } else { ConvertTo-PortableJson $result -Depth 12 }
         Write-FlowOutput -Output $output -OutFilePath $OutFile
     }
     "validate" {
         $result = Build-Handoff -ArchivePath $archivePath -TargetRole $Role
-        @{
+        $output = ConvertTo-PortableJson @{
             success = $true
             data = @{
                 archive = $result.data.archive
@@ -796,16 +1539,66 @@ switch ($Command) {
                 warningCount = $result.data.warnings.Count
                 warnings = $result.data.warnings
             }
-        } | ConvertTo-Json -Depth 8
+        } -Depth 8
+        Write-FlowOutput -Output $output -OutFilePath $OutFile
     }
     "next" {
         $result = Build-NextFlow -ArchivePath $archivePath
-        $output = if ($Format -eq "markdown") { Convert-NextToMarkdown $result } else { $result | ConvertTo-Json -Depth 12 }
+        $output = if ($Format -eq "markdown") { Convert-NextToMarkdown $result } else { ConvertTo-PortableJson $result -Depth 12 }
         Write-FlowOutput -Output $output -OutFilePath $OutFile
     }
     "start" {
         $result = Build-StartGuide -ArchivePath $archivePath -TargetRole $Role
-        $output = if ($Format -eq "markdown") { Convert-StartToMarkdown $result } else { $result | ConvertTo-Json -Depth 14 }
+        $output = if ($Format -eq "markdown") { Convert-StartToMarkdown $result } else { ConvertTo-PortableJson $result -Depth 14 }
         Write-FlowOutput -Output $output -OutFilePath $OutFile
+    }
+    "show" {
+        $filterRole = if ($PSBoundParameters.ContainsKey('Role')) { $Role } else { "" }
+        $result = Invoke-Show -ArchivePath $archivePath -FilterRole $filterRole
+        ConvertTo-PortableJson $result -Depth 8
+    }
+    "init" {
+        $result = Invoke-Init -ArchivePath $archivePath
+        ConvertTo-PortableJson $result -Depth 6
+    }
+    "add-task" {
+        $result = Invoke-AddTask -ArchivePath $archivePath
+        ConvertTo-PortableJson $result -Depth 6
+    }
+    "set-route" {
+        $result = Invoke-SetRoute -ArchivePath $archivePath
+        ConvertTo-PortableJson $result -Depth 6
+    }
+    "advance" {
+        $result = Invoke-Advance -ArchivePath $archivePath
+        ConvertTo-PortableJson $result -Depth 6
+    }
+    "add-design" {
+        $result = Invoke-AddDesign -ArchivePath $archivePath
+        ConvertTo-PortableJson $result -Depth 6
+    }
+    "reject" {
+        $result = Invoke-Reject -ArchivePath $archivePath
+        ConvertTo-PortableJson $result -Depth 6
+    }
+    "complete" {
+        $result = Invoke-Complete -ArchivePath $archivePath
+        ConvertTo-PortableJson $result -Depth 6
+    }
+    "reopen" {
+        $result = Invoke-Reopen -ArchivePath $archivePath
+        ConvertTo-PortableJson $result -Depth 6
+    }
+    "deprecate" {
+        $result = Invoke-Deprecate -ArchivePath $archivePath
+        ConvertTo-PortableJson $result -Depth 6
+    }
+    "check" {
+        $result = Invoke-Check -ArchivePath $archivePath
+        ConvertTo-PortableJson $result -Depth 8
+    }
+    "migrate" {
+        $result = Invoke-Migrate -ArchivePath $archivePath
+        ConvertTo-PortableJson $result -Depth 6
     }
 }

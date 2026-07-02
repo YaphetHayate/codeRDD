@@ -8,7 +8,7 @@
 
 ```
 .rdd/changes/archive/YYYY-MM-DD-short-name/
-├── task.md                         (路由总览)
+├── task.json                        (路由总览，真源)
 ├── requirements/                   (需求文档)
 │   ├── overview.md                 (需求概览)
 │   └── {name}.md                   (独立需求文件)
@@ -41,11 +41,15 @@ New-Item -ItemType Directory -Path ".rdd/changes/archive/YYYY-MM-DD-short-name/r
 
 > **快速通道差异**：只生成一个需求文件；描述直接引用用户原文；如用户提供了验收标准直接采用，否则写一条最简标准；如用户提供了具体做法标注"用户预设方案"。
 
-### 4. 生成 task.md
+### 4. 生成 task.json
 
-写入 `task.md`（归档根目录），按 `references/task-template.md` 模板格式。填写路由总览（`当前责任人` 列设为该需求下一条处理角色）。
+写入 `task.json`（归档根目录），通过 CLI 初始化。先准备 `tasks-init.json`（UTF-8 无 BOM），包含 tasks 数组，然后调用 `init`：
 
-需求文件列填写 `requirements/{name}.md` 格式。
+```powershell
+$rdd = (Get-ChildItem (git rev-parse --show-toplevel) -Recurse -Directory -Depth 3 -Filter 'rdd-engine' | Select-Object -First 1).FullName; & "$rdd\scripts\rdd-flow.cmd" -Command init -Archive ".rdd/changes/archive/YYYY-MM-DD-short-name" -TasksFile ".rdd/changes/archive/YYYY-MM-DD-short-name/tasks-init.json"
+```
+
+字段填写指南见 `references/task-template.md`，路由判定规则见 `references/artifact-routing.md`。`currentOwners` 设为该需求的下一条处理角色。
 
 ### 5. 设置流转控制
 
@@ -71,9 +75,9 @@ $rdd = (Get-ChildItem (git rev-parse --show-toplevel) -Recurse -Directory -Depth
 
 ### 7. 执行角色交接
 
-确认归档完成后（task.md 路由总览已更新），按 `rdd-engine/references/transition-guide.md` 的**上游协议 4 步硬流程**执行角色交接：
+确认归档完成后（task.json 路由已初始化），按 `rdd-engine/references/transition-guide.md` 的**上游协议 4 步硬流程**执行角色交接：
 
-1. task.md 路由已设置（Step 1 已在归档步骤完成）
+1. task.json 路由已设置（Step 4 已在归档步骤完成）
 2. 运行 `next` 展示可流转角色
 3. 推荐角色 + 请求用户确认
 4. 用户确认后运行 `start` 生成交接包，按模式（self-driven / app-driven）分支执行
@@ -91,5 +95,6 @@ $rdd = (Get-ChildItem (git rev-parse --show-toplevel) -Recurse -Directory -Depth
 ## 历史兼容
 
 - 旧归档结构（需求文件在根目录、无 requirements/ 子目录）各角色回退到旧逻辑处理
-- 旧 task.md 格式（无路由总览、含已废弃的「角色参与计划」章节或旧版 ✅⬜ 状态表）各角色忽略 `角色参与计划`，从路由总览派生参与信息；无路由总览则回退到旧逻辑
+- 旧归档有 task.md 无 task.json：`rdd-flow.ps1` 自动回退解析 task.md；可用 `rdd-flow.cmd -Command migrate -Archive <path>` 迁移为 task.json
+- 旧 task.md 格式（无路由总览、含已废弃的「角色参与计划」章节或旧版 ✅⬜ 状态表）各角色忽略 `角色参与计划`，从路由总览派生参与信息
 - 旧 rdd-flow 脚本会先在根目录查找需求文件，找不到时回退到 `requirements/` 子目录

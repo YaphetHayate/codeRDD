@@ -35,7 +35,7 @@
 1. 在目标文档的 `## 驳回记录` 表格中新增一行
 2. 填写：发起方、日期、理由，状态 = `待回应`
 3. 将目标文档的 `## 流转控制 > 当前责任人` 改为被驳回方
-4. 更新 `task.md` 路由总览中对应行的 `当前责任人` 列
+4. 更新 task.json 路由（调用 `rdd-flow.cmd -Command reject`，见 `rdd-engine/references/task-routing.md`）
 5. 告知用户：
 
 ```
@@ -102,8 +102,8 @@ active ──驳回生效──→ deprecated
 
 ---
 
-## task.md 同步规则
+## task.json 同步规则
 
-- 发起驳回时：更新路由总览中目标文档的 `当前责任人` 列
-- 废弃文档：路由总览的行保留，备注栏标注"已废弃"；新增替代文档的行
-- 路由总览与文档自身字段不一致时：以文档自身的流转控制字段为准，角色自行修正 task.md
+- 发起驳回时：调用 `rdd-flow reject` 更新 `currentOwners`（见 `rdd-engine/references/task-routing.md`）
+- 废弃文档：调用 `rdd-flow deprecate` 标记 `lifecycle=deprecated`；新增替代文档的行用 `add-task`
+- 路由总览与文档自身字段不一致时：以文档自身的流转控制字段为准，角色通过 CLI 修正 task.json

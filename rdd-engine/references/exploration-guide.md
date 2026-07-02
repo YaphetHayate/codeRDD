@@ -129,7 +129,7 @@ $rdd = (Get-ChildItem (git rev-parse --show-toplevel) -Recurse -Directory -Depth
 
 ## 输出格式
 
-CLI 始终输出纯 ASCII JSON（非 ASCII 字符转义为 `\uXXXX`），保证任何调用方（PowerShell / cmd / bash / opencode / Claude）解码一致。
+CLI 输出 UTF-8 JSON，控制台输出编码已设为 UTF-8，保证任何调用方（PowerShell / cmd / bash / opencode / Claude）解码一致。
 
 ### candidates 返回（explore 始终返回此结构）
 

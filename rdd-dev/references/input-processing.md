@@ -2,6 +2,25 @@
 
 > 本文档是 [SKILL.md](../SKILL.md) 的补充材料，描述 DEV 模式进入后如何按优先级通过路由目录确定开发任务。
 
+## 优先级 A0 — 脚本自动开窗的指针消息
+
+当上游通过 `start-role.cmd` 自动开窗时，prompt 形如：
+
+- **TaskId 模式**：`/rdd-dev TaskId=<n> task=<task.json绝对路径>`
+- **Handoff 模式**：`/rdd-dev handoff=<交接包绝对路径>`
+
+识别到指针后：
+
+**TaskId 模式**：从指针的 task.json 路径定位归档，调 rdd-flow 拉单条 packet：
+```powershell
+$rdd = (Get-ChildItem (git rev-parse --show-toplevel) -Recurse -Directory -Depth 3 -Filter 'rdd-engine' | Select-Object -First 1).FullName; & "$rdd\scripts\rdd-flow.cmd" -Command handoff -Role DEV -Archive <task.json所在归档目录> -TaskId <n>
+```
+**TaskId 由本角色校验**：若 TaskId 在 task.json 中不存在（可能已被他人完成或废弃），向用户说明情况并请求裁决，不自行臆断。
+
+**Handoff 模式**：直接 Read 交接包文件，按包内 tasks 开工。
+
+两种模式下都只处理指针指向的单条任务，不扫描整个归档。
+
 ## 优先级 A — 用户指定了文档
 
 用户提供了需求文档或设计文档路径，或者明确说"按设计方案开发 XX"。
@@ -36,7 +55,7 @@ $rdd = (Get-ChildItem (git rev-parse --show-toplevel) -Recurse -Directory -Depth
 $rdd = (Get-ChildItem (git rev-parse --show-toplevel) -Recurse -Directory -Depth 3 -Filter 'rdd-engine' | Select-Object -First 1).FullName; & "$rdd\scripts\rdd-flow.cmd" -Command handoff -Role DEV -Archive ".rdd/changes/archive/<archive-name>"
 ```
 
-**不要将指针消息当作"用户直接下达的开发指令"（优先级 E）处理**——它是一个交接信号，背后有完整的 task.md 路由和交接包。
+**不要将指针消息当作"用户直接下达的开发指令"（优先级 E）处理**——它是一个交接信号，背后有完整的 task.json 路由和交接包。
 
 脚本自动定位最新归档，生成 DEV 的交接包。读取交接包后：
 
@@ -55,35 +74,29 @@ $rdd = (Get-ChildItem (git rev-parse --show-toplevel) -Recurse -Directory -Depth
 - 返回 `success: false`，其他错误 → 向用户说明，同时退回到优先级 C
 - 脚本包含 `warnings` → 先向用户展示，再确认是否继续
 
-## 优先级 C — 基于 task.md 路由总览定位待开发任务
+## 优先级 C — 基于 task.json 定位待开发任务
 
 仅当优先级 B 的 handoff 脚本不可用或报错回退至此，或用户明确要求手动定位时，通过路由目录定位任务：
 
 1. 扫描 `.rdd/changes/archive/` 目录，按日期排序找到最新的归档
-2. 读取该目录下的 `task.md`
-3. 检查路由总览格式：
-   - **新格式（路由总览有"当前责任人"列）**：
-     - 筛选出 `当前责任人 = DEV` 的行
-      - 读取每行的需求文件和关联设计文档（关联设计文档为集合语义，单元格内多个路径以 `+` 分隔，需逐个读取）
-     - 逐条检查需求文件自身 `## 流转控制 > 当前责任人`；若与 `task.md` 不一致，以需求文件为准并修正 `task.md`
-   - **旧格式（旧版 ✅⬜ 状态表）**：
-     - 回退到旧逻辑：筛选 PM✅、CTO✅/⏭️、DEV⬜ 的 task
-     - 告知用户这是旧归档，按传统方式处理
+2. 调用 rdd-flow show -Role DEV 读取任务路由
+3. 任务路由操作遵循 `rdd-engine/references/task-routing.md`。用 `show -Role DEV` 定位待开发任务
+   - 逐条检查需求文件自身 `## 流转控制 > 当前责任人`；若与 `task.json` 不一致，以需求文件为准并通过 CLI 修正
 4. 根据关联设计文档判定工作模式：
    - `design/` 下存在 CTO 或 UX 设计文档 → **设计引导模式**（严格按设计实现）
    - 仅有需求文件、无设计文档 → **需求引导模式**（基于需求灵活开发）
    - 如果存在 QA 已完成（QA✅）但 DEV 未开始的 task → **测试先行模式**
 5. 向用户确认：
 
-   > 在 `task.md` 路由总览中找到了 [X] 个待开发任务：
+   > 在 task.json 中找到了 [X] 个待开发任务：
    > - Task N: [标题]（设计引导 / 需求引导）
    > - Task M: [标题]（...）
    >
    > 按这些任务来开发吗？
 
-## 优先级 D — 无 task.md，自动查找文档
+## 优先级 D — 无 task.json，自动查找文档
 
-task.md 不存在时，回退到手动查找：
+task.json 不存在时（旧归档自动回退 task.md），回退到手动查找：
 
 1. 检查 `design/` 子目录下是否有设计文档
    - 有 → 读取设计文档，检查 frontmatter 的 `status: active` 和流转控制的 `当前责任人`
@@ -126,5 +139,5 @@ task.md 不存在时，回退到手动查找：
 仅有需求文档、没有设计文档时，也必须检查需求文档的 `## 流转控制`：
 
 - `当前责任人 = DEV` 且 `文档状态 = active` → 可进入需求引导模式
-- `当前责任人` 不是 DEV → 跳过并同步修正 `task.md`
+- `当前责任人` 不是 DEV → 跳过并通过 CLI 修正 `task.json`
 - 存在待处理驳回记录 → 优先处理驳回流程，暂不开始开发

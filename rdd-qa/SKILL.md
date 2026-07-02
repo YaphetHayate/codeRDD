@@ -29,7 +29,7 @@ description: >
 - `.rdd/tests/{feature}/cases.md` — 功能级测试用例规约（跨迭代的长期资产）
 - `.rdd/tests/index.md` — 功能清单总览
 - `.rdd/changes/archive/.../tests/` 下的测试增量文档（`.md`，极简）
-- 同一归档目录的 `task.md`（仅更新 QA 列状态）
+- task.json 路由操作通过 CLI 命令完成（见 `rdd-engine/references/task-routing.md`），不直接编辑
 
 **当用户要求改业务代码时**：
 > 我现在是 QA 模式，职责是测试而不是修 bug。这个 bug 我已记录在测试结果里。你可以输入 **/RDD-DEV** 进入开发模式来修复。
@@ -81,18 +81,18 @@ $rdd = (Get-ChildItem (git rev-parse --show-toplevel) -Recurse -Directory -Depth
 
 ### 确认需求来源
 
+- **A0 — 脚本开窗指针**：prompt 形如 `/rdd-qa TaskId=<n> task=<task.json路径>`（TaskId 模式）或 `/rdd-qa handoff=<交接包路径>`（Handoff 模式）。TaskId 模式按指针调 `$rdd = (Get-ChildItem (git rev-parse --show-toplevel) -Recurse -Directory -Depth 3 -Filter 'rdd-engine' | Select-Object -First 1).FullName; & "$rdd\scripts\rdd-flow.cmd" -Command handoff -Role QA -Archive <task.json所在归档> -TaskId <n>` 拉单条；Handoff 模式直接 Read 交接包。**仍然禁止读取 `design/`**。TaskId 有效性由本角色校验，不存在时（已完成/废弃）告知用户
 - **A — flow 启动**：由 `$rdd = (Get-ChildItem (git rev-parse --show-toplevel) -Recurse -Directory -Depth 3 -Filter 'rdd-engine' | Select-Object -First 1).FullName; & "$rdd\scripts\rdd-flow.cmd" -Command start -Role QA` 进入 → 优先使用输出的 prompt / handoff packet。只读取 handoff 中的需求文档和项目代码，**仍然禁止读取 `design/`**
 - **B — 用户指定**：提供 `requirement.md` 路径或口述需求 → 直接读取
 - **C — 应用层指针消息**：收到 `请处理 .rdd/changes/archive/<name>/ 下的需求` → 运行 `$rdd = (Get-ChildItem (git rev-parse --show-toplevel) -Recurse -Directory -Depth 3 -Filter 'rdd-engine' | Select-Object -First 1).FullName; & "$rdd\scripts\rdd-flow.cmd" -Command handoff -Role QA -Archive "<path>"` 拉取交接包
-- **D — 基于 task.md 定位**：用户未指定 → 扫描 `.rdd/changes/archive/` 最新归档，读取 `task.md`，筛选 QA 未完成的 task，向用户确认。**只读取 `requirements/`，`design/` 始终不读取**
-- **E — 无 task.md**：回退到直接读取最新归档的 `requirements/`，向用户确认
+- **D — 基于 task.json 定位**：用户未指定 → 扫描 `.rdd/changes/archive/` 最新归档，调用 `rdd-flow show -Role QA` 定位 QA 待处理任务，向用户确认。**只读取 `requirements/`，`design/` 始终不读取**
+- **E — 无 task.json**：回退到直接读取最新归档的 `requirements/`，向用户确认
 - **F — 找不到任何归档**：告知用户当前没有可用需求文档，建议输入 `/RDD-PM` 先梳理需求
 
-### task.md 状态检查
+### 任务路由操作
 
-- 兼容新旧格式：新格式看路由总览"当前责任人"列，旧格式看 ✅⬜ 状态表
-- 兼容旧目录结构（`RDD/changes/archive/`）
-- 需要理解现有代码时，委托 engine 探索
+- 遵循 `rdd-engine/references/task-routing.md`
+- 用 `show -Role QA` 定位任务；验证通过后用 `complete` 标记闭环；发现问题用 `reopen` 回退
 
 ---
 

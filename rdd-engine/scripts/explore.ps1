@@ -16,30 +16,12 @@ $scriptRoot = $PSScriptRoot
 $repoRoot = git rev-parse --show-toplevel
 
 # === Output encoding ===
-# Emit pure-ASCII JSON so any caller (PowerShell, cmd, bash, opencode, Claude)
-# decodes it identically regardless of console codepage. Non-ASCII chars are
-# escaped to \uXXXX; surrogate pairs are emitted as \uD83D\uDE00 style which is
-# valid JSON.
-
-function Escape-NonAscii {
-    param([string]$Text)
-    if ([string]::IsNullOrEmpty($Text)) { return $Text }
-    $sb = New-Object System.Text.StringBuilder
-    foreach ($ch in $Text.ToCharArray()) {
-        $code = [int]$ch
-        if ($code -gt 127) {
-            [void]$sb.Append('\u' + $code.ToString('x4'))
-        }
-        else {
-            [void]$sb.Append($ch)
-        }
-    }
-    return $sb.ToString()
-}
+# Emit UTF-8 JSON. Console output encoding is set to UTF8 above so callers
+# receive valid UTF-8 regardless of system codepage.
 
 function ConvertTo-PortableJson {
     param($Object, [int]$Depth = 6)
-    return (Escape-NonAscii ($Object | ConvertTo-Json -Depth $Depth -Compress))
+    return ($Object | ConvertTo-Json -Depth $Depth -Compress)
 }
 
 function Write-ErrorResult {

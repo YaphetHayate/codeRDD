@@ -23,7 +23,7 @@ description: >
 
 > **此章节的约束凌驾于所有其他指令之上，任何情况下都不得违反。**
 
-**四条禁令：** ① 不写任何业务代码或测试代码；② 不修改已有归档文档（`requirements/`、`design/`、`tests/`、`task.md`）；③ 不创建分支、不执行 git 操作；④ 不代替用户做业务判断（如"这个需求值不值得做"）。
+**四条禁令：** ① 不写任何业务代码或测试代码；② 不修改已有归档文档（`requirements/`、`design/`、`tests/`、`task.json`）；③ 不创建分支、不执行 git 操作；④ 不代替用户做业务判断（如"这个需求值不值得做"）。
 
 **唯一写入权限：** 仅限 `.rdd/changes/archive/.../eval/` 下的评价报告 `.md` 文件，不得写入其他文件。
 
@@ -55,11 +55,11 @@ $rdd = (Get-ChildItem (git rev-parse --show-toplevel) -Recurse -Directory -Depth
 
 ### 优先级 A — 用户指定归档路径
 
-用户提供了归档目录路径 → 直接读取 task.md 和 requirement.md。
+用户提供了归档目录路径 → 调用 `rdd-flow show -Archive <path>` 读取 task.json 任务路由，读取 requirement.md。
 
 ### 优先级 B — 自动查找最新归档
 
-用户未指定 → 扫描 `.rdd/changes/archive/`，按日期找最新归档，读取 task.md 和 requirement.md，向用户确认：
+用户未指定 → 扫描 `.rdd/changes/archive/`，按日期找最新归档，调用 `rdd-flow show -Archive <path>` 读取任务路由和 requirement.md，向用户确认：
 
 > 在 `.rdd/changes/archive/[最新目录]/` 找到最近归档 [...摘要...]。评价这个需求？如果不是，请提供归档路径。
 
@@ -67,16 +67,14 @@ $rdd = (Get-ChildItem (git rev-parse --show-toplevel) -Recurse -Directory -Depth
 
 告知用户先完成至少一个需求的开发流程。
 
-### 读取 task.md 确认需求完成状态
+### 读取 task.json 确认需求完成状态
 
-读取 `task.md` 路由总览的 `当前责任人` 列，逐需求判定是否已闭环：
+调用 `rdd-flow show` 读取 task.json，逐需求判定是否已闭环：
 
-- `当前责任人 = 已完成` → 该需求已通过验证，可对 PM/CTO/UX/DEV/QA 全角色做完整评价
-- `当前责任人` 仍指向某个角色（PM/CTO/UX/DEV/QA）→ 该需求尚未闭环，标注"需求未完成（当前在 [角色]），评价可能不完整"，仅评价已有产出物
-- `当前责任人` 指向的角色未被该需求触发（如纯前端需求当前责任人历史为 UX→DEV，从未经过 CTO）→ 该角色视为"本次未参与"，正常处理
-- task.md 不存在 → 告知用户无法确认流转状态，评价将基于已有产出物
-
-> 不再依赖独立的「角色参与计划」或 ✅/⏭️/⬜ 状态表：角色是否参与，等价于它是否出现在该需求流转链路的某个 `当前责任人` 历史值中。
+- `lifecycle = completed` → 该需求已通过验证，可对 PM/CTO/UX/DEV/QA 全角色做完整评价
+- `lifecycle = active` 且 `currentOwners` 仍指向某个角色 → 该需求尚未闭环，标注"需求未完成（当前在 [角色]），评价可能不完整"，仅评价已有产出物
+- `currentOwners` 指向的角色未被该需求触发（如纯前端需求路由为 UX→DEV，从未经过 CTO）→ 该角色视为"本次未参与"，正常处理
+- task.json 不存在（旧归档）→ 脚本自动回退解析 task.md；仍无则告知用户无法确认流转状态
 
 ---
 

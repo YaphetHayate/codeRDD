@@ -242,18 +242,18 @@
 
 ```
 .rdd/changes/archive/2026-06-04-engine-adapter-modularization/
-├── task.md                 (PM 模式归档)
+├── task.json                (PM 模式归档)
 ├── requirements/           (PM 模式归档)
 ├── design/                 (CTO 模式归档 — 不读取)
 └── tests/                  (QA 模式归档)
     └── cases.md            (本次增量，极简)
 ```
 
-### 5.4 更新 task.md
+### 5.4 更新 task.json
 
 将已完成测试的 task 的 QA 列从 ⬜ 更新为 ✅。总览表和详情部分同步更新。
 
-**测试先行场景说明**：当 QA 在 DEV 之前执行（测试先行模式）时，task.md 中会出现 QA ✅ 但 DEV ⬜ 的状态。这是正常的工作流变体，DEV 进入后会识别到已有测试代码，并基于这些测试来验证实现。
+**测试先行场景说明**：当 QA 在 DEV 之前执行（测试先行模式）时，task.json 中会出现 QA complete 但 DEV 未完成的状态。这是正常的工作流变体，DEV 进入后会识别到已有测试代码，并基于这些测试来验证实现。
 
 ### 引导下一步
 

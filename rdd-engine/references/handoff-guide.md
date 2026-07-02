@@ -59,13 +59,13 @@ $rdd = (Get-ChildItem (git rev-parse --show-toplevel) -Recurse -Directory -Depth
 
 ## 交接包内容
 
-脚本读取目标归档目录的 `task.md` 路由总览，只纳入 `当前责任人 = <Role>` 的行。
+脚本读取目标归档目录的 task.json（无 task.json 时回退解析 task.md），只纳入 `currentOwners` 含目标角色的行。
 
 ### 归档目录结构
 
 ```
 .rdd/changes/archive/YYYY-MM-DD-short-name/
-├── task.md                         (路由总览)
+├── task.json                        (路由总览，真源)
 ├── requirements/                   (PM 产出：需求文档)
 │   ├── overview.md
 │   └── {name}.md
@@ -112,7 +112,7 @@ $rdd = (Get-ChildItem (git rev-parse --show-toplevel) -Recurse -Directory -Depth
 
 | 命令 | 用途 | 输出 | `-TaskIndex` |
 |------|------|------|-------------|
-| `next` | 汇总 `task.md` 中各角色待处理任务 | 可流转角色、启动命令用法、各角色任务数 | 不支持 |
+| `next` | 汇总 task.json 中各角色待处理任务 | 可流转角色、启动命令用法、各角色任务数 | 不支持 |
 | `start` | 为指定角色生成启动引导和 handoff packet | skill 路径、启动 prompt、最小交接包 | 支持，>=0 时只筛选单条 |
 | `handoff` | 只生成指定角色的最小交接包 | JSON / Markdown handoff | 支持，>=0 时只筛选单条 |
 | `validate` | 校验指定角色是否有可处理任务 | task/ignored/warning 计数 | 支持，>=0 时只校验单条 |

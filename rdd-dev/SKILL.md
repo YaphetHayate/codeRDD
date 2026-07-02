@@ -18,9 +18,9 @@ description: >
 
 ## 模式边界
 
-**DEV 负责：** 编写/修改业务和测试代码、运行质量检查（lint/typecheck/test/build）、管理 git 分支、提交代码（用户确认后）、读取项目上下文、更新 `task.md` 路由状态。
+**DEV 负责：** 编写/修改业务和测试代码、运行质量检查（lint/typecheck/test/build）、管理 git 分支、提交代码（用户确认后）、读取项目上下文、通过 CLI 更新任务路由状态。
 
-**DEV 不做：** 不重做需求分析（引导回 PM）、不重做架构设计（引导回 CTO，实现层面微调除外）、不修改 `.rdd/changes/` 下归档文档的需求/设计正文、不代替用户做业务决策。例外：为完成流转闭环，DEV 可按协议更新 `task.md` 路由总览、文档 `## 流转控制` 和 `## 驳回记录`。
+**DEV 不做：** 不重做需求分析（引导回 PM）、不重做架构设计（引导回 CTO，实现层面微调除外）、不修改 `.rdd/changes/` 下归档文档的需求/设计正文、不代替用户做业务决策。例外：为完成流转闭环，DEV 可按协议更新文档 `## 流转控制` 和 `## 驳回记录`，并通过 CLI 命令推进 task.json 路由（见 `rdd-engine/references/task-routing.md`）。
 
 **退出方式：** 用户显式声明 `/RDD-PM`、`/RDD-CTO` 或其他模式指令，或明确说"退出 DEV 模式"。
 
@@ -48,7 +48,7 @@ $rdd = (Get-ChildItem (git rev-parse --show-toplevel) -Recurse -Directory -Depth
 
 ## 输入处理
 
-进入 DEV 后优先使用 handoff packet 裁剪上下文。如果由上游角色通过 `$rdd = (Get-ChildItem (git rev-parse --show-toplevel) -Recurse -Directory -Depth 3 -Filter 'rdd-engine' | Select-Object -First 1).FullName; & "$rdd\scripts\rdd-flow.cmd" -Command start -Role DEV` 启动，直接使用输出的交接包，无需自行定位。如果是用户手动 `/RDD-DEV`，调用 `$rdd = (Get-ChildItem (git rev-parse --show-toplevel) -Recurse -Directory -Depth 3 -Filter 'rdd-engine' | Select-Object -First 1).FullName; & "$rdd\scripts\rdd-flow.cmd" -Command handoff -Role DEV` 自动定位最新归档中的 DEV 任务；脚本不可用时再回退到手动扫描。没有交接包时再按优先级确定任务：A) 用户指定设计文档 → 设计引导模式；B) task.md 定位待开发任务；C) 自动查找文档；D) 用户直接指令（含 bug 检测优先）；E) 无可用信息时提示用户。
+进入 DEV 后优先使用 handoff packet 裁剪上下文。如果由上游角色通过 `$rdd = (Get-ChildItem (git rev-parse --show-toplevel) -Recurse -Directory -Depth 3 -Filter 'rdd-engine' | Select-Object -First 1).FullName; & "$rdd\scripts\rdd-flow.cmd" -Command start -Role DEV` 启动，直接使用输出的交接包，无需自行定位。如果是用户手动 `/RDD-DEV`，调用 `$rdd = (Get-ChildItem (git rev-parse --show-toplevel) -Recurse -Directory -Depth 3 -Filter 'rdd-engine' | Select-Object -First 1).FullName; & "$rdd\scripts\rdd-flow.cmd" -Command handoff -Role DEV` 自动定位最新归档中的 DEV 任务；脚本不可用时再回退到手动扫描。没有交接包时再按优先级确定任务：A) 用户指定设计文档 → 设计引导模式；B) `rdd-flow show -Role DEV` 定位待开发任务；C) 自动查找文档；D) 用户直接指令（含 bug 检测优先）；E) 无可用信息时提示用户。
 
 > 完整优先级判定流程见 `references/input-processing.md`
 
@@ -99,6 +99,7 @@ $rdd = (Get-ChildItem (git rev-parse --show-toplevel) -Recurse -Directory -Depth
 | QA/EVAL 流转 | `references/qa-flow.md` |
 | 异常处理 | `references/exception-handling.md` |
 | 上下游衔接 | `references/mode-integration.md` |
+| 任务路由操作协议 | `rdd-engine/references/task-routing.md` |
 | 驳回协议 | `rdd-engine/references/rejection-protocol.md` |
 
 ## 对话风格

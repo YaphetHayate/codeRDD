@@ -23,9 +23,9 @@ RDD 有两种部署场景，交接行为不同。通过 `.rdd/roles.json` 是否
 
 适用于 PM 归档需求、CTO/UX 归档设计、QA 归档测试用例后的"引导下一步"。
 
-### Step 1 — 更新 task.md 路由总览
+### Step 1 — 推进 task.json 路由
 
-将已完成产物的需求行 `当前责任人` 改为下一处理角色，同步需求/设计文档自身的 `## 流转控制 > 当前责任人`。
+将已完成产物的需求行 `currentOwners` 改为下一处理角色（调用 `rdd-flow advance`），同步需求/设计文档自身的 `## 流转控制 > 当前责任人`。完整命令参考见 `rdd-engine/references/task-routing.md`。
 
 ### Step 2 — 运行 next，展示可流转角色
 
@@ -91,9 +91,9 @@ Agent **不尝试加载目标 skill、不宣布上下文边界**——这些由�
 路由已更新，请在应用层点击切换到 <角色>。
 ```
 
-应用层会自动检测 task.md 的 `currentOwner` 变化，显示切换按钮。用户点击后，应用层切换员工并发送指针消息给下游角色。
+应用层会自动检测 task.json 的 `currentOwners` 变化，显示切换按钮。用户点击后，应用层切换员工并发送指针消息给下游角色。
 
-> **重要**：app-driven 模式下，agent 的职责到"生成 packet + 更新 task.md"为止。不越权驱动角色切换，不干扰应用层的 UI 流程。
+> **重要**：app-driven 模式下，agent 的职责到"生成 packet + 更新 task.json"为止。不越权驱动角色切换，不干扰应用层的 UI 流程。
 
 ---
 
@@ -101,14 +101,33 @@ Agent **不尝试加载目标 skill、不宣布上下文边界**——这些由�
 
 下游角色（DEV/CTO/UX/QA）进入时，按部署模式识别入口来源：
 
-### 入口 B1 — 新会话角色命令（self-driven）
+### 入口 B0 — 脚本自动开窗（self-driven，优先）
 
-self-driven 模式下，角色切换一律在新 session 完成，**不在同会话切换**。用户在上游引导下：
+self-driven 模式下，上游 agent 完成路由推进后，直接调用脚本为目标角色开启新 Windows Terminal 窗口，自动预填角色激活命令：
+
+```powershell
+$rdd = (Get-ChildItem (git rev-parse --show-toplevel) -Recurse -Directory -Depth 3 -Filter 'rdd-engine' | Select-Object -First 1).FullName; & "$rdd\scripts\start-role.cmd" -Role <下游角色> -TaskId <n>
+```
+
+脚本行为：
+- 开新 Windows Terminal 窗口（检测不到 wt.exe 时降级为 PowerShell 窗口）
+- `opencode --prompt` 预填入口消息，用户在新窗口按回车发送即进入角色
+- **TaskId 模式**（推荐）：prompt 为 `/rdd-<角色> TaskId=<n> task=<task.json绝对路径>`，目标角色进 SKILL 后按 TaskId 拉单条 handoff
+- **Handoff 模式**（上游预生成交接包时）：`-Handoff <文件路径>`，prompt 为 `/rdd-<角色> handoff=<交接包绝对路径>`
+- **纯角色模式**：不传 `-TaskId` / `-Handoff`，prompt 仅 `/rdd-<角色>`，由目标角色自行拉 handoff
+
+**TaskId 由执行者校验**：脚本不校验 TaskId 有效性。目标角色拉 handoff 时若发现 TaskId 不存在（已被他人完成 / 被废弃），自行判断并告知用户。
+
+**并行交接**：同一归档需要同时交多个角色时（如 PM 同时交 CTO+QA），上游 agent 循环调用脚本，每次指定不同 `-Role`，各自开独立窗口。TaskId 相同时多角色共享同一 task.json 指针。
+
+### 入口 B1 — 手动新会话角色命令（self-driven，降级）
+
+当脚本自动开窗不可用（非 Windows / 无 wt / opencode CLI 缺失），或用户偏好手动操作时，回退到手动流程。用户在上游引导下：
 
 1. `/new`（Ctrl+X N）开新 session
 2. 输入 `/rdd-<角色>` —— 命令自动加载角色 SKILL，并通过 `$rdd = (Get-ChildItem (git rev-parse --show-toplevel) -Recurse -Directory -Depth 3 -Filter 'rdd-engine' | Select-Object -First 1).FullName; & "$rdd\scripts\rdd-flow.cmd" -Command handoff` 拉取最新交接包
 
-该入口由 `.opencode/commands/rdd-<角色>.md` 实现。**旧版"同会话宣布边界 / Agent 直接交接"已废弃**——无法真正隔离上游上下文。若用户坚持在同会话进入角色，按命令中的检查清单执行，并提示下次走 `/new`。
+该入口由 `.opencode/commands/rdd-<角色>.md` 实现。**旧版"同会话宣布边界 / Agent 直接交接"已废弃**——无法真正隔离上游上下文。若用户坚持在同会话进入角色，按命令中的检查清单执行，并提示下次走脚本开窗或 `/new`。
 
 ### 入口 B2 — 应用层指针消息（app-driven）
 
@@ -124,7 +143,7 @@ self-driven 模式下，角色切换一律在新 session 完成，**不在同会
 $rdd = (Get-ChildItem (git rev-parse --show-toplevel) -Recurse -Directory -Depth 3 -Filter 'rdd-engine' | Select-Object -First 1).FullName; & "$rdd\scripts\rdd-flow.cmd" -Command handoff -Role <self> -Archive ".rdd/changes/archive/<archive-name>"
 ```
 
-用 packet 作为上下文边界开工。**不要将指针消息当作"用户直接下达的开发指令"（优先级 E）处理**——它是一个交接信号，背后有完整的 task.md 路由和交接包。
+用 packet 作为上下文边界开工。**不要将指针消息当作"用户直接下达的开发指令"（优先级 E）处理**——它是一个交接信号，背后有完整的 task.json 路由和交接包。
 
 ---
 
@@ -136,7 +155,7 @@ $rdd = (Get-ChildItem (git rev-parse --show-toplevel) -Recurse -Directory -Depth
 2. 不扫描整个归档目录
 3. 不读取 `ignored` 中的文档（除非用户明确要求）
 4. 代码探索从 `involvedFiles` 起步，深入时委托 `$rdd = (Get-ChildItem (git rev-parse --show-toplevel) -Recurse -Directory -Depth 3 -Filter 'rdd-engine' | Select-Object -First 1).FullName; & "$rdd\scripts\explore.cmd"`
-5. self-driven 角色切换走新会话（见入口 B1）；同会话内不切换，避免上游对话污染
+5. self-driven 角色切换走新会话（脚本自动开窗入口 B0，或手动 `/new` 入口 B1）；同会话内不切换，避免上游对话污染
 
 ---
 
@@ -144,18 +163,18 @@ $rdd = (Get-ChildItem (git rev-parse --show-toplevel) -Recurse -Directory -Depth
 
 | 当前角色 | 典型下游 | 交接触发条件 | 下游入口命令 |
 |---------|---------|-------------|-------------|
-| PM | CTO / UX / DEV | 需求归档完成，task.md 路由已设置 | `/rdd-cto` `/rdd-ux` `/rdd-dev` |
+| PM | CTO / UX / DEV | 需求归档完成，task.json 路由已设置 | `/rdd-cto` `/rdd-ux` `/rdd-dev` |
 | CTO | UX（并行）/ DEV | 设计文档归档完成，路由改为 UX 或 DEV | `/rdd-ux` `/rdd-dev` |
 | UX | DEV | 设计规格归档完成，路由改为 DEV | `/rdd-dev` |
 | QA | DEV | 测试用例归档完成（测试先行），或测试报告产出（验证模式） | `/rdd-dev` |
 | DEV | QA / 已完成 | 实现完成，路由改为 QA；QA 通过后改为"已完成" | `/rdd-qa` |
 
-> self-driven 模式：进入下游 = 上游引导用户 `/new` 后输入上表入口命令，命令会自动加载 SKILL + handoff。CTO/UX/DEV 入口命令已就绪；QA/EVAL/PSE 按需补充。
-> 同一归档中多个需求路由到同一角色时，用 `-TaskIndex` 逐条独立启动（一需求一会话并行）。
+> self-driven 模式：进入下游优先用脚本自动开窗（入口 B0，`start-role.cmd -Role <下游> -TaskId <n>`）；脚本不可用时手动 `/new` + 入口命令（B1）。
+> 同一归档中多个需求路由到同一角色时，用 `-TaskId` 逐条独立启动（一需求一会话并行）。
 
 ### 单条深耕与 handoff 语义
 
 CTO/UX/DEV 采用单条深耕：每会话锁定一条需求做透。引擎返回的完整 handoff（含本角色全部 tasks）由 agent 在 SKILL 层负责锁定一条——这些"同角色但本会话不做"的需求**不属于** packet 的 `ignored`（`ignored` 指派给其他角色），而是本角色待办、留待后续会话。
 
-- agent 锁定一条后，剩余 task 不需要重新拉 packet，靠 task.md 路由自然延续：归档一条推进一行，下个会话 `handoff` 自然读到剩余待办
+- agent 锁定一条后，剩余 task 不需要重新拉 packet，靠 task.json 路由自然延续：归档一条推进一行，下个会话 `handoff` 自然读到剩余待办
 - 多条 L2/L3 想并行时，可开多个新会话，各自用 `-TaskIndex` 指定不同索引独立启动（一需求一会话）；不想并行则按重入分支逐条串行

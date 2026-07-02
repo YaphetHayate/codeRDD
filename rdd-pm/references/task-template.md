@@ -1,39 +1,92 @@
-# Task 模板
+# task.json Schema
 
+> **定位**：PM 归档时 task.json 的字段定义与填写指南。完整的路由操作协议（CLI 命令、各角色用法、流转语义）见 `rdd-engine/references/task-routing.md`。
+>
 > **重要声明**：路由总览为 PM 参考建议，CTO/DEV 可在设计阶段重新组织工作划分（合并、拆分、重排优先级），不受此表约束。
 >
-> **使用说明**：本文档是路由目录，告诉各角色当前需要关注哪个需求文档。实际的流转状态以各文档自身的「流转控制」章节为准。
->
-> **单一信息源**：路由总览的 `当前责任人` 列是角色参与/并行/完成状态的唯一来源。本表不再单列「角色参与计划」——某角色是否参与，等价于它是否出现在某需求的 `当前责任人` 列。
+> **单一信息源**：`currentOwners` 是角色参与/并行/完成状态的唯一来源。
 
-## 文件格式
+---
 
-```markdown
-# Task Tracker
+## 位置
 
-> 本文档是路由目录，告诉每个角色当前需要关注哪个需求文档。
-> 实际的流转状态以各文档自身的「流转控制」章节为准。
+`.rdd/changes/archive/<archive-name>/task.json`
 
-## 路由总览
+## Schema
 
-| 需求 | 需求文件 | 当前责任人 | 关联设计文档 | 备注 |
-|------|----------|-----------|-------------|------|
-| 1. [标题] | requirements/req-a.md | CTO | design/req-a-cto.md (待产出) | - |
-| 2. [标题] | requirements/req-b.md | CTO+UX | design/req-b-cto.md (待产出) | 复合需求，CTO+UX 并行；完成时各自追加路径 |
-| 3. [标题] | requirements/req-c.md | DEV | - | 简单需求，直发开发 |
+```json
+{
+  "version": 1,
+  "archive": "<archive-dir-name>",
+  "generatedAt": "<ISO datetime, CLI 自动维护>",
+  "tasks": [
+    {
+      "id": 1,
+      "title": "需求标题",
+      "requirement": "requirements/<name>.md",
+      "currentOwners": ["CTO"],
+      "designDocs": [
+        { "path": "design/<name>-cto.md", "status": "pending" }
+      ],
+      "remark": "备注（可选）",
+      "lifecycle": "active"
+    }
+  ]
+}
 ```
 
-## 规则
+## 字段填写指南
 
-- PM 归档时必须填写路由总览：每个需求一行，`当前责任人` 列设为该需求的下一条处理角色
-- `当前责任人` 取值：PM / CTO / UX / DEV / QA / 已完成
-- **终端态「已完成」**：QA 验证通过（或用户显式跳过 QA）后，将路由总览该行与对应需求文档 `## 流转控制 > 当前责任人` 一并改为 `已完成`。表示需求已通过验证、进入可评价状态。`rdd-flow.ps1` 不会将 `已完成` 匹配给任何角色，故 `next`/`start` 命令天然跳过已闭环的需求
-- **终端态可回退**：QA 或用户后续发现问题时，将 `已完成` 改回对应角色（如 `DEV`）即可重启流转，并同步更新路由总览与需求文档
-- **各角色查找自己工作的方式**：扫描路由总览 `当前责任人` 列，找到所有属于自己角色的行；同时检查关联设计文档的「当前责任人」是否也指向自己
-- **流转时更新**：任意角色将文档移交下一个角色时，须同时更新路由总览中对应行的 `当前责任人` 列
-- **打回时更新**：任意角色打回文档时，将 `当前责任人` 改为被驳回方，并在备注栏简要标注（如"DEV 打回 CTO"）；废弃文档的行保留，备注栏标注"已废弃"
-- 路由总览与文档自身「流转控制」字段不一致时：以文档自身为准，角色自行修正路由总览
-- "需求文件"字段：PM 归档时填写，值为需求文件路径（如 `requirements/fixbug.md`）
-- "关联设计文档"字段：**集合语义**，`+` 分隔多路径（与「当前责任人」集合语法一致）。PM 归档时预填框架（如 `design/[name]-cto.md (待产出)`，复合需求可预填多个占位）。CTO/UX 完成设计时**追加**自身设计文档路径（与单元格已有路径 `+` 连接、去重，并移除对应 `(待产出)` 占位），**不得覆盖**其他角色已填路径；如该需求不产生设计文档则填 `-`。示例：`design/x-cto.md + design/x-ux.md`
-- 路由总览行数与 PM 产出的需求文件数一致
-- 历史归档兼容：旧结构（无路由总览、含已废弃的「角色参与计划」章节或旧版 ✅⬜ 状态表）各角色一律忽略 `角色参与计划`，改从路由总览 `当前责任人` 列派生参与/并行信息；无路由总览则回退到旧逻辑
+| 字段 | PM 归档时如何填 | 后续由谁更新 |
+|------|----------------|-------------|
+| `id` | 不填，CLI 自动编号 | CLI 维护 |
+| `title` | 需求标题（对应需求文档一级标题） | — |
+| `requirement` | 需求文件路径（归档相对，如 `requirements/fixbug.md`） | — |
+| `currentOwners` | 该需求的下一条处理角色。单角色 `["DEV"]`，并行 `["CTO","UX"]` | CLI `advance`/`set-route` |
+| `designDocs` | 预填预期设计文档位置，`status` 设为 `"pending"`；无设计文档填 `[]` | CLI `add-design`（CTO/UX 归档设计时） |
+| `remark` | 并行标注、特殊说明；无则空字符串 | CLI `reject` 追加驳回摘要 |
+| `lifecycle` | 不填（默认 `"active"`） | CLI `complete`/`reopen`/`deprecate` |
+
+## 路由判定（PM 归档时设置 `currentOwners`）
+
+按 `references/artifact-routing.md` 的路由判定规则：
+- 简单需求、单一模块/功能、无架构影响 → `["DEV"]`
+- 涉及多模块/架构变更/技术选型 → `["CTO"]`
+- 涉及页面设计/UI/交互体验 → `["UX"]`
+- 复合需求（技术+视觉耦合）→ 先 `["CTO"]`，CTO 完成后路由到 UX
+
+## 生成方式
+
+PM 归档时调用 CLI 初始化（**不要手写 task.json**）：
+
+```powershell
+$rdd = (Get-ChildItem (git rev-parse --show-toplevel) -Recurse -Directory -Depth 3 -Filter 'rdd-engine' | Select-Object -First 1).FullName; & "$rdd\scripts\rdd-flow.cmd" -Command init -Archive ".rdd/changes/archive/<name>" -TasksFile ".rdd/changes/archive/<name>/tasks-init.json"
+```
+
+`tasks-init.json` 内容为 tasks 数组（UTF-8 无 BOM），示例：
+
+```json
+[
+  {
+    "title": "支持单需求多角色并行流转",
+    "requirement": "requirements/multi-owner.md",
+    "currentOwners": ["CTO", "UX"],
+    "designDocs": [
+      { "path": "design/multi-owner-cto.md", "status": "pending" }
+    ],
+    "remark": "复合需求，CTO+UX 并行"
+  },
+  {
+    "title": "修复登录Bug",
+    "requirement": "requirements/fix-bug.md",
+    "currentOwners": ["DEV"],
+    "designDocs": []
+  }
+]
+```
+
+## 历史兼容
+
+- 旧归档（有 task.md 无 task.json）：`rdd-flow.ps1` 自动回退解析 task.md，各命令仍可工作
+- 迁移旧归档：`rdd-flow.cmd -Command migrate -Archive <path>` 将 task.md 转为 task.json
+- 旧 task.md 的「角色参与计划」章节、✅⬜ 状态表一律忽略

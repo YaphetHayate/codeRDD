@@ -79,6 +79,7 @@ $rdd = (Get-ChildItem (git rev-parse --show-toplevel) -Recurse -Directory -Depth
 
 ### 确认需求来源
 
+- **A0 — 脚本开窗指针**：prompt 形如 `/rdd-cto TaskId=<n> task=<task.json路径>`（TaskId 模式）或 `/rdd-cto handoff=<交接包路径>`（Handoff 模式）。TaskId 模式按指针调 `$rdd = (Get-ChildItem (git rev-parse --show-toplevel) -Recurse -Directory -Depth 3 -Filter 'rdd-engine' | Select-Object -First 1).FullName; & "$rdd\scripts\rdd-flow.cmd" -Command handoff -Role CTO -Archive <task.json所在归档> -TaskId <n>` 拉单条；Handoff 模式直接 Read 交接包。TaskId 有效性由本角色校验，不存在时（已完成/废弃）告知用户
 - **A — flow 启动**：如果由 `$rdd = (Get-ChildItem (git rev-parse --show-toplevel) -Recurse -Directory -Depth 3 -Filter 'rdd-engine' | Select-Object -First 1).FullName; & "$rdd\scripts\rdd-flow.cmd" -Command start -Role CTO` 进入，优先使用输出的 prompt / handoff packet，只读取 handoff 列出的需求文档
 - **B — 用户指定**：提供 `requirement.md` 路径或口述需求 → 直接读取
 - **C — 应用层指针消息**：收到 `请处理 .rdd/changes/archive/<name>/ 下的需求` → 识别为应用层交接，运行 `$rdd = (Get-ChildItem (git rev-parse --show-toplevel) -Recurse -Directory -Depth 3 -Filter 'rdd-engine' | Select-Object -First 1).FullName; & "$rdd\scripts\rdd-flow.cmd" -Command handoff -Role CTO -Archive "<path>"` 拉取交接包

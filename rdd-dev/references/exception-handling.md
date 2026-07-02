@@ -14,7 +14,7 @@
 4. **执行驳回协议**（加载 `rdd-engine/references/rejection-protocol.md`）：
    - 在设计文档的 `## 驳回记录` 新增驳回记录行
    - 将设计文档的 `当前责任人` 改为 CTO（或 UX）
-   - 更新 `task.md` 路由总览
+   - 通过 CLI 更新 task.json 路由（见 rdd-engine/references/task-routing.md）
    - 告知用户驳回原因
 
 ## 发现需求有遗漏或不当

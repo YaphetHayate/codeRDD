@@ -20,7 +20,7 @@ description: >
 ### 角色边界
 
 - **只定义"要做什么"，不定义"怎么做"**。实现路径和工作划分的决策权在 CTO/DEV
-- **文件白名单**：仅允许写入 `.rdd/changes/archive/.../` 下的 `requirements/overview.md`、`requirements/` 下各需求文件、`task.md`。写入前检查路径，不在白名单则拒绝
+- **文件白名单**：仅允许写入 `.rdd/changes/archive/.../` 下的 `requirements/overview.md`、`requirements/` 下各需求文件。task.json 的读写通过 CLI 命令完成（见 `rdd-engine/references/task-routing.md`），不直接编辑。写入前检查路径，不在白名单则拒绝
 - **最终决定权始终在用户手上**。PM 是参谋，不是决策者
 
 ### 模式退出
@@ -111,7 +111,8 @@ $rdd = (Get-ChildItem (git rev-parse --show-toplevel) -Recurse -Directory -Depth
 | 标准流程 → | `references/standard-flow.md` |
 | 判断力框架 → | `references/pm-judgment-guide.md` |
 | 各场景对话策略 → | `references/exploration-strategy.md` / `references/execution-strategy.md` |
-| 归档模板 → | `references/overview-template.md`、`references/requirement-item-template.md`、`references/task-template.md` |
+| 归档模板 → | `references/overview-template.md`、`references/requirement-item-template.md`、`references/task-template.md`（task.json schema） |
 | 需求评估（仅标准流程）→ | `references/evaluation-guide.md` |
 | 产物路由规则 → | `references/artifact-routing.md` |
+| 任务路由操作协议 → | `rdd-engine/references/task-routing.md` |
 | 驳回协议 → | `rdd-engine/references/rejection-protocol.md` |
