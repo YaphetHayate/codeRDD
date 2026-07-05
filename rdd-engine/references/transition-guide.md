@@ -166,8 +166,8 @@ $rdd = (Get-ChildItem (git rev-parse --show-toplevel) -Recurse -Directory -Depth
 | PM | CTO / UX / DEV | 需求归档完成，task.json 路由已设置 | `/rdd-cto` `/rdd-ux` `/rdd-dev` |
 | CTO | UX（并行）/ DEV | 设计文档归档完成，路由改为 UX 或 DEV | `/rdd-ux` `/rdd-dev` |
 | UX | DEV | 设计规格归档完成，路由改为 DEV | `/rdd-dev` |
-| QA | DEV | 测试用例归档完成（测试先行），或测试报告产出（验证模式） | `/rdd-dev` |
-| DEV | QA / 已完成 | 实现完成，路由改为 QA；QA 通过后改为"已完成" | `/rdd-qa` |
+| QA | DEV（测试先行）/ 已完成（验证模式）/ DEV（reopen） | 测试先行：测试用例归档完成交 DEV；验证模式：功能+质量双通过 → 提交 → 标记已完成，任一硬性项不通过 → reopen 回 DEV | `/rdd-dev`（测试先行） |
+| DEV | QA | 实现完成并自测通过，路由改为 QA（DEV 不再自行提交）；QA 验证通过并提交后改为"已完成" | `/rdd-qa` |
 
 > self-driven 模式：进入下游优先用脚本自动开窗（入口 B0，`start-role.cmd -Role <下游> -TaskId <n>`）；脚本不可用时手动 `/new` + 入口命令（B1）。
 > 同一归档中多个需求路由到同一角色时，用 `-TaskId` 逐条独立启动（一需求一会话并行）。

@@ -18,7 +18,7 @@ description: >
 
 ## 模式边界
 
-**DEV 负责：** 编写/修改业务和测试代码、运行质量检查（lint/typecheck/test/build）、管理 git 分支、提交代码（用户确认后）、读取项目上下文、通过 CLI 更新任务路由状态。
+**DEV 负责：** 编写/修改业务和测试代码、运行质量检查（lint/typecheck/test/build）、管理 git 分支（创建分支、在其上工作）、读取项目上下文、通过 CLI 更新任务路由状态。**代码提交移交 QA**——DEV 完成自测后推进路由至 QA，由 QA 在验证模式下经功能+质量双通过后执行提交门禁。
 
 **DEV 不做：** 不重做需求分析（引导回 PM）、不重做架构设计（引导回 CTO，实现层面微调除外）、不修改 `.rdd/changes/` 下归档文档的需求/设计正文、不代替用户做业务决策。例外：为完成流转闭环，DEV 可按协议更新文档 `## 流转控制` 和 `## 驳回记录`，并通过 CLI 命令推进 task.json 路由（见 `rdd-engine/references/task-routing.md`）。
 
@@ -83,7 +83,7 @@ $rdd = (Get-ChildItem (git rev-parse --show-toplevel) -Recurse -Directory -Depth
 - 编码遵循项目现有风格，最小改动，防御性处理，不引入不必要依赖
 - 需要理解代码时按上方「rdd-engine 能力：代码探索」硬规则执行（先 `$rdd = (Get-ChildItem (git rev-parse --show-toplevel) -Recurse -Directory -Depth 3 -Filter 'rdd-engine' | Select-Object -First 1).FullName; & "$rdd\scripts\explore.cmd"` 取 candidates + 扫 tags 判断，禁止直接派只读 explore）
 - 每个任务完成后必须自测通过
-- 仅在用户明确要求时提交代码
+- 代码提交移交 QA：DEV 不执行 git commit，完成自测后推进路由至 QA，由 QA 在验证模式下经提交门禁（见 `references/qa-flow.md`）
 - 需求不清、设计不可行、需要上游决策时，按驳回协议正式移交
 
 ## Reference 路由
