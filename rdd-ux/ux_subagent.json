@@ -1,0 +1,38 @@
+{
+  "$schema": "ux-subagent-config",
+  "comment": "UX 视觉稿生成子代理的 model 清单。这是单一真相源——本文件定义了哪些 subagent 可用、各自绑定哪个 model。修改本文件后运行 rdd-engine/scripts/sync-ux-subagents.cmd 完成同步（脚本自动 Create/Update/Delete 对应的 .opencode/agent/*.md），然后重启 opencode（见 rdd-ux/references/mockup-generation.md「子代理配置维护」）。",
+  "agents": [
+    {
+      "name": "ux-mockup-a",
+      "model": "deepseek/deepseek-v4-pro",
+      "temperature": 0.8,
+      "capability": "结构严谨 / 长上下文",
+      "note": "默认绑定 A 执行器。换 provider 时按可用 model 的能力画像就近替换，name 不变。"
+    },
+    {
+      "name": "ux-mockup-b",
+      "model": "minimax/minimax-m3",
+      "temperature": 0.8,
+      "capability": "均衡表达 / 通用",
+      "note": "默认绑定 B 执行器。"
+    },
+    {
+      "name": "ux-mockup-c",
+      "model": "mimo/mimo-v2.5-pro",
+      "temperature": 0.9,
+      "capability": "创意表现 / 长上下文",
+      "note": "默认绑定 C 执行器。温度调高增大差异化。"
+    }
+  ],
+  "managed": [
+    "ux-mockup-a",
+    "ux-mockup-b",
+    "ux-mockup-c"
+  ],
+  "rules": {
+    "count": "agents 条目数 = 可用执行器数量。fork-join 默认派 3 个方向，若条目 <3 则部分方向会复用同一 model（差异化退化，UX 派遣时应提示用户）；条目 >3 时 UX 按需求选定参与 fork-join 的子集。",
+    "managed": "managed 列表记录本系统（sync 脚本）创建过所有权的全部 agent name。只有在此列表中的 agent 才允许被脚本删除——这是防止误删用户手建 agent 的安全机制。脚本 Create 时追加 name，Delete 时移除 name。",
+    "decoupling": "方向（信息/任务/体验优先等）不绑定到本文件。方向由 UX 在 mockup-generation.md 定义并在 dispatch 简报中动态注入到执行器。本文件只管 model 层。",
+    "fallback": "换 provider 导致 model 不可用时：① 编辑本文件 agents 替换为 provider 可用 model（按 capability 就近匹配）；② 运行 sync-ux-subagents.cmd 同步 agent 定义；③ 重启 opencode。若要废弃某执行器：从 agents 删除该条目（保留在 managed 里），再跑脚本，脚本会自动删除对应 .md。"
+  }
+}

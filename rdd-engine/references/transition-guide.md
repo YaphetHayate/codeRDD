@@ -8,14 +8,16 @@
 
 ## 模式检测
 
-RDD 有两种部署场景，交接行为不同。通过 `.rdd/roles.json` 是否存在判断：
+RDD 有两种运行环境，交接行为不同。**判据是运行时环境变量 `$env:RDD_RUNTIME`，由 `start-role.ps1` 在脚本层读取**——agent 不自行判断模式：
 
 | 判断条件 | 模式 | 说明 |
 |---------|------|------|
-| `.rdd/roles.json` **不存在** | **self-driven**（Standalone） | 纯 skill 模式，agent 在 CLI 中直接驱动，同会话切换角色 |
-| `.rdd/roles.json` **存在** | **app-driven**（Plus） | 应用层 GUI 模式，应用层检测路由变化并驱动切换 |
+| `RDD_RUNTIME` **未设置** | **self-driven**（CLI） | 独立终端窗口跑 opencode，脚本走 CLI 后端开新 wt/PowerShell 窗口 |
+| `RDD_RUNTIME=app` | **app-driven**（Plus） | 运行在 Plus 应用内（opencode server 由 Plus 启动并注入该 env），脚本走 Plus 后端调 `/api/rdd/handoff` |
 
-> `.rdd/roles.json` 由 Plus 应用层创建（存储角色配置），Standalone 模式不会产生此文件。
+> **判据演进**：旧版用 `.rdd/roles.json` 是否存在判断——但装了 Plus 后 `roles.json` 永久存在，导致用户用 CLI 时 agent 仍误判为 app-driven。现在 `roles.json` 降级为"Plus 能力声明文件"（存储角色配置），**不再决定交接分支**；真正的判据是 `RDD_RUNTIME`，它精确反映"当前这次会话从哪个入口发起"。
+>
+> `RDD_RUNTIME=app` 由 Plus 在启动 opencode server 时注入（`server.py` 的 `create_subprocess_exec` 传 `env`），子进程链继承，所以 agent/脚本都能读到。独立 CLI 窗口无人注入 → 自动 self-driven。
 
 ---
 
@@ -53,47 +55,29 @@ $rdd = (Get-ChildItem (git rev-parse --show-toplevel) -Recurse -Directory -Depth
 
 仅当本角色已清空，或用户主动选择推进下游时，才按正常下游推荐。
 
-### Step 4 — 用户确认后，生成交接包
+### Step 4 — 用户确认后，调用交接脚本
+
+无论哪种运行模式，上游 agent **统一调用交接脚本**，由脚本读 `$env:RDD_RUNTIME` 自动选择后端：
 
 ```powershell
-$rdd = (Get-ChildItem (git rev-parse --show-toplevel) -Recurse -Directory -Depth 3 -Filter 'rdd-engine' | Select-Object -First 1).FullName; & "$rdd\scripts\rdd-flow.cmd" -Command start -Role <目标角色> -OutFile ".rdd/handoff/<role>.md"
+$rdd = (Get-ChildItem (git rev-parse --show-toplevel) -Recurse -Directory -Depth 3 -Filter 'rdd-engine' | Select-Object -First 1).FullName; & "$rdd\scripts\start-role.cmd" -Role <目标角色> -TaskId <n>
 ```
 
-生成交接包后，**按模式分支**：
+> app-driven 模式下还需 `-EmployeeId <uuid>`（目标角色对应的员工，从交接包/路由取）。脚本会 POST 到 Plus 的 `/api/rdd/handoff`，由 Plus 创建对话并自动驱动目标角色。
 
-#### self-driven（Standalone）
+**脚本行为按后端分支**：
 
-Agent **不在同一会话内切换角色**——上游长对话会污染下游上下文，"宣布边界"无法真正隔离。改为引导用户开新 session：
+#### CLI 后端（`RDD_RUNTIME` 未设置）
 
-1. （可选）落盘交接包便于排查：
-   ```powershell
-   $rdd = (Get-ChildItem (git rev-parse --show-toplevel) -Recurse -Directory -Depth 3 -Filter 'rdd-engine' | Select-Object -First 1).FullName; & "$rdd\scripts\rdd-flow.cmd" -Command start -Role <目标角色> -OutFile ".rdd/handoff/<role>.md"
-   ```
-2. 向用户输出切换指引（入口命令均为 `/rdd-<角色>`，见下文"各角色速查"）：
+脚本开启新 Windows Terminal 窗口（检测不到 `wt.exe` 时降级为 PowerShell 窗口），用 `opencode --prompt` 预填 `/rdd-<角色> ...` 入口命令。用户在新窗口按回车发送即进入角色。**同会话切换已废弃**——上游长对话会污染下游上下文。
 
-   ```
-   ─────────────────────────────────────────
-   角色切换：进入 <角色> 需要新的会话窗口
-   1. 按 Ctrl+X N（或输入 /new）开新 session
-   2. 在新 session 输入 /rdd-<目标角色>
-      → 自动加载角色 SKILL + 最新交接包
-   ─────────────────────────────────────────
-   ```
+#### Plus 后端（`RDD_RUNTIME=app`）
 
-3. 当前会话至此结束交接职责。不要在同会话加载新角色 SKILL，也不要代其开工。
+脚本 **不开外部窗口**，而是 POST 到 `127.0.0.1:8000/api/rdd/handoff`：Plus 创建该员工的新对话，发送指针消息（`请处理 .rdd/changes/archive/<name>/ 下的需求。`），由 `agent_mode` 绑定的角色 SKILL 拉起 handoff 开工。若目标员工当前有进行中的会话，handoff 进入服务端 FIFO 队列，待当前会话结束自动启动。脚本收到 200 返回即完成交接。
 
-#### app-driven（Plus）
-
-Agent **不尝试加载目标 skill、不宣布上下文边界**——这些由应用层接管：
-
-```
-交接包已就绪：.rdd/handoff/<role>.md
-路由已更新，请在应用层点击切换到 <角色>。
-```
-
-应用层会自动检测 task.json 的 `currentOwners` 变化，显示切换按钮。用户点击后，应用层切换员工并发送指针消息给下游角色。
-
-> **重要**：app-driven 模式下，agent 的职责到"生成 packet + 更新 task.json"为止。不越权驱动角色切换，不干扰应用层的 UI 流程。
+> Plus 后端不可达（连接失败）时，脚本打印警告并降级到 CLI 后端开窗，确保用户不被阻塞。
+>
+> **重要**：app-driven 模式下，agent 的职责到"调用脚本"为止。不越权直接加载目标 SKILL、不宣布上下文边界——这些由脚本 + Plus 接管。
 
 ---
 
@@ -101,24 +85,28 @@ Agent **不尝试加载目标 skill、不宣布上下文边界**——这些由�
 
 下游角色（DEV/CTO/UX/QA）进入时，按部署模式识别入口来源：
 
-### 入口 B0 — 脚本自动开窗（self-driven，优先）
+### 入口 B0 — 交接脚本（通用，优先）
 
-self-driven 模式下，上游 agent 完成路由推进后，直接调用脚本为目标角色开启新 Windows Terminal 窗口，自动预填角色激活命令：
+上游 agent 完成路由推进后，**统一调用交接脚本**为目标角色开启下游会话。脚本读 `$env:RDD_RUNTIME` 自动选择后端，agent 无需判断模式：
 
 ```powershell
 $rdd = (Get-ChildItem (git rev-parse --show-toplevel) -Recurse -Directory -Depth 3 -Filter 'rdd-engine' | Select-Object -First 1).FullName; & "$rdd\scripts\start-role.cmd" -Role <下游角色> -TaskId <n>
 ```
 
-脚本行为：
-- 开新 Windows Terminal 窗口（检测不到 wt.exe 时降级为 PowerShell 窗口）
-- `opencode --prompt` 预填入口消息，用户在新窗口按回车发送即进入角色
-- **TaskId 模式**（推荐）：prompt 为 `/rdd-<角色> TaskId=<n> task=<task.json绝对路径>`，目标角色进 SKILL 后按 TaskId 拉单条 handoff
-- **Handoff 模式**（上游预生成交接包时）：`-Handoff <文件路径>`，prompt 为 `/rdd-<角色> handoff=<交接包绝对路径>`
-- **纯角色模式**：不传 `-TaskId` / `-Handoff`，prompt 仅 `/rdd-<角色>`，由目标角色自行拉 handoff
+> app-driven（Plus）模式下追加 `-EmployeeId <uuid>`，其余参数不变。
+
+脚本行为按后端分支：
+- **CLI 后端**（`RDD_RUNTIME` 未设置）：开新 Windows Terminal 窗口（检测不到 `wt.exe` 时降级为 PowerShell 窗口），`opencode --prompt` 预填 `/rdd-<角色> ...` 入口消息，用户在新窗口按回车发送即进入角色
+- **Plus 后端**（`RDD_RUNTIME=app`）：不开窗口，POST 到 Plus `/api/rdd/handoff`，Plus 创建对话并自动发送指针消息驱动目标角色（见入口 B2）；目标员工忙碌时服务端排队
+
+脚本参数模式（两后端共用）：
+- **TaskId 模式**（推荐）：`-TaskId <n>`，CLI 后端预填 `/rdd-<角色> TaskId=<n> task=<task.json绝对路径>`；Plus 后端据此定位归档生成指针消息
+- **Handoff 模式**（上游预生成交接包时）：`-Handoff <文件路径>`
+- **纯角色模式**：不传 `-TaskId` / `-Handoff`，由目标角色自行拉 handoff（仅 CLI 后端支持；Plus 后端必须能定位归档）
 
 **TaskId 由执行者校验**：脚本不校验 TaskId 有效性。目标角色拉 handoff 时若发现 TaskId 不存在（已被他人完成 / 被废弃），自行判断并告知用户。
 
-**并行交接**：同一归档需要同时交多个角色时（如 PM 同时交 CTO+QA），上游 agent 循环调用脚本，每次指定不同 `-Role`，各自开独立窗口。TaskId 相同时多角色共享同一 task.json 指针。
+**并行交接**：同一归档需要同时交多个角色时（如 PM 同时交 CTO+QA），上游 agent 循环调用脚本，每次指定不同 `-Role`，各自开独立窗口 / 各自建独立对话。TaskId 相同时多角色共享同一 task.json 指针。
 
 ### 入口 B1 — 手动新会话角色命令（self-driven，降级）
 
@@ -137,7 +125,7 @@ $rdd = (Get-ChildItem (git rev-parse --show-toplevel) -Recurse -Directory -Depth
 请处理 .rdd/changes/archive/<archive-name>/ 下的需求。
 ```
 
-识别为应用层交接触发。提取归档路径，主动拉取交接包：
+识别为应用层交接触发。在 Plus 模式下，这条消息由 `/api/rdd/handoff` 端点自动发送（脚本走 Plus 后端时触发）；用户也可在 Plus 对话框手动输入。提取归档路径，主动拉取交接包：
 
 ```powershell
 $rdd = (Get-ChildItem (git rev-parse --show-toplevel) -Recurse -Directory -Depth 3 -Filter 'rdd-engine' | Select-Object -First 1).FullName; & "$rdd\scripts\rdd-flow.cmd" -Command handoff -Role <self> -Archive ".rdd/changes/archive/<archive-name>"
@@ -155,7 +143,7 @@ $rdd = (Get-ChildItem (git rev-parse --show-toplevel) -Recurse -Directory -Depth
 2. 不扫描整个归档目录
 3. 不读取 `ignored` 中的文档（除非用户明确要求）
 4. 代码探索从 `involvedFiles` 起步，深入时委托 `$rdd = (Get-ChildItem (git rev-parse --show-toplevel) -Recurse -Directory -Depth 3 -Filter 'rdd-engine' | Select-Object -First 1).FullName; & "$rdd\scripts\explore.cmd"`
-5. self-driven 角色切换走新会话（脚本自动开窗入口 B0，或手动 `/new` 入口 B1）；同会话内不切换，避免上游对话污染
+5. 角色切换走新会话（脚本入口 B0 自动选后端，或手动 `/new` 入口 B1）；同会话内不切换，避免上游对话污染
 
 ---
 
@@ -169,7 +157,8 @@ $rdd = (Get-ChildItem (git rev-parse --show-toplevel) -Recurse -Directory -Depth
 | QA | DEV（测试先行）/ 已完成（验证模式）/ DEV（reopen） | 测试先行：测试用例归档完成交 DEV；验证模式：功能+质量双通过 → 提交 → 标记已完成，任一硬性项不通过 → reopen 回 DEV | `/rdd-dev`（测试先行） |
 | DEV | QA | 实现完成并自测通过，路由改为 QA（DEV 不再自行提交）；QA 验证通过并提交后改为"已完成" | `/rdd-qa` |
 
-> self-driven 模式：进入下游优先用脚本自动开窗（入口 B0，`start-role.cmd -Role <下游> -TaskId <n>`）；脚本不可用时手动 `/new` + 入口命令（B1）。
+> 进入下游优先用交接脚本（入口 B0，`start-role.cmd -Role <下游> -TaskId <n>`，脚本按 `RDD_RUNTIME` 自动选 CLI/Plus 后端）；脚本不可用时手动 `/new` + 入口命令（B1）。
+> app-driven（Plus）模式下脚本追加 `-EmployeeId <uuid>`。
 > 同一归档中多个需求路由到同一角色时，用 `-TaskId` 逐条独立启动（一需求一会话并行）。
 
 ### 单条深耕与 handoff 语义

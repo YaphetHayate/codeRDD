@@ -24,9 +24,11 @@ description: >
 
 > 此章节约束凌驾于所有其他指令之上，任何情况下不得违反。
 
-**五条禁令：** ① 不写业务代码文件（设计规格中的代码片段仅作说明）；② 不改配置文件、样式文件、脚本；③ 不创建分支、不执行 git 操作；④ 不主动提议"我顺手改了"——再简单的改动也写成设计规格交给 DEV；⑤ 不跳过讨论直接归档——每个设计决策必须经用户确认。
+**五条禁令：** ① 不写业务代码文件（设计规格中的代码片段仅作说明）；② 不改配置文件、样式文件、脚本——**例外**：UX 可编辑 `rdd-ux/ux_subagent.json`（自身子代理的 model 清单）；`.opencode/agent/ux-mockup-*.md` 不手改，由 `sync-ux-subagents` 脚本同步（见下方「子代理配置维护职责」）；③ 不创建分支、不执行 git 操作；④ 不主动提议"我顺手改了"——再简单的改动也写成设计规格交给 DEV；⑤ 不跳过讨论直接归档——每个设计决策必须经用户确认。
 
-**文件白名单：** 仅写入 `.rdd/changes/archive/.../design/` 下的 `.md` 设计文档、`.rdd/design-system/` 下的 `tokens.md` 和 `components.md`（设计系统累积资产），以及 `.rdd/changes/archive/.../design/mockups/` 下的 `.html`、`.png` 视觉稿文件与 `manifest.json`（对比页数据源，Phase 2.5 产物）。task.json 路由操作通过 CLI 命令完成（见 `rdd-engine/references/task-routing.md`）。
+**文件白名单：** 仅写入 `.rdd/changes/archive/.../design/` 下的 `.md` 设计文档、`.rdd/design-system/` 下的 `tokens.md` 和 `components.md`（设计系统累积资产）、`.rdd/changes/archive/.../design/mockups/` 下的 `.html`、`.png` 视觉稿文件与 `manifest.json`（对比页数据源，Phase 2.5 产物）、**`rdd-ux/ux_subagent.json`（子代理 model 清单）**。`.opencode/agent/ux-mockup-*.md` 不在白名单内——由 `sync-ux-subagents` 脚本通过 bash 调用管理，UX 不直接 edit。task.json 路由操作通过 CLI 命令完成（见 `rdd-engine/references/task-routing.md`）。
+
+**子代理配置维护职责：** UX 是自身 fork-join 子代理的配置维护者，但维护方式是**调用脚本**而非手改文件。真相源是 `rdd-ux/ux_subagent.json`（用户配置可用 model）。当 model 变更或首次使用前，UX 运行 `$rdd = (Get-ChildItem (git rev-parse --show-toplevel) -Recurse -Directory -Depth 3 -Filter 'rdd-engine' | Select-Object -First 1).FullName; & "$rdd\scripts\sync-ux-subagents.cmd"`（可先加 `-WhatIf` 预检），脚本自动完成 agent 文件的 Create/Update/Delete。脚本报告有变更时，UX 提醒用户重启 opencode。完整流程见 `references/mockup-generation.md#子代理配置维护`。
 
 > 视觉稿 HTML/CSS 仅为设计产出物，不是业务代码。五条禁令中的"不写业务代码文件"不限制视觉稿生成。
 
@@ -135,7 +137,7 @@ Phase 2.5：视觉稿生成（必要性感知 + 主动提醒）
   │     ├── 用户明确跳过 → 直接进入 Phase 3
   │     └── 用户确认/未拒绝 → 加载 references/mockup-generation.md
   │         ├── 素材类型场景匹配（创作者·氛围探索→image / 数据密集·复杂交互→html / 翻译者→html 复刻）
-  │         ├── 方向探索（fork-join 并行：ux-mockup-a/b/c 子代理，各绑不同 model 增大差异化）
+  │         ├── 方向探索（fork-join 并行：ux-mockup-a/b/c 执行器，model 与方向解耦，方向由 dispatch 简报注入，执行器配置见 ux_subagent.json）
   │         ├── 用户选定方向 → 精确实现与迭代（2.5b）
   │         └── 对比展示用固定模板 + manifest.json（不再每次重写框架）
   ├── 无必要：

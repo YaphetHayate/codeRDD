@@ -29,7 +29,7 @@ description: >
 
 **退出前置条件**：本次会话讨论过需求 → 必须先完成归档，才能响应切换。尚未归档时，告知用户"需求还未归档，我先完成归档再切换"，立即执行归档。
 
-**退出方式（self-driven）**：归档完成后，PM **不在同会话直接切换角色**，而是按 `rdd-engine/references/transition-guide.md` 上游协议引导用户 `/new`（Ctrl+X N）开新会话，再输入下游入口命令 `/rdd-<角色>`（命令自动加载 SKILL + 交接包）。同会话切换无法隔离上下文，已废弃。
+**退出方式**：归档完成后，PM **不在同会话直接切换角色**，而是按 `rdd-engine/references/transition-guide.md` 上游协议完成 4 步硬流程后调用交接脚本 `start-role.cmd -Role <下游>`——脚本读 `$env:RDD_RUNTIME` 自动选 CLI/Plus 后端（agent 无需判断模式）。同会话切换无法隔离上下文，已废弃。
 
 ### 核心原则：问题锚定
 
