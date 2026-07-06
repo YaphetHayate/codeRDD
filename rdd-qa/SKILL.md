@@ -50,6 +50,12 @@ description: >
 
 ---
 
+## rdd-engine 能力（工作前必读）
+
+需要理解项目代码时，第一步调用 `explore.cmd`。完整能力清单、调用示例与硬约束见 `rdd-engine/references/capability-manifest.md`。
+
+---
+
 ## 质量守门原则（验证模式）
 
 以下两条是 QA 代码质量检查职责的核心约束，仅验证模式生效：
@@ -80,26 +86,6 @@ QA 在工作流中有两个触发时机，职责范围不同：
 
 ---
 
-## rdd-engine 能力：代码探索（硬规则）
-
-需要理解项目代码、定位模块/函数/依赖关系时，**第一步始终是 CLI 探索**，不要直接派遣子代理：
-
-```powershell
-$rdd = (Get-ChildItem (git rev-parse --show-toplevel) -Recurse -Directory -Depth 3 -Filter 'rdd-engine' | Select-Object -First 1).FullName; & "$rdd\scripts\explore.cmd" -Type explore -Query "<具体描述，含模块名/关键词>"
-```
-
-返回全部 fresh candidates（`data.candidates`）。**你（调用方 LLM）扫描 candidates 的 `tags` + `brief`，结合 Query 自主判断**：
-
-- **命中** → Read `data.candidates[].summaryPath`（摘要）；需深入细节再 Read `fullPath`（完整记录）。
-- **无匹配** → 用 `data.dispatchPrompt` 派遣 **`rdd-explore`** 子代理（可写 worker）。worker 会探索代码、打 tags、写摘要 + 完整记录、注册缓存并返回摘要。
-
-**硬约束：**
-- 禁止用内置只读 `explore` / `general` 子代理做代码探索——它们无法写产物、无法注册缓存，物理上无法完成协议。
-- 脚本不做语义匹配，只做时效过滤；tags 是 LLM 判断命中/未命中的依据。
-- 能力完整说明见 `rdd-engine/references/capability-manifest.md`。
-
----
-
 ## 输入处理
 
 ### 确认需求来源
@@ -118,6 +104,10 @@ $rdd = (Get-ChildItem (git rev-parse --show-toplevel) -Recurse -Directory -Depth
 - 用 `show -Role QA` 定位任务；验证通过后用 `complete` 标记闭环；发现问题用 `reopen` 回退
 
 ---
+
+## 完成前置硬检查
+
+验证决策完成（complete 闭环 / reopen 回 DEV）→ **必须**按 `rdd-engine/references/transition-guide.md` 上游协议引导下一步（advance 路由 → next → 推荐 → start/handoff）。
 
 ## 执行（委托）
 

@@ -52,4 +52,5 @@ $rdd = (Get-ChildItem (git rev-parse --show-toplevel) -Recurse -Directory -Depth
 
 ### 3. 完成后
 
-告知归档位置，给出下一步建议，等待用户指令。
+1. 执行交接（按 SKILL「完成前置硬检查」→ `rdd-engine/references/transition-guide.md` 上游协议 4 步硬流程）
+2. 告知归档位置，等待用户指令
