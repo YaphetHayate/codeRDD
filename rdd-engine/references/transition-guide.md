@@ -1,4 +1,4 @@
-﻿# 角色交接协议
+# 角色交接协议
 
 > **定位**：所有 RDD 角色在完成产物后、引导下一角色时的标准流程。
 > 上游角色（PM/CTO/UX/QA）完成归档后**必须**按本协议执行交接，不走"直接告知用户输入斜杠命令"的捷径。
@@ -142,7 +142,7 @@ $rdd = (Get-ChildItem (git rev-parse --show-toplevel) -Recurse -Directory -Depth
 1. 只读 handoff packet 列出的需求/设计文档
 2. 不扫描整个归档目录
 3. 不读取 `ignored` 中的文档（除非用户明确要求）
-4. 代码探索从 `involvedFiles` 起步，深入时委托 `$rdd = (Get-ChildItem (git rev-parse --show-toplevel) -Recurse -Directory -Depth 3 -Filter 'rdd-engine' | Select-Object -First 1).FullName; & "$rdd\scripts\explore.cmd"`
+4. 代码探索从 `involvedFiles` 起步，深入时委托 `$rdd = (Get-ChildItem (git rev-parse --show-toplevel) -Recurse -Directory -Depth 3 -Filter 'rdd-engine' | Select-Object -First 1).FullName; & "$rdd\scripts\explore.cmd" -Type search`
 5. 角色切换走新会话（脚本入口 B0 自动选后端，或手动 `/new` 入口 B1）；同会话内不切换，避免上游对话污染
 
 ---

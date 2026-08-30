@@ -77,19 +77,20 @@ Agent 需要理解代码时，按场景选择探索手段，不要混用：
 | 场景 | 用什么 | 理由 |
 |------|--------|------|
 | 单符号定位（"X 定义在哪"） | 内置 `explore` subagent | 只读、快、fresh context 适合轻量搜索 |
-| 主题级理解（"X 模块如何工作"） | `rdd_explore` 工具 | 返回 candidates，扫 tags 判断；无匹配派 worker 探索 + 注册 |
+| 主题级理解（"X 模块如何工作"） | `explore.cmd -Type search`（探索缓存检索） | 返回数据位置（热区优先），扫 tags 判断；无匹配派 worker 探索 + 注册入热区 |
 | 大规模探索（fresh context 隔离） | `rdd-explore` subagent | 通过 Task 工具派遣，写摘要 + 完整记录 + 注册 |
 
-### rdd_explore 工具边界
+### 探索缓存使用边界
 
-- **不要**把单符号定位委托给 `rdd_explore`：缓存粒度是主题级，单符号查询无法从 tags 获益，浪费一次 RPC
+- **不要**把单符号定位委托给探索缓存：缓存粒度是主题级，单符号查询无法从 tags 获益，浪费一次调用
 - **不要**在无匹配后跳过注册：不注册的探索产物无法被后续会话命中，等于白做
 - **不要**用 `rdd-explore` subagent 做简单定位：它是可写 worker（fresh context 成本高），仅用于无匹配后的深度探索
-- **注册必须带 tags**：tags 是 LLM 判断命中/未命中的核心依据，走 `explore.cmd -Type register -Tags "..."` CLI（MCP 工具 `rdd_explore_register` 不支持 tags 参数）
+- **注册必须带 tags**：tags 是 LLM 判断命中/未命中的核心依据，走 `explore-store.cmd -Type register -Tags "..."` CLI（注册入热区，下一次检索立即可见）
+- **MCP 工具 `rdd_explore` / `rdd_explore_register` 已废弃删除**（与现行协议双重断裂：恒走 MISS 分支、注册缺 Tags 必然失败，且零存量用户）。OpenCode 的规范路径是 SKILL → shell CLI（`explore.cmd -Type search` 检索 / `explore-store.cmd -Type register` 注册）。旧版安装过 `.opencode/tools/rdd_explore.ts` 的项目：`coderrdd uninstall` 按清单清理，或手动删除该文件
 
 ### 注册时的文件列表
 
-`explore.cmd -Type register` 的 `-Files` 参数只列**实际读过并分析**的文件。这些文件的 SHA-256 会被记录——任一变更触发缓存失效。列太多无关文件会降低缓存寿命；漏列关键文件会导致缓存过期不失效。
+`explore-store.cmd -Type register` 的 `-Files` 参数只列**实际读过并分析**的文件。这些文件的 SHA-256 会被记录——任一变更触发缓存失效。列太多无关文件会降低缓存寿命；漏列关键文件会导致缓存过期不失效。
 
 ---
 

@@ -1,0 +1,21 @@
+{
+  "features": [
+    {
+      "feature": "explore-search",
+      "relatedCode": [
+        "rdd-engine/scripts/explore.ps1",
+        "rdd-engine/scripts/explore-store.ps1",
+        "rdd-engine/scripts/recallers/lexical.ps1",
+        "rdd-engine/scripts/recallers/vector.ps1"
+      ],
+      "testCode": [
+        ".rdd/tests/explore-search/search-precision-ranking.mjs",
+        ".rdd/tests/explore-search/qa-ast-review.ps1"
+      ],
+      "activeCount": 15,
+      "deprecatedCount": 0,
+      "lastUpdated": "2026-08-30",
+      "lastChange": "2026-08-29-search-precision-ranking"
+    }
+  ]
+}

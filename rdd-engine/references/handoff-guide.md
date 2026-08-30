@@ -1,4 +1,4 @@
-﻿# Handoff 交接包指南
+# Handoff 交接包指南
 
 > 交接包用于阶段流转时裁剪上下文。下游角色不继承上游长对话，只读取交接包列出的最小文档集合。
 
@@ -85,7 +85,7 @@ $rdd = (Get-ChildItem (git rev-parse --show-toplevel) -Recurse -Directory -Depth
 
 此外，代码探索需求应委托 engine 执行（而非读取 archive 级文件）：
 ```powershell
-$rdd = (Get-ChildItem (git rev-parse --show-toplevel) -Recurse -Directory -Depth 3 -Filter 'rdd-engine' | Select-Object -First 1).FullName; & "$rdd\scripts\explore.cmd" -Type explore -Query "分析..." 
+$rdd = (Get-ChildItem (git rev-parse --show-toplevel) -Recurse -Directory -Depth 3 -Filter 'rdd-engine' | Select-Object -First 1).FullName; & "$rdd\scripts\explore.cmd" -Type search -Query "分析..." 
 ```
 engine 通过 `exploration-guide.md` 管理全局可复用缓存。
 

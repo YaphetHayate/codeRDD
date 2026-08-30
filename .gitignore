@@ -5,3 +5,10 @@ node_modules/
 # RDD workflow runtime data
 .rdd/changes/
 .rdd/handoff/
+# exploration vector sidecar: derived data (rebuildable via embed-backfill)
+.rdd/exploration/vectors.json
+
+.claude/settings.local.json
+
+# dsh plugin physical home lives in the dsh checkout; this path is a junction
+dsh/dsh-rdd-explore/

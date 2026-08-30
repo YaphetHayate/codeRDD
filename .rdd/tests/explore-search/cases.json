@@ -1,0 +1,282 @@
+{
+  "feature": "explore-search",
+  "status": "active",
+  "relatedCode": [
+    "rdd-engine/scripts/explore.ps1",
+    "rdd-engine/scripts/explore-store.ps1",
+    "rdd-engine/scripts/recallers/lexical.ps1",
+    "rdd-engine/scripts/recallers/vector.ps1"
+  ],
+  "testCode": [
+    ".rdd/tests/explore-search/search-precision-ranking.mjs",
+    ".rdd/tests/explore-search/qa-ast-review.ps1"
+  ],
+  "lastChange": "2026-08-29-search-precision-ranking",
+  "cases": [
+    {
+      "id": "TC-001",
+      "title": "词面命中返回降序达标条目且不附 dispatchPrompt",
+      "type": "positive",
+      "priority": "P0",
+      "acceptance": "AC-1",
+      "codeRef": ".rdd/tests/explore-search/search-precision-ranking.mjs:251",
+      "sourceChange": "2026-08-29-search-precision-ranking",
+      "status": "active",
+      "crossFeature": [],
+      "precondition": "fixture 仓库含 5 条双 zone 条目（中英文 tags 混合）",
+      "steps": [
+        "explore.ps1 -Type search -Query 'auth middleware'",
+        "校验 exit 0、success=true",
+        "校验 results 非空、≤5 条、字段完整（key/tags/brief/summaryPath/fullPath/origin/score/recalledBy）",
+        "校验 score 非递增、响应无 dispatchPrompt"
+      ],
+      "expected": "results 仅含相关性达标条目、按融合分数降序、最多 K 条；命中响应不附 dispatchPrompt（两分支协议）"
+    },
+    {
+      "id": "TC-002",
+      "title": "无关 query 返回空 results 并附 dispatchPrompt",
+      "type": "negative",
+      "priority": "P0",
+      "acceptance": "AC-3",
+      "codeRef": ".rdd/tests/explore-search/search-precision-ranking.mjs:278",
+      "sourceChange": "2026-08-29-search-precision-ranking",
+      "status": "active",
+      "crossFeature": [],
+      "precondition": "fixture 仓库含 5 条条目",
+      "steps": [
+        "explore.ps1 -Type search -Query 'zzzqqq xyzzy'",
+        "校验 results 为空",
+        "校验 dispatchPrompt 非空且内嵌 exploration-guide 协议与 register 调用行"
+      ],
+      "expected": "results 空 = miss，返回体附完整 dispatchPrompt（现有 miss 行为保留）"
+    },
+    {
+      "id": "TC-003",
+      "title": "Top-K 截断：配置 K=2 生效、默认 K=5",
+      "type": "boundary",
+      "priority": "P0",
+      "acceptance": "AC-1",
+      "codeRef": ".rdd/tests/explore-search/search-precision-ranking.mjs:297",
+      "sourceChange": "2026-08-29-search-precision-ranking",
+      "status": "active",
+      "crossFeature": [],
+      "precondition": "宽 query 可词面命中全部 5 条条目",
+      "steps": [
+        "写 search-config.json topK=2 后检索，校验 fused=5 / returned=2",
+        "删除配置（默认）后同 query 检索，校验 fused=5 / returned=5"
+      ],
+      "expected": "K 默认 5、可配置，截断发生在融合排序之后"
+    },
+    {
+      "id": "TC-004",
+      "title": "跨语 query 经向量路召回（本地 mock embedding 端点）",
+      "type": "positive",
+      "priority": "P0",
+      "acceptance": "AC-4",
+      "codeRef": ".rdd/tests/explore-search/search-precision-ranking.mjs:320",
+      "sourceChange": "2026-08-29-search-precision-ranking",
+      "status": "active",
+      "crossFeature": [],
+      "precondition": "本地 HTTP stub 返回固定 query embedding；vectors.json 预置与 F1 textHash 匹配的条目向量；子进程 loopback 可用（沙箱内自动 SKIP，需原生终端全量跑）",
+      "steps": [
+        "中文 query（与全部 F1 文本零词面重合）+ 向量配置齐备（RDD_EMBED_APIKEY）检索",
+        "校验仅目标英文 tags 条目被召回且 recalledBy=['vector']",
+        "校验 rankMeta vector=ok(1)、恰好一次 embedding API 调用",
+        "另：sidecar textHash 全失效时检索，校验 vector=ok(0)、miss、零 API 调用（不空转）"
+      ],
+      "expected": "query 用词与注册 tags 不同义时向量路可召回；F6 全失效时不调 API 直接空返回"
+    },
+    {
+      "id": "TC-005",
+      "title": "召回器可插拔：禁用/未配置/运行时失败均降级不破坏接口",
+      "type": "negative",
+      "priority": "P0",
+      "acceptance": "AC-5",
+      "codeRef": ".rdd/tests/explore-search/search-precision-ranking.mjs:377",
+      "sourceChange": "2026-08-29-search-precision-ranking",
+      "status": "active",
+      "crossFeature": [],
+      "precondition": "a) 需 loopback（沙箱内 SKIP）；b/c/d 无网络依赖",
+      "steps": [
+        "a) lexical enabled=false + vector 齐备：仅向量路返回结果",
+        "b) vector auto 未配置：词面独撑命中，rankMeta 标记 vector disabled",
+        "c) 跨语 query 且无向量配置：接口级 miss + dispatchPrompt，exit 0",
+        "d) endpoint 不可达：vector failed + 词面照常命中 + exit 0"
+      ],
+      "expected": "各召回路独立启用/禁用；禁用或单路失败后剩余召回路 + 融合排序仍构成完整可用的检索接口"
+    },
+    {
+      "id": "TC-006",
+      "title": "register 即可见：新注册条目下一次检索经词面路召回",
+      "type": "positive",
+      "priority": "P0",
+      "acceptance": "AC-7",
+      "codeRef": ".rdd/tests/explore-search/search-precision-ranking.mjs:454",
+      "sourceChange": "2026-08-29-search-precision-ranking",
+      "status": "active",
+      "crossFeature": [],
+      "precondition": "配对产物（record + summary）已写好",
+      "steps": [
+        "explore-store.ps1 -Type register 注册新条目（无向量）",
+        "校验 registered=true、zone=hot、输出含 embed 钩子结果",
+        "立即 search 该条目词面，校验命中且 origin=hot、recalledBy 含 lexical"
+      ],
+      "expected": "新注册条目（向量未就绪）下一次检索即可经词面路召回"
+    },
+    {
+      "id": "TC-007",
+      "title": "explore 兼容面：candidates 全量返回且 dispatchPrompt 恒附",
+      "type": "positive",
+      "priority": "P0",
+      "acceptance": "AC-8",
+      "codeRef": ".rdd/tests/explore-search/search-precision-ranking.mjs:485",
+      "sourceChange": "2026-08-29-search-precision-ranking",
+      "status": "active",
+      "crossFeature": [],
+      "precondition": "fixture 仓库含 5 条 fresh 条目",
+      "steps": [
+        "explore.ps1 -Type explore -Query '<无关词>' 与 '<命中词>' 各一次",
+        "校验两次均返回全量 5 条 candidates（无语义过滤）",
+        "校验条目含旧契约字段 + origin，且 dispatchPrompt 两次均附"
+      ],
+      "expected": "兼容面 explore（candidates + 恒附 dispatchPrompt）行为保持，旧调用方零改动"
+    },
+    {
+      "id": "TC-008",
+      "title": "冻结 RRF 公式值与 rankMeta 计数",
+      "type": "positive",
+      "priority": "P1",
+      "acceptance": "AC-1",
+      "codeRef": ".rdd/tests/explore-search/search-precision-ranking.mjs:511",
+      "sourceChange": "2026-08-29-search-precision-ranking",
+      "status": "active",
+      "crossFeature": [],
+      "precondition": "标准 5 条 fixture，query 'auth middleware'",
+      "steps": [
+        "检索并断言排序 [auth-middleware, auth-cn-middleware, session-store]",
+        "断言 RRF 分数 1/61、1/62、1/63（weight=1、rrfK=60、rank 从 1）",
+        "断言 rankMeta.fused=3、returned=3、lexical ok(3)、vector disabled"
+      ],
+      "expected": "融合分数按冻结公式计算且降序输出，rankMeta 计数与结果一致"
+    },
+    {
+      "id": "TC-009",
+      "title": "新增召回器经扩展点接入且不改变既有召回路行为",
+      "type": "positive",
+      "priority": "P1",
+      "acceptance": "AC-6",
+      "codeRef": ".rdd/tests/explore-search/search-precision-ranking.mjs:539",
+      "sourceChange": "2026-08-29-search-precision-ranking",
+      "status": "active",
+      "crossFeature": [],
+      "precondition": "fixture 内复制引擎 + recallers/，追加 zz-extra.ps1 测试插件（不改业务目录）",
+      "steps": [
+        "向复制引擎的 recallers/ 投放未配置的第三方召回器 zz-extra.ps1",
+        "search 'auth middleware'，校验接口仍正常输出 JSON",
+        "校验 rankMeta 含 extra（auto-registered）、lexical qualified 与基线一致",
+        "校验 auth* 条目 recalledBy 含 extra（参与融合）"
+      ],
+      "expected": "新增召回器被扩展点自动注册并运行，既有召回路行为不变，接口不崩溃"
+    },
+    {
+      "id": "TC-010",
+      "title": "summaryPath 派生正确且指向存在的摘要文件",
+      "type": "boundary",
+      "priority": "P1",
+      "acceptance": "AC-2",
+      "codeRef": ".rdd/tests/explore-search/search-precision-ranking.mjs:590",
+      "sourceChange": "2026-08-29-search-precision-ranking",
+      "status": "active",
+      "crossFeature": [],
+      "steps": [
+        "检索命中后校验每条 summaryPath == fullPath 的 .md→.summary.md 派生",
+        "校验每个 summaryPath 在 fixture 中实际存在"
+      ],
+      "expected": "results 非空 = 命中：调用方可直接按位置读 summaryPath"
+    },
+    {
+      "id": "TC-011",
+      "title": "协议文档同步改写为两分支判据",
+      "type": "positive",
+      "priority": "P1",
+      "acceptance": "AC-9",
+      "codeRef": ".rdd/tests/explore-search/search-precision-ranking.mjs:606",
+      "sourceChange": "2026-08-29-search-precision-ranking",
+      "status": "active",
+      "crossFeature": [],
+      "steps": [
+        "断言 exploration-guide.md 含两分支协议/非空=命中/dispatchPrompt 表述",
+        "断言 exploration-guide.md 无『非空但不相关』三分支残留",
+        "断言 capability-manifest.md 无『不做语义匹配』『三分支』，且含 Top-K 与 dispatchPrompt"
+      ],
+      "expected": "exploration-guide.md / capability-manifest.md 中『CLI 不做语义匹配』与三分支协议更新为新判据协议"
+    },
+    {
+      "id": "TC-012",
+      "title": "search-config.json 损坏时 fail-soft 回默认",
+      "type": "negative",
+      "priority": "P2",
+      "acceptance": "AC-1",
+      "codeRef": ".rdd/tests/explore-search/search-precision-ranking.mjs:624",
+      "sourceChange": "2026-08-29-search-precision-ranking",
+      "status": "active",
+      "crossFeature": [],
+      "steps": [
+        "写入损坏 JSON 后检索",
+        "校验 exit 0、success=true、词面行为与默认配置一致"
+      ],
+      "expected": "调参数据损坏静默回默认，接口不报错（与索引数据 fail-loud 有意不对称）"
+    },
+    {
+      "id": "TC-013",
+      "title": "空 query 双面拒绝（MISSING_QUERY exit 1）",
+      "type": "negative",
+      "priority": "P2",
+      "acceptance": "AC-3",
+      "codeRef": ".rdd/tests/explore-search/search-precision-ranking.mjs:638",
+      "sourceChange": "2026-08-29-search-precision-ranking",
+      "status": "active",
+      "crossFeature": [],
+      "steps": [
+        "search/explore 两面分别传空 Query",
+        "校验均 exit 1 且 error.code=MISSING_QUERY"
+      ],
+      "expected": "输入校验保持：空 query 在两面均被拒绝"
+    },
+    {
+      "id": "TC-014",
+      "title": "anchor 文件变更触发 stale 条目驱逐",
+      "type": "boundary",
+      "priority": "P2",
+      "acceptance": "AC-7",
+      "codeRef": ".rdd/tests/explore-search/search-precision-ranking.mjs:655",
+      "sourceChange": "2026-08-29-search-precision-ranking",
+      "status": "active",
+      "crossFeature": [],
+      "steps": [
+        "改写 a2.txt 内容使两条目哈希失效",
+        "检索校验失效条目不出现在 results、有效条目仍在",
+        "校验 staleRemoved=2"
+      ],
+      "expected": "读路径 stale 驱逐保持：新鲜度由 SHA-256 判定"
+    },
+    {
+      "id": "TC-015",
+      "title": "DSH 插件读面与 PS 侧行为一致（冻结契约，跨仓库执行项）",
+      "type": "positive",
+      "priority": "P1",
+      "acceptance": "AC-10",
+      "codeRef": "dsh-checkout:packages/local/rdd-explore/tests/search-ranking.mjs:1",
+      "sourceChange": "2026-08-29-search-precision-ranking",
+      "status": "active",
+      "crossFeature": [],
+      "precondition": "DSH checkout 已编译（lib/ 存在）；RDD_ENGINE_ROOT 指向本仓库 rdd-engine",
+      "steps": [
+        "在 DSH 侧 packages/local/rdd-explore 下运行 node tests/search-ranking.mjs",
+        "校验 TS 侧管线断言（F1-F8、两分支、mock 向量路、插件 stub）全过",
+        "校验 PS/TS 一致性断言（同 fixture 下 ordering/Top-K/score/miss 一致）全过"
+      ],
+      "expected": "cache.ts 检索路径与 PS 侧行为一致（同批交付的冻结契约镜像通过回归防线）"
+    }
+  ]
+}

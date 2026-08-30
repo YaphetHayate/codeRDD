@@ -1,37 +1,53 @@
-﻿---
+---
 name: rdd-engine
 description: >
-  RDD 通用能力总线。所有 RDD 角色按需调用 scripts/explore.ps1 CLI 脚本，启动子 agent 完成委托并返回结果。
+  RDD 通用能力总线。所有 RDD 角色按需调用 scripts/explore.ps1（读面：search/explore 检索）与
+  scripts/explore-store.ps1（写面：register 入热区/persist 转正）CLI 脚本，启动子 agent 完成委托并返回结果。
 ---
 
 # rdd-engine
 
 engine 通过 CLI 脚本提供服务：
 
-- `explore.ps1`：代码探索能力。`-Type explore` 做时效过滤（SHA-256 校验剔除 stale），返回全部 fresh candidates + dispatch prompt（**不做语义匹配**，由调用方 LLM 扫 tags 判断）；`-Type register` 由 worker 探索完成后注册产物到缓存（含 tags + 摘要配对校验）。
+- `explore.ps1`（读面）：代码探索检索能力。`-Type search` 合并读双 zone（热区 `hot.json` 优先 + 持久层 `index.json`），SHA-256 时效校验剔除 stale，跑**精度排序管线**（词法 BM25 + 向量余弦多路召回 → RRF 融合 → Top-K 截断，冻结公式 F1–F8），返回排序后的数据**所在位置**（key/tags/brief/summaryPath/fullPath/origin/score/recalledBy + rankMeta），miss 时附 dispatch prompt（**两分支协议**：results 非空即命中，空则派遣）；`-Type explore` 为兼容面（candidates + 恒附 dispatchPrompt）；`-Type register` 为废弃转发（薄转发到 explore-store）。
+- `explore-store.ps1`（写面）：缓存写入与生命周期。`-Type register` 注册产物入热区（注册即对下一次检索可见，向量配置齐备时同步 embedding）；`-Type persist` 按 key 转正进持久层；`-Type embed-backfill` 为存量条目补齐/重建向量 sidecar；sweep 保底（超 7 天 / 容量 50 条未转正 → 按原样自动落入持久层，任何已探索结果不丢）。
 - `rdd-flow.ps1`：阶段流转与上下文交接，生成最小 handoff packet
 
-> **脚本位置**：所有 `.cmd` / `.ps1` 位于 `scripts/` 子目录（与 `SKILL.md` 同级的 `scripts/`，非 skill 根目录），遵循 skill 标准结构。完整路径：`rdd-engine/scripts/explore.cmd`、`rdd-engine/scripts/rdd-flow.cmd`（仓库根相对）。
+> **脚本位置**：所有 `.cmd` / `.ps1` 位于 `scripts/` 子目录（与 `SKILL.md` 同级的 `scripts/`，非 skill 根目录），遵循 skill 标准结构。完整路径：`rdd-engine/scripts/explore.cmd`、`rdd-engine/scripts/explore-store.cmd`、`rdd-engine/scripts/rdd-flow.cmd`（仓库根相对）。
 >
-> **调用入口统一用 `.cmd` 包装器**（`scripts/rdd-flow.cmd` / `scripts/explore.cmd`，与同名 `.ps1` 同目录）。`.cmd` 内部以 `powershell -ExecutionPolicy Bypass -File` 调用 `.ps1`，绕过 Windows 默认的 `Restricted` 执行策略。**不要直接调用 `.ps1`**——在 ExecutionPolicy=Restricted 的环境下会被系统拦截。下方所有示例均使用仓库根相对的完整路径 `rdd-engine/scripts/*.cmd`。
+> **调用入口统一用 `.cmd` 包装器**（`scripts/rdd-flow.cmd` / `scripts/explore.cmd` / `scripts/explore-store.cmd`，与同名 `.ps1` 同目录）。`.cmd` 内部以 `powershell -ExecutionPolicy Bypass -File` 调用 `.ps1`，绕过 Windows 默认的 `Restricted` 执行策略。**不要直接调用 `.ps1`**——在 ExecutionPolicy=Restricted 的环境下会被系统拦截。下方所有示例均使用仓库根相对的完整路径 `rdd-engine/scripts/*.cmd`。
 
 ## 调用方式
 
-### 代码探索
+### 缓存检索（第一步）
 
 ```powershell
-$rdd = (Get-ChildItem (git rev-parse --show-toplevel) -Recurse -Directory -Depth 3 -Filter 'rdd-engine' | Select-Object -First 1).FullName; & "$rdd\scripts\explore.cmd" -Type explore -Query "<description>"
+$rdd = (Get-ChildItem (git rev-parse --show-toplevel) -Recurse -Directory -Depth 3 -Filter 'rdd-engine' | Select-Object -First 1).FullName; & "$rdd\scripts\explore.cmd" -Type search -Query "<description>"
 ```
 
-返回 JSON（始终返回 candidates + dispatchPrompt）：
-- 扫描 `data.candidates` 的 `tags` + `brief`，结合 Query 判断相关性
-- **命中** → Read `data.candidates[].summaryPath`（摘要）；需深入细节再 Read `fullPath`
-- **无匹配** → 用 `data.dispatchPrompt` 派遣 `rdd-explore` 子代理（可写 worker）
+返回 JSON（results 为空时附 dispatchPrompt）：
+- `data.results` 是精度管线排序后的 Top-K 命中（每条含 `score` 融合分 + `recalledBy` 召回路，`origin: hot|persistent`），**两分支**消费
+- **非空 = 命中** → Read `data.results[0].summaryPath`（score 最高者优先；摘要）；需深入细节再 Read `fullPath`
+- **空 = 未命中** → 用 `data.dispatchPrompt` 派遣 `rdd-explore` 子代理（可写 worker）
 
-### 探索产物注册（worker 探索完成后调用）
+### 探索产物注册（worker 探索完成后调用，写面）
 
 ```powershell
-$rdd = (Get-ChildItem (git rev-parse --show-toplevel) -Recurse -Directory -Depth 3 -Filter 'rdd-engine' | Select-Object -First 1).FullName; & "$rdd\scripts\explore.cmd" -Type register -Key "<semantic key>" -Tags "<module/feature/synonym keywords, comma-separated>" -Path "<artifact path>" -Brief "<summary>" -Files "<comma-separated files>"
+$rdd = (Get-ChildItem (git rev-parse --show-toplevel) -Recurse -Directory -Depth 3 -Filter 'rdd-engine' | Select-Object -First 1).FullName; & "$rdd\scripts\explore-store.cmd" -Type register -Key "<semantic key>" -Tags "<module/feature/synonym keywords, comma-separated>" -Path "<artifact path>" -Brief "<summary>" -Files "<comma-separated files>"
+```
+
+> 旧路径 `explore.cmd -Type register` 仍可用（薄转发，输出附 deprecation 提示）；新代码一律直调 `explore-store.cmd`。
+
+### 持久化转正
+
+```powershell
+$rdd = (Get-ChildItem (git rev-parse --show-toplevel) -Recurse -Directory -Depth 3 -Filter 'rdd-engine' | Select-Object -First 1).FullName; & "$rdd\scripts\explore-store.cmd" -Type persist -Key "<semantic key>"
+```
+
+### 向量补齐（配置/更换 embedding 模型后）
+
+```powershell
+$rdd = (Get-ChildItem (git rev-parse --show-toplevel) -Recurse -Directory -Depth 3 -Filter 'rdd-engine' | Select-Object -First 1).FullName; & "$rdd\scripts\explore-store.cmd" -Type embed-backfill [-PurgeOtherModels]
 ```
 
 ### 流转交接
@@ -47,24 +63,35 @@ $rdd = (Get-ChildItem (git rev-parse --show-toplevel) -Recurse -Directory -Depth
 
 ### 参数
 
+explore.cmd（读面）：
+
 | 参数 | 必需 | 默认值 | 说明 |
 |------|------|--------|------|
-| `-Type` | 是 | — | 能力类型：`explore`（时效过滤）/ `register`（注册产物） |
-| `-Query` | `explore` 必需 | — | 需求描述，传递给 dispatchPrompt |
-| `-Key` | `register` 必需 | — | 语义 key（中文可用），标识探索主题 |
-| `-Tags` | `register` 必需 | — | 逗号分隔的关键词标签（模块名/功能名/同义词，中英文），LLM 判断命中的核心依据 |
+| `-Type` | 是 | — | 能力类型：`search`（检索，返回位置）/ `explore`（兼容面，candidates + 恒附 dispatchPrompt）/ `register`（废弃转发到 explore-store） |
+| `-Query` | `search`/`explore` 必需 | — | 需求描述，传递给 dispatchPrompt |
+
+explore-store.cmd（写面）：
+
+| 参数 | 必需 | 默认值 | 说明 |
+|------|------|--------|------|
+| `-Type` | 是 | — | 能力类型：`register`（注册入热区）/ `persist`（按 key 转正进持久层）/ `embed-backfill`（补齐向量 sidecar，可加 `-PurgeOtherModels` 清其他模型旧向量） |
+| `-Key` | `register`/`persist` 必需 | — | 语义 key（中文可用），标识探索主题 |
+| `-Tags` | `register` 必需 | — | 逗号分隔的关键词标签（模块名/功能名/同义词，中英文）——LLM 的阅读语言 + 词法召回的检索语料（直接进 BM25 评分） |
 | `-Path` | `register` 必需 | — | 完整记录文件路径（repo-relative，需配对 `{slug}.summary.md`） |
 | `-Brief` | `register` 必需 | — | 一句话摘要 |
 | `-Files` | `register` 必需 | — | 逗号分隔的已分析文件路径列表 |
 
 ### 能力说明
 
-> 引擎所有可用能力的权威清单定义在 `references/capability-manifest.md`。新增/变更能力时只需更新该文件（+ `explore.ps1`），各角色自动发现。
+> 引擎所有可用能力的权威清单定义在 `references/capability-manifest.md`。新增/变更能力时只需更新该文件（+ 对应脚本），各角色自动发现。
 
-| `-Type` | 说明 | Reference 文件 |
-|-------|------|---------------|
-| `explore` | 时效过滤：SHA-256 校验剔除 stale，返回全部 fresh candidates + dispatch prompt（语义判断由调用方 LLM 扫 tags 完成） | `references/exploration-guide.md` |
-| `register` | 注册产物：worker 探索完成后，校验摘要配对、写入 tags、计算文件哈希并追加进 index | `references/exploration-guide.md` |
+| `-Type` | 入口 | 说明 | Reference 文件 |
+|-------|------|------|---------------|
+| `search` | `explore.cmd` | 检索接口：双 zone 合并（SHA-256 剔除 stale）→ 精度排序管线（多路召回 + RRF 融合 + Top-K，冻结公式 F1–F8）→ 返回排序位置；miss 附 dispatchPrompt（两分支协议：非空即命中） | `references/exploration-guide.md` |
+| `explore` | `explore.cmd` | 兼容面：candidates + 恒附 dispatchPrompt（旧调用方零改动，条目新增 origin 为超集增量） | `references/exploration-guide.md` |
+| `register` | `explore-store.cmd` | 注册入热区：校验摘要配对、写入 tags、计算文件哈希，热区内去重后追加（盖 registeredAt），注册即可见（向量配置齐备时同步 embedding） | `references/exploration-guide.md` |
+| `persist` | `explore-store.cmd` | 转正：热区条目按 key 转正进 index.json（去重替换） | `references/exploration-guide.md` |
+| `embed-backfill` | `explore-store.cmd` | 向量补齐：为存量条目重建 `.rdd/exploration/vectors.json`（textHash 一致复用；配置不齐报 EMBED_CONFIG_INCOMPLETE） | `references/exploration-guide.md` |
 
 ### 流转命令
 
@@ -147,8 +174,8 @@ $rdd = (Get-ChildItem (git rev-parse --show-toplevel) -Recurse -Directory -Depth
 stdout 输出纯 JSON：
 
 ```json
-// 正常（explore 返回 candidates + dispatchPrompt）
-{ "success": true, "data": { "query": "...", "candidates": [...], "dispatchPrompt": "..." } }
+// 正常（search 返回排序位置 + rankMeta，miss 时附 dispatchPrompt）
+{ "success": true, "data": { "query": "...", "results": [ { "key": "...", "tags": [...], "brief": "...", "summaryPath": "...", "fullPath": "...", "origin": "hot|persistent", "score": 0.032787, "recalledBy": ["lexical", "vector"] } ], "staleRemoved": 0, "rankMeta": { "recallers": [ { "name": "lexical", "status": "ok", "qualified": 3 } ], "fused": 3, "returned": 1 }, "dispatchPrompt": "..." } }
 // 错误
 { "success": false, "error": { "code": "...", "message": "..." } }
 ```
@@ -156,11 +183,14 @@ stdout 输出纯 JSON：
 ### 示例
 
 ```powershell
-# 代码探索（返回 candidates，调用方 LLM 扫 tags 判断，无匹配时用 dispatchPrompt 派 worker）
-$rdd = (Get-ChildItem (git rev-parse --show-toplevel) -Recurse -Directory -Depth 3 -Filter 'rdd-engine' | Select-Object -First 1).FullName; & "$rdd\scripts\explore.cmd" -Type explore -Query "分析认证模块的中间件链"
+# 缓存检索（返回排序位置：results 非空即命中读首条，空则用 dispatchPrompt 派 worker）
+$rdd = (Get-ChildItem (git rev-parse --show-toplevel) -Recurse -Directory -Depth 3 -Filter 'rdd-engine' | Select-Object -First 1).FullName; & "$rdd\scripts\explore.cmd" -Type search -Query "分析认证模块的中间件链"
 
-# worker 探索完成后注册产物（含 tags + 配对校验）
-$rdd = (Get-ChildItem (git rev-parse --show-toplevel) -Recurse -Directory -Depth 3 -Filter 'rdd-engine' | Select-Object -First 1).FullName; & "$rdd\scripts\explore.cmd" -Type register -Key "认证中间件链" -Tags "认证,鉴权,auth,jwt,中间件" -Path ".rdd/exploration/artifacts/auth-middleware.md" -Brief "JWT 签发→验证→权限检查" -Files "src/auth/middleware.ts,src/auth/jwt.ts"
+# worker 探索完成后注册产物（入热区；含 tags + 配对校验）
+$rdd = (Get-ChildItem (git rev-parse --show-toplevel) -Recurse -Directory -Depth 3 -Filter 'rdd-engine' | Select-Object -First 1).FullName; & "$rdd\scripts\explore-store.cmd" -Type register -Key "认证中间件链" -Tags "认证,鉴权,auth,jwt,中间件" -Path ".rdd/exploration/artifacts/auth-middleware.md" -Brief "JWT 签发→验证→权限检查" -Files "src/auth/middleware.ts,src/auth/jwt.ts"
+
+# 持久化转正
+$rdd = (Get-ChildItem (git rev-parse --show-toplevel) -Recurse -Directory -Depth 3 -Filter 'rdd-engine' | Select-Object -First 1).FullName; & "$rdd\scripts\explore-store.cmd" -Type persist -Key "认证中间件链"
 ```
 
 ## 路由依据
