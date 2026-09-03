@@ -1,0 +1,120 @@
+{
+  "format_version": 1,
+  "case_id": "openrca-bank-task6-1800",
+  "updated_round": 2,
+  "nodes": [
+    {
+      "id": "H-SYMPTOM",
+      "parent": null,
+      "statement": "症状锚点: t=0 桶(18:00:00-18:01:00)单次 60s 全服务时延尖峰,rr 跌至 85.96-98.67(sr=100,无错误),边缘 max 15s,t=60 完全恢复;幅度与服务调用深度正相关(ST4 最重,ST11 免疫)。第 2 轮细化: 急性停顿窗精确为 t∈[20,38)(约 18-20s,秒级 MG span 时延定位),60s 桶症状由停顿+尾部排水构成(E14)。",
+      "prior": 1.0,
+      "status": "confirmed",
+      "confidence": 0.98,
+      "prune_reason": null,
+      "evidence_ids": ["E1", "E2", "E4", "E14"],
+      "children": ["H-MYSQL2", "H-INFRA", "H-TOMCAT2", "H-REDIS", "H-MGJVM", "H-NETTCP"]
+    },
+    {
+      "id": "H-MYSQL2",
+      "parent": "H-SYMPTOM",
+      "statement": "根因=Mysql02(根因组件)。机制: 自 t≈-600 的行锁/慢查询竞争爬坡(E8,慢性背景病,并于 t=-420 产生 ST4 单服务轻症前兆=同病小发作,E16);事件分钟(覆盖 t∈[20,38) 急性窗)mysqld 内部触发的检查点型猛烈刷脏(全部脏页 5012→1464,pages written 74/s 为基线 15x+,data written 2.52MB/s 为全序列唯一最大值 10-25x,逻辑写平稳=非应用驱动,E13)穿过长期饱和的 sdc 盘(85-100% busy,慢性 iowait 26-37%),期间每 DB 往返成本升至 0.7-1s 典型/5-8s 峰值,按每请求 DB 调用数乘性放大(E14);刷脏 IO 全程穿盘完成(无存储冻结,E15),恢复与刷脏完成同步、脏页重新正常累积(E18)。组件归因置信 0.85;机制中'刷脏→IO 排队→查询停顿'一步无直接时延序列(sdc AvgServ 死指标、无队列深度),为推断而非直测——与'并发内部停顿+刷脏为伴生'不可完全区分,但两者均在 Mysql02 内部。",
+      "prior": 0.5,
+      "status": "confirmed",
+      "confidence": 0.85,
+      "prune_reason": null,
+      "evidence_ids": ["E8", "E12", "E13", "E14", "E15", "E16", "E18"],
+      "children": ["H-MYSQL2-BURST"]
+    },
+    {
+      "id": "H-MYSQL2-BURST",
+      "parent": "H-MYSQL2",
+      "statement": "已验证: 事件分钟存在 mysqld 侧急性事件=检查点型猛烈刷脏(E13);原候选中的连接洪峰(Connections 平稳 0.15-0.25/s,MaxUsed=37 恒定)、锁等待爆发(row lock current waits=0,Row Lock Waits≈0.3-1.1/s)、redo 日志压力(log waits=0,pending fsyncs 恒 1)均被同数据排除。",
+      "prior": 0.5,
+      "status": "confirmed",
+      "confidence": 0.8,
+      "prune_reason": null,
+      "evidence_ids": ["E13", "E15"],
+      "children": []
+    },
+    {
+      "id": "H-INFRA",
+      "parent": "H-SYMPTOM",
+      "statement": "根因=应用层主机共享基础设施 60s 抖动(共享存储 fsync 停顿或虚拟化/网络抖动)。",
+      "prior": 0.35,
+      "status": "pruned",
+      "confidence": 0.08,
+      "prune_reason": "第 2 轮证据重估后无正面承载:(1) 存储冻结变体被否——Mysql02 sdc 事件期持续完成写入 2092-2338KB/s 无塌缩/回灌,刷脏 IO 正常穿盘(E15);(2) 应用主机本地盘全程闲置(DSKBps=0,busy 0-4.75%),本地盘停顿变体无载体(E16/E17);(3) 停顿为每 DB 往返乘性结构而非恒定偏移冻结-释放型(E14);(4) ST11/Redis/docker 免疫排除共享底座(E16);(5) 原 E9 iowait 凸起重估为排水/混杂脚印(幅度 1-6pp,多主机仅 +60 出现,Redis01 亦有)(E17)。残余: MG→Mysql02 专属链路无遥测为不可观测盲区,已并入 Mysql02 服务路径归因,保留 0.08 余量。",
+      "evidence_ids": ["E3", "E9", "E12", "E15", "E17"],
+      "children": ["H-NETTCP"]
+    },
+    {
+      "id": "H-TOMCAT2",
+      "parent": "H-SYMPTOM",
+      "statement": "根因=Tomcat02 本地故障(GC/线程池/主机)。",
+      "prior": 0.4,
+      "status": "pruned",
+      "confidence": 0.05,
+      "prune_reason": "Tomcat01/03/04 同步劣化 5-8x(单机故障无法解释);Tomcat02 JVM/OS 内部全干净(无 Full GC、busy 0-2/500、ErrorCount 静态、CPU/内存/swap 正常)——E4+E5。Tomcat02 幅度最大仅作为后续放大(其自耗时 +142ms 部分为未追踪依赖等待),不构成根因。",
+      "evidence_ids": ["E4", "E5"],
+      "children": []
+    },
+    {
+      "id": "H-REDIS",
+      "parent": "H-SYMPTOM",
+      "statement": "根因=Redis01/02 缓存时延/拒绝。",
+      "prior": 0.3,
+      "status": "pruned",
+      "confidence": 0.03,
+      "prune_reason": "事件期 Redis 全部关键 KPI 干净(blocked/rejected/evicted/fork=0,ops 平滑,内存平稳)——E6。第 2 轮补强: Redis 往返全程平滑兼为'网络底座未退化'对照(E16)。",
+      "evidence_ids": ["E6"],
+      "children": []
+    },
+    {
+      "id": "H-MGJVM",
+      "parent": "H-SYMPTOM",
+      "statement": "根因=MG 层 JVM 停顿(GC/STW)。",
+      "prior": 0.3,
+      "status": "pruned",
+      "confidence": 0.05,
+      "prune_reason": "MG JVM 无重启、CPULoad 未升、线程平稳;堆在 t=60 采样突增(616→1184MB)后正常回落,第 2 轮确认为停顿后排队能力所致(与 E18 恢复耦合一致);无 MG GC 日志可直接排除,保留小余量——E7。MG 自耗时增长与停顿空窗与'等待未追踪下游'一致(E12),归入 H-MYSQL2。",
+      "evidence_ids": ["E7", "E12", "E18"],
+      "children": []
+    },
+    {
+      "id": "H-NETTCP",
+      "parent": "H-INFRA",
+      "statement": "根因=TCP 连接层故障(CLOSE-WAIT 堆积/连接表耗尽/网卡特例)。",
+      "prior": 0.2,
+      "status": "pruned",
+      "confidence": 0.05,
+      "prune_reason": "全部主机 TCP-CLOSE-WAIT/FIN-WAIT=0,MG02 连接数仅 +25%(排队征兆),带宽正常——E10。第 2 轮补强: Redis 往返平滑排除共享网络底座退化(E16)。",
+      "evidence_ids": ["E10"],
+      "children": []
+    },
+    {
+      "id": "ARTIFACT",
+      "parent": null,
+      "statement": "数据工件记录(非假设): MG→docker span 父子链自 bucket -60 起消失且持续,与故障窗不同界,判定为追踪采集异常;docker 层事件期 flat 的结论仍有效(其自身 span 速率与时延均不变)。另: Mysql02 GetResponseTimeOfMysqld 全程 0.0、sdc DSKAvgServ 恒 0.72、buffer pool pages total 全程 0.0 为死指标,均不可用(第 2 轮确认)。",
+      "prior": null,
+      "status": "noted",
+      "confidence": 0.8,
+      "prune_reason": null,
+      "evidence_ids": ["E11"],
+      "children": []
+    }
+  ],
+  "active_focus": [],
+  "conclusion": {
+    "round": 2,
+    "stop_condition": 1,
+    "root_cause_component": "Mysql02",
+    "root_cause_reason": "Mysql02 上 MySQL 的急性查询服务停顿(t∈[20,38),18:00:20-18:00:38 约 18-20s): mysqld 内部触发的检查点型猛烈刷脏(全部 3548 脏页,pages written 74/s=基线 15x+,data written 2.52MB/s=全序列唯一最大值)穿过长期饱和的 sdc 盘,叠加自 17:50(t=-600) 以来的行锁/慢查询竞争慢性爬坡(17:53 t=-420 已有 ST4 单服务轻症前兆);期间每 DB 往返成本 0.7-1s 典型/5-8s 峰值,经 MG/Tomcat/IG 按每请求 DB 调用数乘性放大,深调用服务(ServiceTest4)最重、无 DB 扇出服务(ServiceTest11)免疫;刷脏完成即恢复(t≈38-40,全部 KPI t=60 复常)。机制中磁盘排队恶化一步为推断(无时延/队列直测序列),'刷脏致堵'与'内部停顿+刷脏伴生'不可完全区分,但均在 Mysql02 内部。",
+    "caveats": [
+      "sdc DSKAvgServ/队列深度无有效遥测,IO 排队恶化步骤为推断而非直测",
+      "急性窗 [20,38) 与刷脏样本区间 [-60,+60] 的对齐受 60-120s 采样分辨率限制",
+      "MG→Mysql02 专属网络链路无遥测(同 pod 网底座经 Redis 对照排除)",
+      "全部证据为静态快照观察因果推断(时序+剂量反应+案例内复制+免疫对照),无干预实验可能"
+    ],
+    "best_alternative": "H-INFRA(残余 0.08): 不可观测的 Mysql02 专属链路/共享层盲区"
+  }
+}

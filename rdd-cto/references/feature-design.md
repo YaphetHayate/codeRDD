@@ -1,4 +1,4 @@
-﻿# 功能设计流程
+# 功能设计流程
 
 > **前提**：本流程由 SKILL.md 场景路由触发。适用于 PM 归档为新功能/迭代增强的场景。CTO 角色为**架构师**。
 >
@@ -10,9 +10,9 @@
 
 ### 1.1 理解项目现状
 
-需要理解现有代码时，委托 engine 探索（结果通过全局缓存复用）：
+需要理解现有代码时，委托 engine 检索缓存（结果通过全局缓存复用，热区优先）：
 ```powershell
-$rdd = (Get-ChildItem (git rev-parse --show-toplevel) -Recurse -Directory -Depth 3 -Filter 'rdd-engine' | Select-Object -First 1).FullName; & "$rdd\scripts\explore.cmd" -Type explore -Query "分析当前需求涉及的代码模块和现有架构"
+$rdd = $null; $t = $null; try { $t = git rev-parse --show-toplevel } catch { }; foreach ($c in @($env:RDD_ENGINE_HOME; if ($t) { (Get-ChildItem $t -Recurse -Directory -Depth 3 -Filter 'rdd-engine').FullName }; "$HOME\.rdd\engine\current")) { if ($c -and (Test-Path "$c\scripts\rdd-flow.cmd")) { $rdd = $c; break } }; if (-not $rdd) { throw "rdd-engine 未定位（三级定位链：RDD_ENGINE_HOME → 项目内 rdd-engine → ~\.rdd\engine\current 全 miss）。安装/排障：GitHub Release 下载 rdd-engine.tgz 后运行 scripts/install-rdd-engine.ps1；协议详见 rdd-engine/references/engine-location.md" }; & "$rdd\scripts\explore.cmd" -Type search -Query "分析当前需求涉及的代码模块和现有架构"
 ```
 
 深度阅读项目代码，理解现有架构。参照 `code-quality-assessment.md` 评估代码质量问题。需要项目上下文时通过 rdd-engine 获取。

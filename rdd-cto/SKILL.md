@@ -1,4 +1,4 @@
-﻿---
+---
 name: RDD-CTO
 description: >
   技术架构师模式。仅当用户输入 /RDD-CTO 时触发，不接受隐式激活。
@@ -42,7 +42,7 @@ description: >
 
 ## rdd-engine 能力（工作前必读）
 
-需要理解项目代码时，第一步调用 `explore.cmd`。完整能力清单、调用示例与硬约束见 `rdd-engine/references/capability-manifest.md`。
+需要理解项目代码时，第一步调用 `explore.cmd -Type search` 检索探索缓存（返回数据位置而非全量内容，热区优先）。完整能力清单、调用示例与硬约束见 `rdd-engine/references/capability-manifest.md`。
 
 ---
 
@@ -65,10 +65,10 @@ description: >
 
 ### 确认需求来源
 
-- **A0 — 脚本开窗指针**：prompt 形如 `/rdd-cto TaskId=<n> task=<task.json路径>`（TaskId 模式）或 `/rdd-cto handoff=<交接包路径>`（Handoff 模式）。TaskId 模式按指针调 `$rdd = (Get-ChildItem (git rev-parse --show-toplevel) -Recurse -Directory -Depth 3 -Filter 'rdd-engine' | Select-Object -First 1).FullName; & "$rdd\scripts\rdd-flow.cmd" -Command handoff -Role CTO -Archive <task.json所在归档> -TaskId <n>` 拉单条；Handoff 模式直接 Read 交接包。TaskId 有效性由本角色校验，不存在时（已完成/废弃）告知用户
-- **A — flow 启动**：如果由 `$rdd = (Get-ChildItem (git rev-parse --show-toplevel) -Recurse -Directory -Depth 3 -Filter 'rdd-engine' | Select-Object -First 1).FullName; & "$rdd\scripts\rdd-flow.cmd" -Command start -Role CTO` 进入，优先使用输出的 prompt / handoff packet，只读取 handoff 列出的需求文档
+- **A0 — 脚本开窗指针**：prompt 形如 `/rdd-cto TaskId=<n> task=<task.json路径>`（TaskId 模式）或 `/rdd-cto handoff=<交接包路径>`（Handoff 模式）。TaskId 模式按指针调 `$rdd = $null; $t = $null; try { $t = git rev-parse --show-toplevel } catch { }; foreach ($c in @($env:RDD_ENGINE_HOME; if ($t) { (Get-ChildItem $t -Recurse -Directory -Depth 3 -Filter 'rdd-engine').FullName }; "$HOME\.rdd\engine\current")) { if ($c -and (Test-Path "$c\scripts\rdd-flow.cmd")) { $rdd = $c; break } }; if (-not $rdd) { throw "rdd-engine 未定位（三级定位链：RDD_ENGINE_HOME → 项目内 rdd-engine → ~\.rdd\engine\current 全 miss）。安装/排障：GitHub Release 下载 rdd-engine.tgz 后运行 scripts/install-rdd-engine.ps1；协议详见 rdd-engine/references/engine-location.md" }; & "$rdd\scripts\rdd-flow.cmd" -Command handoff -Role CTO -Archive <task.json所在归档> -TaskId <n>` 拉单条；Handoff 模式直接 Read 交接包。TaskId 有效性由本角色校验，不存在时（已完成/废弃）告知用户
+- **A — flow 启动**：如果由 `$rdd = $null; $t = $null; try { $t = git rev-parse --show-toplevel } catch { }; foreach ($c in @($env:RDD_ENGINE_HOME; if ($t) { (Get-ChildItem $t -Recurse -Directory -Depth 3 -Filter 'rdd-engine').FullName }; "$HOME\.rdd\engine\current")) { if ($c -and (Test-Path "$c\scripts\rdd-flow.cmd")) { $rdd = $c; break } }; if (-not $rdd) { throw "rdd-engine 未定位（三级定位链：RDD_ENGINE_HOME → 项目内 rdd-engine → ~\.rdd\engine\current 全 miss）。安装/排障：GitHub Release 下载 rdd-engine.tgz 后运行 scripts/install-rdd-engine.ps1；协议详见 rdd-engine/references/engine-location.md" }; & "$rdd\scripts\rdd-flow.cmd" -Command start -Role CTO` 进入，优先使用输出的 prompt / handoff packet，只读取 handoff 列出的需求文档
 - **B — 用户指定**：提供 `requirement.md` 路径或口述需求 → 直接读取
-- **C — 应用层指针消息**：收到 `请处理 .rdd/changes/archive/<name>/ 下的需求` → 识别为应用层交接，运行 `$rdd = (Get-ChildItem (git rev-parse --show-toplevel) -Recurse -Directory -Depth 3 -Filter 'rdd-engine' | Select-Object -First 1).FullName; & "$rdd\scripts\rdd-flow.cmd" -Command handoff -Role CTO -Archive "<path>"` 拉取交接包
+- **C — 应用层指针消息**：收到 `请处理 .rdd/changes/archive/<name>/ 下的需求` → 识别为应用层交接，运行 `$rdd = $null; $t = $null; try { $t = git rev-parse --show-toplevel } catch { }; foreach ($c in @($env:RDD_ENGINE_HOME; if ($t) { (Get-ChildItem $t -Recurse -Directory -Depth 3 -Filter 'rdd-engine').FullName }; "$HOME\.rdd\engine\current")) { if ($c -and (Test-Path "$c\scripts\rdd-flow.cmd")) { $rdd = $c; break } }; if (-not $rdd) { throw "rdd-engine 未定位（三级定位链：RDD_ENGINE_HOME → 项目内 rdd-engine → ~\.rdd\engine\current 全 miss）。安装/排障：GitHub Release 下载 rdd-engine.tgz 后运行 scripts/install-rdd-engine.ps1；协议详见 rdd-engine/references/engine-location.md" }; & "$rdd\scripts\rdd-flow.cmd" -Command handoff -Role CTO -Archive "<path>"` 拉取交接包
 - **D — 自动查找**：用户未提供 → 扫描 `.rdd/changes/archive/`，找最新归档，调用 `rdd-flow show -Role CTO` 读取任务路由。向用户确认找到的需求
 - **E — 无归档** → 告知用户先去 PM 模式梳理需求
 

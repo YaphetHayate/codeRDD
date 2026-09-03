@@ -1,0 +1,161 @@
+# dsh agent preset 模板 —— scripts/build-dsh-presets.mjs 使用。
+# 不要直接编辑生成产物（dsh/presets/*/agent.cordis.yml）：改本模板或对应 SKILL.md 后重跑生成器。
+#
+# 骨架基于 dsh shipped standard preset。delegation 段是结构改动核心：
+# 裸 subagent 工具行全部移除、替换为缓存优先的 rdd-explore 工具行——
+# 本 preset 的会话不存在绕过 .rdd 探索缓存的派遣路径（装配层保证，非 prompt 约定）。
+# persona 段的 text 由生成器以各角色 SKILL.md 正文填充（见下方占位符行）。
+
+# ── identity ────────────────────────────────────────────────────────────────
+
+# 会话级角色人格：挂载于 preset 域内时遮蔽部署默认 persona（仅本会话生效）。
+- id: persona
+  name: '@deepseek-ai/dsh-persona'
+  config:
+    text: |-
+__PERSONA__
+
+- id: agent-instructions
+  name: '@deepseek-ai/dsh-agent-instructions'
+  config:
+    maxBytes: 65536
+
+# ── shell ───────────────────────────────────────────────────────────────────
+
+# 执行器（sandbox、shell-env 注册表）在宿主面；这里只声明模型可见的 shell 工具，
+# 按平台互斥装配（任一平台恰好一个生效）。
+- id: tool-bash
+  name: '@deepseek-ai/dsh-tool-bash'
+  disabled: !!js process.platform === 'win32'
+
+- id: tool-pwsh
+  name: '@deepseek-ai/dsh-tool-pwsh'
+  disabled: !!js process.platform !== 'win32'
+
+# ── filesystem ──────────────────────────────────────────────────────────────
+
+- id: tool-fs
+  name: '@deepseek-ai/dsh-tool-fs'
+
+- id: tool-fs-search
+  name: '@deepseek-ai/dsh-tool-fs-search'
+  config:
+    sampleOverCapGlobResults: false
+
+# ── background jobs ────────────────────────────────────────────────────────
+
+# jobs 注册表在宿主面；本行只暴露控制工具。
+- id: tool-jobs
+  name: '@deepseek-ai/dsh-tool-jobs'
+
+# ── skills ──────────────────────────────────────────────────────────────────
+
+# skill 目录按默认发现根注册（项目 .dsh/skills、.agents/skills 等）；
+# 项目内的 rdd-* skills 经此进目录。角色的正文已内联 persona，skill 条目仅作
+# 兜底与其他 skill 之用。
+- id: skill-filesystem
+  name: '@deepseek-ai/dsh-skill-filesystem'
+
+- id: tool-skill
+  name: '@deepseek-ai/dsh-tool-skill'
+
+# ── goals ───────────────────────────────────────────────────────────────────
+
+# goal 服务在宿主面；这里只有模型可见工具。
+- id: tool-goal
+  name: '@deepseek-ai/dsh-tool-goal'
+
+# ── plan mode ───────────────────────────────────────────────────────────────
+
+# 计划状态每会话一份：域隔离是正确生命周期，不是权宜。
+- id: planning
+  name: cordis:group
+  group: true
+  isolate:
+    planMode: true
+  config:
+    - id: plan-mode
+      name: '@deepseek-ai/dsh-plan-mode'
+      config:
+        section: |
+              You are in plan mode. Stay in plan mode until exit_plan_mode succeeds or the user switches the session mode. Imperative language to implement changes means plan the implementation, not execute it. Explore first with non-mutating reads; do not edit files or run code generation that rewrites tracked files. When ready, call exit_plan_mode with the complete plan markdown starting with a # title, as the only and final tool call in that assistant response.
+
+# ── compaction ──────────────────────────────────────────────────────────────
+
+# compaction-basic 经 ctx.get 跨读 toolResultPrune，两者必须同域；
+# tokenMeter 特意留在宿主面（浏览器读其投影）。
+- id: compaction
+  name: cordis:group
+  group: true
+  isolate:
+    compaction: true
+    toolResultPruner: true
+  config:
+    - id: compaction-basic
+      name: '@deepseek-ai/dsh-compaction-basic'
+
+    - id: command-compact
+      name: '@deepseek-ai/dsh-command-compact'
+
+    - id: tool-result-pruner
+      name: '@deepseek-ai/dsh-compaction-tool-result-pruner'
+      config:
+        thresholdChars: 8192
+        headChars: 4096
+        tailChars: 1024
+
+# ── delegation and workflows ────────────────────────────────────────────────
+
+# 与 standard 的结构差异：移除 tool-subagent / tool-subagent-fork /
+# tool-subagent-control（无裸派遣路径）；保留 workflow 行（ralph/workflow 在
+# 服务层调宿主 subagents 注册表，不受模型工具行移除影响）；新增 rdd-explore。
+# subagents 注册表与 spawn/fork provider 本身在宿主面 profile。
+- id: delegation
+  name: cordis:group
+  group: true
+  isolate:
+    workflowEngine: true
+  config:
+    - id: rdd-explore
+      name: '@coderrdd/dsh-rdd-explore'
+      config:
+        provider: spawn
+        registerMode: plugin
+        # 硬拒绝经 skill 工具加载 rdd-* 系列：本角色正文已在 persona，engine 职能由
+        # rdd_explore 工具与 CLI 承接；references 仍可经 read 工具读取。
+        forbiddenSkills: ['rdd-engine', 'rdd-pm', 'rdd-cto', 'rdd-ux', 'rdd-dev', 'rdd-qa', 'rdd-eval', 'rdd-pse']
+        # worker 是纯研究者：探索结果经结构化输出返回，落盘与注册全由插件可信
+        # 代码完成——因此不需要 write 工具，与任意会话沙箱模式正交。
+        toolFilter:
+          allow: ['read', 'read_image', 'glob', 'grep']
+__ROLE_POLICY__
+
+    - id: workflow-worker-thread
+      name: '@deepseek-ai/dsh-workflow-worker-thread'
+      config:
+        provider: spawn
+
+    - id: tool-workflow
+      name: '@deepseek-ai/dsh-tool-workflow'
+
+    - id: tool-ralph
+      name: '@deepseek-ai/dsh-tool-ralph'
+      config:
+        subagentProvider: spawn
+        maxRounds: 64
+
+# ── remaining model-facing rows ─────────────────────────────────────────────
+
+- id: tool-ask-user
+  name: '@deepseek-ai/dsh-tool-ask-user'
+
+- id: tool-todo
+  name: '@deepseek-ai/dsh-tool-todo'
+  config:
+    allowParallelInProgress: true
+
+- id: tool-web
+  name: '@deepseek-ai/dsh-tool-web'
+  config:
+    fetch: false
+    searchTimeoutMs: 60000

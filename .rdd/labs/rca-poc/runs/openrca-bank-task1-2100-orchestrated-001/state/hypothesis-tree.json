@@ -1,0 +1,58 @@
+{
+  "format_version": 1,
+  "case_id": "openrca-bank-task1-2100",
+  "updated_round": 1,
+  "nodes": [
+    {
+      "id": "H1",
+      "parent": null,
+      "statement": "JVM 进程级 CPU 事件:某 JVM 实例(IG01/IG02/MG01/MG02)JVM_CPULoad 类 KPI 在症状窗内存在事件型异常",
+      "prior": 0.6,
+      "status": "concluded",
+      "confidence": 0.82,
+      "prune_reason": null,
+      "evidence_ids": [
+        "E1",
+        "E2",
+        "E3"
+      ],
+      "children": []
+    },
+    {
+      "id": "H2",
+      "parent": null,
+      "statement": "OS/资源级事件:某实例(含 Mysql/Redis/Tomcat/apache/docker)OS CPU/内存/磁盘/网络在窗口内存在独占事件型异常",
+      "prior": 0.5,
+      "status": "supported",
+      "confidence": 0.7,
+      "prune_reason": null,
+      "evidence_ids": [
+        "E2"
+      ],
+      "children": [],
+      "manager_note": "IG01 OS CPU(720 起)为 JVM 事件的第二级/伴随;apache01 为涟漪"
+    },
+    {
+      "id": "H3",
+      "parent": null,
+      "statement": "服务面症状锚定:metric_app 在窗口内的突变时刻与形态(供根因事件对齐)",
+      "prior": 0.4,
+      "status": "supported",
+      "confidence": 0.85,
+      "prune_reason": null,
+      "evidence_ids": [
+        "E3"
+      ],
+      "children": [],
+      "manager_note": "症状锚点在追溯窗(20:29),报障窗内零症状——解耦第四例"
+    }
+  ],
+  "active_focus": [],
+  "conclusion": {
+    "root_cause_hypothesis": "H1",
+    "confidence": 0.82,
+    "stop_reason": "confidence_threshold",
+    "summary": "根因组件=IG01,原因=high JVM CPU load(JVM_CPULoad 阶跃 0.16→26.8→平台 50.0,≈280× 基线,JVM 进程内口径,全舰队 4 JVM 独占),发生时刻 ∈(T+240, T+360](=21:04:00-21:06:00 UTC+8,best estimate ~21:05;+360 采样为过渡值≈54% 平台,提示起点靠近 +300)。两级结构:JVM 平台 [360,600] → 同宿主 OS CPU 67-76% [720,1020](错相 120-360s)。报障窗内应用/trace 零影响;可观测症状 episode 在追溯窗 20:29(MG 层乘性放大,阻塞点在未入 trace 的下游)——与根因事件解耦(第四例)。",
+    "answer_tension": "托管真值:IG01 high JVM CPU load @21:06(=T+360)——组件/原因一致,时刻在夹逼区间端点(+360 为首个偏离采样,60s 采样下与真值粒度一致)"
+  }
+}

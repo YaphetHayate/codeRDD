@@ -1,0 +1,55 @@
+{
+  "format_version": 1,
+  "case_id": "pm-001",
+  "updated_round": 1,
+  "nodes": [
+    {
+      "id": "H1",
+      "parent": null,
+      "statement": "部署/变更引发:窗口内某次 deploy(#4821 T-95 或 #4822 T-40)的变更导致分发停止——需区分变更代码在跑 vs 变更遗留",
+      "prior": 0.6,
+      "status": "supported",
+      "confidence": 0.88,
+      "prune_reason": null,
+      "evidence_ids": [
+        "E1"
+      ],
+      "children": [],
+      "manager_note": "机制=变更遗留状态;与 H2 双 causal 交叉"
+    },
+    {
+      "id": "H2",
+      "parent": null,
+      "statement": "数据层状态问题:pg 中的数据状态(校验失败指向的数据不一致)导致 distributor 拒绝分发;回滚代码不修复数据",
+      "prior": 0.55,
+      "status": "concluded",
+      "confidence": 0.9,
+      "prune_reason": null,
+      "evidence_ids": [
+        "E2"
+      ],
+      "children": []
+    },
+    {
+      "id": "H3",
+      "parent": null,
+      "statement": "服务自身/资源问题:worker 池/队列服务/网络/其他组件(canary/billing)异常导致 job 不下发",
+      "prior": 0.35,
+      "status": "pruned",
+      "confidence": 0,
+      "prune_reason": "E3(refute,0.9):worker/服务/资源全平稳,停止点在校验门;11 条噪声全排除",
+      "evidence_ids": [
+        "E3"
+      ],
+      "children": []
+    }
+  ],
+  "active_focus": [],
+  "conclusion": {
+    "root_cause_hypothesis": "H2",
+    "confidence": 0.9,
+    "stop_reason": "confidence_threshold",
+    "summary": "根因=deploy #4821 的 pg-migrator 对 pg.jobs 表执行 ALTER(列 14 存储表示改为 raw numeric),变更后新写入行与旧行类型混存;distributor 严格 scan 校验门在混合行上失败(T-88 首错)并拒绝从不一致快照分发(T-85 分发归零)→job 大量堆积。为什么回滚无效:T+18 回滚仅还原 distributor-api 代码,pg-migrator 反向迁移未定义被跳过(pg.log),数据层保持污染且回滚后仍有新不一致行写入(T+19 'row written AFTER rollback window began')。真正恢复=T+25 hotfix-ignore-field-8803(读取端容忍该字段)——hotfix 落地当分钟分发即恢复而校验失败行数仍高,直接证明阻断条件=校验门×数据不一致。噪声鲁棒性:app.log 11 条噪声(canary×3/redis failover/billing×3/GC×2/disk/rate-limiter)+无关 deploy #4822 全部被正确排除;pg.log 时间模糊(仅日期)由 deploy.log 时刻链补齐,未阻碍定位。",
+    "answer_tension": null
+  }
+}

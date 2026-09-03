@@ -1,4 +1,4 @@
-﻿[CmdletBinding()]
+[CmdletBinding()]
 param(
     [string]$Target = ".",
     [ValidateSet("full", "minimal", "custom")]
@@ -145,7 +145,7 @@ function Copy-RoleAssets {
 
 function Copy-InfraAssets {
     param([string]$SourceRoot, [string]$TargetRoot, $Manifest, [switch]$Force, [switch]$DryRun)
-    $items = @(@("agent", "rdd-explore.md"), @("tools", "rdd_explore.ts"))
+    $items = @(@("agent", "rdd-explore.md"))
     foreach ($pair in $items) {
         $sub, $file = $pair
         $src = Join-Path $SourceRoot ".opencode\$sub\$file"

@@ -1,0 +1,3 @@
+name: RDD-PSE
+description: 售前工程师模式。 负责生成和更新 README.md、CLAUDE.md、AGENT.md、docs/code-quality.md，帮助其他角色快速理解项目全貌并遵循统一代码规范。
+order: 8

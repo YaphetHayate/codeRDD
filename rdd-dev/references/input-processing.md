@@ -1,4 +1,4 @@
-﻿# 输入处理
+# 输入处理
 
 > 本文档是 [SKILL.md](../SKILL.md) 的补充材料，描述 DEV 模式进入后如何按优先级通过路由目录确定开发任务。
 
@@ -13,7 +13,7 @@
 
 **TaskId 模式**：从指针的 task.json 路径定位归档，调 rdd-flow 拉单条 packet：
 ```powershell
-$rdd = (Get-ChildItem (git rev-parse --show-toplevel) -Recurse -Directory -Depth 3 -Filter 'rdd-engine' | Select-Object -First 1).FullName; & "$rdd\scripts\rdd-flow.cmd" -Command handoff -Role DEV -Archive <task.json所在归档目录> -TaskId <n>
+$rdd = $null; $t = $null; try { $t = git rev-parse --show-toplevel } catch { }; foreach ($c in @($env:RDD_ENGINE_HOME; if ($t) { (Get-ChildItem $t -Recurse -Directory -Depth 3 -Filter 'rdd-engine').FullName }; "$HOME\.rdd\engine\current")) { if ($c -and (Test-Path "$c\scripts\rdd-flow.cmd")) { $rdd = $c; break } }; if (-not $rdd) { throw "rdd-engine 未定位（三级定位链：RDD_ENGINE_HOME → 项目内 rdd-engine → ~\.rdd\engine\current 全 miss）。安装/排障：GitHub Release 下载 rdd-engine.tgz 后运行 scripts/install-rdd-engine.ps1；协议详见 rdd-engine/references/engine-location.md" }; & "$rdd\scripts\rdd-flow.cmd" -Command handoff -Role DEV -Archive <task.json所在归档目录> -TaskId <n>
 ```
 **TaskId 由本角色校验**：若 TaskId 在 task.json 中不存在（可能已被他人完成或废弃），向用户说明情况并请求裁决，不自行臆断。
 
@@ -33,7 +33,7 @@ DEV 有两种入口方式：
 
 ### B1 — Agent 间交接（上游传递）
 
-当上游角色（PM/CTO）通过 `$rdd = (Get-ChildItem (git rev-parse --show-toplevel) -Recurse -Directory -Depth 3 -Filter 'rdd-engine' | Select-Object -First 1).FullName; & "$rdd\scripts\rdd-flow.cmd" -Command start -Role DEV` 启动新会话时，新会话直接使用输出的 handoff packet，无需自行定位。此时：
+当上游角色（PM/CTO）通过 `$rdd = $null; $t = $null; try { $t = git rev-parse --show-toplevel } catch { }; foreach ($c in @($env:RDD_ENGINE_HOME; if ($t) { (Get-ChildItem $t -Recurse -Directory -Depth 3 -Filter 'rdd-engine').FullName }; "$HOME\.rdd\engine\current")) { if ($c -and (Test-Path "$c\scripts\rdd-flow.cmd")) { $rdd = $c; break } }; if (-not $rdd) { throw "rdd-engine 未定位（三级定位链：RDD_ENGINE_HOME → 项目内 rdd-engine → ~\.rdd\engine\current 全 miss）。安装/排障：GitHub Release 下载 rdd-engine.tgz 后运行 scripts/install-rdd-engine.ps1；协议详见 rdd-engine/references/engine-location.md" }; & "$rdd\scripts\rdd-flow.cmd" -Command start -Role DEV` 启动新会话时，新会话直接使用输出的 handoff packet，无需自行定位。此时：
 - 一次会话只实现一条需求（与 CTO/UX 对称）。`-TaskIndex` 指定单条启动，未指定时 handoff 列出全部 DEV 任务，锁定一条深耕
 - 只处理 packet 中 `tasks` 列出的需求/设计文档
 - 不扫描整个归档目录
@@ -44,7 +44,7 @@ DEV 有两种入口方式：
 用户输入 `/RDD-DEV` 但未指定归档时，调用流转脚本自动获取最新归档中的 DEV 任务：
 
 ```powershell
-$rdd = (Get-ChildItem (git rev-parse --show-toplevel) -Recurse -Directory -Depth 3 -Filter 'rdd-engine' | Select-Object -First 1).FullName; & "$rdd\scripts\rdd-flow.cmd" -Command handoff -Role DEV
+$rdd = $null; $t = $null; try { $t = git rev-parse --show-toplevel } catch { }; foreach ($c in @($env:RDD_ENGINE_HOME; if ($t) { (Get-ChildItem $t -Recurse -Directory -Depth 3 -Filter 'rdd-engine').FullName }; "$HOME\.rdd\engine\current")) { if ($c -and (Test-Path "$c\scripts\rdd-flow.cmd")) { $rdd = $c; break } }; if (-not $rdd) { throw "rdd-engine 未定位（三级定位链：RDD_ENGINE_HOME → 项目内 rdd-engine → ~\.rdd\engine\current 全 miss）。安装/排障：GitHub Release 下载 rdd-engine.tgz 后运行 scripts/install-rdd-engine.ps1；协议详见 rdd-engine/references/engine-location.md" }; & "$rdd\scripts\rdd-flow.cmd" -Command handoff -Role DEV
 ```
 
 ### B3 — 应用层指针消息（app-driven）
@@ -52,7 +52,7 @@ $rdd = (Get-ChildItem (git rev-parse --show-toplevel) -Recurse -Directory -Depth
 收到形如 `请处理 .rdd/changes/archive/<archive-name>/ 下的需求。` 的消息时，识别为应用层交接触发（Plus 模式）。提取归档路径，主动拉取交接包：
 
 ```powershell
-$rdd = (Get-ChildItem (git rev-parse --show-toplevel) -Recurse -Directory -Depth 3 -Filter 'rdd-engine' | Select-Object -First 1).FullName; & "$rdd\scripts\rdd-flow.cmd" -Command handoff -Role DEV -Archive ".rdd/changes/archive/<archive-name>"
+$rdd = $null; $t = $null; try { $t = git rev-parse --show-toplevel } catch { }; foreach ($c in @($env:RDD_ENGINE_HOME; if ($t) { (Get-ChildItem $t -Recurse -Directory -Depth 3 -Filter 'rdd-engine').FullName }; "$HOME\.rdd\engine\current")) { if ($c -and (Test-Path "$c\scripts\rdd-flow.cmd")) { $rdd = $c; break } }; if (-not $rdd) { throw "rdd-engine 未定位（三级定位链：RDD_ENGINE_HOME → 项目内 rdd-engine → ~\.rdd\engine\current 全 miss）。安装/排障：GitHub Release 下载 rdd-engine.tgz 后运行 scripts/install-rdd-engine.ps1；协议详见 rdd-engine/references/engine-location.md" }; & "$rdd\scripts\rdd-flow.cmd" -Command handoff -Role DEV -Archive ".rdd/changes/archive/<archive-name>"
 ```
 
 **不要将指针消息当作"用户直接下达的开发指令"（优先级 E）处理**——它是一个交接信号，背后有完整的 task.json 路由和交接包。

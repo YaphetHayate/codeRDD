@@ -1,4 +1,4 @@
-﻿# 归档规则
+# 归档规则
 
 > PM 专属：统一归档流程。标准流程和快速通道均引用本文档，各自以差异覆盖。
 
@@ -46,7 +46,7 @@ New-Item -ItemType Directory -Path ".rdd/changes/archive/YYYY-MM-DD-short-name/r
 写入 `task.json`（归档根目录），通过 CLI 初始化。先准备 `tasks-init.json`（UTF-8 无 BOM），包含 tasks 数组，然后调用 `init`：
 
 ```powershell
-$rdd = (Get-ChildItem (git rev-parse --show-toplevel) -Recurse -Directory -Depth 3 -Filter 'rdd-engine' | Select-Object -First 1).FullName; & "$rdd\scripts\rdd-flow.cmd" -Command init -Archive ".rdd/changes/archive/YYYY-MM-DD-short-name" -TasksFile ".rdd/changes/archive/YYYY-MM-DD-short-name/tasks-init.json"
+$rdd = $null; $t = $null; try { $t = git rev-parse --show-toplevel } catch { }; foreach ($c in @($env:RDD_ENGINE_HOME; if ($t) { (Get-ChildItem $t -Recurse -Directory -Depth 3 -Filter 'rdd-engine').FullName }; "$HOME\.rdd\engine\current")) { if ($c -and (Test-Path "$c\scripts\rdd-flow.cmd")) { $rdd = $c; break } }; if (-not $rdd) { throw "rdd-engine 未定位（三级定位链：RDD_ENGINE_HOME → 项目内 rdd-engine → ~\.rdd\engine\current 全 miss）。安装/排障：GitHub Release 下载 rdd-engine.tgz 后运行 scripts/install-rdd-engine.ps1；协议详见 rdd-engine/references/engine-location.md" }; & "$rdd\scripts\rdd-flow.cmd" -Command init -Archive ".rdd/changes/archive/YYYY-MM-DD-short-name" -TasksFile ".rdd/changes/archive/YYYY-MM-DD-short-name/tasks-init.json"
 ```
 
 字段填写指南见 `references/task-template.md`，路由判定规则见 `references/artifact-routing.md`。`currentOwners` 设为该需求的下一条处理角色。
@@ -63,13 +63,13 @@ $rdd = (Get-ChildItem (git rev-parse --show-toplevel) -Recurse -Directory -Depth
 
 ### 6. 委托 engine 探索代码（可选）
 
-若需求需要理解现有代码，委托 rdd-engine 执行探索（产物缓存于全局索引，下游角色可复用）：
+若需求需要理解现有代码，委托 rdd-engine 执行检索（产物缓存于全局双层索引——热区优先，下游角色可复用）：
 
 ```powershell
-$rdd = (Get-ChildItem (git rev-parse --show-toplevel) -Recurse -Directory -Depth 3 -Filter 'rdd-engine' | Select-Object -First 1).FullName; & "$rdd\scripts\explore.cmd" -Type explore -Query "分析 [需求简述] 涉及的代码模块"
+$rdd = $null; $t = $null; try { $t = git rev-parse --show-toplevel } catch { }; foreach ($c in @($env:RDD_ENGINE_HOME; if ($t) { (Get-ChildItem $t -Recurse -Directory -Depth 3 -Filter 'rdd-engine').FullName }; "$HOME\.rdd\engine\current")) { if ($c -and (Test-Path "$c\scripts\rdd-flow.cmd")) { $rdd = $c; break } }; if (-not $rdd) { throw "rdd-engine 未定位（三级定位链：RDD_ENGINE_HOME → 项目内 rdd-engine → ~\.rdd\engine\current 全 miss）。安装/排障：GitHub Release 下载 rdd-engine.tgz 后运行 scripts/install-rdd-engine.ps1；协议详见 rdd-engine/references/engine-location.md" }; & "$rdd\scripts\explore.cmd" -Type search -Query "分析 [需求简述] 涉及的代码模块"
 ```
 
-> engine 按 `rdd-engine/references/exploration-guide.md` 的策略执行：返回全部 fresh candidates（已通过时效校验），PM 扫 tags 判断后 Read 摘要或派 worker 探索并写入全局缓存。
+> engine 按 `rdd-engine/references/exploration-guide.md` 的策略执行：返回数据所在位置（已通过时效校验，热区优先），PM 扫 tags 判断后 Read 摘要或派 worker 探索并注册入热区。
 >
 > 如果变更范围简单（单文件/单模块），可跳过此步骤。快速通道默认跳过。
 

@@ -1,0 +1,25 @@
+{
+  "format_version": 1,
+  "case_id": "mock-001",
+  "system": "order-query",
+  "components": [
+    { "id": "lb", "kind": "load-balancer", "role": "入口流量分发" },
+    { "id": "web-1", "kind": "service", "role": "订单查询 API 实例" },
+    { "id": "web-2", "kind": "service", "role": "订单查询 API 实例" },
+    { "id": "web-3", "kind": "service", "role": "订单查询 API 实例" },
+    { "id": "mysql-primary", "kind": "database", "role": "订单主库(读写)" },
+    { "id": "cache", "kind": "cache", "role": "热点订单缓存" }
+  ],
+  "edges": [
+    { "from": "lb", "to": "web-1", "note": "HTTP" },
+    { "from": "lb", "to": "web-2", "note": "HTTP" },
+    { "from": "lb", "to": "web-3", "note": "HTTP" },
+    { "from": "web-1", "to": "mysql-primary", "note": "连接池,上限 100" },
+    { "from": "web-2", "to": "mysql-primary", "note": "连接池,上限 100" },
+    { "from": "web-3", "to": "mysql-primary", "note": "连接池,上限 100" },
+    { "from": "web-1", "to": "cache", "note": "读旁路" },
+    { "from": "web-2", "to": "cache", "note": "读旁路" },
+    { "from": "web-3", "to": "cache", "note": "读旁路" }
+  ],
+  "slo": { "endpoint": "/v1/orders", "p99_baseline_ms": 150 }
+}

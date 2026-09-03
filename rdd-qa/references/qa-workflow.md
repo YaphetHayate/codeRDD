@@ -5,8 +5,8 @@
 本文件描述从需求分析到测试归档（验证模式含代码质量检查与提交门禁）的完整流程。测试用例设计的方法论和模板见 `test-case-guide.md`。
 
 **核心产物**：本流程产出两处用例资产，职责不同、必须双写：
-- `.rdd/tests/{feature}/cases.md` — 功能级用例规约，**跨迭代的长期资产**（这个功能现在该测什么）
-- `archive/.../tests/cases.md` — 本次变更增量，**极简时点快照**（本次动过哪些 TC）
+- `.rdd/tests/{feature}/cases.json` — 功能级用例规约，**跨迭代的长期资产**（这个功能现在该测什么），JSON 格式，Schema 见 `test-case-guide.md#功能用例库`
+- `archive/.../tests/cases.json` — 本次变更增量，**极简时点快照**（本次动过哪些 TC）
 
 ---
 
@@ -16,7 +16,7 @@
 
 ### 读取功能清单
 
-读取 `.rdd/tests/index.md`（首次工作则不存在，跳过）。它列出项目已有的功能及其用例库位置。
+读取 `.rdd/tests/index.json`（首次工作则不存在，跳过）。它列出项目已有的功能及其用例库位置。
 
 ### 为每条需求识别功能归属
 
@@ -33,13 +33,13 @@
 
 | 需求 | 功能 | 类型 | 说明 |
 |------|------|------|------|
-| 需求1：搜索分页 | search | 复用 | 已有 .rdd/tests/search/cases.md（5 个 active 用例） |
+| 需求1：搜索分页 | search | 复用 | 已有 .rdd/tests/search/cases.json（5 个 active 用例） |
 | 需求2：导出 Excel | export | 新建 | 全新功能，建议命名 export |
 ```
 
 ### 读取已有用例规约
 
-对每个**复用型**功能，读取 `.rdd/tests/{feature}/cases.md`，重点关注：
+对每个**复用型**功能，读取 `.rdd/tests/{feature}/cases.json`，重点关注：
 - 已有哪些 active 用例 → 新需求可能扩展或修改它们
 - 哪些 deprecated → 避免重新设计已被取代的场景
 - TC 编号规则 → 新用例接着已有编号续编，保持连续
@@ -124,7 +124,7 @@
 
 ### 覆盖率追溯（按需）
 
-当一个功能涉及 **≥2 条验收标准**时，构建覆盖率追溯矩阵作为"覆盖充分"的硬证据。该矩阵**融入功能用例库的绑定表**（见 `test-case-guide.md#功能用例库` 的「用例与代码绑定」表），不单独成文：
+当一个功能涉及 **≥2 条验收标准**时，构建覆盖率追溯矩阵作为"覆盖充分"的硬证据。该矩阵**融入功能用例库的 cases 数组**（见 `test-case-guide.md#功能用例库` 的 cases.json Schema），不单独成文：
 
 - **正向**（验收标准 → 用例）：每条验收标准映射到哪些用例 + 覆盖状态（✅ 正向+反向 / ⚠️ 仅单向 / ❌ 未覆盖）
 - **反向**（用例 → 验收标准）：揪出**孤立用例**——没映射到任何验收标准的用例，大概率是"测了需求外的东西"或"需求遗漏了"
@@ -291,36 +291,38 @@ DEV 修复后重新进入 QA 验证。
 
 ### 7.1 更新功能用例库（当前态）
 
-对第〇步识别的每个功能，更新 `.rdd/tests/{feature}/cases.md`：
+对第〇步识别的每个功能，更新 `.rdd/tests/{feature}/cases.json`：
 
-- **复用型功能**：在已有规约上增删改。新增用例续编 TC 编号；被取代的旧用例改 `状态` 为 `deprecated` 并注明取代原因；`最后更新` 指向本次 archive
-- **新建型功能**：创建 `.rdd/tests/{feature}/cases.md`（模板见 `test-case-guide.md#功能用例库`），所有用例初始状态 `active`
-- **绑定表**：每条用例的 `代码位置` 填到 `tests/` 下实际文件:行号，`来源变更` 填本次 archive 目录名
+- **复用型功能**：在已有规约上增删改。新增用例续编 TC 编号；被取代的旧用例改 `status: "deprecated"` 并填 `deprecatedReason`；`lastChange` 指向本次 archive
+- **新建型功能**：创建 `.rdd/tests/{feature}/cases.json`（Schema 见 `test-case-guide.md#功能用例库`），所有用例初始 `status: "active"`
+- **绑定代码**：每条用例的 `codeRef` 填到 `tests/` 下实际文件:行号，`sourceChange` 填本次 archive 目录名
+- **写后自检**：JSON 可解析、枚举值合法、TC 编号无重复
 
-> 这是长期资产：**更新而非重写**。不要把整个 cases.md 覆盖重写，只在已有结构上做增量改动。
+> 这是长期资产：**更新而非重写**。不要把整个 cases.json 重建，只在已有结构上做增量改动。
 
 ### 7.2 更新功能清单总览
 
-更新 `.rdd/tests/index.md`：
-- 新建功能 → 追加一行（功能名、关联代码、用例数、最后更新）
-- 已有功能 → 更新用例数和最后更新时间
-- 首次工作（index.md 不存在）→ 创建并填入本次涉及的所有功能
+更新 `.rdd/tests/index.json`：
+- 新建功能 → `features` 数组追加一项（feature、relatedCode、testCode、activeCount、lastUpdated、lastChange）
+- 已有功能 → 更新 activeCount 和 lastUpdated
+- 首次工作（index.json 不存在）→ 创建并填入本次涉及的所有功能
 
 ### 7.3 写 archive 增量（时点快照）
 
-在归档目录创建 `tests/cases.md`，**只记本次动过的用例**，不复制完整内容：
+在归档目录创建 `tests/cases.json`，**只记本次动过的用例**，不复制完整内容：
 
+```json
+{
+  "archive": "2026-06-04-engine-adapter-modularization",
+  "changes": [
+    { "feature": "search", "id": "TC-005", "op": "added", "title": "分页边界 page=0" },
+    { "feature": "search", "id": "TC-002", "op": "deprecated", "reason": "v2 重构取代旧排序逻辑" },
+    { "feature": "search", "id": "TC-001", "op": "modified", "note": "补充空结果断言" }
+  ]
+}
 ```
-本次变更测试增量 — {archive 目录名}
 
-| TC | 操作 | 说明 |
-|----|------|------|
-| TC-005 | 新增 | 分页边界 page=0 |
-| TC-002 | 废弃 | v2 重构取代旧排序逻辑 |
-| TC-001 | 修改 | 补充空结果断言 |
-
-完整用例规约见 .rdd/tests/{feature}/cases.md
-```
+`op` 枚举：`added` / `modified` / `deprecated`。完整用例规约见 `.rdd/tests/{feature}/cases.json`。
 
 目录结构：
 
@@ -330,7 +332,7 @@ DEV 修复后重新进入 QA 验证。
 ├── requirements/           (PM 模式归档)
 ├── design/                 (CTO 模式归档 — 不读取)
 └── tests/                  (QA 模式归档)
-    └── cases.md            (本次增量，极简)
+    └── cases.json          (本次增量，极简)
 ```
 
 ### 7.4 更新 task.json

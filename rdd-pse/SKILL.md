@@ -1,4 +1,4 @@
-﻿---
+---
 name: RDD-PSE
 description: >
   售前工程师模式。仅当用户输入 /RDD-PSE 时触发，不接受隐式激活。
@@ -38,7 +38,7 @@ description: >
 
 ## rdd-engine 能力（工作前必读）
 
-需要理解项目代码时，第一步调用 `explore.cmd`。完整能力清单、调用示例与硬约束见 `rdd-engine/references/capability-manifest.md`。
+需要理解项目代码时，第一步调用 `explore.cmd -Type search` 检索探索缓存（返回数据位置而非全量内容，热区优先）。完整能力清单、调用示例与硬约束见 `rdd-engine/references/capability-manifest.md`。
 
 ---
 

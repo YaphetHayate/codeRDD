@@ -1,4 +1,4 @@
-﻿---
+---
 name: RDD-DEV
 description: >
   开发实现者模式。仅当用户输入 /RDD-DEV 时触发，不接受隐式激活。
@@ -28,13 +28,13 @@ description: >
 
 ## rdd-engine 能力（工作前必读）
 
-需要理解项目代码时，第一步调用 `explore.cmd`。完整能力清单、调用示例与硬约束见 `rdd-engine/references/capability-manifest.md`。
+需要理解项目代码时，第一步调用 `explore.cmd -Type search` 检索探索缓存（返回数据位置而非全量内容，热区优先）。完整能力清单、调用示例与硬约束见 `rdd-engine/references/capability-manifest.md`。
 
 ---
 
 ## 输入处理
 
-进入 DEV 后优先使用 handoff packet 裁剪上下文。如果由上游角色通过 `$rdd = (Get-ChildItem (git rev-parse --show-toplevel) -Recurse -Directory -Depth 3 -Filter 'rdd-engine' | Select-Object -First 1).FullName; & "$rdd\scripts\rdd-flow.cmd" -Command start -Role DEV` 启动，直接使用输出的交接包，无需自行定位。如果是用户手动 `/RDD-DEV`，调用 `$rdd = (Get-ChildItem (git rev-parse --show-toplevel) -Recurse -Directory -Depth 3 -Filter 'rdd-engine' | Select-Object -First 1).FullName; & "$rdd\scripts\rdd-flow.cmd" -Command handoff -Role DEV` 自动定位最新归档中的 DEV 任务；脚本不可用时再回退到手动扫描。没有交接包时再按优先级确定任务：A) 用户指定设计文档 → 设计引导模式；B) `rdd-flow show -Role DEV` 定位待开发任务；C) 自动查找文档；D) 用户直接指令（含 bug 检测优先）；E) 无可用信息时提示用户。
+进入 DEV 后优先使用 handoff packet 裁剪上下文。如果由上游角色通过 `$rdd = $null; $t = $null; try { $t = git rev-parse --show-toplevel } catch { }; foreach ($c in @($env:RDD_ENGINE_HOME; if ($t) { (Get-ChildItem $t -Recurse -Directory -Depth 3 -Filter 'rdd-engine').FullName }; "$HOME\.rdd\engine\current")) { if ($c -and (Test-Path "$c\scripts\rdd-flow.cmd")) { $rdd = $c; break } }; if (-not $rdd) { throw "rdd-engine 未定位（三级定位链：RDD_ENGINE_HOME → 项目内 rdd-engine → ~\.rdd\engine\current 全 miss）。安装/排障：GitHub Release 下载 rdd-engine.tgz 后运行 scripts/install-rdd-engine.ps1；协议详见 rdd-engine/references/engine-location.md" }; & "$rdd\scripts\rdd-flow.cmd" -Command start -Role DEV` 启动，直接使用输出的交接包，无需自行定位。如果是用户手动 `/RDD-DEV`，调用 `$rdd = $null; $t = $null; try { $t = git rev-parse --show-toplevel } catch { }; foreach ($c in @($env:RDD_ENGINE_HOME; if ($t) { (Get-ChildItem $t -Recurse -Directory -Depth 3 -Filter 'rdd-engine').FullName }; "$HOME\.rdd\engine\current")) { if ($c -and (Test-Path "$c\scripts\rdd-flow.cmd")) { $rdd = $c; break } }; if (-not $rdd) { throw "rdd-engine 未定位（三级定位链：RDD_ENGINE_HOME → 项目内 rdd-engine → ~\.rdd\engine\current 全 miss）。安装/排障：GitHub Release 下载 rdd-engine.tgz 后运行 scripts/install-rdd-engine.ps1；协议详见 rdd-engine/references/engine-location.md" }; & "$rdd\scripts\rdd-flow.cmd" -Command handoff -Role DEV` 自动定位最新归档中的 DEV 任务；脚本不可用时再回退到手动扫描。没有交接包时再按优先级确定任务：A) 用户指定设计文档 → 设计引导模式；B) `rdd-flow show -Role DEV` 定位待开发任务；C) 自动查找文档；D) 用户直接指令（含 bug 检测优先）；E) 无可用信息时提示用户。
 
 > 完整优先级判定流程见 `references/input-processing.md`
 
@@ -67,7 +67,7 @@ description: >
 硬规则：
 
 - 编码遵循项目现有风格，最小改动，防御性处理，不引入不必要依赖
-- 需要理解代码时按上方「rdd-engine 能力：代码探索」硬规则执行（先 `$rdd = (Get-ChildItem (git rev-parse --show-toplevel) -Recurse -Directory -Depth 3 -Filter 'rdd-engine' | Select-Object -First 1).FullName; & "$rdd\scripts\explore.cmd"` 取 candidates + 扫 tags 判断，禁止直接派只读 explore）
+- 需要理解代码时按上方「rdd-engine 能力：代码探索」硬规则执行（先 `$rdd = $null; $t = $null; try { $t = git rev-parse --show-toplevel } catch { }; foreach ($c in @($env:RDD_ENGINE_HOME; if ($t) { (Get-ChildItem $t -Recurse -Directory -Depth 3 -Filter 'rdd-engine').FullName }; "$HOME\.rdd\engine\current")) { if ($c -and (Test-Path "$c\scripts\rdd-flow.cmd")) { $rdd = $c; break } }; if (-not $rdd) { throw "rdd-engine 未定位（三级定位链：RDD_ENGINE_HOME → 项目内 rdd-engine → ~\.rdd\engine\current 全 miss）。安装/排障：GitHub Release 下载 rdd-engine.tgz 后运行 scripts/install-rdd-engine.ps1；协议详见 rdd-engine/references/engine-location.md" }; & "$rdd\scripts\explore.cmd"` `-Type search` 检索缓存（返回位置）+ 扫 tags 判断，禁止直接派只读 explore）
 - 每个任务完成后必须自测通过
 - 代码提交移交 QA：DEV 不执行 git commit，完成自测后推进路由至 QA，由 QA 在验证模式下经提交门禁（见 `references/qa-flow.md`）
 - 需求不清、设计不可行、需要上游决策时，按驳回协议正式移交

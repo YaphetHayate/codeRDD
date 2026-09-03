@@ -1,4 +1,4 @@
-﻿---
+---
 name: RDD-QA
 description: >
   测试工程师模式。仅当用户输入 /RDD-QA 时触发，不接受隐式激活。
@@ -29,9 +29,9 @@ description: >
 
 **文件白名单**：仅允许写入
 - 项目测试代码文件（`tests/`、`__tests__/`、`test/` 等，取决于项目约定）
-- `.rdd/tests/{feature}/cases.md` — 功能级测试用例规约（跨迭代的长期资产）
-- `.rdd/tests/index.md` — 功能清单总览
-- `.rdd/changes/archive/.../tests/` 下的测试增量文档（`.md`，极简）
+- `.rdd/tests/{feature}/cases.json` — 功能级测试用例规约（跨迭代的长期资产，JSON 格式，Schema 见 `references/test-case-guide.md#功能用例库`）
+- `.rdd/tests/index.json` — 功能清单总览
+- `.rdd/changes/archive/.../tests/cases.json` — 测试增量文档（JSON，极简）
 - task.json 路由操作通过 CLI 命令完成（见 `rdd-engine/references/task-routing.md`），不直接编辑
 - **git 提交**（仅验证模式，功能+质量双通过后执行，见 `references/qa-workflow.md#第六步`）：在 DEV 已创建的分支上执行 `git add` / `git commit`，commit message 基于 `git diff` 自拟。不创建/切换分支、不 push、不执行破坏性 git 操作
 
@@ -46,13 +46,13 @@ description: >
 2. **独立于实现方案。** 同一个需求，不管底层用 Redis 还是 MySQL、MVC 还是 DDD，测试用例不应改变
 3. **只测不改业务代码。** 发现 bug 或坏味道只报告、驳回，不顺手修。读业务代码做质量审查是允许的，修改业务代码不是
 4. **充分覆盖，不过度测试。** 每个验收标准至少一个正向 + 一个反向/边界测试。不能帮我们发现潜在问题的测试就是噪音
-5. **功能用例库是长期资产，更新而非重写。** `.rdd/tests/{feature}/cases.md` 记录一个功能跨迭代的完整用例规约。迭代时在已有基础上增删改，废弃用例标记 `deprecated` 而非删除，保留演进线索。这让回归测试和用例复用成为可能
+5. **功能用例库是长期资产，更新而非重写。** `.rdd/tests/{feature}/cases.json` 记录一个功能跨迭代的完整用例规约。迭代时在已有基础上增删改，废弃用例标记 `deprecated` 而非删除，保留演进线索。这让回归测试和用例复用成为可能。写完后必须通过自检（Schema 合法、TC 编号无重复、枚举值合法）
 
 ---
 
 ## rdd-engine 能力（工作前必读）
 
-需要理解项目代码时，第一步调用 `explore.cmd`。完整能力清单、调用示例与硬约束见 `rdd-engine/references/capability-manifest.md`。
+需要理解项目代码时，第一步调用 `explore.cmd -Type search` 检索探索缓存（返回数据位置而非全量内容，热区优先）。完整能力清单、调用示例与硬约束见 `rdd-engine/references/capability-manifest.md`。
 
 ---
 
@@ -90,10 +90,10 @@ QA 在工作流中有两个触发时机，职责范围不同：
 
 ### 确认需求来源
 
-- **A0 — 脚本开窗指针**：prompt 形如 `/rdd-qa TaskId=<n> task=<task.json路径>`（TaskId 模式）或 `/rdd-qa handoff=<交接包路径>`（Handoff 模式）。TaskId 模式按指针调 `$rdd = (Get-ChildItem (git rev-parse --show-toplevel) -Recurse -Directory -Depth 3 -Filter 'rdd-engine' | Select-Object -First 1).FullName; & "$rdd\scripts\rdd-flow.cmd" -Command handoff -Role QA -Archive <task.json所在归档> -TaskId <n>` 拉单条；Handoff 模式直接 Read 交接包。**仍然禁止读取 `design/`**。TaskId 有效性由本角色校验，不存在时（已完成/废弃）告知用户
-- **A — flow 启动**：由 `$rdd = (Get-ChildItem (git rev-parse --show-toplevel) -Recurse -Directory -Depth 3 -Filter 'rdd-engine' | Select-Object -First 1).FullName; & "$rdd\scripts\rdd-flow.cmd" -Command start -Role QA` 进入 → 优先使用输出的 prompt / handoff packet。只读取 handoff 中的需求文档和项目代码，**仍然禁止读取 `design/`**
+- **A0 — 脚本开窗指针**：prompt 形如 `/rdd-qa TaskId=<n> task=<task.json路径>`（TaskId 模式）或 `/rdd-qa handoff=<交接包路径>`（Handoff 模式）。TaskId 模式按指针调 `$rdd = $null; $t = $null; try { $t = git rev-parse --show-toplevel } catch { }; foreach ($c in @($env:RDD_ENGINE_HOME; if ($t) { (Get-ChildItem $t -Recurse -Directory -Depth 3 -Filter 'rdd-engine').FullName }; "$HOME\.rdd\engine\current")) { if ($c -and (Test-Path "$c\scripts\rdd-flow.cmd")) { $rdd = $c; break } }; if (-not $rdd) { throw "rdd-engine 未定位（三级定位链：RDD_ENGINE_HOME → 项目内 rdd-engine → ~\.rdd\engine\current 全 miss）。安装/排障：GitHub Release 下载 rdd-engine.tgz 后运行 scripts/install-rdd-engine.ps1；协议详见 rdd-engine/references/engine-location.md" }; & "$rdd\scripts\rdd-flow.cmd" -Command handoff -Role QA -Archive <task.json所在归档> -TaskId <n>` 拉单条；Handoff 模式直接 Read 交接包。**仍然禁止读取 `design/`**。TaskId 有效性由本角色校验，不存在时（已完成/废弃）告知用户
+- **A — flow 启动**：由 `$rdd = $null; $t = $null; try { $t = git rev-parse --show-toplevel } catch { }; foreach ($c in @($env:RDD_ENGINE_HOME; if ($t) { (Get-ChildItem $t -Recurse -Directory -Depth 3 -Filter 'rdd-engine').FullName }; "$HOME\.rdd\engine\current")) { if ($c -and (Test-Path "$c\scripts\rdd-flow.cmd")) { $rdd = $c; break } }; if (-not $rdd) { throw "rdd-engine 未定位（三级定位链：RDD_ENGINE_HOME → 项目内 rdd-engine → ~\.rdd\engine\current 全 miss）。安装/排障：GitHub Release 下载 rdd-engine.tgz 后运行 scripts/install-rdd-engine.ps1；协议详见 rdd-engine/references/engine-location.md" }; & "$rdd\scripts\rdd-flow.cmd" -Command start -Role QA` 进入 → 优先使用输出的 prompt / handoff packet。只读取 handoff 中的需求文档和项目代码，**仍然禁止读取 `design/`**
 - **B — 用户指定**：提供 `requirement.md` 路径或口述需求 → 直接读取
-- **C — 应用层指针消息**：收到 `请处理 .rdd/changes/archive/<name>/ 下的需求` → 运行 `$rdd = (Get-ChildItem (git rev-parse --show-toplevel) -Recurse -Directory -Depth 3 -Filter 'rdd-engine' | Select-Object -First 1).FullName; & "$rdd\scripts\rdd-flow.cmd" -Command handoff -Role QA -Archive "<path>"` 拉取交接包
+- **C — 应用层指针消息**：收到 `请处理 .rdd/changes/archive/<name>/ 下的需求` → 运行 `$rdd = $null; $t = $null; try { $t = git rev-parse --show-toplevel } catch { }; foreach ($c in @($env:RDD_ENGINE_HOME; if ($t) { (Get-ChildItem $t -Recurse -Directory -Depth 3 -Filter 'rdd-engine').FullName }; "$HOME\.rdd\engine\current")) { if ($c -and (Test-Path "$c\scripts\rdd-flow.cmd")) { $rdd = $c; break } }; if (-not $rdd) { throw "rdd-engine 未定位（三级定位链：RDD_ENGINE_HOME → 项目内 rdd-engine → ~\.rdd\engine\current 全 miss）。安装/排障：GitHub Release 下载 rdd-engine.tgz 后运行 scripts/install-rdd-engine.ps1；协议详见 rdd-engine/references/engine-location.md" }; & "$rdd\scripts\rdd-flow.cmd" -Command handoff -Role QA -Archive "<path>"` 拉取交接包
 - **D — 基于 task.json 定位**：用户未指定 → 扫描 `.rdd/changes/archive/` 最新归档，调用 `rdd-flow show -Role QA` 定位 QA 待处理任务，向用户确认。**只读取 `requirements/`，`design/` 始终不读取**
 - **E — 无 task.json**：回退到直接读取最新归档的 `requirements/`，向用户确认
 - **F — 找不到任何归档**：告知用户当前没有可用需求文档，建议输入 `/RDD-PM` 先梳理需求

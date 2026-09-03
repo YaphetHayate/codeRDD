@@ -1,0 +1,26 @@
+{
+  "run_id": "openrca-bank-task6-1800-orchestrated-001",
+  "case_id": "openrca-bank-task6-1800",
+  "arm": "orchestrated",
+  "final_state": "hypothesis_space_exhausted",
+  "truth_component": "Redis02",
+  "verdict": "escalated",
+  "verdict_keywords_hit": [
+    "Redis02",
+    "high",
+    "memory",
+    "usage"
+  ],
+  "reject_keywords_hit": [],
+  "rounds_used": 2,
+  "evidence_count": 5,
+  "correlational": 5,
+  "causal": 0,
+  "chain_integrity": {
+    "unsupported_prune_or_conclude_nodes": [],
+    "dangling_citations": []
+  },
+  "confidence_range_violations": [],
+  "concluded_without_causal": [],
+  "needs_human_review": false
+}

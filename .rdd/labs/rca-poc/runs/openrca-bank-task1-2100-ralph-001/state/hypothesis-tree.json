@@ -1,0 +1,106 @@
+{
+  "format_version": 1,
+  "case_id": "openrca-bank-task1-2100",
+  "updated_round": 1,
+  "nodes": [
+    {
+      "id": "H0",
+      "parent": null,
+      "statement": "症状窗 [0,+1800](2021-03-04 21:00-21:30 UTC+8)内存在单次系统故障,其根因发生时刻待定位(可早于窗起点,观测面覆盖 [-3600,+2400])",
+      "prior": 1.0,
+      "status": "framing",
+      "confidence": null,
+      "prune_reason": null,
+      "evidence_ids": [],
+      "children": ["H1", "H2", "H3", "H4", "H5", "H6", "H7"]
+    },
+    {
+      "id": "H1",
+      "parent": "H0",
+      "statement": "根因=apache02 主机上 apache 进程组 apache_10001 一个 worker 进程异常退出(PROCPPCount 6→5,持续不恢复);发生时刻(相对T0)∈(+180s,+240s],首次异常采样 t=+240s(2021-03-04 21:04:00 UTC+8,60s 采样粒度)",
+      "prior": 0.5,
+      "status": "leading",
+      "confidence": 0.82,
+      "prune_reason": null,
+      "evidence_ids": ["E001", "E002", "E003", "E004", "E005", "E006", "E009"],
+      "children": []
+    },
+    {
+      "id": "H2",
+      "parent": "H0",
+      "statement": "根因=Mysql02 慢查询/锁风暴(发生时刻≈t=-2820~-2760)导致窗内故障",
+      "prior": 0.2,
+      "status": "pruned",
+      "confidence": 0.05,
+      "prune_reason": "全部影响与恢复均在 t<0:SlowQueries 风暴区间 [-2820,-540] 与 app 层 mrt 尖峰 -2820/-1860..-1740/-660..-360 一一对应,但 t=0 前 SlowQueries 回基线、app 指标与 trace 在 [0,1800] 干净(E007),且窗内穷尽扫描 Mysql02 无故障级偏离(E004);与'症状窗内单次故障'的因果时序不符",
+      "evidence_ids": ["E007", "E004", "E009"],
+      "children": []
+    },
+    {
+      "id": "H3",
+      "parent": "H0",
+      "statement": "根因=docker 容器层故障(dockerA/B 独立停顿,发生时刻≈t=-3120 或 -2220~-2040)导致窗内故障",
+      "prior": 0.15,
+      "status": "pruned",
+      "confidence": 0.05,
+      "prune_reason": "docker 独立停顿两轮均在 t<0 且 t=-1560 起完全恢复(E007);窗内 docker 分钟最大时长正常、无状态变化(E004/E005);窗内 dockerB1/B2 span 数下探 z 仅 -1.0~-1.9 不显著(E006)",
+      "evidence_ids": ["E007", "E004", "E006"],
+      "children": []
+    },
+    {
+      "id": "H4",
+      "parent": "H0",
+      "statement": "根因=IG01 JVM/主机 CPU 异常(JVM_CPULoad、CPUCpuUtil 升高)导致窗内故障",
+      "prior": 0.05,
+      "status": "pruned",
+      "confidence": 0.03,
+      "prune_reason": "瞬态且晚于故障:t=+240 时刻 JVM_CPULoad 仍为基线 0.158,冲高仅在 t=360-600(JVM)与 720-1020(主机)且随后恢复(E008);无持续性状态变化,不满足根因的先行性/持续性",
+      "evidence_ids": ["E008"],
+      "children": []
+    },
+    {
+      "id": "H5",
+      "parent": "H0",
+      "statement": "根因=IG01 JVM 非堆内存泄漏",
+      "prior": 0.03,
+      "status": "pruned",
+      "confidence": 0.01,
+      "prune_reason": "NoHeapMemoryUsed 序列平坦(826611440→826591424,微漂无增长趋势)(E008)",
+      "evidence_ids": ["E008"],
+      "children": []
+    },
+    {
+      "id": "H6",
+      "parent": "H0",
+      "statement": "根因=Tomcat 主机内存压力(Tomcat02/03/04 MEMFreeMem 下降)",
+      "prior": 0.04,
+      "status": "pruned",
+      "confidence": 0.02,
+      "prune_reason": "全窗(含故障前 1h)线性漂移 1367→1232MB 无阶跃、无饱和(E008),为背景漂移而非故障",
+      "evidence_ids": ["E008"],
+      "children": []
+    },
+    {
+      "id": "H7",
+      "parent": "H0",
+      "statement": "根因=Redis02 异常(keyspace_misses/used_cpu 变化,发生时刻≈-2100/-1020)",
+      "prior": 0.03,
+      "status": "pruned",
+      "confidence": 0.02,
+      "prune_reason": "旗标均为累计计数器(uptime/lru_clock/total_commands 等)伪异常且起始均在 t<0(E004 方法复核);窗内穷尽扫描 Redis01/02 无任何故障级持续偏离(E004)",
+      "evidence_ids": ["E004"],
+      "children": []
+    }
+  ],
+  "active_focus": ["H1"],
+  "conclusion": {
+    "round": 1,
+    "stop_rule": 1,
+    "root_cause_component": "apache02",
+    "root_cause_reason": "apache 进程组 apache_10001 进程数 6→5:一个 worker 进程异常退出(主机未重启、无内存/CPU 资源压力,进程级故障;具体退出诱因本观测面不可见——本窗无日志数据)",
+    "root_cause_time_rel_t0": "∈(+180s,+240s],首次异常采样 t=+240s",
+    "root_cause_time_abs": "2021-03-04 21:04:00 UTC+8(采样区间 21:03:00-21:04:00,60s 粒度)",
+    "confidence": 0.82,
+    "evidence_ids": ["E001(causal)", "E002", "E003", "E004", "E005", "E006(weak)", "E009"]
+  }
+}

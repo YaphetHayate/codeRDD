@@ -1,0 +1,27 @@
+{
+  "run_id": "mock-001-orchestrated-001",
+  "case_id": "mock-001",
+  "arm": "orchestrated",
+  "final_state": "root_cause_concluded",
+  "truth_component": "release-2185",
+  "verdict": "located",
+  "verdict_keywords_hit": [
+    "release-2185",
+    "orders",
+    "customer_id",
+    "全表扫描",
+    "rows_examined"
+  ],
+  "reject_keywords_hit": [],
+  "rounds_used": 2,
+  "evidence_count": 5,
+  "correlational": 2,
+  "causal": 3,
+  "chain_integrity": {
+    "unsupported_prune_or_conclude_nodes": [],
+    "dangling_citations": []
+  },
+  "confidence_range_violations": [],
+  "concluded_without_causal": [],
+  "needs_human_review": false
+}

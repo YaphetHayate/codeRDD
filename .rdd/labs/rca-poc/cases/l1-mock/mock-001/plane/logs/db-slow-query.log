@@ -1,0 +1,13 @@
+# 慢查询日志采样(执行时间 > 1s 才记录;t 为相对 T0 分钟偏移)
+t=-44.2 query="SELECT id, status, total FROM orders WHERE customer_id = 88231 ORDER BY created_at DESC LIMIT 50" duration_ms=3901 rows_examined=487213 rows_sent=50
+t=-43.8 query="SELECT id, status, total FROM orders WHERE customer_id = 10442 ORDER BY created_at DESC LIMIT 50" duration_ms=3810 rows_examined=482905 rows_sent=50
+t=-42.1 query="SELECT id, status, total FROM orders WHERE customer_id = 73119 ORDER BY created_at DESC LIMIT 50" duration_ms=4012 rows_examined=490112 rows_sent=50
+t=-38.5 query="SELECT id, status, total FROM orders WHERE customer_id = 20988 ORDER BY created_at DESC LIMIT 50" duration_ms=4233 rows_examined=486773 rows_sent=50
+t=-31.0 query="SELECT id, status, total FROM orders WHERE customer_id = 51002 ORDER BY created_at DESC LIMIT 50" duration_ms=4490 rows_examined=488340 rows_sent=50
+t=-24.3 query="SELECT id, status, total FROM orders WHERE customer_id = 31877 ORDER BY created_at DESC LIMIT 50" duration_ms=4710 rows_examined=491207 rows_sent=50
+t=-16.7 query="SELECT id, status, total FROM orders WHERE customer_id = 90145 ORDER BY created_at DESC LIMIT 50" duration_ms=5102 rows_examined=493864 rows_sent=50
+t=-8.9 query="SELECT id, status, total FROM orders WHERE customer_id = 42871 ORDER BY created_at DESC LIMIT 50" duration_ms=5640 rows_examined=495500 rows_sent=50
+t=-2.4 query="SELECT id, status, total FROM orders WHERE customer_id = 66410 ORDER BY created_at DESC LIMIT 50" duration_ms=6104 rows_examined=498231 rows_sent=50
+t=3.1 query="SELECT id, status, total FROM orders WHERE customer_id = 15538 ORDER BY created_at DESC LIMIT 50" duration_ms=6488 rows_examined=499712 rows_sent=50
+t=-21.4 query="SELECT o.id, o.status FROM orders o JOIN customers c ON o.customer_id = c.id WHERE c.tier = 'vip' LIMIT 100" duration_ms=1180 rows_examined=21400 rows_sent=100
+t=-9.6 query="SELECT COUNT(*) FROM orders WHERE status = 'pending'" duration_ms=1050 rows_examined=31800 rows_sent=1

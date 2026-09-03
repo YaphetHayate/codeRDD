@@ -202,102 +202,146 @@ tests/
 
 ## 功能用例库
 
-> 测试用例是按**功能**组织的长期资产（跨迭代活着），不是按需求归档的一次性快照。本节定义 `.rdd/tests/` 的结构、模板和命名约定。
+> 测试用例是按**功能**组织的长期资产（跨迭代活着），不是按需求归档的一次性快照。本节定义 `.rdd/tests/` 的结构、JSON Schema 和命名约定。
+>
+> **为什么是 JSON**：用例库是结构化数据（供可视化面板、回归分析、覆盖率统计消费），MD 表格无法机器校验。JSON 是唯一事实源，人类可读视图由工具从 JSON 渲染，不手写。
 
 ### 目录结构
 
 ```
 .rdd/tests/
-├── index.md                # 功能清单总览（QA 入口）
-├── search/cases.md         # 搜索功能用例规约
-├── user/cases.md           # 用户功能用例规约
-└── order/cases.md          # 订单功能用例规约
+├── index.json               # 功能清单总览（QA 入口）
+├── search/cases.json        # 搜索功能用例规约
+├── user/cases.json          # 用户功能用例规约
+└── order/cases.json         # 订单功能用例规约
 ```
 
 **与 archive 的分工**：
-- `.rdd/tests/{feature}/cases.md` = 功能的**当前态**（现在该测什么）— 类似 working tree
-- `archive/.../tests/cases.md` = 本次变更的**增量**（动过哪些 TC）— 类似 commit
+- `.rdd/tests/{feature}/cases.json` = 功能的**当前态**（现在该测什么）— 类似 working tree
+- `archive/.../tests/cases.json` = 本次变更的**增量**（动过哪些 TC）— 类似 commit
 
-### index.md 模板
+### 通用 JSON 约定
 
-```markdown
-# 测试功能清单
+- **编码与格式**：UTF-8，2 空格缩进，键名用 camelCase
+- **枚举值固定**，禁止自由文本（见各 Schema 注释）
+- **id 唯一性**：同一 feature 内 TC 编号不得重复
+- **写后自检**：每次写入后校验——JSON 可解析、枚举值合法、无重复 id、`activeCount`/`deprecatedCount` 与 cases 数组实际值一致
 
-| 功能 | 关联代码 | 测试代码 | 用例数 (active) | 最后更新 |
-|------|---------|---------|----------------|---------|
-| search | src/services/search.ts | tests/search.test.ts | 7 | 2026-07-15 |
-| user | src/services/user.ts | tests/user.test.ts | 8 | 2026-06-01 |
+### index.json Schema
+
+```json
+{
+  "features": [
+    {
+      "feature": "search",
+      "relatedCode": ["src/services/search.ts"],
+      "testCode": ["tests/search.test.ts"],
+      "activeCount": 7,
+      "deprecatedCount": 2,
+      "lastUpdated": "2026-07-15",
+      "lastChange": "2026-07-15-search-v2"
+    }
+  ]
+}
 ```
 
-### cases.md 模板（核心）
+### cases.json Schema（核心）
 
 每个功能一个文件。结构固定，便于跨迭代演进：
 
-```markdown
-# {功能名} — 测试用例规约
-
-## 元信息
-- 功能标识：search
-- 关联代码：src/services/search.ts
-- 测试代码：tests/search.test.ts
-- 当前用例：7 active / 2 deprecated
-- 最后更新：2026-07-15 ← archive/2026-07-15-search-v2
-
-## 用例与代码绑定
-
-| TC | 标题 | 优先级 | 验收标准 | 代码位置 | 来源变更 | 状态 |
-|----|------|--------|---------|---------|---------|------|
-| TC-001 | 合法关键词返回结果 | P0 | AC-1.1 | search.test.ts:12 | 2026-06-01-search-v1 | active |
-| TC-005 | 分页边界 page=0 | P1 | AC-1.3 | search.test.ts:88 | 2026-07-15-search-v2 | active |
-| TC-002 | 旧版结果排序 | P2 | AC-1.2 | — | 2026-06-01-search-v1 | deprecated (v2 重构取代) |
-
-## 用例详情
-
-### TC-001：合法关键词返回结果
-- **类型/优先级**：正向 / P0
-- **关联需求**：搜索功能
-- **验收标准映射**：AC-1.1
-- **前置条件**：[环境/数据要求]
-- **测试步骤**：1. ... 2. ...
-- **预期结果**：[判断条件]
-
-（每个 TC 按上方「测试用例模板」展开。deprecated 用例保留详情，仅状态标记为 deprecated）
+```json
+{
+  "feature": "search",
+  "status": "active",
+  "relatedCode": ["src/services/search.ts"],
+  "testCode": ["tests/search.test.ts"],
+  "lastChange": "2026-07-15-search-v2",
+  "cases": [
+    {
+      "id": "TC-001",
+      "title": "合法关键词返回结果",
+      "type": "positive",
+      "priority": "P0",
+      "acceptance": "AC-1.1",
+      "codeRef": "tests/search.test.ts:12",
+      "sourceChange": "2026-06-01-search-v1",
+      "status": "active",
+      "crossFeature": [],
+      "precondition": "数据库存在种子用户",
+      "steps": ["输入关键词「张三」", "点击搜索"],
+      "expected": "返回名称匹配的用户列表"
+    },
+    {
+      "id": "TC-002",
+      "title": "旧版结果排序",
+      "type": "positive",
+      "priority": "P2",
+      "acceptance": "AC-1.2",
+      "codeRef": null,
+      "sourceChange": "2026-06-01-search-v1",
+      "status": "deprecated",
+      "deprecatedReason": "v2 重构取代",
+      "crossFeature": [],
+      "expected": "按创建时间倒序"
+    }
+  ]
+}
 ```
 
-### 「用例与代码绑定」表 = 长期追溯矩阵
+**字段说明**：
 
-这张表同时承担追溯矩阵的职责（需求↔用例双向闭环），第三步覆盖率追溯直接读这张表：
-- **正向**（验收标准 → 用例）：每条验收标准是否有用例覆盖
-- **反向**（用例 → 验收标准）：揪出没映射到任何验收标准的**孤立用例**
+| 字段 | 必填 | 约束 |
+|------|------|------|
+| `feature` | ✅ | kebab-case，与目录名一致 |
+| `status` | ✅ | `active` / `deprecated`（功能整体废弃时标 `deprecated`，不删文件） |
+| `cases[].id` | ✅ | `TC-` 前缀 + 数字，同一 feature 内唯一，续编不重排 |
+| `cases[].type` | ✅ | 枚举：`positive`（正向）/ `negative`（反向）/ `boundary`（边界）/ `exception`（异常） |
+| `cases[].priority` | ✅ | 枚举：`P0` / `P1` / `P2` |
+| `cases[].acceptance` | ✅ | 验收标准编号，如 `AC-1.1`；无映射时填 `null`（会被覆盖率追溯揪为孤立用例） |
+| `cases[].codeRef` | ✅ | 测试代码位置：`文件:行号` 或 `类::方法`；deprecated 可为 `null` |
+| `cases[].sourceChange` | ✅ | 首次引入时的 archive 目录名 |
+| `cases[].status` | ✅ | 枚举：`active` / `deprecated` |
+| `cases[].deprecatedReason` | deprecated 时必填 | 取代原因，如"v2 重构取代" |
+| `cases[].crossFeature` | ✅ | 数组，关联的其他功能名；无关联填 `[]` |
+| `precondition` / `steps` / `expected` | 建议填 | P0/P1 用例必填 `expected`；P2 可只填 `expected`（对应精简模板） |
 
-单条验收标准的功能无需刻意维护"覆盖状态"列，绑定表本身已足够。
+### cases 数组 = 长期追溯矩阵
+
+cases 数组同时承担追溯矩阵的职责（需求↔用例双向闭环），第三步覆盖率追溯直接读它：
+- **正向**（验收标准 → 用例）：每条验收标准（`acceptance` 字段）是否有用例覆盖
+- **反向**（用例 → 验收标准）：揪出 `acceptance` 为 `null` 的**孤立用例**（大概率是"测了需求外的东西"或"需求遗漏了"）
+
+单条验收标准的功能无需刻意构建覆盖视图，cases 数组本身已足够。
 
 ### 功能命名约定（QA 淘汰式）
 
 - **kebab-case**，语义化，与被测能力对齐（`search`、`user-auth`、`order-export`）
 - **复用优先**：第〇步识别功能时，已有功能能覆盖的绝不新建。命名在首次使用时与用户确认，后续迭代沿用
 - **避免过细**：一个功能 = 一组用户可感知的完整能力。"搜索"是一个功能，不要拆成"搜索输入"和"搜索结果"
-- **重命名谨慎**：功能名一旦建立就是回归测试的锚点，轻易不改；确需改时同步更新所有 cases.md 和 index.md 的引用
+- **重命名谨慎**：功能名一旦建立就是回归测试的锚点，轻易不改；确需改时同步更新所有 cases.json 和 index.json 的引用
 
 ### 演进规则
 
-- **新增用例**：续编 TC 编号（步长见上方「用例编号规则」），状态 `active`，填 `来源变更`
-- **修改用例**：原地改，`来源变更` 更新为本次 archive。不保留旧版内容（旧版在历史 archive 里可查）
-- **废弃用例**：**不删除**。状态改 `deprecated`，注明取代原因（如"v2 重构取代"）。`代码位置` 置空或保留历史值
-- **功能整体移除**：cases.md 整体在元信息区标注 `状态：deprecated`，不删文件
+- **新增用例**：续编 TC 编号（步长见上方「用例编号规则」），`status: "active"`，填 `sourceChange`
+- **修改用例**：原地改，`sourceChange` 不变、archive 增量记录本次修改。不保留旧版内容（旧版在历史 archive 里可查）
+- **废弃用例**：**不删除**。`status` 改 `deprecated`，填 `deprecatedReason`。`codeRef` 置 `null` 或保留历史值
+- **功能整体移除**：顶层 `status` 改 `deprecated`，不删文件
 
 ### 跨功能用例（cross-feature）
 
 一条用例涉及多个功能时（如"登录后搜索"同时涉及登录和搜索）：
 
-- **归属主触发功能**：用例规约放在核心行为落地的功能下（"登录后搜索"归 `search`）
-- **加 cross-feature 标签**：在用例详情里标注关联的其他功能：
+- **归属主触发功能**：用例对象放在核心行为落地的功能的 cases.json 里（"登录后搜索"归 `search`）
+- **填 crossFeature 数组**：列出关联的其他功能：
 
-  ```markdown
-  ### TC-008：登录用户搜索返回个性化结果
-  - **cross-feature**：user-auth
-  - **类型/优先级**：正向 / P0
-  ...
+  ```json
+  {
+    "id": "TC-008",
+    "title": "登录用户搜索返回个性化结果",
+    "crossFeature": ["user-auth"],
+    "type": "positive",
+    "priority": "P0"
+  }
   ```
 
-- **不在被关联功能里重复登记**：`user-auth/cases.md` 不重复写这条用例，避免同步成本
+- **不在被关联功能里重复登记**：`user-auth/cases.json` 不重复写这条用例，避免同步成本

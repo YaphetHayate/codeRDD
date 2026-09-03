@@ -3,6 +3,8 @@
 > **定位**：所有 RDD 角色在完成产物后、引导下一角色时的标准流程。
 > 上游角色（PM/CTO/UX/QA）完成归档后**必须**按本协议执行交接，不走"直接告知用户输入斜杠命令"的捷径。
 > 下游角色（DEV/CTO/QA）按本协议识别三种入口，统一以 handoff packet 为上下文边界开工。
+>
+> **路由单一真源**：流转状态（当前处理角色、任务生命周期）只存在于 task.json，一律通过 `rdd-flow` CLI 读写。需求/设计文档是内容工件——任何角色都有权阅读，但只有作者角色有维护义务，**文档不承载流转字段**。存量归档中已有的「当前责任人」视为废弃历史痕迹，一律以 task.json 为准，无需回改。
 
 ---
 
@@ -27,12 +29,12 @@ RDD 有两种运行环境，交接行为不同。**判据是运行时环境变�
 
 ### Step 1 — 推进 task.json 路由
 
-将已完成产物的需求行 `currentOwners` 改为下一处理角色（调用 `rdd-flow advance`），同步需求/设计文档自身的 `## 流转控制 > 当前责任人`。完整命令参考见 `rdd-engine/references/task-routing.md`。
+将已完成产物的需求行 `currentOwners` 改为下一处理角色，调用 `rdd-flow advance` 一步完成。**不修改任何文档侧的流转字段**——文档是内容工件，路由状态只活在 task.json；存量归档中已存在的「当前责任人」字段已废弃，以 task.json 为准。完整命令参考见 `rdd-engine/references/task-routing.md`。
 
 ### Step 2 — 运行 next，展示可流转角色
 
 ```powershell
-$rdd = (Get-ChildItem (git rev-parse --show-toplevel) -Recurse -Directory -Depth 3 -Filter 'rdd-engine' | Select-Object -First 1).FullName; & "$rdd\scripts\rdd-flow.cmd" -Command next -Format markdown
+$rdd = $null; $t = $null; try { $t = git rev-parse --show-toplevel } catch { }; foreach ($c in @($env:RDD_ENGINE_HOME; if ($t) { (Get-ChildItem $t -Recurse -Directory -Depth 3 -Filter 'rdd-engine').FullName }; "$HOME\.rdd\engine\current")) { if ($c -and (Test-Path "$c\scripts\rdd-flow.cmd")) { $rdd = $c; break } }; if (-not $rdd) { throw "rdd-engine 未定位（三级定位链：RDD_ENGINE_HOME → 项目内 rdd-engine → ~\.rdd\engine\current 全 miss）。安装/排障：GitHub Release 下载 rdd-engine.tgz 后运行 scripts/install-rdd-engine.ps1；协议详见 rdd-engine/references/engine-location.md" }; & "$rdd\scripts\rdd-flow.cmd" -Command next -Format markdown
 ```
 
 将输出的可流转角色列表展示给用户。
@@ -60,7 +62,7 @@ $rdd = (Get-ChildItem (git rev-parse --show-toplevel) -Recurse -Directory -Depth
 无论哪种运行模式，上游 agent **统一调用交接脚本**，由脚本读 `$env:RDD_RUNTIME` 自动选择后端：
 
 ```powershell
-$rdd = (Get-ChildItem (git rev-parse --show-toplevel) -Recurse -Directory -Depth 3 -Filter 'rdd-engine' | Select-Object -First 1).FullName; & "$rdd\scripts\start-role.cmd" -Role <目标角色> -TaskId <n>
+$rdd = $null; $t = $null; try { $t = git rev-parse --show-toplevel } catch { }; foreach ($c in @($env:RDD_ENGINE_HOME; if ($t) { (Get-ChildItem $t -Recurse -Directory -Depth 3 -Filter 'rdd-engine').FullName }; "$HOME\.rdd\engine\current")) { if ($c -and (Test-Path "$c\scripts\rdd-flow.cmd")) { $rdd = $c; break } }; if (-not $rdd) { throw "rdd-engine 未定位（三级定位链：RDD_ENGINE_HOME → 项目内 rdd-engine → ~\.rdd\engine\current 全 miss）。安装/排障：GitHub Release 下载 rdd-engine.tgz 后运行 scripts/install-rdd-engine.ps1；协议详见 rdd-engine/references/engine-location.md" }; & "$rdd\scripts\start-role.cmd" -Role <目标角色> -TaskId <n>
 ```
 
 > app-driven 模式下还需 `-EmployeeId <uuid>`（目标角色对应的员工，从交接包/路由取）。脚本会 POST 到 Plus 的 `/api/rdd/handoff`，由 Plus 创建对话并自动驱动目标角色。
@@ -90,7 +92,7 @@ $rdd = (Get-ChildItem (git rev-parse --show-toplevel) -Recurse -Directory -Depth
 上游 agent 完成路由推进后，**统一调用交接脚本**为目标角色开启下游会话。脚本读 `$env:RDD_RUNTIME` 自动选择后端，agent 无需判断模式：
 
 ```powershell
-$rdd = (Get-ChildItem (git rev-parse --show-toplevel) -Recurse -Directory -Depth 3 -Filter 'rdd-engine' | Select-Object -First 1).FullName; & "$rdd\scripts\start-role.cmd" -Role <下游角色> -TaskId <n>
+$rdd = $null; $t = $null; try { $t = git rev-parse --show-toplevel } catch { }; foreach ($c in @($env:RDD_ENGINE_HOME; if ($t) { (Get-ChildItem $t -Recurse -Directory -Depth 3 -Filter 'rdd-engine').FullName }; "$HOME\.rdd\engine\current")) { if ($c -and (Test-Path "$c\scripts\rdd-flow.cmd")) { $rdd = $c; break } }; if (-not $rdd) { throw "rdd-engine 未定位（三级定位链：RDD_ENGINE_HOME → 项目内 rdd-engine → ~\.rdd\engine\current 全 miss）。安装/排障：GitHub Release 下载 rdd-engine.tgz 后运行 scripts/install-rdd-engine.ps1；协议详见 rdd-engine/references/engine-location.md" }; & "$rdd\scripts\start-role.cmd" -Role <下游角色> -TaskId <n>
 ```
 
 > app-driven（Plus）模式下追加 `-EmployeeId <uuid>`，其余参数不变。
@@ -113,7 +115,7 @@ $rdd = (Get-ChildItem (git rev-parse --show-toplevel) -Recurse -Directory -Depth
 当脚本自动开窗不可用（非 Windows / 无 wt / opencode CLI 缺失），或用户偏好手动操作时，回退到手动流程。用户在上游引导下：
 
 1. `/new`（Ctrl+X N）开新 session
-2. 输入 `/rdd-<角色>` —— 命令自动加载角色 SKILL，并通过 `$rdd = (Get-ChildItem (git rev-parse --show-toplevel) -Recurse -Directory -Depth 3 -Filter 'rdd-engine' | Select-Object -First 1).FullName; & "$rdd\scripts\rdd-flow.cmd" -Command handoff` 拉取最新交接包
+2. 输入 `/rdd-<角色>` —— 命令自动加载角色 SKILL，并通过 `$rdd = $null; $t = $null; try { $t = git rev-parse --show-toplevel } catch { }; foreach ($c in @($env:RDD_ENGINE_HOME; if ($t) { (Get-ChildItem $t -Recurse -Directory -Depth 3 -Filter 'rdd-engine').FullName }; "$HOME\.rdd\engine\current")) { if ($c -and (Test-Path "$c\scripts\rdd-flow.cmd")) { $rdd = $c; break } }; if (-not $rdd) { throw "rdd-engine 未定位（三级定位链：RDD_ENGINE_HOME → 项目内 rdd-engine → ~\.rdd\engine\current 全 miss）。安装/排障：GitHub Release 下载 rdd-engine.tgz 后运行 scripts/install-rdd-engine.ps1；协议详见 rdd-engine/references/engine-location.md" }; & "$rdd\scripts\rdd-flow.cmd" -Command handoff` 拉取最新交接包
 
 该入口由 `.opencode/commands/rdd-<角色>.md` 实现。**旧版"同会话宣布边界 / Agent 直接交接"已废弃**——无法真正隔离上游上下文。若用户坚持在同会话进入角色，按命令中的检查清单执行，并提示下次走脚本开窗或 `/new`。
 
@@ -128,7 +130,7 @@ $rdd = (Get-ChildItem (git rev-parse --show-toplevel) -Recurse -Directory -Depth
 识别为应用层交接触发。在 Plus 模式下，这条消息由 `/api/rdd/handoff` 端点自动发送（脚本走 Plus 后端时触发）；用户也可在 Plus 对话框手动输入。提取归档路径，主动拉取交接包：
 
 ```powershell
-$rdd = (Get-ChildItem (git rev-parse --show-toplevel) -Recurse -Directory -Depth 3 -Filter 'rdd-engine' | Select-Object -First 1).FullName; & "$rdd\scripts\rdd-flow.cmd" -Command handoff -Role <self> -Archive ".rdd/changes/archive/<archive-name>"
+$rdd = $null; $t = $null; try { $t = git rev-parse --show-toplevel } catch { }; foreach ($c in @($env:RDD_ENGINE_HOME; if ($t) { (Get-ChildItem $t -Recurse -Directory -Depth 3 -Filter 'rdd-engine').FullName }; "$HOME\.rdd\engine\current")) { if ($c -and (Test-Path "$c\scripts\rdd-flow.cmd")) { $rdd = $c; break } }; if (-not $rdd) { throw "rdd-engine 未定位（三级定位链：RDD_ENGINE_HOME → 项目内 rdd-engine → ~\.rdd\engine\current 全 miss）。安装/排障：GitHub Release 下载 rdd-engine.tgz 后运行 scripts/install-rdd-engine.ps1；协议详见 rdd-engine/references/engine-location.md" }; & "$rdd\scripts\rdd-flow.cmd" -Command handoff -Role <self> -Archive ".rdd/changes/archive/<archive-name>"
 ```
 
 用 packet 作为上下文边界开工。**不要将指针消息当作"用户直接下达的开发指令"（优先级 E）处理**——它是一个交接信号，背后有完整的 task.json 路由和交接包。
@@ -142,7 +144,7 @@ $rdd = (Get-ChildItem (git rev-parse --show-toplevel) -Recurse -Directory -Depth
 1. 只读 handoff packet 列出的需求/设计文档
 2. 不扫描整个归档目录
 3. 不读取 `ignored` 中的文档（除非用户明确要求）
-4. 代码探索从 `involvedFiles` 起步，深入时委托 `$rdd = (Get-ChildItem (git rev-parse --show-toplevel) -Recurse -Directory -Depth 3 -Filter 'rdd-engine' | Select-Object -First 1).FullName; & "$rdd\scripts\explore.cmd" -Type search`
+4. 代码探索从 `involvedFiles` 起步，深入时委托 `$rdd = $null; $t = $null; try { $t = git rev-parse --show-toplevel } catch { }; foreach ($c in @($env:RDD_ENGINE_HOME; if ($t) { (Get-ChildItem $t -Recurse -Directory -Depth 3 -Filter 'rdd-engine').FullName }; "$HOME\.rdd\engine\current")) { if ($c -and (Test-Path "$c\scripts\rdd-flow.cmd")) { $rdd = $c; break } }; if (-not $rdd) { throw "rdd-engine 未定位（三级定位链：RDD_ENGINE_HOME → 项目内 rdd-engine → ~\.rdd\engine\current 全 miss）。安装/排障：GitHub Release 下载 rdd-engine.tgz 后运行 scripts/install-rdd-engine.ps1；协议详见 rdd-engine/references/engine-location.md" }; & "$rdd\scripts\explore.cmd" -Type search`
 5. 角色切换走新会话（脚本入口 B0 自动选后端，或手动 `/new` 入口 B1）；同会话内不切换，避免上游对话污染
 
 ---

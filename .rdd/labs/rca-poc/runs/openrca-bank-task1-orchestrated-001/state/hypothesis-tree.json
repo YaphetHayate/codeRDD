@@ -1,0 +1,60 @@
+{
+  "format_version": 1,
+  "case_id": "openrca-bank-task1",
+  "updated_round": 3,
+  "nodes": [
+    {
+      "id": "H1", "parent": null,
+      "statement": "数据库层故障(Mysql01/Mysql02):某 Mysql 实例出现异常导致窗口内系统单点故障",
+      "prior": 0.55, "status": "supported", "confidence": 0.5,
+      "prune_reason": null, "evidence_ids": ["E1"], "children": ["H1.1", "H1.2"],
+      "manager_note": "域级支持;根因层由子节点承载"
+    },
+    {
+      "id": "H2", "parent": null,
+      "statement": "缓存层故障(Redis01/Redis02)",
+      "prior": 0.35, "status": "pruned", "confidence": 0.0,
+      "prune_reason": "E2(refute, 0.88):双实例全 KPI 稳态", "evidence_ids": ["E2"], "children": []
+    },
+    {
+      "id": "H3", "parent": null,
+      "statement": "应用层故障(Tomcat/Service/docker/gw 实例)",
+      "prior": 0.4, "status": "pruned", "confidence": 0.0,
+      "prune_reason": "E3(refute, 0.8):应用组件平稳;T+840 突变为传递性受害", "evidence_ids": ["E3"], "children": []
+    },
+    {
+      "id": "H1.1", "parent": "H1",
+      "statement": "Mysql02 工作负载型异常为根因:查询模式/速率变化(T+540 前兆)触发阵发性慢查询爆发(T+660 首爆),经滞后两步机制(MG 排队/池耗竭,推测)传导至应用面(T+837/840 突变)",
+      "prior": 0.6, "status": "supported", "confidence": 0.6,
+      "prune_reason": null, "evidence_ids": ["E1", "E4", "E6", "E7"], "children": ["H1.1.1", "H1.1.2"],
+      "manager_note": "最终最佳假设(结案):E4 支持(首爆 T+660 预注册标准/前兆 T+540/历史回合共变)+ E6/E7 的两个 refine 反驳反向强化本方向(锁时间为伴随量非因;直接传递被时序反转反驳)。置信度 0.6:组件定位多线交叉扎实,但 causal 末环受观测面盲区阻断(无 Mysql log/trace、720-840 采样空洞、MG 池指标缺位),未达 0.8 阈值——如实以 budget_exhausted 结案"
+    },
+    {
+      "id": "H1.2", "parent": "H1",
+      "statement": "Mysql02 内存持续高压为根因('high memory usage' 型)",
+      "prior": 0.45, "status": "pruned", "confidence": 0.0,
+      "prune_reason": "E5(refute, 0.88):内存恒 98% 为静态慢性基线,孪生判别失败,BP/swap/Qcache 机制信号全零", "evidence_ids": ["E5"], "children": [],
+      "manager_note": "与托管真值 reason 口径存在张力(observations 记录)"
+    },
+    {
+      "id": "H1.1.1", "parent": "H1.1",
+      "statement": "末环因果闭合:应用侧存在对 DB 异常的直接响应证据",
+      "prior": 0.55, "status": "pruned", "confidence": 0.0,
+      "prune_reason": "E6(refute, 0.65):日志关键词 0 命中;时序反转——T+840 DB 空闲(SQ=0.098/Questions -35%)而应用请求量稳定,直接传递不成立;突变起点收紧至 T+837;prior 0.55<0.6 免双验", "evidence_ids": ["E6"], "children": []
+    },
+    {
+      "id": "H1.1.2", "parent": "H1.1",
+      "statement": "锁/长事务侧机制:锁持有者先于慢查询首爆",
+      "prior": 0.5, "status": "pruned", "confidence": 0.0,
+      "prune_reason": "E7(refute, 0.7):锁系 KPI 与 SQ 完全同步无先导(T+660 同刻);current waits/LongestTrx 全窗零;孪生 Mysql01 RLT 抬升无慢查询伴随(非诊断性);prior 0.5<0.6 免双验", "evidence_ids": ["E7"], "children": []
+    }
+  ],
+  "active_focus": [],
+  "conclusion": {
+    "root_cause_hypothesis": "H1.1",
+    "confidence": 0.6,
+    "stop_reason": "budget_exhausted",
+    "summary": "根因组件 = Mysql02(多线交叉:时序首发/孪生对照/历史回合共变/trace 时延梯度独立指向)。机制 = 查询模式/速率变化触发的工作负载型阵发性慢查询爆发(非资源耗尽:CPU≤51%/内存静态/连接富余;非锁竞争主导:锁时间为伴随量)。发生时刻 = T+660s 首个异常采样点(物理起始 ∈ (T+540, T+660] 采样盲区;T+540 为语句速率前兆)。传导:滞后两步机制(MG 层排队/池耗竭,推测——观测面无该环指标)至应用面 T+837/840。置信度 0.6 未达 0.8:causal 末环被观测面结构性盲区阻断,如实结案。",
+    "answer_tension": "托管真值: Mysql02 'high memory usage' @ T+1620s;调查证据: 内存恒 98% 为静态基线(E5 孪生判别),窗口内事件型异常为慢查询爆发;T+1620 恰有 SQ=4.8 复发采样。分歧归因:评测集 record 标注(运维记录口径)与观测面可判定事件(遥测口径)的粒度差异——如实呈现,交人工裁决。"
+  }
+}

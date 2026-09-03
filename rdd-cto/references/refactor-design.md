@@ -1,4 +1,4 @@
-﻿# 重构设计流程
+# 重构设计流程
 
 > **前提**：本流程由 SKILL.md 场景路由触发。适用于 PM 归档为重构/技术优化的场景。CTO 角色为**架构师**——诊断现状、设计目标架构、规划迁移路径。
 >
@@ -10,9 +10,9 @@
 
 ### 1.1 理解现状
 
-从 PM 归档中读取重构需求文件，然后**深入阅读现有代码**——必须理解当前架构的问题所在，才能设计合理的改造方案。需要理解代码时委托 engine：
+从 PM 归档中读取重构需求文件，然后**深入阅读现有代码**——必须理解当前架构的问题所在，才能设计合理的改造方案。需要理解代码时委托 engine 检索缓存：
 ```powershell
-$rdd = (Get-ChildItem (git rev-parse --show-toplevel) -Recurse -Directory -Depth 3 -Filter 'rdd-engine' | Select-Object -First 1).FullName; & "$rdd\scripts\explore.cmd" -Type explore -Query "分析重构需求涉及的代码模块"
+$rdd = $null; $t = $null; try { $t = git rev-parse --show-toplevel } catch { }; foreach ($c in @($env:RDD_ENGINE_HOME; if ($t) { (Get-ChildItem $t -Recurse -Directory -Depth 3 -Filter 'rdd-engine').FullName }; "$HOME\.rdd\engine\current")) { if ($c -and (Test-Path "$c\scripts\rdd-flow.cmd")) { $rdd = $c; break } }; if (-not $rdd) { throw "rdd-engine 未定位（三级定位链：RDD_ENGINE_HOME → 项目内 rdd-engine → ~\.rdd\engine\current 全 miss）。安装/排障：GitHub Release 下载 rdd-engine.tgz 后运行 scripts/install-rdd-engine.ps1；协议详见 rdd-engine/references/engine-location.md" }; & "$rdd\scripts\explore.cmd" -Type search -Query "分析重构需求涉及的代码模块"
 ```
 
 参照 `code-quality-assessment.md` 评估现有代码的系统性问题（循环依赖、模块职责混乱、架构模式不一致等）。

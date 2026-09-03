@@ -1,0 +1,4 @@
+# 部署事件日志(窗口 T-60 ~ T+10)
+t=-45 service=order-query-api event=deploy release=release-2185 note="order-export feature: per-customer order history listing"
+t=-45 service=order-query-api event=deploy release=release-2185 detail="adds SELECT on orders by customer_id path; no schema migration"
+t=-52 service=order-query-api event=deploy release=release-2184 note="log sampling config tweak"

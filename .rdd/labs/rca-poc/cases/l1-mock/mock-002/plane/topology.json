@@ -1,0 +1,24 @@
+{
+  "format_version": 1,
+  "case_id": "mock-002",
+  "system": "settlement-worker",
+  "components": [
+    { "id": "mq", "kind": "queue", "role": "结算消息队列" },
+    { "id": "worker-1", "kind": "worker", "role": "消息处理实例(JVM,heap 上限 2GB)" },
+    { "id": "worker-2", "kind": "worker", "role": "消息处理实例(JVM,heap 上限 2GB)" },
+    { "id": "worker-3", "kind": "worker", "role": "消息处理实例(JVM,heap 上限 2GB)" },
+    { "id": "worker-4", "kind": "worker", "role": "消息处理实例(JVM,heap 上限 2GB)" },
+    { "id": "settlement-api", "kind": "service", "role": "下游结算 API" }
+  ],
+  "edges": [
+    { "from": "mq", "to": "worker-1", "note": "pull 消费" },
+    { "from": "mq", "to": "worker-2", "note": "pull 消费" },
+    { "from": "mq", "to": "worker-3", "note": "pull 消费" },
+    { "from": "mq", "to": "worker-4", "note": "pull 消费" },
+    { "from": "worker-1", "to": "settlement-api", "note": "HTTP 写结果" },
+    { "from": "worker-2", "to": "settlement-api", "note": "HTTP 写结果" },
+    { "from": "worker-3", "to": "settlement-api", "note": "HTTP 写结果" },
+    { "from": "worker-4", "to": "settlement-api", "note": "HTTP 写结果" }
+  ],
+  "slo": { "metric": "end_to_end_latency", "baseline": "< 3 分钟" }
+}

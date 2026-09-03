@@ -1,0 +1,169 @@
+{
+  "feature": "tree-run",
+  "status": "active",
+  "relatedCode": [
+    "rdd-engine/scripts/tree-run.ps1",
+    "rdd-engine/scripts/tree-run.cmd",
+    "rdd-engine/scripts/tree-leaf.ps1",
+    "rdd-engine/scripts/tree-leaf.cmd",
+    "rdd-engine/references/tree-run-guide.md"
+  ],
+  "testCode": [
+    ".rdd/tests/tree-run/tree-run-verify.ps1"
+  ],
+  "lastChange": "2026-09-02-tree-run-engine",
+  "cases": [
+    {
+      "id": "TC-001", "title": "start 建运行:manifest+tree+根节点落档,预算与引用范围持久化", "type": "positive", "priority": "P0",
+      "acceptance": "AC-1", "codeRef": ".rdd/tests/tree-run/tree-run-verify.ps1:173", "sourceChange": "2026-09-02-tree-run-engine", "status": "active", "crossFeature": [],
+      "precondition": "引擎 CLI 可用,runId 合法且不存在",
+      "steps": ["tree-run start(带 Goal/RefRoots/预算)", "检查输出与运行目录产物"],
+      "expected": "退出码 0;manifest.json/state 三件套/report 目录落档;根节点 n1=pending;预算与 ref_roots 与入参一致"
+    },
+    {
+      "id": "TC-002", "title": "start 非法入参拒绝(INVALID_RUN_ID/MISSING_GOAL/MISSING_REF_ROOTS/REF_ROOT_NOT_FOUND)且不留目录", "type": "negative", "priority": "P1",
+      "acceptance": "AC-1", "codeRef": ".rdd/tests/tree-run/tree-run-verify.ps1:196", "sourceChange": "2026-09-02-tree-run-engine", "status": "active", "crossFeature": [],
+      "steps": ["分别以非法 RunId/缺 Goal/缺 RefRoots/不存在的 RefRoot 调用 start"],
+      "expected": "退出码 1,错误码逐项匹配,不留下运行目录"
+    },
+    {
+      "id": "TC-003", "title": "与 task.json 归档流转正交:全部操作后 .rdd/changes/ 零改动", "type": "boundary", "priority": "P1",
+      "acceptance": "AC-1", "codeRef": ".rdd/tests/tree-run/tree-run-verify.ps1:916", "sourceChange": "2026-09-02-tree-run-engine", "status": "active", "crossFeature": [],
+      "precondition": "套件执行前对 .rdd/changes/ 做内容哈希快照",
+      "steps": ["执行全套件 CLI 操作", "结束后再次快照比对"],
+      "expected": "task.json 归档流转零改动(目录/命令/数据三重正交)"
+    },
+    {
+      "id": "TC-004", "title": "重复 start 同 RunId 被拒(RUN_EXISTS),已有运行状态不被覆盖", "type": "boundary", "priority": "P2",
+      "acceptance": "AC-1", "codeRef": ".rdd/tests/tree-run/tree-run-verify.ps1:215", "sourceChange": "2026-09-02-tree-run-engine", "status": "active", "crossFeature": [],
+      "expected": "退出码 1 + RUN_EXISTS;原 manifest 内容不变"
+    },
+    {
+      "id": "TC-005", "title": ".rdd/tree-runs/ 被 gitignore 覆盖(运行数据不入版本库)", "type": "boundary", "priority": "P2",
+      "acceptance": "AC-1", "codeRef": ".rdd/tests/tree-run/tree-run-verify.ps1:227", "sourceChange": "2026-09-02-tree-run-engine", "status": "active", "crossFeature": [],
+      "expected": "git check-ignore 退出码 0"
+    },
+    {
+      "id": "TC-011", "title": "graft 颁布子任务节点:树结构正确更新(parent/children 一致、status=pending)", "type": "positive", "priority": "P0",
+      "acceptance": "AC-2", "codeRef": ".rdd/tests/tree-run/tree-run-verify.ps1:245", "sourceChange": "2026-09-02-tree-run-engine", "status": "active", "crossFeature": [],
+      "precondition": "运行已创建且轮开放",
+      "steps": ["round-start", "graft TasksFile 颁布 4 个子节点到 n1"],
+      "expected": "id 顺序续编(n2..n5);tree.json 节点数/parent/children 双向一致;新节点 status=pending、created_round 正确"
+    },
+    {
+      "id": "TC-012", "title": "next→claim→report→settle 全生命周期:pending→claimed→reported→done", "type": "positive", "priority": "P0",
+      "acceptance": "AC-2", "codeRef": ".rdd/tests/tree-run/tree-run-verify.ps1:270", "sourceChange": "2026-09-02-tree-run-engine", "status": "active", "crossFeature": [],
+      "steps": ["next 列 pending", "claim 后 next 不再列出", "report 结构化回调", "settle"],
+      "expected": "状态机全链路流转正确;validation.status=valid;管理面 status 的 done 列表包含该节点"
+    },
+    {
+      "id": "TC-013", "title": "协议误用拒绝且不记账(重复claim/非持有者report/非claimed report/无开放轮)", "type": "negative", "priority": "P0",
+      "acceptance": "AC-2", "codeRef": ".rdd/tests/tree-run/tree-run-verify.ps1:301", "sourceChange": "2026-09-02-tree-run-engine", "status": "active", "crossFeature": [],
+      "steps": ["重复 claim 同节点", "非持有者 report", "对 pending 节点 report", "收轮后 claim"],
+      "expected": "分别报 NODE_NOT_CLAIMABLE/CLAIM_OWNER_MISMATCH/NODE_NOT_CLAIMED/NO_OPEN_ROUND(退出码 1);账本条目数不变(误用不记账)"
+    },
+    {
+      "id": "TC-014", "title": "并发冲突:同节点二次 claim 被拒,worker 改领其他节点成功(原子领取)", "type": "boundary", "priority": "P1",
+      "acceptance": "AC-2", "codeRef": ".rdd/tests/tree-run/tree-run-verify.ps1:323", "sourceChange": "2026-09-02-tree-run-engine", "status": "active", "crossFeature": [],
+      "expected": "第二 claim 报 NODE_NOT_CLAIMABLE;改领其他 pending 节点成功;status claimed 清单与树一致"
+    },
+    {
+      "id": "TC-021", "title": "有效回调 valid 入账:schema 完整、引用归一采纳、extras 透传", "type": "positive", "priority": "P0",
+      "acceptance": "AC-3", "codeRef": ".rdd/tests/tree-run/tree-run-verify.ps1:355", "sourceChange": "2026-09-02-tree-run-engine", "status": "active", "crossFeature": [],
+      "steps": ["提交含全路径+根相对两种引用形态、extras 的合法回调"],
+      "expected": "accepted=true,validation.status=valid;账本条目元数据/回调字段完整;2 条引用均采纳且无穿越;extras 原样透传"
+    },
+    {
+      "id": "TC-022", "title": "结构违规回调→invalid 记账、节点不流转、运行不破坏(可修正重报)", "type": "negative", "priority": "P0",
+      "acceptance": "AC-3", "codeRef": ".rdd/tests/tree-run/tree-run-verify.ps1:381", "sourceChange": "2026-09-02-tree-run-engine", "status": "active", "crossFeature": [],
+      "steps": ["分别提交缺 summary/verdict 非法/citations 非数组/node_id 不存在四种坏回调", "检查节点状态与账本", "修正后重报"],
+      "expected": "四种均 accepted=false + invalid 且退出码 0(降级不破坏运行);节点保持 claimed;invalid 原样入账;修正重报成功"
+    },
+    {
+      "id": "TC-023", "title": "confidence 越界截断 + 越界引用拒采记录(range_check_failures 不静默丢弃)", "type": "boundary", "priority": "P1",
+      "acceptance": "AC-3", "codeRef": ".rdd/tests/tree-run/tree-run-verify.ps1:412", "sourceChange": "2026-09-02-tree-run-engine", "status": "active", "crossFeature": [],
+      "steps": ["提交 confidence=1.7 且 2 合法+2 越界引用(范围外/穿越)的回调"],
+      "expected": "accepted=true + downgraded;confidence 截断 1.0;2 条越界引用逐条记录在 range_check_failures;账本仅存合法引用"
+    },
+    {
+      "id": "TC-024", "title": "round-end 落人类可读轮快照 round-NN.md", "type": "positive", "priority": "P0",
+      "acceptance": "AC-3", "codeRef": ".rdd/tests/tree-run/tree-run-verify.ps1:441", "sourceChange": "2026-09-02-tree-run-engine", "status": "active", "crossFeature": [],
+      "expected": "round-01.md 存在、内容非空、含 run_id,每轮留人类可读过程快照"
+    },
+    {
+      "id": "TC-025", "title": "verdict=done 但全部引用被拒采→降级 inconclusive(verdict_downgraded)", "type": "boundary", "priority": "P2",
+      "acceptance": "AC-3", "codeRef": ".rdd/tests/tree-run/tree-run-verify.ps1:453", "sourceChange": "2026-09-02-tree-run-engine", "status": "active", "crossFeature": [],
+      "expected": "accepted=true + downgraded;verdict_downgraded=true;节点 last_verdict=inconclusive"
+    },
+    {
+      "id": "TC-031", "title": "悬挂轮后 resume 定位断点:hanging_round/claimed/reported/pending 清单", "type": "positive", "priority": "P0",
+      "acceptance": "AC-4", "codeRef": ".rdd/tests/tree-run/tree-run-verify.ps1:493", "sourceChange": "2026-09-02-tree-run-engine", "status": "active", "crossFeature": [],
+      "steps": ["制造开放轮+在飞 claim+待整合 reported", "resume", "收轮后再 resume"],
+      "expected": "悬挂轮编号/claimed/reported_unsettle/pending 清单准确;收轮后 next_round 正确且给出恢复步骤指引"
+    },
+    {
+      "id": "TC-032", "title": "reported/done 永不可再消费:claim 拒绝,-Steal 亦不可回收", "type": "boundary", "priority": "P0",
+      "acceptance": "AC-4", "codeRef": ".rdd/tests/tree-run/tree-run-verify.ps1:516", "sourceChange": "2026-09-02-tree-run-engine", "status": "active", "crossFeature": [],
+      "expected": "reported/done 节点 claim 报 NODE_NOT_CLAIMABLE,steal 报 STEAL_REQUIRES_CLAIMED;-Steal 仅可回收 claimed(死锁恢复正路径)"
+    },
+    {
+      "id": "TC-033", "title": "tree.json 损坏自动从 .bak 回退:status 报警,后续写原语自愈", "type": "boundary", "priority": "P0",
+      "acceptance": "AC-4", "codeRef": ".rdd/tests/tree-run/tree-run-verify.ps1:544", "sourceChange": "2026-09-02-tree-run-engine", "status": "active", "crossFeature": [],
+      "steps": ["向 state/tree.json 写入非法 JSON", "status 体检", "继续 round-end/graft"],
+      "expected": "status 成功且 integrity.tree_read_from_backup=true;后续写原语后 tree.json 恢复合法且包含全部节点(read-back 自愈)"
+    },
+    {
+      "id": "TC-034", "title": "ledger 坏行隔离 .corrupt:原行保留、好行不丢、账本恢复纯 JSONL", "type": "boundary", "priority": "P1",
+      "acceptance": "AC-4", "codeRef": ".rdd/tests/tree-run/tree-run-verify.ps1:568", "sourceChange": "2026-09-02-tree-run-engine", "status": "active", "crossFeature": [],
+      "steps": ["向 ledger.jsonl 追加垃圾行", "status 触发隔离"],
+      "expected": "quarantined_now≥1;账本仅剩可解析好行(数量不变);.corrupt 保留原始坏行文本(不静默丢行)"
+    },
+    {
+      "id": "TC-035", "title": "跨会话凭状态文件续跑:新进程继续消费-整合-收轮全链路", "type": "positive", "priority": "P2",
+      "acceptance": "AC-4", "codeRef": ".rdd/tests/tree-run/tree-run-verify.ps1:588", "sourceChange": "2026-09-02-tree-run-engine", "status": "active", "crossFeature": [],
+      "expected": "仅凭磁盘状态即可续跑 claim→report→settle→round-end,终态一致"
+    },
+    {
+      "id": "TC-041", "title": "achieved:anchor done 后终结成功,产出 final-report,结案后运行冻结", "type": "positive", "priority": "P0",
+      "acceptance": "AC-5", "codeRef": ".rdd/tests/tree-run/tree-run-verify.ps1:614", "sourceChange": "2026-09-02-tree-run-engine", "status": "active", "crossFeature": [],
+      "expected": "conclude achieved 成功;final-report.md 产出;manifest.state=concluded;结案后 graft/claim 均报 RUN_CONCLUDED"
+    },
+    {
+      "id": "TC-042", "title": "achieved 前置:anchor 非 done 被拒(ANCHOR_NOT_DONE/MISSING_ANCHOR),settle 后可终结", "type": "negative", "priority": "P0",
+      "acceptance": "AC-5", "codeRef": ".rdd/tests/tree-run/tree-run-verify.ps1:644", "sourceChange": "2026-09-02-tree-run-engine", "status": "active", "crossFeature": [],
+      "expected": "anchor=reported 时拒绝且运行不终结;补 settle 后 conclude 成功(拒绝可恢复)"
+    },
+    {
+      "id": "TC-043", "title": "预算诚实性:未耗尽 budget_exhausted 被拒;真耗尽(ROUNDS_EXCEEDED)后成功+结案报告", "type": "boundary", "priority": "P0",
+      "acceptance": "AC-5", "codeRef": ".rdd/tests/tree-run/tree-run-verify.ps1:669", "sourceChange": "2026-09-02-tree-run-engine", "status": "active", "crossFeature": [],
+      "expected": "预算未耗尽时报 BUDGET_NOT_EXHAUSTED 且运行不终结;超轮 round-start 报 ROUNDS_EXCEEDED;真耗尽后终结成功并产出 final-report"
+    },
+    {
+      "id": "TC-044", "title": "space_exhausted:无 pending+claimed 时成功;剪枝级联子树参与空间收敛", "type": "positive", "priority": "P0",
+      "acceptance": "AC-5", "codeRef": ".rdd/tests/tree-run/tree-run-verify.ps1:693", "sourceChange": "2026-09-02-tree-run-engine", "status": "active", "crossFeature": [],
+      "expected": "尚有 pending/claimed 时报 SPACE_NOT_EXHAUSTED;剪枝级联子树(pruned 含后代);全树收敛后终结成功+final-report"
+    },
+    {
+      "id": "TC-045", "title": "预算强制:graft 超 NodeWidth/MaxNodes 被拒且树不破坏;任务结构非法被拒", "type": "boundary", "priority": "P1",
+      "acceptance": "AC-5", "codeRef": ".rdd/tests/tree-run/tree-run-verify.ps1:731", "sourceChange": "2026-09-02-tree-run-engine", "status": "active", "crossFeature": [],
+      "expected": "WIDTH_EXCEEDED/NODES_EXCEEDED/INVALID_TASK/TASKS_FILE_NOT_FOUND 逐项拒绝;被拒后树保持原状"
+    },
+    {
+      "id": "TC-046", "title": "三终局 final-report 均含终局语义与诚实结案摘要", "type": "positive", "priority": "P2",
+      "acceptance": "AC-5", "codeRef": ".rdd/tests/tree-run/tree-run-verify.ps1:760", "sourceChange": "2026-09-02-tree-run-engine", "status": "active", "crossFeature": [],
+      "expected": "achieved/budget_exhausted/space_exhausted 三份 final-report 均含终局 token 与结案摘要文本"
+    },
+    {
+      "id": "TC-051", "title": "E2E 全流程:rca-poc 式根因调查完整运行,账本/轮快照/结案报告齐备可审计", "type": "positive", "priority": "P0",
+      "acceptance": "AC-6", "codeRef": ".rdd/tests/tree-run/tree-run-verify.ps1:875", "sourceChange": "2026-09-02-tree-run-engine", "status": "active", "crossFeature": ["rca-poc"],
+      "precondition": "rca-poc mock-001 案例素材作为引用范围",
+      "steps": ["start→graft 3 假设→3 worker 回写(有效/降级/无效后修正)→settle/prune/下探→round-end→R2 下探→conclude achieved"],
+      "expected": "账本 5 条(3 valid+1 downgraded+1 invalid)、range_failures≥2 留痕;done/pruned 集合正确;round-01/02.md 与 final-report.md 齐备可读"
+    },
+    {
+      "id": "TC-052", "title": "E2E 中断恢复:轮边界中断后新会话 resume 定位,续跑至终局零重复消费", "type": "boundary", "priority": "P1",
+      "acceptance": "AC-6", "codeRef": ".rdd/tests/tree-run/tree-run-verify.ps1:836", "sourceChange": "2026-09-02-tree-run-engine", "status": "active", "crossFeature": ["rca-poc"],
+      "expected": "R1 收轮后中断,resume 正确定位(next_round=2、pending 含下探节点、无在飞 claim);已 done 节点 claim 被拒;续跑至 achieved,每个节点恰好 1 条已接受账本条目"
+    }
+  ]
+}

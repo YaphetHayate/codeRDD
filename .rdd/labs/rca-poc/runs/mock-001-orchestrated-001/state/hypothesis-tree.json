@@ -1,0 +1,85 @@
+{
+  "format_version": 1,
+  "case_id": "mock-001",
+  "updated_round": 102,
+  "nodes": [
+    {
+      "id": "H1",
+      "parent": null,
+      "statement": "数据库层异常导致 /v1/orders 查询慢:连接池耗尽、慢查询或 db 过载,web 层等待 db 响应(依据:仅查询接口受影响,写接口正常,故障大概率在共享读路径下游) [live-demo]",
+      "prior": 0.7,
+      "status": "supported",
+      "confidence": 0.85,
+      "prune_reason": null,
+      "evidence_ids": [
+        "E1"
+      ],
+      "children": [
+        "H1.1",
+        "H1.2"
+      ],
+      "manager_note": "E1(causal)证实传导机制(慢查询→池耗尽→web 等待);db 过载子句被反证(CPU 仅 59%)。传导机制层,根因层由子节点 concluded"
+    },
+    {
+      "id": "H2",
+      "parent": null,
+      "statement": "web 实例资源不足(CPU/内存)导致 API 处理慢(依据:延迟从 web 层观测到;需排除单实例或全实例资源瓶颈)",
+      "prior": 0.5,
+      "status": "pruned",
+      "confidence": 0,
+      "prune_reason": "E2(refute, causal, 0.85):时序不成立(恶化始于 T-40,CPU 抬升晚于 onset)+ 分布不成立(低 CPU 实例同样慢/504)+ web-2 抬升与 retry 共变属下游症状;prior 0.5 < verify_prune_prior 0.6,未触发双验",
+      "evidence_ids": [
+        "E2"
+      ],
+      "children": []
+    },
+    {
+      "id": "H3",
+      "parent": null,
+      "statement": "上游流量激增导致系统过载(依据:延迟突增与错误率升高的常见共因;需流量证据判定)",
+      "prior": 0.3,
+      "status": "pruned",
+      "confidence": 0,
+      "prune_reason": "E3(refute, correlational, 0.8):峰值窗口 2/3 web 实例 CPU<41%、db 59% 未饱和、写接口全程正常,与全局过载矛盾;504 全部为等 db 连接;prior 0.3 < verify_prune_prior 0.6,未触发双验",
+      "evidence_ids": [
+        "E3"
+      ],
+      "children": []
+    },
+    {
+      "id": "H1.1",
+      "parent": "H1",
+      "statement": "release-2185(T-45 上线)引入的 orders 表按 customer_id 新查询缺有效索引,rows_examined≈49万全表扫描、单条耗时 3.9s→6.5s,长期占用连接逐步耗尽连接池",
+      "prior": 0.85,
+      "status": "concluded",
+      "confidence": 0.9,
+      "prune_reason": null,
+      "evidence_ids": [
+        "E1",
+        "E4"
+      ],
+      "children": [],
+      "manager_note": "E4(causal, 0.9):部署→首条同型慢查询(0.8min 间隔)→池爬升→504 的时序递进+量级匹配+替代解释排除;confidence 0.9 ≥ 0.8 阈值,触发停止条件 1"
+    },
+    {
+      "id": "H1.2",
+      "parent": "H1",
+      "statement": "连接池配置不足或存在其他连接持有者(长事务/泄漏),与查询负载叠加导致池耗尽",
+      "prior": 0.2,
+      "status": "pruned",
+      "confidence": 0,
+      "prune_reason": "E5(refute, correlational, 0.8):部署前池占用仅 21~26/100 余量 4 倍,直接反证『先占偏高』;窗口内无池配置变更;慢日志全部为同一只读 SELECT,无长事务/锁等待;prior 0.2 < verify_prune_prior 0.6,未触发双验",
+      "evidence_ids": [
+        "E5"
+      ],
+      "children": []
+    }
+  ],
+  "active_focus": [],
+  "conclusion": {
+    "root_cause_hypothesis": "H1.1",
+    "confidence": 0.9,
+    "stop_reason": "confidence_reached",
+    "summary": "release-2185(T-45 上线)引入的 orders 表按 customer_id 查询缺有效索引,rows_examined≈49万全表扫描、单条耗时 3.9s→6.5s,长期占用连接逐步耗尽 db 连接池(上限 100,T-20 打满),web 层等待连接导致 /v1/orders p99 从 ~150ms 突增至 8s+、错误率 4%(504)。写接口不受影响(新查询仅命中读路径)。web-2 CPU 升高为客户端重试放大所致(相关非因果)。"
+  }
+}

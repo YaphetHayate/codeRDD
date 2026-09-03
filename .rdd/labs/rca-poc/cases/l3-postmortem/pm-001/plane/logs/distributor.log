@@ -1,0 +1,29 @@
+offset_min,level,message
+-90,info,scan cycle completed rows=120431 dispatched=118
+-89,info,scan cycle completed rows=120566 dispatched=121
+-88,error,strict schema validation failed on scan: column 14 type mismatch (expected text representation of numeric, got raw numeric) row_id_hint=jobs:1742091
+-88,error,dispatch halted: scan validation gate failed (refusing to dispatch from inconsistent snapshot)
+-87,error,strict schema validation failed on scan: column 14 type mismatch (expected text representation of numeric, got raw numeric) row_id_hint=jobs:1751342
+-86,error,strict schema validation failed on scan: column 14 type mismatch (expected text representation of numeric, got raw numeric) row_id_hint=jobs:1752953
+-84,error,strict schema validation failed on scan: column 14 type mismatch (expected text representation of numeric, got raw numeric) row_id_hint=jobs:1741833
+-80,error,strict schema validation failed on scan: column 14 type mismatch (expected text representation of numeric, got raw numeric) row_id_hint=jobs:1742396
+-76,error,strict schema validation failed on scan: column 14 type mismatch (expected text representation of numeric, got raw numeric) row_id_hint=jobs:1745927
+-70,error,strict schema validation failed on scan: column 14 type mismatch (expected text representation of numeric, got raw numeric) row_id_hint=jobs:1742571
+-65,error,strict schema validation failed on scan: column 14 type mismatch (expected text representation of numeric, got raw numeric) row_id_hint=jobs:1751769
+-55,error,strict schema validation failed on scan: column 14 type mismatch (expected text representation of numeric, got raw numeric) row_id_hint=jobs:1741689
+-45,error,strict schema validation failed on scan: column 14 type mismatch (expected text representation of numeric, got raw numeric) row_id_hint=jobs:1752636
+-30,error,strict schema validation failed on scan: column 14 type mismatch (expected text representation of numeric, got raw numeric) row_id_hint=jobs:1743813
+-20,error,strict schema validation failed on scan: column 14 type mismatch (expected text representation of numeric, got raw numeric) row_id_hint=jobs:1744303
+-10,error,strict schema validation failed on scan: column 14 type mismatch (expected text representation of numeric, got raw numeric) row_id_hint=jobs:1748667
+-5,error,strict schema validation failed on scan: column 14 type mismatch (expected text representation of numeric, got raw numeric) row_id_hint=jobs:1749040
+-1,error,strict schema validation failed on scan: column 14 type mismatch (expected text representation of numeric, got raw numeric) row_id_hint=jobs:1749365
+3,error,strict schema validation failed on scan: column 14 type mismatch (expected text representation of numeric, got raw numeric) row_id_hint=jobs:1745446
+8,error,strict schema validation failed on scan: column 14 type mismatch (expected text representation of numeric, got raw numeric) row_id_hint=jobs:1742760
+12,error,strict schema validation failed on scan: column 14 type mismatch (expected text representation of numeric, got raw numeric) row_id_hint=jobs:1749281
+19,error,strict schema validation failed on scan: column 14 type mismatch (expected text representation of numeric, got raw numeric) row_id_hint=jobs:1755402 (row written AFTER rollback window began)
+20,error,strict schema validation failed on scan: column 14 type mismatch (expected text representation of numeric, got raw numeric) row_id_hint=jobs:1755418
+21,error,strict schema validation failed on scan: column 14 type mismatch (expected text representation of numeric, got raw numeric) row_id_hint=jobs:1755430
+22,error,strict schema validation failed on scan: column 14 type mismatch (expected text representation of numeric, got raw numeric) row_id_hint=jobs:1748302
+24,error,strict schema validation failed on scan: column 14 type mismatch (expected text representation of numeric, got raw numeric) row_id_hint=jobs:1754520
+30,info,scan cycle completed rows=121980 dispatched=165 validation=clean
+33,info,backlog drained: queue depth normalized

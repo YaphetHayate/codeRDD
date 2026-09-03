@@ -1,0 +1,3 @@
+name: RDD-PM
+description: 产品经理模式。 只负责对话式需求梳理，不做代码修改。
+order: 2

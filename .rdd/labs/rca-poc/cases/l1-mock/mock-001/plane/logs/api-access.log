@@ -1,0 +1,19 @@
+# API 访问日志采样(仅错误/超时请求;t 为相对 T0 分钟偏移)
+t=-12.4 instance=web-1 method=GET path=/v1/orders status=200 dur_ms=3120 note="slow"
+t=-11.8 instance=web-3 method=GET path=/v1/orders status=200 dur_ms=3455 note="slow"
+t=-10.9 instance=web-2 method=GET path=/v1/orders status=504 dur_ms=10001 note="upstream timeout waiting for db connection"
+t=-10.2 instance=web-1 method=GET path=/v1/orders status=504 dur_ms=10003 note="upstream timeout waiting for db connection"
+t=-9.7 instance=web-2 method=GET path=/v1/orders status=200 dur_ms=5210 note="slow, retry=1"
+t=-6.3 instance=web-3 method=GET path=/v1/orders status=504 dur_ms=10000 note="upstream timeout waiting for db connection"
+t=-5.5 instance=web-2 method=GET path=/v1/orders status=200 dur_ms=6350 note="slow, retry=2"
+t=-4.8 instance=web-1 method=GET path=/v1/orders status=504 dur_ms=10002 note="upstream timeout waiting for db connection"
+t=-1.2 instance=web-3 method=GET path=/v1/orders status=504 dur_ms=10001 note="upstream timeout waiting for db connection"
+t=-0.6 instance=web-2 method=GET path=/v1/orders status=200 dur_ms=7980 note="slow, retry=2"
+t=0.1 instance=web-1 method=GET path=/v1/orders status=504 dur_ms=10000 note="upstream timeout waiting for db connection"
+t=0.7 instance=web-2 method=GET path=/v1/orders status=504 dur_ms=10004 note="upstream timeout waiting for db connection, retry=1"
+t=1.5 instance=web-3 method=GET path=/v1/orders status=200 dur_ms=8310 note="slow"
+t=4.9 instance=web-1 method=GET path=/v1/orders status=504 dur_ms=10002 note="upstream timeout waiting for db connection"
+t=8.2 instance=web-2 method=GET path=/v1/orders status=504 dur_ms=10000 note="upstream timeout waiting for db connection, retry=2"
+# 对照:写接口同窗口无超时
+t=0.3 instance=web-1 method=POST path=/v1/orders/create status=201 dur_ms=138
+t=6.6 instance=web-3 method=POST path=/v1/orders/create status=201 dur_ms=145

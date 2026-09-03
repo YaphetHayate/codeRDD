@@ -1,0 +1,21 @@
+{
+  "run_id": "openrca-bank-task6-1800-ralph-001",
+  "case_id": "openrca-bank-task6-1800",
+  "arm": "ralph-baseline",
+  "final_state": "root_cause_concluded",
+  "truth_component": "Redis02",
+  "verdict": "missed",
+  "verdict_keywords_hit": [],
+  "reject_keywords_hit": [],
+  "rounds_used": 2,
+  "evidence_count": 18,
+  "correlational": 16,
+  "causal": 2,
+  "chain_integrity": {
+    "unsupported_prune_or_conclude_nodes": [],
+    "dangling_citations": []
+  },
+  "confidence_range_violations": [],
+  "concluded_without_causal": [],
+  "needs_human_review": false
+}

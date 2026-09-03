@@ -1,6 +1,6 @@
 ﻿[CmdletBinding()]
 param(
-    [ValidateSet("handoff", "validate", "next", "start", "show", "init", "add-task", "set-route", "advance", "add-design", "reject", "complete", "reopen", "deprecate", "check", "migrate")]
+    [ValidateSet("handoff", "validate", "next", "start", "show", "init", "add-task", "set-route", "advance", "add-design", "reject", "complete", "reopen", "deprecate", "check", "migrate", "version")]
     [string]$Command = "handoff",
 
     [ValidateSet("PM", "CTO", "UX", "DEV", "QA")]
@@ -31,7 +31,10 @@ param(
 $ErrorActionPreference = "Stop"
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 $OutputEncoding = [System.Text.Encoding]::UTF8
-$repoRoot = git rev-parse --show-toplevel
+# version 自检与安装器可能在任意目录（含非 git）运行；git 缺失不阻断 version 输出。
+# 2>$null 由 try/catch 兜底：PS5.1 下重定向原生 stderr + ErrorActionPreference=Stop 会抛 NativeCommandError
+$repoRoot = $null
+try { $repoRoot = git rev-parse --show-toplevel 2>$null } catch { }
 
 function ConvertTo-PortableJson {
     param($Object, [int]$Depth = 6)
@@ -432,9 +435,8 @@ function Test-DocEligible {
     if ($FlowControl.hasPendingRejection) {
         return @{ eligible = $false; reason = "$($Label)HasPendingRejection" }
     }
-    if ($FlowControl.owner -and $FlowControl.owner -ne $TargetRole) {
-        return @{ eligible = $false; reason = "$($Label)Owner=$($FlowControl.owner)" }
-    }
+    # Note: doc-side 当前责任人 is deprecated as a routing source; task.json is the
+    # single source of truth. Owner mismatch no longer gates handoff eligibility.
     return @{ eligible = $true; reason = "" }
 }
 
@@ -746,7 +748,7 @@ function Build-StartGuide {
         "1. 先确认 handoff 中的 tasks 和 warnings。",
         "2. 按 task 的 workMode 进入对应工作模式。",
         "3. 如 handoff 为空或 warning 阻塞执行，先向用户说明并请求裁决。",
-        "4. 流转状态更新必须同时同步 task.json 和文档自身的流转控制。"
+        "4. 流转状态只通过 rdd-flow CLI 更新 task.json；不修改文档侧流转字段（存量归档中的「当前责任人」已废弃，以 task.json 为准）。"
     )
 
     return @{
@@ -1407,7 +1409,8 @@ function Invoke-Check {
         }
     }
 
-    # Consistency check: requirement doc flow control vs currentOwners
+    # Routing single source: doc-side 当前责任人 is deprecated. Report drift only as
+    # an informational notice — task.json is authoritative, no doc remediation needed.
     foreach ($t in $data.tasks) {
         if ($t.lifecycle -eq "completed" -or $t.lifecycle -eq "deprecated") { continue }
         if (-not $t.requirement) { continue }
@@ -1419,7 +1422,7 @@ function Invoke-Check {
         if ($flow.owner) {
             $taskOwners = @($t.currentOwners) -join "+"
             if ($flow.owner -ne $taskOwners) {
-                $issues += "Task $($t.id): currentOwners='$taskOwners' but requirement doc 当前责任人='$($flow.owner)' (doc takes precedence)"
+                $issues += "Task $($t.id): requirement doc carries deprecated 当前责任人='$($flow.owner)' differing from currentOwners='$taskOwners'; routing follows task.json, no doc edit required"
             }
         }
     }
@@ -1518,6 +1521,22 @@ function Invoke-Migrate {
 }
 
 # === Command dispatch ===
+
+# version：输出 version + engineRoot（安装器自检 / 诊断用）。
+# 必须先于归档解析——该命令不依赖 git 仓库与 .rdd/changes 归档。
+if ($Command -eq "version") {
+    $engineRoot = Split-Path -Parent $PSScriptRoot
+    $pkgPath = Join-Path $engineRoot "package.json"
+    $engineVersion = "unknown"
+    if (Test-Path -LiteralPath $pkgPath) {
+        try { $engineVersion = (Get-Content -LiteralPath $pkgPath -Raw -Encoding UTF8 | ConvertFrom-Json).version } catch { }
+    }
+    ConvertTo-PortableJson @{
+        success = $true
+        data    = @{ version = $engineVersion; engineRoot = $engineRoot }
+    } -Depth 4
+    return
+}
 
 $archivePath = Resolve-ArchivePath $Archive
 

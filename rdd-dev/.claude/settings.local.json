@@ -1,7 +1,0 @@
-{
-  "permissions": {
-    "allow": [
-      "Bash(ls -1d \"Z:/YaphetHayate/Projects/codeRDD/RDD/changes/archive/\"*/)"
-    ]
-  }
-}

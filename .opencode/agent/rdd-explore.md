@@ -48,7 +48,7 @@ permission:
 5. **注册缓存**：写完配对产物后，**必须**调用 explore-store 注册（走 CLI 才能传 -Tags；注册入热区，下一次检索立即可见）：
 
    ```powershell
-   $rdd = (Get-ChildItem (git rev-parse --show-toplevel) -Recurse -Directory -Depth 3 -Filter 'rdd-engine' | Select-Object -First 1).FullName; & "$rdd\scripts\explore-store.cmd" -Type register `
+   $rdd = $null; $t = $null; try { $t = git rev-parse --show-toplevel } catch { }; foreach ($c in @($env:RDD_ENGINE_HOME; if ($t) { (Get-ChildItem $t -Recurse -Directory -Depth 3 -Filter 'rdd-engine').FullName }; "$HOME\.rdd\engine\current")) { if ($c -and (Test-Path "$c\scripts\rdd-flow.cmd")) { $rdd = $c; break } }; if (-not $rdd) { throw "rdd-engine 未定位（三级定位链：RDD_ENGINE_HOME → 项目内 rdd-engine → ~\.rdd\engine\current 全 miss）。安装/排障：GitHub Release 下载 rdd-engine.tgz 后运行 scripts/install-rdd-engine.ps1；协议详见 rdd-engine/references/engine-location.md" }; & "$rdd\scripts\explore-store.cmd" -Type register `
      -Key "<语义 key，中文可用，与 Query 主题对应>" `
      -Tags "<第 3 步提炼的关键词，逗号分隔>" `
      -Path ".rdd/exploration/artifacts/{slug}.md" `

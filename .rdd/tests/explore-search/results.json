@@ -1,0 +1,180 @@
+{
+  "generatedAt": "2026-08-30T05:53:01.633Z",
+  "archive": "2026-08-29-search-precision-ranking",
+  "feature": "explore-search",
+  "summary": {
+    "total": 14,
+    "passed": 12,
+    "failed": 0,
+    "skipped": 0,
+    "partial": 2
+  },
+  "cases": [
+    {
+      "id": "TC-001",
+      "status": "pass",
+      "checks": {
+        "total": 5,
+        "passed": 5,
+        "failed": 0,
+        "skipped": 0
+      },
+      "issues": []
+    },
+    {
+      "id": "TC-002",
+      "status": "pass",
+      "checks": {
+        "total": 3,
+        "passed": 3,
+        "failed": 0,
+        "skipped": 0
+      },
+      "issues": []
+    },
+    {
+      "id": "TC-003",
+      "status": "pass",
+      "checks": {
+        "total": 2,
+        "passed": 2,
+        "failed": 0,
+        "skipped": 0
+      },
+      "issues": []
+    },
+    {
+      "id": "TC-004",
+      "status": "partial",
+      "checks": {
+        "total": 2,
+        "passed": 1,
+        "failed": 0,
+        "skipped": 1
+      },
+      "issues": [
+        {
+          "name": "TC-004: cross-language vector recall (real HTTP round trip)",
+          "status": "skip",
+          "detail": "child PowerShell cannot reach the loopback stub in this sandbox — run from a plain terminal for full coverage"
+        }
+      ]
+    },
+    {
+      "id": "TC-005",
+      "status": "partial",
+      "checks": {
+        "total": 4,
+        "passed": 3,
+        "failed": 0,
+        "skipped": 1
+      },
+      "issues": [
+        {
+          "name": "TC-005a: lexical disabled -> vector path alone serves the interface",
+          "status": "skip",
+          "detail": "child PowerShell cannot reach the loopback stub in this sandbox — run from a plain terminal for full coverage"
+        }
+      ]
+    },
+    {
+      "id": "TC-006",
+      "status": "pass",
+      "checks": {
+        "total": 3,
+        "passed": 3,
+        "failed": 0,
+        "skipped": 0
+      },
+      "issues": []
+    },
+    {
+      "id": "TC-007",
+      "status": "pass",
+      "checks": {
+        "total": 5,
+        "passed": 5,
+        "failed": 0,
+        "skipped": 0
+      },
+      "issues": []
+    },
+    {
+      "id": "TC-008",
+      "status": "pass",
+      "checks": {
+        "total": 3,
+        "passed": 3,
+        "failed": 0,
+        "skipped": 0
+      },
+      "issues": []
+    },
+    {
+      "id": "TC-009",
+      "status": "pass",
+      "checks": {
+        "total": 4,
+        "passed": 4,
+        "failed": 0,
+        "skipped": 0
+      },
+      "issues": []
+    },
+    {
+      "id": "TC-010",
+      "status": "pass",
+      "checks": {
+        "total": 2,
+        "passed": 2,
+        "failed": 0,
+        "skipped": 0
+      },
+      "issues": []
+    },
+    {
+      "id": "TC-011",
+      "status": "pass",
+      "checks": {
+        "total": 4,
+        "passed": 4,
+        "failed": 0,
+        "skipped": 0
+      },
+      "issues": []
+    },
+    {
+      "id": "TC-012",
+      "status": "pass",
+      "checks": {
+        "total": 1,
+        "passed": 1,
+        "failed": 0,
+        "skipped": 0
+      },
+      "issues": []
+    },
+    {
+      "id": "TC-013",
+      "status": "pass",
+      "checks": {
+        "total": 2,
+        "passed": 2,
+        "failed": 0,
+        "skipped": 0
+      },
+      "issues": []
+    },
+    {
+      "id": "TC-014",
+      "status": "pass",
+      "checks": {
+        "total": 2,
+        "passed": 2,
+        "failed": 0,
+        "skipped": 0
+      },
+      "issues": []
+    }
+  ]
+}

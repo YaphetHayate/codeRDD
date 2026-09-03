@@ -1,0 +1,37 @@
+{
+  "rule_version": 2,
+  "task": "task_2",
+  "window": {
+    "date": "March 4, 2021",
+    "start": "13:30",
+    "end": "14:00"
+  },
+  "sliceEpochMs": {
+    "start": 1614832200000,
+    "end": 1614838200000
+  },
+  "sliced": [
+    {
+      "file": "log_service.csv",
+      "kept": 141032,
+      "total": 1182984
+    },
+    {
+      "file": "metric_app.csv",
+      "kept": 1111,
+      "total": 13568
+    },
+    {
+      "file": "metric_container.csv",
+      "kept": 88380,
+      "total": 1258400
+    },
+    {
+      "file": "trace_span.csv",
+      "kept": 1361256,
+      "total": 12152300
+    }
+  ],
+  "skipped": [],
+  "records_in_window": 1
+}

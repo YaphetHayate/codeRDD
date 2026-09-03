@@ -1,0 +1,16 @@
+{
+  "run_id": "openrca-bank-task1-orchestrated-001",
+  "case_id": "openrca-bank-task1",
+  "case_tier": "l2-openrca",
+  "arm": "orchestrated",
+  "budget": {
+    "max_rounds": 4,
+    "worker_width": 3,
+    "confidence_stop": 0.8,
+    "verify_prune_prior": 0.6
+  },
+  "format_version": 1,
+  "created_at": "2026-08-30T10:40:00Z",
+  "final_state": "budget_exhausted",
+  "notes": "L2 pilot 编排臂试跑完成:根因组件 Mysql02(与真值一致),机制=查询模式变化触发的工作负载型慢查询爆发,时刻 T+660(真值 T+1620,粒度分歧);置信度 0.6 未达 0.8(causal 末环受观测面盲区阻断),第 4 轮保留;3 轮/7 worker/7 有效回调。评分见 analysis/scoring/summary"
+}

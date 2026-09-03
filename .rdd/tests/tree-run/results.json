@@ -1,0 +1,288 @@
+{
+    "verifier":  "tree-run-verify.ps1",
+    "suite":  "all",
+    "ranAt":  "2026-09-02T06:30:46Z",
+    "total":  27,
+    "passed":  27,
+    "failed":  0,
+    "warned":  0,
+    "p0Failures":  [
+
+                   ],
+    "p1Failures":  [
+
+                   ],
+    "blocking":  false,
+    "results":  [
+                    {
+                        "id":  "TC-001",
+                        "title":  "start 建运行:manifest+tree+根节点落档,预算与引用范围持久化",
+                        "priority":  "P0",
+                        "acceptance":  "AC-1",
+                        "status":  "PASS",
+                        "fails":  [
+
+                                  ]
+                    },
+                    {
+                        "id":  "TC-002",
+                        "title":  "start 非法入参拒绝(INVALID_RUN_ID/MISSING_GOAL/MISSING_REF_ROOTS/REF_ROOT_NOT_FOUND)且不留目录",
+                        "priority":  "P1",
+                        "acceptance":  "AC-1",
+                        "status":  "PASS",
+                        "fails":  [
+
+                                  ]
+                    },
+                    {
+                        "id":  "TC-004",
+                        "title":  "重复 start 同 RunId 被拒(RUN_EXISTS),已有运行状态不被覆盖",
+                        "priority":  "P2",
+                        "acceptance":  "AC-1",
+                        "status":  "PASS",
+                        "fails":  [
+
+                                  ]
+                    },
+                    {
+                        "id":  "TC-005",
+                        "title":  ".rdd/tree-runs/ 被 gitignore 覆盖(运行数据不入版本库)",
+                        "priority":  "P2",
+                        "acceptance":  "AC-1",
+                        "status":  "PASS",
+                        "fails":  [
+
+                                  ]
+                    },
+                    {
+                        "id":  "TC-011",
+                        "title":  "graft 颁布子任务节点:树结构正确更新(parent/children 一致、status=pending)",
+                        "priority":  "P0",
+                        "acceptance":  "AC-2",
+                        "status":  "PASS",
+                        "fails":  [
+
+                                  ]
+                    },
+                    {
+                        "id":  "TC-012",
+                        "title":  "next→claim→report→settle 全生命周期:pending→claimed→reported→done",
+                        "priority":  "P0",
+                        "acceptance":  "AC-2",
+                        "status":  "PASS",
+                        "fails":  [
+
+                                  ]
+                    },
+                    {
+                        "id":  "TC-013",
+                        "title":  "协议误用拒绝且不记账(重复claim/非持有者report/非claimed report/无开放轮)",
+                        "priority":  "P0",
+                        "acceptance":  "AC-2",
+                        "status":  "PASS",
+                        "fails":  [
+
+                                  ]
+                    },
+                    {
+                        "id":  "TC-014",
+                        "title":  "并发冲突:同节点二次 claim 被拒,worker 改领其他节点成功(原子领取)",
+                        "priority":  "P1",
+                        "acceptance":  "AC-2",
+                        "status":  "PASS",
+                        "fails":  [
+
+                                  ]
+                    },
+                    {
+                        "id":  "TC-021",
+                        "title":  "有效回调 valid 入账:schema 完整、引用归一采纳、extras 透传",
+                        "priority":  "P0",
+                        "acceptance":  "AC-3",
+                        "status":  "PASS",
+                        "fails":  [
+
+                                  ]
+                    },
+                    {
+                        "id":  "TC-022",
+                        "title":  "结构违规回调→invalid 记账、节点不流转、运行不破坏(可修正重报)",
+                        "priority":  "P0",
+                        "acceptance":  "AC-3",
+                        "status":  "PASS",
+                        "fails":  [
+
+                                  ]
+                    },
+                    {
+                        "id":  "TC-023",
+                        "title":  "confidence 越界截断 + 越界引用拒采记录(range_check_failures 不静默丢弃)",
+                        "priority":  "P1",
+                        "acceptance":  "AC-3",
+                        "status":  "PASS",
+                        "fails":  [
+
+                                  ]
+                    },
+                    {
+                        "id":  "TC-024",
+                        "title":  "round-end 落人类可读轮快照 round-NN.md",
+                        "priority":  "P0",
+                        "acceptance":  "AC-3",
+                        "status":  "PASS",
+                        "fails":  [
+
+                                  ]
+                    },
+                    {
+                        "id":  "TC-025",
+                        "title":  "verdict=done 但全部引用被拒采→降级 inconclusive(verdict_downgraded)",
+                        "priority":  "P2",
+                        "acceptance":  "AC-3",
+                        "status":  "PASS",
+                        "fails":  [
+
+                                  ]
+                    },
+                    {
+                        "id":  "TC-031",
+                        "title":  "悬挂轮后 resume 定位断点:hanging_round/claimed/reported/pending 清单",
+                        "priority":  "P0",
+                        "acceptance":  "AC-4",
+                        "status":  "PASS",
+                        "fails":  [
+
+                                  ]
+                    },
+                    {
+                        "id":  "TC-032",
+                        "title":  "reported/done 永不可再消费:claim 拒绝,-Steal 亦不可回收",
+                        "priority":  "P0",
+                        "acceptance":  "AC-4",
+                        "status":  "PASS",
+                        "fails":  [
+
+                                  ]
+                    },
+                    {
+                        "id":  "TC-033",
+                        "title":  "tree.json 损坏自动从 .bak 回退:status 报警,后续写原语自愈",
+                        "priority":  "P0",
+                        "acceptance":  "AC-4",
+                        "status":  "PASS",
+                        "fails":  [
+
+                                  ]
+                    },
+                    {
+                        "id":  "TC-034",
+                        "title":  "ledger 坏行隔离 .corrupt:原行保留、好行不丢、账本恢复纯 JSONL",
+                        "priority":  "P1",
+                        "acceptance":  "AC-4",
+                        "status":  "PASS",
+                        "fails":  [
+
+                                  ]
+                    },
+                    {
+                        "id":  "TC-035",
+                        "title":  "跨会话凭状态文件续跑:新进程继续消费-整合-收轮全链路",
+                        "priority":  "P2",
+                        "acceptance":  "AC-4",
+                        "status":  "PASS",
+                        "fails":  [
+
+                                  ]
+                    },
+                    {
+                        "id":  "TC-041",
+                        "title":  "achieved:anchor done 后终结成功,产出 final-report,结案后运行冻结",
+                        "priority":  "P0",
+                        "acceptance":  "AC-5",
+                        "status":  "PASS",
+                        "fails":  [
+
+                                  ]
+                    },
+                    {
+                        "id":  "TC-042",
+                        "title":  "achieved 前置:anchor 非 done 被拒(ANCHOR_NOT_DONE/MISSING_ANCHOR),settle 后可终结",
+                        "priority":  "P0",
+                        "acceptance":  "AC-5",
+                        "status":  "PASS",
+                        "fails":  [
+
+                                  ]
+                    },
+                    {
+                        "id":  "TC-043",
+                        "title":  "预算诚实性:未耗尽 budget_exhausted 被拒;真耗尽(ROUNDS_EXCEEDED)后成功+结案报告",
+                        "priority":  "P0",
+                        "acceptance":  "AC-5",
+                        "status":  "PASS",
+                        "fails":  [
+
+                                  ]
+                    },
+                    {
+                        "id":  "TC-044",
+                        "title":  "space_exhausted:无 pending+claimed 时成功;剪枝级联子树参与空间收敛",
+                        "priority":  "P0",
+                        "acceptance":  "AC-5",
+                        "status":  "PASS",
+                        "fails":  [
+
+                                  ]
+                    },
+                    {
+                        "id":  "TC-045",
+                        "title":  "预算强制:graft 超 NodeWidth/MaxNodes 被拒且树不破坏;任务结构非法被拒",
+                        "priority":  "P1",
+                        "acceptance":  "AC-5",
+                        "status":  "PASS",
+                        "fails":  [
+
+                                  ]
+                    },
+                    {
+                        "id":  "TC-046",
+                        "title":  "三终局 final-report 均含终局语义与诚实结案摘要",
+                        "priority":  "P2",
+                        "acceptance":  "AC-5",
+                        "status":  "PASS",
+                        "fails":  [
+
+                                  ]
+                    },
+                    {
+                        "id":  "TC-052",
+                        "title":  "E2E 中断恢复:轮边界中断后新会话 resume 定位,续跑至终局零重复消费",
+                        "priority":  "P1",
+                        "acceptance":  "AC-6",
+                        "status":  "PASS",
+                        "fails":  [
+
+                                  ]
+                    },
+                    {
+                        "id":  "TC-051",
+                        "title":  "E2E 全流程:rca-poc 式根因调查完整运行,账本/轮快照/结案报告齐备可审计",
+                        "priority":  "P0",
+                        "acceptance":  "AC-6",
+                        "status":  "PASS",
+                        "fails":  [
+
+                                  ]
+                    },
+                    {
+                        "id":  "TC-003",
+                        "title":  "与 task.json 归档流转正交:全部操作后 .rdd/changes/ 零改动",
+                        "priority":  "P1",
+                        "acceptance":  "AC-1",
+                        "status":  "PASS",
+                        "fails":  [
+
+                                  ]
+                    }
+                ]
+}

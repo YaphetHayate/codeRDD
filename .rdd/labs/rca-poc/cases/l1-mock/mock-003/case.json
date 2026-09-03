@@ -1,0 +1,25 @@
+{
+  "format_version": 1,
+  "case_id": "mock-003",
+  "tier": "l1-mock",
+  "title": "数据库写请求延迟突增(读正常)",
+  "source": { "repo": "dev-handcrafted", "original_id": "mock-003" },
+  "symptom": "T0 起告警:支付数据库的**写操作**(事务提交)延迟从 ~10ms 突增至秒级,大量写事务超时失败;同窗口内**读查询延迟完全正常**。磁盘非系统盘,专用于数据库。请定位根因。观测面为 T-60 ~ T+10 窗口的静态快照,时间戳为相对 T0 的分钟偏移(负值=症状前)。",
+  "topology_entry": "plane/topology.json",
+  "plane_manifest": [
+    { "file": "plane/topology.json", "desc": "系统拓扑:组件与依赖关系" },
+    { "file": "plane/metrics/disk-used.csv", "desc": "数据盘使用率,5 分钟粒度" },
+    { "file": "plane/metrics/pg-write-latency.csv", "desc": "事务提交延迟(commit),5 分钟粒度" },
+    { "file": "plane/metrics/pg-read-latency.csv", "desc": "读查询延迟(select),5 分钟粒度" },
+    { "file": "plane/metrics/pg-connections.csv", "desc": "活跃连接数,5 分钟粒度" },
+    { "file": "plane/metrics/log-bytes.csv", "desc": "数据库服务器日志产出量,5 分钟粒度" },
+    { "file": "plane/logs/pg-log.log", "desc": "数据库服务器日志采样(checkpoint/WAL/错误)" },
+    { "file": "plane/logs/audit-config-change.txt", "desc": "运维配置变更审计记录" }
+  ],
+  "answer_ref": "analysis/scoring/answers.jsonl#mock-003",
+  "conversion": {
+    "tool": "handcrafted",
+    "rule_version": "n/a",
+    "audit": "DEV 手造玩具故障;时间轴相对 T0;无真实系统;答案不进案例目录(结构性隔离)"
+  }
+}

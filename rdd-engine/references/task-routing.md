@@ -82,7 +82,7 @@
 
 > **调用约定**：以下示例中 `$rdd` 指向 rdd-engine 目录，定义为：
 > ```powershell
-> $rdd = (Get-ChildItem (git rev-parse --show-toplevel) -Recurse -Directory -Depth 3 -Filter 'rdd-engine' | Select-Object -First 1).FullName
+> $rdd = $null; $t = $null; try { $t = git rev-parse --show-toplevel } catch { }; foreach ($c in @($env:RDD_ENGINE_HOME; if ($t) { (Get-ChildItem $t -Recurse -Directory -Depth 3 -Filter 'rdd-engine').FullName }; "$HOME\.rdd\engine\current")) { if ($c -and (Test-Path "$c\scripts\rdd-flow.cmd")) { $rdd = $c; break } }; if (-not $rdd) { throw "rdd-engine 未定位（三级定位链：RDD_ENGINE_HOME → 项目内 rdd-engine → ~\.rdd\engine\current 全 miss）。安装/排障：GitHub Release 下载 rdd-engine.tgz 后运行 scripts/install-rdd-engine.ps1；协议详见 rdd-engine/references/engine-location.md" }
 > ```
 > 所有命令通过 `& "$rdd\scripts\rdd-flow.cmd" -Command <name> ...` 调用，输出 UTF-8 JSON。
 
@@ -101,6 +101,15 @@
 - `-TaskId <n>` → 返回指定单条详情
 
 各角色定位自己的任务一律用 `show -Role <本角色>`。
+
+#### `version` — 输出引擎版本与安装根
+
+```powershell
+& "$rdd\scripts\rdd-flow.cmd" -Command version
+```
+
+- 无需归档、无需 git 仓库，任意目录可运行（安装器自检 / 环境诊断用）
+- 返回 `data.version`（来自 `rdd-engine/package.json`，发行版本真相源）与 `data.engineRoot`（脚本所在引擎根）
 
 ### 初始化类（PM 归档用）
 

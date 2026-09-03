@@ -1,0 +1,18 @@
+{
+  "format_version": 1,
+  "case_id": "mock-003",
+  "system": "payment-db",
+  "components": [
+    { "id": "pay-app", "kind": "service", "role": "支付应用" },
+    { "id": "pg-primary", "kind": "database", "role": "PostgreSQL 主库" },
+    { "id": "pg-standby", "kind": "database", "role": "PostgreSQL 只读副本" },
+    { "id": "datadisk", "kind": "storage", "role": "pg-primary 数据盘 2TB(WAL + 数据 + 服务器日志共用)" }
+  ],
+  "edges": [
+    { "from": "pay-app", "to": "pg-primary", "note": "读写" },
+    { "from": "pay-app", "to": "pg-standby", "note": "只读" },
+    { "from": "pg-primary", "to": "datadisk", "note": "WAL/数据/日志写入" },
+    { "from": "pg-primary", "to": "pg-standby", "note": "流复制" }
+  ],
+  "slo": { "metric": "commit_latency", "baseline_ms": 10 }
+}

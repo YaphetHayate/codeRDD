@@ -1,4 +1,4 @@
-﻿---
+---
 name: RDD-EVAL
 description: >
   验收评价模式。仅当用户输入 /RDD-EVAL 时触发，不接受隐式激活。
@@ -35,7 +35,7 @@ description: >
 
 ## rdd-engine 能力（工作前必读）
 
-需要理解项目代码时，第一步调用 `explore.cmd`。完整能力清单、调用示例与硬约束见 `rdd-engine/references/capability-manifest.md`。
+需要理解项目代码时，第一步调用 `explore.cmd -Type search` 检索探索缓存（返回数据位置而非全量内容，热区优先）。完整能力清单、调用示例与硬约束见 `rdd-engine/references/capability-manifest.md`。
 
 ## 输入处理
 
@@ -97,7 +97,7 @@ description: >
 2. **设计质量（CTO）** — 读取 design/ 下所有 CTO 设计文档（如存在）
 3. **设计规格质量（UX）** — 读取 design/ 下 UX 设计文件（如存在）
 4. **实现质量（DEV）** — 读取实际代码（结合 requirement.md 和 design/ 做一致性检查）
-5. **测试质量（QA）** — 读取 tests/cases.md（本次增量）和测试代码（如存在）；评价功能用例库 `.rdd/tests/{feature}/cases.md` 的演进质量
+5. **测试质量（QA）** — 读取 tests/cases.json（本次增量）和测试代码（如存在）；评价功能用例库 `.rdd/tests/{feature}/cases.json` 的演进质量
 6. **协同效率** — 读取 `references/collaboration-analysis.md` 执行协同链路分析
 
 ### 每个维度的评价要求

@@ -1,0 +1,258 @@
+{
+  "generated_at": "2026-08-30T09:25:56.835Z",
+  "suite": "all",
+  "lab": "D:\\YaphetHayate\\projects\\codeRDD\\.rdd\\labs\\rca-poc",
+  "totals": {
+    "pass": 18,
+    "fail": 4,
+    "warn": 0,
+    "skip": 0
+  },
+  "blocking": true,
+  "p0_fail_ids": [
+    "TC-011",
+    "TC-013",
+    "TC-041"
+  ],
+  "cases": [
+    {
+      "id": "TC-005",
+      "title": "校验器自检:坏 fixture 的结构违规必须逐项检出,好 fixture 零误报",
+      "ac": "AC-1",
+      "priority": "P0",
+      "suite": "meta",
+      "status": "pass",
+      "details": [
+        "好样本 0 误报;坏样本检出 20 项违规,含全部期望规则"
+      ]
+    },
+    {
+      "id": "TC-014",
+      "title": "校验器自检:坏证据链 fixture(无据剪枝/悬空引用/无 causal 结论/越界引用)逐项检出",
+      "ac": "AC-2",
+      "priority": "P0",
+      "suite": "meta",
+      "status": "pass",
+      "details": []
+    },
+    {
+      "id": "TC-001",
+      "title": "L1 run 状态三件套 schema 合法(字段/枚举/数值范围)",
+      "ac": "AC-1",
+      "priority": "P0",
+      "suite": "l1",
+      "status": "pass",
+      "details": [
+        "1 个 L1 run 全部通过(mock-001-orchestrated-001)"
+      ]
+    },
+    {
+      "id": "TC-002",
+      "title": "轮次连续无死锁:1..N、每轮首读状态、派发=回调数、停止有据、轮报快照齐全",
+      "ac": "AC-1",
+      "priority": "P0",
+      "suite": "l1",
+      "status": "pass",
+      "details": [
+        "1 个 L1 run 全部通过(mock-001-orchestrated-001)"
+      ]
+    },
+    {
+      "id": "TC-003",
+      "title": "停止条件三方一致(manifest↔round-log↔tree);escalated 不得宣称根因",
+      "ac": "AC-1",
+      "priority": "P0",
+      "suite": "l1",
+      "status": "pass",
+      "details": [
+        "1 个 L1 run 全部通过(mock-001-orchestrated-001)"
+      ]
+    },
+    {
+      "id": "TC-004",
+      "title": "断点恢复信息完备:证据 id 连续、树↔链↔派发引用闭合、updated_round 同步、结案报告存在",
+      "ac": "AC-1",
+      "priority": "P0",
+      "suite": "l1",
+      "status": "pass",
+      "details": [
+        "1 个 L1 run 全部通过(mock-001-orchestrated-001)"
+      ]
+    },
+    {
+      "id": "TC-006",
+      "title": "全部已注册 L1 mock 案例均有编排臂 run 且通过结构校验",
+      "ac": "AC-1",
+      "priority": "P1",
+      "suite": "l1",
+      "status": "fail",
+      "details": [
+        "案例 mock-002 无编排臂 run",
+        "案例 mock-003 无编排臂 run"
+      ]
+    },
+    {
+      "id": "TC-011",
+      "title": "OpenRCA 改装案例注册数 ≥5(5~10 区间,>10 备忘)",
+      "ac": "AC-2",
+      "priority": "P0",
+      "suite": "l2",
+      "status": "fail",
+      "details": [
+        "l2-openrca 注册案例 0 个 < 5(验收要求抽取 5~10 个)"
+      ]
+    },
+    {
+      "id": "TC-012",
+      "title": "L2 案例结构合规 + 改装审计落档(rule_version/audit_summary/leak_check)",
+      "ac": "AC-2",
+      "priority": "P0",
+      "suite": "l2",
+      "status": "pass",
+      "details": [
+        "尚无 L2 案例注册(TC-011 已拦截)"
+      ]
+    },
+    {
+      "id": "TC-013",
+      "title": "≥1 个 L2 编排臂 run 独立复算 verdict=located 且证据链完整可复核",
+      "ac": "AC-2",
+      "priority": "P0",
+      "suite": "l2",
+      "status": "fail",
+      "details": [
+        "无任何 L2 编排臂 run 同时满足「独立复算 located」且「证据链完整」(当前 L2 编排臂 run 0 个)"
+      ]
+    },
+    {
+      "id": "TC-015",
+      "title": "无凭空排除:全部剪枝有 refute 证据 + 高先验剪枝双验记录完备",
+      "ac": "AC-2",
+      "priority": "P1",
+      "suite": "l2",
+      "status": "pass",
+      "details": [
+        "尚无 L2 run(随 TC-011/013 拦截)"
+      ]
+    },
+    {
+      "id": "TC-016",
+      "title": "L2 plane 文本敏感词独立粗检(改装不得泄露根因线索)",
+      "ac": "AC-2",
+      "priority": "P1",
+      "suite": "l2",
+      "status": "pass",
+      "details": [
+        "尚无 L2 案例(随 TC-011 拦截)"
+      ]
+    },
+    {
+      "id": "TC-021",
+      "title": "两臂汇总如实落档:summary 与单 run 评分重算一致、论文参照口径标注",
+      "ac": "AC-3",
+      "priority": "P0",
+      "suite": "l2",
+      "status": "pass",
+      "details": []
+    },
+    {
+      "id": "TC-022",
+      "title": "基线臂公平对照:所测 L2 案例有同案例 baseline run 且同 max_rounds",
+      "ac": "AC-3",
+      "priority": "P1",
+      "suite": "l2",
+      "status": "pass",
+      "details": [
+        "尚无 L2 编排臂 run(随 TC-011/013 拦截)"
+      ]
+    },
+    {
+      "id": "TC-023",
+      "title": "无增益信号如实呈现:编排不高于基线时结案文档必须记录",
+      "ac": "AC-3",
+      "priority": "P2",
+      "suite": "l2",
+      "status": "pass",
+      "details": [
+        "无 baseline run,无增益判定不适用"
+      ]
+    },
+    {
+      "id": "TC-031",
+      "title": "评分 verdict 枚举合法且分层可归因(机械/能力/无增益可区分)",
+      "ac": "AC-4",
+      "priority": "P1",
+      "suite": "l2",
+      "status": "pass",
+      "details": [
+        "1 个评分产物 verdict 全部合法(机械=incomplete/no_report;能力=missed/misattributed;升级=escalated;预算=budget_exhausted 可区分)"
+      ]
+    },
+    {
+      "id": "TC-041",
+      "title": "归属判据报告产出:三判据章节齐全(原语够用性+缺口/格式稳定性/归属建议)",
+      "ac": "AC-5",
+      "priority": "P0",
+      "suite": "constraints",
+      "status": "fail",
+      "details": [
+        "analysis/attribution-report.md 缺失(PoC 结案交付物,三判据未产出)"
+      ]
+    },
+    {
+      "id": "TC-042",
+      "title": "格式稳定性追踪:observations.md 落档且各 run 状态文件 format_version 一致",
+      "ac": "AC-5",
+      "priority": "P1",
+      "suite": "constraints",
+      "status": "pass",
+      "details": [
+        "observations.md 落档,format_version 统一为 1"
+      ]
+    },
+    {
+      "id": "TC-051",
+      "title": "影响范围 confined:受保护路径(harness/rdd-engine/角色目录等)对照基线快照零改动",
+      "ac": "AC-6",
+      "priority": "P0",
+      "suite": "constraints",
+      "status": "pass",
+      "details": [
+        "受保护路径(rdd-engine,dsh,src,scripts,bin,dist,rdd-pm,rdd-cto,rdd-dev,rdd-qa,rdd-pse,rdd-ux,rdd-eval,.claude,.zcode + 7 个根文件)对照基线零改动"
+      ]
+    },
+    {
+      "id": "TC-052",
+      "title": "新增产物 confined:基线后新增/变更文件仅在允许根(labs/tests/exploration 等)",
+      "ac": "AC-6",
+      "priority": "P1",
+      "suite": "constraints",
+      "status": "pass",
+      "details": [
+        "基线后全部变更 confined 于允许根(.rdd/labs/, .rdd/tests/, .rdd/exploration/, .rdd/changes/, .rdd/tmp/, .rdd/handoff/)"
+      ]
+    },
+    {
+      "id": "TC-061",
+      "title": "只读边界:全部 citations 为 plane/ 相对路径且无绝对路径/逃逸",
+      "ac": "AC-7",
+      "priority": "P0",
+      "suite": "constraints",
+      "status": "pass",
+      "details": [
+        "1 个 run 的全部证据引用均为 plane/ 相对路径,无越界"
+      ]
+    },
+    {
+      "id": "TC-062",
+      "title": "引用面封闭:citations 均落在案例 plane_manifest 声明的静态文件集内",
+      "ac": "AC-7",
+      "priority": "P1",
+      "suite": "constraints",
+      "status": "pass",
+      "details": [
+        "1 个 run 的全部证据引用均落在 plane_manifest 静态文件集内"
+      ]
+    }
+  ]
+}

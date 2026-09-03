@@ -1,0 +1,62 @@
+{
+  "format_version": 1,
+  "case_id": "pm-001",
+  "tier": "l3-postmortem",
+  "title": "CI jobs stuck in not-running state after a deploy (postmortem replay)",
+  "source": {
+    "blueprint": "real postmortem: CircleCI 2021-11-08 jobs-stuck incident (danluu/post-mortems index)",
+    "telemetry": "SYNTHETIC REPLAY — 观测面为按 postmortem 叙述重建的合成遥测,非原始监控数据",
+    "original_id": "l3/pm-001"
+  },
+  "symptom": "11 月 8 日上午,CI 平台的 job 大量停留在 not-running 状态,队列深度持续攀升并在 T0 触发告警。job 被创建但从不下发执行;worker 池本身空闲。请定位根因(变更?数据?服务?)并解释:为什么 T+15 的回滚没有恢复分发。",
+  "topology_entry": "plane/topology.json",
+  "plane_manifest": [
+    {
+      "file": "plane/topology.json",
+      "desc": "组件清单与调用关系"
+    },
+    {
+      "file": "plane/metrics/job-queue-depth.csv",
+      "desc": "待执行 job 数与最老 job 年龄(分钟,T0 相对)"
+    },
+    {
+      "file": "plane/metrics/distributor-scan-rate.csv",
+      "desc": "distributor 扫描速率与校验失败行数"
+    },
+    {
+      "file": "plane/metrics/distributor-dispatch.csv",
+      "desc": "每分钟下发的 job 数"
+    },
+    {
+      "file": "plane/metrics/worker-cpu.csv",
+      "desc": "worker 池资源(含 GC)"
+    },
+    {
+      "file": "plane/metrics/api-latency.csv",
+      "desc": "api 面 p99 与 5xx"
+    },
+    {
+      "file": "plane/logs/deploy.log",
+      "desc": "部署/回滚审计(组件与目标,不含变更内容)"
+    },
+    {
+      "file": "plane/logs/distributor.log",
+      "desc": "distributor 运行日志(含校验错误明细)"
+    },
+    {
+      "file": "plane/logs/pg.log",
+      "desc": "pg 审计(仅日期,无时刻——原始审计策略如此)"
+    },
+    {
+      "file": "plane/logs/app.log",
+      "desc": "应用杂项日志"
+    }
+  ],
+  "answer_ref": "analysis/scoring/answers.jsonl#pm-001",
+  "conversion": {
+    "tool": "tools/gen-pm001.mjs(手工改装脚本,L3)",
+    "rule_version": 1,
+    "audit": "R1 时间归一 T0=告警;R2 泛型组件名+deploy 编号保留(合法变更线索);R3 [T-95,T+40];R4 根因细节(字段名/类型/污染机制)仅在托管答案——deploy.log 只见目标、distributor.log 只见现象、pg.log 只见'有 ALTER 且反向迁移未定义'且无时刻;R5/L3 噪声:无关 deploy #4822、canary 重启、GC/磁盘/重连噪声、误导信号(worker/队列服务/网络健康)",
+    "regen": "node tools/gen-pm001.mjs"
+  }
+}

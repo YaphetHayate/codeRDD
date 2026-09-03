@@ -1,0 +1,185 @@
+{
+  "format_version": 1,
+  "case_id": "openrca-bank-task1",
+  "updated_round": 3,
+  "nodes": [
+    {
+      "id": "SYM",
+      "parent": null,
+      "statement": "症状锚点(轮2精化): [0,1800]内三次用户可见停滞事件,机制统一为MG→dockerB(trace-st)的dle调用挂起5-15s后被10s上层超时截断: E1爬升230-232→主爆[232,258]→尾289; E2弱弥散[612,706]; E3爬升837-839→主爆[840,865]→尾886; apache口径>5s: E1~26条/E2~27条/E3~38条,纯时延型(sr=100,无错误码);另有T0前微事件[-86,-66]与被吸收的后端微事件[480,540];2-7s背景span为常态噪声(EV-020)",
+      "prior": 1.0,
+      "status": "established",
+      "confidence": 0.97,
+      "prune_reason": null,
+      "evidence_ids": ["EV-001", "EV-003", "EV-012", "EV-020", "EV-022"],
+      "children": ["H1", "H2", "H9", "H10", "CTX-PRE"]
+    },
+    {
+      "id": "H10",
+      "parent": "SYM",
+      "statement": "根因(轮3结案)=MG→dockerB(trace-st)路径的选择性流级阻断(单向、间歇发作): 附加时延全部精确进入dle跳(EV-018因果);挂起调用从未到达dockerB应用层且无迟到span(E1:0/59、E3:0/87),同秒兄弟调用正常到达快速处理(209/243条,max≤4.2s)(EV-024因果对照);dockerB→MG回调方向全程健康(EV-025方向不对称);跨2MG×2dockerB(异宿主)四条流组合同受打击(EV-026);发生时刻=+231s(E1首发,EV-027/028裁决),三次flare[231,289]/[612,706]/[837,886]同族单一间歇故障,886后消亡(EV-029)",
+      "prior": 0.5,
+      "status": "concluded",
+      "confidence": 0.85,
+      "prune_reason": null,
+      "evidence_ids": ["EV-018", "EV-019", "EV-020", "EV-022", "EV-024", "EV-025", "EV-026"],
+      "children": ["H10a", "H10b"]
+    },
+    {
+      "id": "H10a",
+      "parent": "H10",
+      "statement": "子假设(最佳机制): MG→dockerB方向网络路径按流丢包/黑洞(SDN/conntrack/子网级): 单向性(EV-025:回调方向0慢)、到达侧空记录(EV-024:挂起请求从未进入dockerB)、5-15s连续重传恢复轮廓(EV-022)、跨四流组合同击(EV-026)全部吻合;精确物理层(丢包vs流黑洞vs conntrack)在现有观测面内不可分辨",
+      "prior": 0.3,
+      "status": "active",
+      "confidence": 0.55,
+      "prune_reason": null,
+      "evidence_ids": ["EV-019", "EV-022", "EV-024", "EV-025", "EV-026"],
+      "children": []
+    },
+    {
+      "id": "H10b",
+      "parent": "H10",
+      "statement": "子假设: dockerB内部预处理排队/accept队列间歇停顿",
+      "prior": 0.2,
+      "status": "pruned",
+      "confidence": 0.1,
+      "prune_reason": "EV-024: E1+E3共146条挂起dle调用在爆发窗+其后30s内于dockerB侧产生0条span(含迟到)——accept/队列停顿在恢复后应迟到处理并留下晚到server span,观测为全空;且EV-025示dockerB出站方向爆发期照常,入站独断更符合路径侧而非dockerB内部排队;降为0.1保留残余不确定性",
+      "evidence_ids": ["EV-018", "EV-021", "EV-024", "EV-025"],
+      "children": []
+    },
+    {
+      "id": "H1",
+      "parent": "SYM",
+      "statement": "根因=Mysql02锁竞争: 仅与E2时间重合(EV-005/EV-015),E1/E3窗口DB全净(EV-014)→不能作为三次事件统一根因;且E2的docker span不慢,锁冲突未拖慢dockerB,方向可疑(可能是dle删除事务堆积之果或独立并发事件)",
+      "prior": 0.45,
+      "status": "active",
+      "confidence": 0.15,
+      "prune_reason": null,
+      "evidence_ids": ["EV-005", "EV-011", "EV-010", "EV-014", "EV-015"],
+      "children": []
+    },
+    {
+      "id": "H2",
+      "parent": "SYM",
+      "statement": "根因=MG侧连接池/队列耗尽: 已被EV-024同秒对照否证——同一秒内同源dle调用大多正常完成(max~1s)仅个别挂起5-15s,池耗竭会挂起全部新调用而非按流选择;且四条MG×dockerB流组合同击(EV-026)非单MG池行为",
+      "prior": 0.3,
+      "status": "pruned",
+      "confidence": 0.1,
+      "prune_reason": "EV-024: 同秒兄弟调用畅通+同秒最大正常完成时延~1s;EV-026: 跨双MG同时受击",
+      "evidence_ids": ["EV-004", "EV-018", "EV-024", "EV-026"],
+      "children": []
+    },
+    {
+      "id": "H9",
+      "parent": "SYM",
+      "statement": "根因=Mysql01角色变化(660起+2永久连接): Mysql01全程准空闲(buffer pool 25万页恒定free),该台阶与事件无因果链证据,仅记录未解释",
+      "prior": 0.1,
+      "status": "active",
+      "confidence": 0.05,
+      "prune_reason": null,
+      "evidence_ids": ["EV-010"],
+      "children": []
+    },
+    {
+      "id": "CTX-PRE",
+      "parent": "SYM",
+      "statement": "上下文(轮3裁决完毕): (a)大事件[-3579,-2869]=重读批处理+dockerB执行慢+锁,负载型,-2760切换后恢复,左截断(EV-002);(b)微事件[-86,-66]=dockerB执行慢慢性背景的集中发作(该背景0-7/min贯穿全程,亦见于[300,359]/[480,540]dockerA同累/900后),dle路径在[-95,-60]无>=2s成簇、apache[-130,-1]仅2条基线噪声→与dle-挂起族不同族、用户不可见(EV-028)→根因发生时刻=窗内+231s,-86s口径排除;(c)dle-挂起族T0前仅噪声底1-2/min(与大负载事件内偶发无关),900后同噪声底→故障条件存在区间[231,886](EV-029)",
+      "prior": 0.2,
+      "status": "established",
+      "confidence": 0.85,
+      "prune_reason": null,
+      "evidence_ids": ["EV-002", "EV-021", "EV-027", "EV-028", "EV-029"],
+      "children": []
+    },
+    {
+      "id": "H3",
+      "parent": "SYM",
+      "statement": "根因=Redis01间歇停顿",
+      "prior": 0.15,
+      "status": "pruned",
+      "confidence": 0.03,
+      "prune_reason": "EV-016: uptime单调无重启、rejected/blocked/misses增量全0、无bgsave/aof;[420,540]客户端-100下陷窗口请求路径无停顿(apache无>5s簇、IG/MG慢span仅1-2条),该下陷与[480,540]后端微事件相伴,非用户路径根因",
+      "evidence_ids": ["EV-007", "EV-016"],
+      "children": []
+    },
+    {
+      "id": "H4",
+      "parent": "SYM",
+      "statement": "根因=MG01 CPU-2核饱和始于(-1560,-1320]",
+      "prior": 0.4,
+      "status": "pruned",
+      "confidence": 0.05,
+      "prune_reason": "EV-006: 热核从CPU-3迁移到CPU-2,整体CPU利用率全程平坦,孪生MG02同构;非新增负载,系调度迁移伪象",
+      "evidence_ids": ["EV-006"],
+      "children": []
+    },
+    {
+      "id": "H5",
+      "parent": "SYM",
+      "statement": "根因=Redis资源故障(阻塞/逐出/fork/CPU/内存)",
+      "prior": 0.25,
+      "status": "pruned",
+      "confidence": 0.03,
+      "prune_reason": "EV-007+EV-016: blocked/evicted/fork全程0,CPU与内存平坦,深查无重启/拒绝/未命中增量",
+      "evidence_ids": ["EV-007", "EV-016"],
+      "children": []
+    },
+    {
+      "id": "H6",
+      "parent": "SYM",
+      "statement": "根因=docker容器资源故障(CPU限流/内存泄漏)",
+      "prior": 0.25,
+      "status": "pruned",
+      "confidence": 0.05,
+      "prune_reason": "EV-008: MemPercent恒定、CpuPercent<5%、内存平稳;E1/E3期间dockerB span速率不变(EV-019)亦排除整体容器故障",
+      "evidence_ids": ["EV-008", "EV-019"],
+      "children": []
+    },
+    {
+      "id": "H7",
+      "parent": "SYM",
+      "statement": "根因=网关/Tomcat JVM故障(GC长停顿/重启/内存泄漏)",
+      "prior": 0.25,
+      "status": "pruned",
+      "confidence": 0.08,
+      "prune_reason": "EV-009: uptime单调、堆锯齿正常、无Full GC;另EV-018已示附加时延不在IG/Tomcat/MG处理内而在dle跳",
+      "evidence_ids": ["EV-009", "EV-018"],
+      "children": []
+    },
+    {
+      "id": "TOPO",
+      "parent": null,
+      "statement": "拓扑事实(轮2修正,以parent_id链为准): apache→IG01/02 —(in)→ Tomcat01-04 —(st)→ MG01/02 —(dle)→ dockerB(trace-st);dockerB —(trace)→ MG回调;dockerA(role-st,op=role)不在该用户链;MySQL/Redis无span(EV-017,取代EV-013的共现排序)",
+      "prior": 1.0,
+      "status": "established",
+      "confidence": 0.9,
+      "prune_reason": null,
+      "evidence_ids": ["EV-013", "EV-017"],
+      "children": []
+    },
+    {
+      "id": "CTX-DB",
+      "parent": null,
+      "statement": "DB事实: Mysql02活动库,Mysql01准空闲;Mysql02缓冲池健康;[480,540]存在被吸收的后端微事件(dockerA/B执行慢+Redis -100客户端+Mysql02连接28→20,EV-023)",
+      "prior": 1.0,
+      "status": "established",
+      "confidence": 0.85,
+      "prune_reason": null,
+      "evidence_ids": ["EV-010", "EV-011", "EV-023"],
+      "children": []
+    }
+  ],
+  "active_focus": [],
+  "conclusion": {
+    "root_cause_time_rel_t0_sec": 231,
+    "root_cause_time_onset_window": [230, 232],
+    "root_cause_time_wallclock_utc8": "2021-03-04 14:33:51 (T0=14:30:00, 首个dle挂起4858ms于+231s; 亚秒级精度受采样限制)",
+    "component": "MG(01/02)→dockerB(trace-st)服务路径(连接/网络层,单向入站方向)",
+    "reason": "选择性流级阻断: 间歇窗口内部分MG→dockerB dle调用5-15s挂起且从未到达dockerB应用层(0/146迟到span),同秒兄弟调用畅通,dockerB→MG回调方向健康,跨双MG×双dockerB四流组合同击;dockerB自身处理能力与其他流量全程正常",
+    "flare_windows_rel_t0": [[231, 289], [612, 706], [837, 886]],
+    "hypothesis_id": "H10",
+    "confidence": 0.85,
+    "causal_evidence": ["EV-018", "EV-024"],
+    "caveats": "阻断的精确物理层(丢包/流黑洞/conntrack/SDN)在现有plane观测面内不可分辨(容器网络KPI采样稀疏);E2(612-706)为同族轻度连续形态且与Mysql02锁突发(660)时间重叠,因果方向未定但不影响主结论"
+  }
+}

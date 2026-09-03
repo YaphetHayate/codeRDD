@@ -1,0 +1,63 @@
+{
+  "name": "coderrdd",
+  "version": "1.1.0",
+  "description": "RDD (Requirement-Driven Development) AI workflow installer — install skills into .rdd/ as single source of truth and link AI client directories to it",
+  "keywords": [
+    "rdd",
+    "requirement-driven-development",
+    "ai-workflow",
+    "skills",
+    "opencode",
+    "claude-code",
+    "installer"
+  ],
+  "author": "YaphetHayate",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/YaphetHayate/codeRDD.git"
+  },
+  "bugs": {
+    "url": "https://github.com/YaphetHayate/codeRDD/issues"
+  },
+  "homepage": "https://github.com/YaphetHayate/codeRDD#readme",
+  "bin": {
+    "coderrdd": "./bin/coderrdd.js"
+  },
+  "files": [
+    "bin/",
+    "dist/cli/",
+    "dist/core/",
+    "rdd-engine/",
+    "rdd-pm/",
+    "rdd-cto/",
+    "rdd-ux/",
+    "rdd-dev/",
+    "rdd-qa/",
+    "rdd-eval/",
+    "rdd-pse/",
+    "docs/code-quality.md",
+    ".opencode/agent/rdd-explore.md",
+    ".opencode/package.json",
+    ".claude/agents/rdd-explore.md",
+    ".zcode/agents/rdd-explore.md"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "prepare": "npm run build",
+    "prepublishOnly": "npm run build && node scripts/prepublish-check.js",
+    "register": "node scripts/register.js",
+    "unregister": "npm unlink -g coderrdd"
+  },
+  "dependencies": {
+    "@inquirer/prompts": "^7.2.0",
+    "commander": "^12.1.0"
+  },
+  "devDependencies": {
+    "@types/node": "^26.2.0",
+    "typescript": "^5.6.0"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

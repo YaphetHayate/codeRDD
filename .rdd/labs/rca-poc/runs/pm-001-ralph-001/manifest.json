@@ -1,0 +1,16 @@
+{
+  "run_id": "pm-001-ralph-001",
+  "case_id": "pm-001",
+  "case_tier": "l3-postmortem",
+  "arm": "ralph-baseline",
+  "budget": {
+    "max_rounds": 4,
+    "worker_width": 1,
+    "confidence_stop": 0.8,
+    "verify_prune_prior": 0.6
+  },
+  "format_version": 1,
+  "created_at": "2026-08-31T12:09:14Z",
+  "final_state": "root_cause_concluded",
+  "notes": "L3 基线臂:ralph 单体模式;maxRounds=4 与编排臂同值"
+}

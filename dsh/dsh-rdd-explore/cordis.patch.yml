@@ -1,0 +1,17 @@
+# The @coderrdd/dsh-rdd-explore bundle patch: inserts the rdd_explore tool plugin
+# over whatever the profile already composes. Layers above (the profile's own
+# cordis.patch.yml, the home-level one, any --patch overlay) can override this
+# row by id `rdd-explore` — restating every key they want the row to keep.
+#
+# toolFilter.allow keeps the exploration worker at minimal privilege: the four
+# read-only tools (read / read_image / glob / grep, all registered by the dsh
+# base composition). In `registerMode: plugin` the harness itself writes the
+# artifacts and registers the cache entry, so the worker needs no write tools.
+- insert:
+    - id: rdd-explore
+      name: '@coderrdd/dsh-rdd-explore'
+      config:
+        provider: spawn
+        registerMode: plugin
+        toolFilter:
+          allow: [read, read_image, glob, grep]

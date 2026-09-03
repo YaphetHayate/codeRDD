@@ -1,4 +1,4 @@
-﻿---
+---
 name: RDD-UX
 description: >
   UX 设计师模式。仅当用户输入 /RDD-UX 时触发，不接受隐式激活。
@@ -28,7 +28,7 @@ description: >
 
 **文件白名单：** 仅写入 `.rdd/changes/archive/.../design/` 下的 `.md` 设计文档、`.rdd/design-system/` 下的 `tokens.md` 和 `components.md`（设计系统累积资产）、`.rdd/changes/archive/.../design/mockups/` 下的 `.html`、`.png` 视觉稿文件与 `manifest.json`（对比页数据源，Phase 2.5 产物）、**`rdd-ux/ux_subagent.json`（子代理 model 清单）**。`.opencode/agent/ux-mockup-*.md` 不在白名单内——由 `sync-ux-subagents` 脚本通过 bash 调用管理，UX 不直接 edit。task.json 路由操作通过 CLI 命令完成（见 `rdd-engine/references/task-routing.md`）。
 
-**子代理配置维护职责：** UX 是自身 fork-join 子代理的配置维护者，但维护方式是**调用脚本**而非手改文件。真相源是 `rdd-ux/ux_subagent.json`（用户配置可用 model）。当 model 变更或首次使用前，UX 运行 `$rdd = (Get-ChildItem (git rev-parse --show-toplevel) -Recurse -Directory -Depth 3 -Filter 'rdd-engine' | Select-Object -First 1).FullName; & "$rdd\scripts\sync-ux-subagents.cmd"`（可先加 `-WhatIf` 预检），脚本自动完成 agent 文件的 Create/Update/Delete。脚本报告有变更时，UX 提醒用户重启 opencode。完整流程见 `references/mockup-generation.md#子代理配置维护`。
+**子代理配置维护职责：** UX 是自身 fork-join 子代理的配置维护者，但维护方式是**调用脚本**而非手改文件。真相源是 `rdd-ux/ux_subagent.json`（用户配置可用 model）。当 model 变更或首次使用前，UX 运行 `$rdd = $null; $t = $null; try { $t = git rev-parse --show-toplevel } catch { }; foreach ($c in @($env:RDD_ENGINE_HOME; if ($t) { (Get-ChildItem $t -Recurse -Directory -Depth 3 -Filter 'rdd-engine').FullName }; "$HOME\.rdd\engine\current")) { if ($c -and (Test-Path "$c\scripts\rdd-flow.cmd")) { $rdd = $c; break } }; if (-not $rdd) { throw "rdd-engine 未定位（三级定位链：RDD_ENGINE_HOME → 项目内 rdd-engine → ~\.rdd\engine\current 全 miss）。安装/排障：GitHub Release 下载 rdd-engine.tgz 后运行 scripts/install-rdd-engine.ps1；协议详见 rdd-engine/references/engine-location.md" }; & "$rdd\scripts\sync-ux-subagents.cmd"`（可先加 `-WhatIf` 预检），脚本自动完成 agent 文件的 Create/Update/Delete。脚本报告有变更时，UX 提醒用户重启 opencode。完整流程见 `references/mockup-generation.md#子代理配置维护`。
 
 > 视觉稿 HTML/CSS 仅为设计产出物，不是业务代码。五条禁令中的"不写业务代码文件"不限制视觉稿生成。
 
@@ -40,7 +40,7 @@ description: >
 
 ## rdd-engine 能力（工作前必读）
 
-需要理解项目代码时，第一步调用 `explore.cmd`。完整能力清单、调用示例与硬约束见 `rdd-engine/references/capability-manifest.md`。
+需要理解项目代码时，第一步调用 `explore.cmd -Type search` 检索探索缓存（返回数据位置而非全量内容，热区优先）。完整能力清单、调用示例与硬约束见 `rdd-engine/references/capability-manifest.md`。
 
 ---
 
@@ -50,10 +50,10 @@ description: >
 
 | 优先级 | 触发 | 动作 |
 |--------|------|------|
-| A0 | 脚本开窗指针（`/rdd-ux TaskId=<n> task=<task.json路径>` 或 `/rdd-ux handoff=<路径>`） | TaskId 模式：按指针调 `$rdd = (Get-ChildItem (git rev-parse --show-toplevel) -Recurse -Directory -Depth 3 -Filter 'rdd-engine' | Select-Object -First 1).FullName; & "$rdd\scripts\rdd-flow.cmd" -Command handoff -Role UX -Archive <task.json所在归档> -TaskId <n>` 拉单条；Handoff 模式：直接 Read 交接包。TaskId 无效（已完成/废弃）告知用户 |
-| A | flow 启动（`$rdd = (Get-ChildItem (git rev-parse --show-toplevel) -Recurse -Directory -Depth 3 -Filter 'rdd-engine' | Select-Object -First 1).FullName; & "$rdd\scripts\rdd-flow.cmd" -Command start -Role UX`） | 使用输出的 prompt / handoff packet，只读 handoff 列出的需求文档 |
+| A0 | 脚本开窗指针（`/rdd-ux TaskId=<n> task=<task.json路径>` 或 `/rdd-ux handoff=<路径>`） | TaskId 模式：按指针调 `$rdd = $null; $t = $null; try { $t = git rev-parse --show-toplevel } catch { }; foreach ($c in @($env:RDD_ENGINE_HOME; if ($t) { (Get-ChildItem $t -Recurse -Directory -Depth 3 -Filter 'rdd-engine').FullName }; "$HOME\.rdd\engine\current")) { if ($c -and (Test-Path "$c\scripts\rdd-flow.cmd")) { $rdd = $c; break } }; if (-not $rdd) { throw "rdd-engine 未定位（三级定位链：RDD_ENGINE_HOME → 项目内 rdd-engine → ~\.rdd\engine\current 全 miss）。安装/排障：GitHub Release 下载 rdd-engine.tgz 后运行 scripts/install-rdd-engine.ps1；协议详见 rdd-engine/references/engine-location.md" }; & "$rdd\scripts\rdd-flow.cmd" -Command handoff -Role UX -Archive <task.json所在归档> -TaskId <n>` 拉单条；Handoff 模式：直接 Read 交接包。TaskId 无效（已完成/废弃）告知用户 |
+| A | flow 启动（`$rdd = $null; $t = $null; try { $t = git rev-parse --show-toplevel } catch { }; foreach ($c in @($env:RDD_ENGINE_HOME; if ($t) { (Get-ChildItem $t -Recurse -Directory -Depth 3 -Filter 'rdd-engine').FullName }; "$HOME\.rdd\engine\current")) { if ($c -and (Test-Path "$c\scripts\rdd-flow.cmd")) { $rdd = $c; break } }; if (-not $rdd) { throw "rdd-engine 未定位（三级定位链：RDD_ENGINE_HOME → 项目内 rdd-engine → ~\.rdd\engine\current 全 miss）。安装/排障：GitHub Release 下载 rdd-engine.tgz 后运行 scripts/install-rdd-engine.ps1；协议详见 rdd-engine/references/engine-location.md" }; & "$rdd\scripts\rdd-flow.cmd" -Command start -Role UX`） | 使用输出的 prompt / handoff packet，只读 handoff 列出的需求文档 |
 | B | 用户指定需求文件路径或口述需求 | 直接读取/记录 |
-| C | 应用层指针消息（形如 `请处理 .rdd/changes/archive/<name>/ 下的需求`） | 识别为应用层交接，运行 `$rdd = (Get-ChildItem (git rev-parse --show-toplevel) -Recurse -Directory -Depth 3 -Filter 'rdd-engine' | Select-Object -First 1).FullName; & "$rdd\scripts\rdd-flow.cmd" -Command handoff -Role UX -Archive "<path>"` 拉取交接包 |
+| C | 应用层指针消息（形如 `请处理 .rdd/changes/archive/<name>/ 下的需求`） | 识别为应用层交接，运行 `$rdd = $null; $t = $null; try { $t = git rev-parse --show-toplevel } catch { }; foreach ($c in @($env:RDD_ENGINE_HOME; if ($t) { (Get-ChildItem $t -Recurse -Directory -Depth 3 -Filter 'rdd-engine').FullName }; "$HOME\.rdd\engine\current")) { if ($c -and (Test-Path "$c\scripts\rdd-flow.cmd")) { $rdd = $c; break } }; if (-not $rdd) { throw "rdd-engine 未定位（三级定位链：RDD_ENGINE_HOME → 项目内 rdd-engine → ~\.rdd\engine\current 全 miss）。安装/排障：GitHub Release 下载 rdd-engine.tgz 后运行 scripts/install-rdd-engine.ps1；协议详见 rdd-engine/references/engine-location.md" }; & "$rdd\scripts\rdd-flow.cmd" -Command handoff -Role UX -Archive "<path>"` 拉取交接包 |
 | D | 用户未提供 | 扫描 `.rdd/changes/archive/` 找最新归档，调用 `rdd-flow show -Role UX` 定位 UX 待处理任务 |
 | E | 无归档 | 告知用户先去 PM 模式梳理需求 |
 

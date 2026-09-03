@@ -5,10 +5,35 @@ node_modules/
 # RDD workflow runtime data
 .rdd/changes/
 .rdd/handoff/
-# exploration vector sidecar: derived data (rebuildable via embed-backfill)
-.rdd/exploration/vectors.json
+# tree-run runtime data (state files are the sole authority; gitignored like .rdd/changes/)
+.rdd/tree-runs/
+# exploration cache: machine-local runtime data (zero-init on fresh clone; vectors rebuildable via embed-backfill)
+.rdd/exploration/
+# rdd e2e sandbox homes / scratch
+.rdd/tmp/
+
+# rdd labs: cloned external datasets (readonly, --depth 1, not submodule)
+.rdd/labs/rca-poc/datasets/
+
+# rca-poc L2 case planes are large grep-able slices, regenerable via tools/convert-openrca.mjs
+.rdd/labs/rca-poc/cases/l2-openrca/*/plane/
+
+# rca-poc run scratch: derived telemetry slices regenerable from the dataset
+.rdd/labs/rca-poc/runs/*/scratch/
+
+# zcode per-session plan notes
+.zcode/plans/
+
+# editor/backup droppings
+*.bak
 
 .claude/settings.local.json
 
-# dsh plugin physical home lives in the dsh checkout; this path is a junction
-dsh/dsh-rdd-explore/
+# dsh plugin build output (produced inside the DSH workspace via the reverse junction)
+dsh/dsh-rdd-explore/lib/
+
+# node build output (installer dist/) and engine release tarballs (dist/engine/*.tgz, npm pack artifacts)
+dist/
+
+# engine/plugin release tarballs built via npm pack (e.g. rdd-engine.tgz)
+*.tgz

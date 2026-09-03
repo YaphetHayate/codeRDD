@@ -1,0 +1,25 @@
+{
+  "format_version": 1,
+  "case_id": "mock-001",
+  "updated_round": 1,
+  "nodes": [
+    {
+      "id": "H1",
+      "parent": null,
+      "statement": "release-2185 上线的 orders 按 customer_id 查询缺索引,全表扫描长期占用连接导致连接池耗尽(依据:症状仅影响读接口)",
+      "prior": 0.6,
+      "status": "concluded",
+      "confidence": 0.9,
+      "prune_reason": null,
+      "evidence_ids": ["E1"],
+      "children": []
+    }
+  ],
+  "active_focus": [],
+  "conclusion": {
+    "root_cause_hypothesis": "H1",
+    "confidence": 0.9,
+    "stop_reason": "confidence_reached",
+    "summary": "fixture 结案:release-2185 引入的 orders/customer_id 查询缺索引致全表扫描,连接池耗尽"
+  }
+}

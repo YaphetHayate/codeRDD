@@ -150,10 +150,10 @@ cmd → powershell → 目标程序的参数链路经过 GBK→UTF-8 转码，�
 
 ### 6.6 调用方路径约定
 
-文档、SKILL 中调用 rdd-engine 脚本时，统一用仓库根定位，避免依赖当前工作目录：
+文档、SKILL 中调用 rdd-engine 脚本时，统一用三级定位链解析引擎根（`RDD_ENGINE_HOME` → 项目内 `rdd-engine` → `~/.rdd/engine/current`），避免依赖当前工作目录，同时兼容用户级独立安装：
 
 ```powershell
-$rdd = (Get-ChildItem (git rev-parse --show-toplevel) -Recurse -Directory -Depth 3 -Filter 'rdd-engine' | Select-Object -First 1).FullName; & "$rdd\scripts\<script>.cmd" ...
+$rdd = $null; $t = $null; try { $t = git rev-parse --show-toplevel } catch { }; foreach ($c in @($env:RDD_ENGINE_HOME; if ($t) { (Get-ChildItem $t -Recurse -Directory -Depth 3 -Filter 'rdd-engine').FullName }; "$HOME\.rdd\engine\current")) { if ($c -and (Test-Path "$c\scripts\rdd-flow.cmd")) { $rdd = $c; break } }; if (-not $rdd) { throw "rdd-engine 未定位（三级定位链：RDD_ENGINE_HOME → 项目内 rdd-engine → ~\.rdd\engine\current 全 miss）。安装/排障：GitHub Release 下载 rdd-engine.tgz 后运行 scripts/install-rdd-engine.ps1；协议详见 rdd-engine/references/engine-location.md" }; & "$rdd\scripts\<script>.cmd" ...
 ```
 
 不要写相对路径（`.\rdd-engine\...`），上游 agent 可能在任意子目录下执行。

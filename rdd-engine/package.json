@@ -1,0 +1,23 @@
+{
+  "name": "@coderrdd/rdd-engine",
+  "version": "1.0.0",
+  "description": "RDD workflow engine CLI (rdd-flow / tree-run / tree-leaf / explore family) — pure PowerShell, zero node/npm dependency at runtime; distributed standalone as a GitHub Release tarball",
+  "keywords": [
+    "rdd",
+    "requirement-driven-development",
+    "workflow-engine",
+    "cli",
+    "powershell"
+  ],
+  "author": "YaphetHayate",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/YaphetHayate/codeRDD.git",
+    "directory": "rdd-engine"
+  },
+  "files": [
+    "scripts/",
+    "references/"
+  ]
+}

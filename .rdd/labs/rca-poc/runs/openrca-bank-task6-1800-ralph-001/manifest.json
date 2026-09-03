@@ -1,0 +1,17 @@
+{
+  "run_id": "openrca-bank-task6-1800-ralph-001",
+  "case_id": "openrca-bank-task6-1800",
+  "case_tier": "l2-openrca",
+  "arm": "ralph-baseline",
+  "budget": {
+    "max_rounds": 4,
+    "worker_width": 1,
+    "confidence_stop": 0.8,
+    "verify_prune_prior": 0.6
+  },
+  "format_version": 1,
+  "created_at": "2026-08-31T07:00:59Z",
+  "final_state": "root_cause_concluded",
+  "concluded_round": 2,
+  "notes": "L2 基线臂:ralph 单体模式(每轮 1 新 agent 兼规划+采证);maxRounds=4 与编排臂同值(公平性约束)"
+}
