@@ -1,4 +1,0 @@
-# 运维配置变更审计记录(窗口 T-60 ~ T+10)
-t=-58 ticket=OPS-4471 operator=ops-jane action="ALTER SYSTEM SET log_min_messages = 'DEBUG2'; SELECT pg_reload_conf();" reason="support ticket TRI-5521: need statement-level traces for payment dispute"
-t=-58 ticket=OPS-4471 note="requested duration: 'a few minutes'; no revert logged in window"
-t=-70 ticket=OPS-4460 operator=ops-bob action="routine index maintenance" note="out of window, completed cleanly"

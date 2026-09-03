@@ -1,9 +1,0 @@
-offset_min,event
--95,deploy #4821 STARTED target=distributor-api component_group=jobs-infra operator=ci-bot
--92,deploy #4821 COMPLETED status=ok targets=distributor-api,pg-migrator
--40,deploy #4822 STARTED target=billing-web component_group=billing operator=human-jane
--38,deploy #4822 COMPLETED status=ok targets=billing-web
-15,rollback #4821 REQUESTED reason=incident-1147 operator=oncall-dana
-18,rollback #4821 COMPLETED status=ok note=reverted distributor-api to v2.29 (pg-migrator NOT reverted)
-25,manual-deploy build=hotfix-ignore-field-8803 target=distributor-api operator=oncall-dana note=custom build
-27,scale-out distributor workers 4x operator=oncall-dana

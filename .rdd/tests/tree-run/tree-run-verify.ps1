@@ -15,7 +15,7 @@
 #   callback 有效回写/结构违规降级/截断与拒采/轮快照/verdict 降级 —— TC-021~025
 #   recovery 悬挂轮 resume/不重复消费/tree.json 自愈/账本坏行隔离/跨会话续跑 —— TC-031~035
 #   ending   三终局与前置校验/预算强制/结案产物 —— TC-041~046
-#   e2e      rca-poc 式根因调查全流程 + 中断恢复 —— TC-051~052
+#   e2e      根因调查式全流程 + 中断恢复 —— TC-051~052
 #   all      全部
 #
 # 严重度语义:P0 失败=阻塞(退出码 1);P1 失败=严重不阻塞;P2 失败=备忘警告(WARN)。
@@ -50,7 +50,7 @@ $script:CreatedRuns = New-Object System.Collections.Generic.List[string]
 New-Item -ItemType Directory -Path $script:WorkDir -Force | Out-Null
 
 $Utf8NoBom = New-Object System.Text.UTF8Encoding($false)
-$PlaneRepoRel = ".rdd/labs/rca-poc/cases/l1-mock/mock-001/plane"   # E2E 引用范围(rca-poc mock-001 观测面)
+$PlaneRepoRel = ".rdd/tests/tree-run/fixtures/mock-001/plane"   # E2E 引用范围(测试自持 mock-001 观测面)
 
 # ---------- CLI 调用与状态读取 ----------
 
@@ -174,7 +174,7 @@ function Suite-Basic {
         param($c)
         $rid = New-RunId "basic-start"
         $r = TRun @("-Command", "start", "-RunId", $rid, "-Goal", "acceptance test: verify start persistence",
-                    "-RefRoots", ".rdd/labs/rca-poc", "-CreatedBy", "QA", "-Notes", "TC-001",
+                    "-RefRoots", ".rdd/tests/tree-run/fixtures/mock-001", "-CreatedBy", "QA", "-Notes", "TC-001",
                     "-MaxRounds", "3", "-NodeWidth", "3", "-MaxNodes", "20")
         Assert $c ($r.exit -eq 0) "start 退出码 $($r.exit),期望 0;输出: $($r.text)"
         Assert $c ($null -ne $r.json -and $r.json.success -eq $true) "start 未返回 success=true"
@@ -187,7 +187,7 @@ function Suite-Basic {
         $m = Read-RunManifest $rid
         Assert $c ($m.goal -eq "acceptance test: verify start persistence") "manifest.goal 未持久化: $($m.goal)"
         Assert $c ([int]$m.budget.max_rounds -eq 3 -and [int]$m.budget.node_width -eq 3 -and [int]$m.budget.max_nodes -eq 20) "manifest.budget 与入参不符: $($m.budget | ConvertTo-Json -Compress)"
-        Assert $c (@($m.ref_roots) -contains ".rdd/labs/rca-poc") "manifest.ref_roots 未含声明的根: $($m.ref_roots -join ',')"
+        Assert $c (@($m.ref_roots) -contains ".rdd/tests/tree-run/fixtures/mock-001") "manifest.ref_roots 未含声明的根: $($m.ref_roots -join ',')"
         $t = Read-RunTree $rid
         Assert $c (@($t.nodes).Count -eq 1) "初始树节点数 $(@($t.nodes).Count),期望 1"
         Assert $c ($t.nodes[0].id -eq "n1" -and $t.nodes[0].status -eq "pending") "根节点 n1 状态异常: $($t.nodes[0].status)"
@@ -197,8 +197,8 @@ function Suite-Basic {
         param($c)
         # 注:缺失类用例用「省略参数」表达 —— 空串参数经 cmd 转发会被吞,属宿主边界而非引擎行为
         $cases = @(
-            @{ rid = "qa-verify-1bad!id"; args = @("-Goal", "g", "-RefRoots", ".rdd/labs"); code = "INVALID_RUN_ID" },
-            @{ rid = "qa-verify-ok-id-a";  args = @("-RefRoots", ".rdd/labs");          code = "MISSING_GOAL" },
+            @{ rid = "qa-verify-1bad!id"; args = @("-Goal", "g", "-RefRoots", ".rdd/tests"); code = "INVALID_RUN_ID" },
+            @{ rid = "qa-verify-ok-id-a";  args = @("-RefRoots", ".rdd/tests");          code = "MISSING_GOAL" },
             @{ rid = "qa-verify-ok-id-b";  args = @("-Goal", "g");                       code = "MISSING_REF_ROOTS" },
             @{ rid = "qa-verify-ok-id-c";  args = @("-Goal", "g", "-RefRoots", "no/such/dir"); code = "REF_ROOT_NOT_FOUND" }
         )
@@ -215,9 +215,9 @@ function Suite-Basic {
     Run-Tc "TC-004" "重复 start 同 RunId 被拒(RUN_EXISTS),已有运行状态不被覆盖" "P2" "AC-1" {
         param($c)
         $rid = New-RunId "basic-dup"
-        $null = TRun @("-Command", "start", "-RunId", $rid, "-Goal", "original goal", "-RefRoots", ".rdd/labs/rca-poc")
+        $null = TRun @("-Command", "start", "-RunId", $rid, "-Goal", "original goal", "-RefRoots", ".rdd/tests/tree-run/fixtures/mock-001")
         $before = (Read-RunFileText $rid "manifest.json")
-        $r = TRun @("-Command", "start", "-RunId", $rid, "-Goal", "overwriting goal", "-RefRoots", ".rdd/labs")
+        $r = TRun @("-Command", "start", "-RunId", $rid, "-Goal", "overwriting goal", "-RefRoots", ".rdd/tests")
         Assert $c ($r.exit -eq 1) "重复 start 退出码 $($r.exit),期望 1"
         Assert $c ($null -ne $r.json -and $r.json.error.code -eq "RUN_EXISTS") "错误码 $($r.json.error.code),期望 RUN_EXISTS"
         $after = (Read-RunFileText $rid "manifest.json")
@@ -779,7 +779,7 @@ function Suite-Ending {
 }
 
 # ============================================================
-# 套件:e2e — TC-051 / TC-052(rca-poc 式根因调查)
+# 套件:e2e — TC-051 / TC-052(根因调查式)
 # ============================================================
 
 function Suite-E2E {
@@ -787,7 +787,7 @@ function Suite-E2E {
     $rid = New-RunId "e2e"
 
     # --- 运行编排:R1(含降级/拒采/无效重报真实插曲) ---
-    $null = TRun @("-Command", "start", "-RunId", $rid, "-Goal", "rca-poc style root cause investigation for mock-001 alerts",
+    $null = TRun @("-Command", "start", "-RunId", $rid, "-Goal", "root cause investigation for mock-001 alerts",
                    "-RefRoots", $PlaneRepoRel, "-CreatedBy", "QA", "-Notes", "e2e acceptance run",
                    "-MaxRounds", "3", "-NodeWidth", "4", "-MaxNodes", "15")
     $null = TRun @("-Command", "round-start", "-RunId", $rid)
@@ -872,7 +872,7 @@ function Suite-E2E {
         }
     }
 
-    Run-Tc "TC-051" "E2E 全流程:rca-poc 式根因调查完整运行,账本/轮快照/结案报告齐备可审计" "P0" "AC-6" {
+    Run-Tc "TC-051" "E2E 全流程:根因调查式完整运行,账本/轮快照/结案报告齐备可审计" "P0" "AC-6" {
         param($c)
         # 编排前置已在本套件完成;此处做全量终态审计
         Assert $c ($rp1.json.data.accepted -eq $true -and $rp1.json.data.validation.status -eq "valid") "w1 有效回写未入账"

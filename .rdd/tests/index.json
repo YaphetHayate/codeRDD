@@ -18,26 +18,6 @@
       "lastChange": "2026-08-29-search-precision-ranking"
     },
     {
-      "feature": "rca-poc",
-      "relatedCode": [
-        ".rdd/labs/rca-poc/tools/score.mjs",
-        ".rdd/labs/rca-poc/tools/convert-openrca.mjs",
-        ".rdd/labs/rca-poc/prompts/manager-system.md",
-        ".rdd/labs/rca-poc/prompts/worker-dispatch.md",
-        ".rdd/labs/rca-poc/cases/registry.jsonl",
-        ".rdd/labs/rca-poc/runs/"
-      ],
-      "testCode": [
-        ".rdd/tests/rca-poc/rca-poc-verify.mjs",
-        ".rdd/tests/rca-poc/fixtures/good-run/",
-        ".rdd/tests/rca-poc/fixtures/bad-run/"
-      ],
-      "activeCount": 22,
-      "deprecatedCount": 0,
-      "lastUpdated": "2026-08-30",
-      "lastChange": "2026-08-30-rca-investigation-poc"
-    },
-    {
       "feature": "tree-run",
       "relatedCode": [
         "rdd-engine/scripts/tree-run.ps1",

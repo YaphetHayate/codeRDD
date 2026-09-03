@@ -169,7 +169,7 @@ coderrdd uninstall .  # 删链接/薄文件/角色目录，还原合并配置；
 
 只需要 rdd-engine 命令行工具（角色技能已由其他渠道安装，或只想在任意项目里直接用流转 / 任务树 / 探索缓存 CLI）时，走独立分发通道：GitHub Release 提供固定名 `rdd-engine.tgz` 与配套安装器，**用户侧零 node/npm 依赖**。
 
-**前置**：Windows 10 1803+（自带 `tar.exe`）、PowerShell 5.1+、git（引擎数据落点 `.rdd/changes|tree-runs|labs` 由 git 仓库根推导，非 git 项目不可用——继承现状）。
+**前置**：Windows 10 1803+（自带 `tar.exe`）、PowerShell 5.1+、git（引擎数据落点 `.rdd/changes|tree-runs` 由 git 仓库根推导，非 git 项目不可用——继承现状）。
 
 ```powershell
 # 1) 从 GitHub Release 下载 rdd-engine.tgz 与 scripts/install-rdd-engine.ps1

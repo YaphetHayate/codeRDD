@@ -1,5 +1,0 @@
-logged_date,offset_min_unknown,level,message
-2021-11-08,,notice,ALTER TABLE jobs executed by role=pg-migrator (deploy #4821 migration step 2/2) — statement detail elided by audit policy
-2021-11-08,,info,table jobs: 1742091 rows before alteration
-2021-11-08,,info,sequential inserts to jobs resumed after alteration (approx. 13300 rows over the following hours per WAL rate)
-2021-11-08,,warning,pg-migrator replay of reverse migration skipped: reverse step not defined in deploy #4821 manifest

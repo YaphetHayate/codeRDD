@@ -1,4 +1,0 @@
-# 部署事件日志(窗口 T-60 ~ T+10)
-t=-52 service=settlement-worker event=deploy release=release-9902 note="feature-flag driven dynamic routing of settlement rules"
-t=-52 service=settlement-worker event=deploy release=release-9902 detail="introduces local feature-flag cache per instance"
-t=-70 service=settlement-worker event=deploy release=release-9901 note="dependency bump (out of window)"

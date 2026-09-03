@@ -12,14 +12,8 @@ node_modules/
 # rdd e2e sandbox homes / scratch
 .rdd/tmp/
 
-# rdd labs: cloned external datasets (readonly, --depth 1, not submodule)
-.rdd/labs/rca-poc/datasets/
-
-# rca-poc L2 case planes are large grep-able slices, regenerable via tools/convert-openrca.mjs
-.rdd/labs/rca-poc/cases/l2-openrca/*/plane/
-
-# rca-poc run scratch: derived telemetry slices regenerable from the dataset
-.rdd/labs/rca-poc/runs/*/scratch/
+# rdd labs: experimental sandpads, machine-local (regenerate per experiment)
+.rdd/labs/
 
 # zcode per-session plan notes
 .zcode/plans/

@@ -100,14 +100,14 @@ $rdd = $null; $t = $null; try { $t = git rev-parse --show-toplevel } catch { }; 
 
 ## 树形长程任务运行（tree-run / tree-leaf 双面）
 
-长程任务的 Manager-Worker 树形循环引擎能力（沉淀自 `.rdd/labs/rca-poc/` 已验证模式）。**双接口分权**：管理面 `tree-run.cmd`（Manager 会话驱动树生长与生命周期：start / graft / prune / settle / conclude / round-start / round-end / status / resume）；消费面 `tree-leaf.cmd`（worker 子代理 next / claim / report / status，CLI 硬编码字段白名单，物理上无法篡改树结构）。
+长程任务的 Manager-Worker 树形循环引擎能力（沉淀自早期 RCA PoC 实验验证过的模式）。**双接口分权**：管理面 `tree-run.cmd`（Manager 会话驱动树生长与生命周期：start / graft / prune / settle / conclude / round-start / round-end / status / resume）；消费面 `tree-leaf.cmd`（worker 子代理 next / claim / report / status，CLI 硬编码字段白名单，物理上无法篡改树结构）。
 
 **核心机制**：状态文件为唯一权威（`.rdd/tree-runs/<run-id>/`，gitignore）；回写账本只追加、坏行隔离 `.corrupt`；树写前 `.bak` + 写后 read-back；每 run 一把 `.lock` 互斥所有写原语；引用范围 `-RefRoots` 机械校验 + 引擎归一；回调核心 schema 引擎强制，invalid 降级记账不破坏运行；三种终局（achieved / budget_exhausted / space_exhausted）均为正常终结并产出结案报告；轮日志起止两行制支持任意一轮中断后 `resume` 续跑，已回写节点永不重复消费。
 
 ```powershell
 # Manager：创建并驱动一次运行
 $rdd = $null; $t = $null; try { $t = git rev-parse --show-toplevel } catch { }; foreach ($c in @($env:RDD_ENGINE_HOME; if ($t) { (Get-ChildItem $t -Recurse -Directory -Depth 3 -Filter 'rdd-engine').FullName }; "$HOME\.rdd\engine\current")) { if ($c -and (Test-Path "$c\scripts\rdd-flow.cmd")) { $rdd = $c; break } }; if (-not $rdd) { throw "rdd-engine 未定位（三级定位链：RDD_ENGINE_HOME → 项目内 rdd-engine → ~\.rdd\engine\current 全 miss）。安装/排障：GitHub Release 下载 rdd-engine.tgz 后运行 scripts/install-rdd-engine.ps1；协议详见 rdd-engine/references/engine-location.md" }
-& "$rdd\scripts\tree-run.cmd" -Command start -RunId my-rca-001 -Goal "排查这批告警的根因" -RefRoots ".rdd/labs/rca-poc/cases/l1-mock/mock-001" -CreatedBy DEV
+& "$rdd\scripts\tree-run.cmd" -Command start -RunId my-rca-001 -Goal "排查这批告警的根因" -RefRoots "docs" -CreatedBy DEV
 & "$rdd\scripts\tree-run.cmd" -Command round-start -RunId my-rca-001
 & "$rdd\scripts\tree-run.cmd" -Command graft -RunId my-rca-001 -Parent n1 -TasksFile <batch.json>   # [{title, task, note?}]
 

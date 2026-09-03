@@ -154,15 +154,15 @@
       "expected": "achieved/budget_exhausted/space_exhausted 三份 final-report 均含终局 token 与结案摘要文本"
     },
     {
-      "id": "TC-051", "title": "E2E 全流程:rca-poc 式根因调查完整运行,账本/轮快照/结案报告齐备可审计", "type": "positive", "priority": "P0",
-      "acceptance": "AC-6", "codeRef": ".rdd/tests/tree-run/tree-run-verify.ps1:875", "sourceChange": "2026-09-02-tree-run-engine", "status": "active", "crossFeature": ["rca-poc"],
-      "precondition": "rca-poc mock-001 案例素材作为引用范围",
+      "id": "TC-051", "title": "E2E 全流程:根因调查式完整运行,账本/轮快照/结案报告齐备可审计", "type": "positive", "priority": "P0",
+      "acceptance": "AC-6", "codeRef": ".rdd/tests/tree-run/tree-run-verify.ps1:875", "sourceChange": "2026-09-02-tree-run-engine", "status": "active",
+      "precondition": "测试自持 fixtures/mock-001 案例素材作为引用范围",
       "steps": ["start→graft 3 假设→3 worker 回写(有效/降级/无效后修正)→settle/prune/下探→round-end→R2 下探→conclude achieved"],
       "expected": "账本 5 条(3 valid+1 downgraded+1 invalid)、range_failures≥2 留痕;done/pruned 集合正确;round-01/02.md 与 final-report.md 齐备可读"
     },
     {
       "id": "TC-052", "title": "E2E 中断恢复:轮边界中断后新会话 resume 定位,续跑至终局零重复消费", "type": "boundary", "priority": "P1",
-      "acceptance": "AC-6", "codeRef": ".rdd/tests/tree-run/tree-run-verify.ps1:836", "sourceChange": "2026-09-02-tree-run-engine", "status": "active", "crossFeature": ["rca-poc"],
+      "acceptance": "AC-6", "codeRef": ".rdd/tests/tree-run/tree-run-verify.ps1:836", "sourceChange": "2026-09-02-tree-run-engine", "status": "active",
       "expected": "R1 收轮后中断,resume 正确定位(next_round=2、pending 含下探节点、无在飞 claim);已 done 节点 claim 被拒;续跑至 achieved,每个节点恰好 1 条已接受账本条目"
     }
   ]
