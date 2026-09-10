@@ -24,15 +24,31 @@
         "rdd-engine/scripts/tree-run.cmd",
         "rdd-engine/scripts/tree-leaf.ps1",
         "rdd-engine/scripts/tree-leaf.cmd",
-        "rdd-engine/references/tree-run-guide.md"
+        "rdd-engine/references/tree-run-guide.md",
+        "rdd-engine/references/task-dispatch-guide.md"
       ],
       "testCode": [
-        ".rdd/tests/tree-run/tree-run-verify.ps1"
+        ".rdd/tests/tree-run/tree-run-verify.ps1",
+        "rdd-engine/tests/test-tree-run-gates.ps1"
       ],
-      "activeCount": 27,
+      "activeCount": 33,
       "deprecatedCount": 0,
-      "lastUpdated": "2026-09-02",
-      "lastChange": "2026-09-02-tree-run-engine"
+      "lastUpdated": "2026-09-10",
+      "lastChange": "2026-09-10-rca-role-landing"
+    },
+    {
+      "feature": "rca-role-cards",
+      "relatedCode": [
+        "rdd-engine/references/rca-roles.md",
+        "rdd-engine/references/rca-roles/"
+      ],
+      "testCode": [
+        ".rdd/tests/rca-role-cards/rca-cards-review.ps1"
+      ],
+      "activeCount": 4,
+      "deprecatedCount": 0,
+      "lastUpdated": "2026-09-10",
+      "lastChange": "2026-09-10-rca-role-landing"
     }
   ]
 }

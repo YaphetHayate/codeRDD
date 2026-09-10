@@ -52,7 +52,16 @@ param(
     [string]$Outcome,
     [string]$Summary,
     [string]$AnchorNodeId,
-    [string]$Decision
+    [string]$Decision,
+
+    # start (coverage gates, task-dispatch-guide R1/R4)
+    [string]$DomainJson,
+    [string]$DomainJsonFile,
+    [int]$CoverageToleranceS,
+    [string]$GateMode,
+
+    # settle / conclude one-shot gate override (warn|enforce)
+    [string]$Override
 )
 
 $ErrorActionPreference = "Stop"
@@ -126,6 +135,192 @@ function Get-LockPath     { param([string]$RunDir); Join-Path $RunDir ".lock" }
 function Get-ReportDir    { param([string]$RunDir); Join-Path $RunDir "report" }
 function Get-RoundsDir    { param([string]$RunDir); Join-Path (Get-ReportDir $RunDir) "rounds" }
 function Get-FinalPath    { param([string]$RunDir); Join-Path (Get-ReportDir $RunDir) "final-report.md" }
+
+# === Coverage manifest sidecars (task-dispatch-guide: R1/R4 gates) ===
+
+function Get-ManifestsDir     { param([string]$RunDir); Join-Path (Get-StateDir $RunDir) "manifests" }
+function Get-NodeManifestPath { param([string]$RunDir, [string]$NodeId); Join-Path (Get-ManifestsDir $RunDir) "$NodeId.json" }
+
+function Test-PropPresent {
+    # works for both PSCustomObject (ConvertFrom-Json) and IDictionary (ordered manifest)
+    param($Obj, [string]$Name)
+    if ($null -eq $Obj) { return $false }
+    if ($Obj -is [System.Collections.IDictionary]) { return $Obj.Contains($Name) }
+    return ($null -ne $Obj.PSObject.Properties[$Name])
+}
+
+function ConvertTo-CoverageDatetime {
+    param([string]$Value)
+    $v = if ($Value) { $Value.Trim() } else { '' }
+    try { return [datetime]::ParseExact($v, 'yyyy-MM-dd HH:mm:ss', $null) } catch { return $null }
+}
+
+function Test-CoverageCells {
+    param($Cells)
+    $problems = @()
+    if ($null -eq $Cells) { return @("cells is required") }
+    $arr = @($Cells)
+    if ($arr.Count -eq 0) { return @("cells must be a non-empty array") }
+    $seen = @{}
+    $i = 0
+    foreach ($c in $arr) {
+        if ($null -eq $c -or $c -isnot [System.Management.Automation.PSCustomObject]) { $problems += "cells[$i] must be an object"; $i++; continue }
+        $cid = [string]$c.id
+        if ([string]::IsNullOrWhiteSpace($cid)) { $problems += "cells[$i].id must be non-empty" }
+        elseif ($seen.ContainsKey($cid)) { $problems += "duplicate cell id '$cid'" }
+        else { $seen[$cid] = $true }
+        $iv = $c.interval
+        if ($null -eq $iv) { $problems += "cells[$i].interval is required" }
+        else {
+            $ivArr = @($iv)
+            if ($ivArr.Count -ne 2) { $problems += "cells[$i].interval must be [start, end]" }
+            else {
+                $s = ConvertTo-CoverageDatetime ([string]$ivArr[0])
+                $e = ConvertTo-CoverageDatetime ([string]$ivArr[1])
+                if ($null -eq $s -or $null -eq $e) { $problems += "cells[$i].interval must use 'YYYY-MM-DD HH:mm:ss' (got [$($ivArr[0]), $($ivArr[1])])" }
+                elseif ($e -le $s) { $problems += "cells[$i].interval end must be after start" }
+            }
+        }
+        $i++
+    }
+    return $problems
+}
+
+function Read-NodeManifest {
+    # returns $null when the node has no sidecar; fail-loud on a corrupt sidecar
+    param([string]$RunDir, [string]$NodeId)
+    $p = Get-NodeManifestPath $RunDir $NodeId
+    if (-not (Test-Path -LiteralPath $p -PathType Leaf)) { return $null }
+    try {
+        return ([System.IO.File]::ReadAllText($p, [System.Text.Encoding]::UTF8) | ConvertFrom-Json)
+    }
+    catch {
+        Write-ErrorResult "NODE_MANIFEST_CORRUPT" "coverage manifest for node $NodeId failed to parse: $p" 3
+    }
+}
+
+function Write-NodeManifest {
+    param([string]$RunDir, $Sidecar)
+    $dir = Get-ManifestsDir $RunDir
+    New-Item -ItemType Directory -Path $dir -Force | Out-Null
+    $p = Get-NodeManifestPath $RunDir ([string]$Sidecar.node_id)
+    [System.IO.File]::WriteAllText($p, (ConvertTo-Json $Sidecar -Depth 10), $script:Utf8NoBom)
+}
+
+function Get-ManifestPendingCells {
+    # declared cell ids without a valid terminal fill (found/clean/escalated)
+    param($Sidecar)
+    $pending = @()
+    if ($null -eq $Sidecar) { return $pending }
+    $filled = $null
+    if ((Test-PropPresent $Sidecar 'filled') -and $null -ne $Sidecar.filled) { $filled = $Sidecar.filled }
+    foreach ($c in @($Sidecar.declared.cells)) {
+        $cid = [string]$c.id
+        $status = ''
+        if ($null -ne $filled -and (Test-PropPresent $filled $cid) -and $null -ne $filled.$cid) { $status = [string]$filled.$cid.status }
+        if (@('found', 'clean', 'escalated') -notcontains $status) { $pending += $cid }
+    }
+    return $pending
+}
+
+function Get-CoveredIntervals {
+    # merged closed intervals (DateTime pairs) of all found/clean cells across sidecars
+    param([string]$RunDir)
+    $spans = @()
+    $dir = Get-ManifestsDir $RunDir
+    if (Test-Path -LiteralPath $dir -PathType Container) {
+        foreach ($f in @(Get-ChildItem -LiteralPath $dir -Filter '*.json' -File)) {
+            $sc = Read-NodeManifest $RunDir $f.BaseName
+            if ($null -eq $sc) { continue }
+            if (-not (Test-PropPresent $sc 'declared')) { continue }
+            $filled = $null
+            if ((Test-PropPresent $sc 'filled') -and $null -ne $sc.filled) { $filled = $sc.filled }
+            foreach ($c in @($sc.declared.cells)) {
+                $cid = [string]$c.id
+                $status = ''
+                if ($null -ne $filled -and (Test-PropPresent $filled $cid) -and $null -ne $filled.$cid) { $status = [string]$filled.$cid.status }
+                if (@('found', 'clean') -notcontains $status) { continue }
+                $ivArr = @($c.interval)
+                $s = ConvertTo-CoverageDatetime ([string]$ivArr[0])
+                $e = ConvertTo-CoverageDatetime ([string]$ivArr[1])
+                if ($null -ne $s -and $null -ne $e -and $e -gt $s) { $spans += ,@($s, $e) }
+            }
+        }
+    }
+    $merged = @()
+    if ($spans.Count -gt 0) {
+        $sorted = @($spans | Sort-Object { $_[0] })
+        $curS = $sorted[0][0]; $curE = $sorted[0][1]
+        for ($k = 1; $k -lt $sorted.Count; $k++) {
+            $s2 = $sorted[$k][0]; $e2 = $sorted[$k][1]
+            if ($s2 -le $curE) { if ($e2 -gt $curE) { $curE = $e2 } }
+            else { $merged += ,@($curS, $curE); $curS = $s2; $curE = $e2 }
+        }
+        $merged += ,@($curS, $curE)
+    }
+    # emit each pair as ONE pipeline item; caller's @() then yields a flat array of pairs
+    # (a bare `return ,$merged` gets re-nested by PS5.1 pipeline collection)
+    foreach ($pair in $merged) { Write-Output -NoEnumerate $pair }
+}
+
+function Get-R4Result {
+    # coverage union vs the run's declared query domain
+    param($Manifest, [string]$RunDir, [int]$ToleranceSec = 0)
+    $hasDomain = $false
+    $domainIntervals = @()
+    if ((Test-PropPresent $Manifest 'domain') -and $null -ne $Manifest.domain) {
+        if ((Test-PropPresent $Manifest.domain 'intervals')) {
+            $domainIntervals = @($Manifest.domain.intervals)
+            if ($domainIntervals.Count -gt 0) { $hasDomain = $true }
+        }
+    }
+    $sweepCount = 0
+    $dir = Get-ManifestsDir $RunDir
+    if (Test-Path -LiteralPath $dir -PathType Container) { $sweepCount = @(Get-ChildItem -LiteralPath $dir -Filter '*.json' -File).Count }
+    $covered = @(Get-CoveredIntervals $RunDir)
+    $gaps = @()
+    if ($hasDomain) {
+        foreach ($d in $domainIntervals) {
+            $dArr = @($d)
+            if ($dArr.Count -ne 2) { continue }
+            $ds = ConvertTo-CoverageDatetime ([string]$dArr[0])
+            $de = ConvertTo-CoverageDatetime ([string]$dArr[1])
+            if ($null -eq $ds -or $null -eq $de) { continue }
+            $cursor = $ds
+            foreach ($c in $covered) {
+                if ($c[1] -lt $cursor) { continue }
+                if ($c[0] -gt $de) { break }
+                if ($c[0] -gt $cursor -and (($c[0] - $cursor).TotalSeconds -gt $ToleranceSec)) { $gaps += ,@($cursor, $c[0]) }
+                if ($c[1] -gt $cursor) { $cursor = $c[1] }
+                if ($cursor -ge $de) { break }
+            }
+            if ($cursor -lt $de -and (($de - $cursor).TotalSeconds -gt $ToleranceSec)) { $gaps += ,@($cursor, $de) }
+        }
+    }
+    return @{ has_domain = $hasDomain; sweeps = $sweepCount; covered = $covered; gaps = $gaps }
+}
+
+function Resolve-GateMode {
+    # one-shot -Override wins; then run-level gates.<name>; default warn (legacy fail-open)
+    param($Manifest, [string]$GateName)
+    if (-not [string]::IsNullOrWhiteSpace($Override)) {
+        if (@('warn', 'enforce') -notcontains $Override) { Write-ErrorResult "INVALID_OVERRIDE" "-Override must be warn or enforce" 1 }
+        return $Override
+    }
+    if ($null -ne $Manifest -and (Test-PropPresent $Manifest 'gates') -and $null -ne $Manifest.gates) {
+        $g = $Manifest.gates
+        $mode = $null
+        if ($g -is [System.Collections.IDictionary]) { if ($g.Contains($GateName)) { $mode = $g[$GateName] } }
+        elseif ($null -ne $g.PSObject.Properties[$GateName]) { $mode = $g.$GateName }
+        if ($mode) { return [string]$mode }
+    }
+    return 'warn'
+}
+
+function ConvertTo-GapText {
+    param($Gaps)
+    return (@($Gaps) | ForEach-Object { "[$($_[0].ToString('yyyy-MM-dd HH:mm:ss')) .. $($_[1].ToString('yyyy-MM-dd HH:mm:ss'))]" }) -join ', '
+}
 
 function Resolve-RunDir {
     param([string]$Id)
@@ -222,6 +417,22 @@ function Read-ManifestEditable {
             summary      = [string]$m.concluded.summary
         }
     }
+    $domain = $null
+    if ($m.domain) {
+        $ivs = @()
+        foreach ($iv in @($m.domain.intervals)) { $ivs += ,@([string]@($iv)[0], [string]@($iv)[1]) }
+        $domain = @{
+            intervals = $ivs
+            scope     = @(Convert-ToSafeArray $m.domain.scope)
+        }
+    }
+    $gates = $null
+    if ($m.gates) {
+        $gates = @{
+            r1_settle   = if ($m.gates.r1_settle) { [string]$m.gates.r1_settle } else { 'warn' }
+            r4_conclude = if ($m.gates.r4_conclude) { [string]$m.gates.r4_conclude } else { 'warn' }
+        }
+    }
     return [ordered]@{
         format_version = [int]$m.format_version
         run_id         = [string]$m.run_id
@@ -237,6 +448,9 @@ function Read-ManifestEditable {
         state          = [string]$m.state
         concluded      = $concluded
         notes          = if ($m.notes) { [string]$m.notes } else { "" }
+        domain         = $domain
+        gates          = $gates
+        coverage_tolerance_s = if ($null -ne $m.coverage_tolerance_s) { [int]$m.coverage_tolerance_s } else { 0 }
     }
 }
 
@@ -258,25 +472,28 @@ function Write-ManifestFile {
 function Convert-NodeToHashtable {
     param($Node)
     return [ordered]@{
-        id             = [string]$Node.id
-        parent         = if ($Node.parent) { [string]$Node.parent } else { $null }
-        title          = [string]$Node.title
-        task           = [string]$Node.task
-        status         = [string]$Node.status
-        created_round  = if ($null -ne $Node.created_round) { [int]$Node.created_round } else { 0 }
-        claimed_by     = if ($Node.claimed_by) { [string]$Node.claimed_by } else { $null }
-        claimed_at     = if ($Node.claimed_at) { [string]$Node.claimed_at } else { $null }
-        steal_count    = if ($null -ne $Node.steal_count) { [int]$Node.steal_count } else { 0 }
-        reported_at    = if ($Node.reported_at) { [string]$Node.reported_at } else { $null }
-        settled_at     = if ($Node.settled_at) { [string]$Node.settled_at } else { $null }
-        settled_note   = if ($Node.settled_note) { [string]$Node.settled_note } else { $null }
-        pruned_at      = if ($Node.pruned_at) { [string]$Node.pruned_at } else { $null }
-        pruned_reason  = if ($Node.pruned_reason) { [string]$Node.pruned_reason } else { $null }
-        last_verdict   = if ($Node.last_verdict) { [string]$Node.last_verdict } else { $null }
+        id              = [string]$Node.id
+        parent          = if ($Node.parent) { [string]$Node.parent } else { $null }
+        title           = [string]$Node.title
+        task            = [string]$Node.task
+        type            = if ($Node.type) { [string]$Node.type } else { $null }
+        role            = if ($Node.role) { [string]$Node.role } else { $null }
+        falsification_duty = if ($Node.falsification_duty) { [string]$Node.falsification_duty } else { $null }
+        status          = [string]$Node.status
+        created_round   = if ($null -ne $Node.created_round) { [int]$Node.created_round } else { 0 }
+        claimed_by      = if ($Node.claimed_by) { [string]$Node.claimed_by } else { $null }
+        claimed_at      = if ($Node.claimed_at) { [string]$Node.claimed_at } else { $null }
+        steal_count     = if ($null -ne $Node.steal_count) { [int]$Node.steal_count } else { 0 }
+        reported_at     = if ($Node.reported_at) { [string]$Node.reported_at } else { $null }
+        settled_at      = if ($Node.settled_at) { [string]$Node.settled_at } else { $null }
+        settled_note    = if ($Node.settled_note) { [string]$Node.settled_note } else { $null }
+        pruned_at       = if ($Node.pruned_at) { [string]$Node.pruned_at } else { $null }
+        pruned_reason   = if ($Node.pruned_reason) { [string]$Node.pruned_reason } else { $null }
+        last_verdict    = if ($Node.last_verdict) { [string]$Node.last_verdict } else { $null }
         last_confidence = if ($null -ne $Node.last_confidence) { [double]$Node.last_confidence } else { $null }
-        ledger_refs    = @(Convert-ToSafeArray $Node.ledger_refs)
-        note           = if ($Node.note) { [string]$Node.note } else { $null }
-        children       = @(Convert-ToSafeArray $Node.children)
+        ledger_refs     = @(Convert-ToSafeArray $Node.ledger_refs)
+        note            = if ($Node.note) { [string]$Node.note } else { $null }
+        children        = @(Convert-ToSafeArray $Node.children)
     }
 }
 
@@ -720,6 +937,51 @@ function Invoke-Start {
     $now = Get-UtcNowIso
     $rootTitle = if ([string]::IsNullOrWhiteSpace($Title)) { "root" } else { $Title }
 
+    # --- coverage gates (task-dispatch-guide): optional query domain + gate defaults ---
+    if (-not [string]::IsNullOrWhiteSpace($GateMode) -and @('warn', 'enforce') -notcontains $GateMode) {
+        Write-ErrorResult "INVALID_GATE_MODE" "-GateMode must be warn or enforce" 1
+    }
+    if ($CoverageToleranceS -lt 0) {
+        Write-ErrorResult "INVALID_TOLERANCE" "-CoverageToleranceS must be >= 0 (seconds of edge slack allowed in R4 gap arithmetic)" 1
+    }
+    $domain = $null
+    $domainSource = $null
+    if (-not [string]::IsNullOrWhiteSpace($DomainJsonFile)) {
+        $df = $DomainJsonFile
+        if (-not [System.IO.Path]::IsPathRooted($df)) { $df = Join-Path $repoRoot $df }
+        if (-not (Test-Path -LiteralPath $df -PathType Leaf)) { Write-ErrorResult "DOMAIN_FILE_NOT_FOUND" "Domain file not found: $df" 1 }
+        $domainSource = [System.IO.File]::ReadAllText($df, [System.Text.Encoding]::UTF8)
+    }
+    elseif (-not [string]::IsNullOrWhiteSpace($DomainJson)) {
+        # NOTE: inline JSON loses its double quotes through powershell -File / cmd argument
+        # passing; prefer -DomainJsonFile (mirrors -TasksFile/-CallbackFile conventions).
+        $domainSource = $DomainJson
+    }
+    if ($null -ne $domainSource) {
+        try { $domainObj = $domainSource | ConvertFrom-Json } catch { Write-ErrorResult "DOMAIN_UNPARSEABLE" "domain JSON is not valid (if you used -DomainJson inline, quoting may have stripped the double quotes — use -DomainJsonFile): $($_.Exception.Message)" 1 }
+        $domainProblems = @()
+        $ivs = @()
+        if ($null -eq $domainObj -or $null -eq $domainObj.PSObject.Properties['intervals'] -or $null -eq $domainObj.intervals) {
+            $domainProblems += 'domain.intervals must be a non-empty array of [start, end]'
+        }
+        else {
+            foreach ($iv in @($domainObj.intervals)) {
+                $ivArr = @($iv)
+                if ($ivArr.Count -ne 2) { $domainProblems += 'each interval must be [start, end]'; continue }
+                $ds = ConvertTo-CoverageDatetime ([string]$ivArr[0])
+                $de = ConvertTo-CoverageDatetime ([string]$ivArr[1])
+                if ($null -eq $ds -or $null -eq $de) { $domainProblems += "interval must use 'YYYY-MM-DD HH:mm:ss': [$($ivArr[0]), $($ivArr[1])]" }
+                elseif ($de -le $ds) { $domainProblems += "interval end must be after start: [$($ivArr[0]), $($ivArr[1])]" }
+                else { $ivs += ,@([string]$ivArr[0], [string]$ivArr[1]) }
+            }
+        }
+        if ($domainProblems.Count -gt 0) { Write-ErrorResult "DOMAIN_UNPARSEABLE" ($domainProblems -join '; ') 1 }
+        $domain = @{
+            intervals = $ivs
+            scope     = if ($null -ne $domainObj.PSObject.Properties['scope'] -and $null -ne $domainObj.scope) { @($domainObj.scope | ForEach-Object { [string]$_ }) } else { @() }
+        }
+    }
+
     $manifest = [ordered]@{
         format_version = 1
         run_id         = $RunId
@@ -731,6 +993,9 @@ function Invoke-Start {
         state          = "running"
         concluded      = $null
         notes          = if ([string]::IsNullOrWhiteSpace($Notes)) { "" } else { $Notes }
+        domain         = $domain
+        gates          = if ($GateMode) { @{ r1_settle = $GateMode; r4_conclude = $GateMode } } else { $null }
+        coverage_tolerance_s = if ($CoverageToleranceS -gt 0) { $CoverageToleranceS } else { 0 }
     }
 
     $tree = [ordered]@{
@@ -744,6 +1009,9 @@ function Invoke-Start {
                 parent          = $null
                 title           = $rootTitle
                 task            = $Goal
+                type            = $null
+                role            = $null
+                falsification_duty = $null
                 status          = "pending"
                 created_round   = 0
                 claimed_by      = $null
@@ -792,6 +1060,9 @@ function Invoke-Start {
             budget    = $manifest.budget
             ref_roots = $roots
             state     = "running"
+            domain    = $domain
+            gates     = $manifest.gates
+            coverage_tolerance_s = $manifest.coverage_tolerance_s
             next_step = "tree-run.cmd -Command round-start -RunId $RunId"
         }
     }
@@ -822,6 +1093,31 @@ function Invoke-Graft {
     foreach ($t in $inputTasks) {
         if ([string]::IsNullOrWhiteSpace([string]$t.title)) { Write-ErrorResult "INVALID_TASK" "Every grafted task requires a non-empty title" 1 }
         if ([string]::IsNullOrWhiteSpace([string]$t.task)) { Write-ErrorResult "INVALID_TASK" "Every grafted task requires a non-empty task body (title: $($t.title))" 1 }
+        # --- role identifier format check (engine-generic; vocabulary authority lives in references/rca-roles.md) ---
+        $tRole = ''
+        if ($null -ne $t.PSObject.Properties['role'] -and $null -ne $t.role) { $tRole = [string]$t.role }
+        if ($tRole.Trim() -ne '') {
+            if ($tRole.Length -gt 64 -or $tRole -CNotMatch '^[a-z0-9]+(-[a-z0-9]+)*$') {
+                Write-ErrorResult "ROLE_INVALID" "task '$($t.title)' role '$tRole' must be kebab-case ^[a-z0-9]+(-[a-z0-9]+)*$ and <=64 chars (the engine checks format only — role vocabulary is defined by the role cards, not validated here)" 1
+            }
+        }
+        # --- probe falsification duty (task-dispatch-guide R5): structural contract missing at dispatch time ---
+        $tType = if ($null -ne $t.PSObject.Properties['type']) { [string]$t.type } else { '' }
+        if ($tType -eq 'probe') {
+            $tDuty = ''
+            if ($null -ne $t.PSObject.Properties['falsification_duty'] -and $null -ne $t.falsification_duty) { $tDuty = [string]$t.falsification_duty }
+            if ([string]::IsNullOrWhiteSpace($tDuty)) {
+                Write-ErrorResult "GRAFT_FALSIFICATION_REQUIRED" "task '$($t.title)' declares type=probe; a non-empty falsification_duty is required so the falsification obligation travels with the node and the worker reconciles extras.probe against it (task-dispatch-guide R5). Fix the task and re-graft." 1
+            }
+        }
+        # --- coverage manifest contract (task-dispatch-guide R1) ---
+        if ($tType -eq 'sweep') {
+            if ($null -eq $t.PSObject.Properties['manifest'] -or $null -eq $t.manifest) {
+                Write-ErrorResult "GRAFT_MANIFEST_REQUIRED" "task '$($t.title)' declares type=sweep; a manifest {granularity, cells} is required so coverage can be reconciled at settle/conclude (task-dispatch-guide R1)" 1
+            }
+            $cellProblems = @(Test-CoverageCells $t.manifest.cells)
+            if ($cellProblems.Count -gt 0) { Write-ErrorResult "GRAFT_MANIFEST_INVALID" "task '$($t.title)' manifest cells invalid: $($cellProblems -join '; ')" 1 }
+        }
     }
 
     $lockInfo = Enter-RunLock $RunDir
@@ -847,14 +1143,23 @@ function Invoke-Graft {
         }
 
         $created = @()
+        $sweepManifestCount = 0
         $round = [int]$roundState.open_round
         foreach ($t in $inputTasks) {
             $newId = Get-NextNodeId $tree
+            $gRole = ''
+            if ($null -ne $t.PSObject.Properties['role'] -and $null -ne $t.role) { $gRole = [string]$t.role }
+            $gType = if ($null -ne $t.PSObject.Properties['type']) { [string]$t.type } else { '' }
+            $gDuty = ''
+            if ($gType -eq 'probe' -and $null -ne $t.PSObject.Properties['falsification_duty'] -and $null -ne $t.falsification_duty) { $gDuty = [string]$t.falsification_duty }
             $node = [ordered]@{
                 id              = $newId
                 parent          = $Parent
                 title           = [string]$t.title
                 task            = [string]$t.task
+                type            = if ($gType.Trim() -ne '') { $gType.Trim() } else { $null }
+                role            = if ($gRole.Trim() -ne '') { $gRole.Trim() } else { $null }
+                falsification_duty = if ($gDuty.Trim() -ne '') { $gDuty.Trim() } else { $null }
                 status          = "pending"
                 created_round   = $round
                 claimed_by      = $null
@@ -874,6 +1179,40 @@ function Invoke-Graft {
             $tree.nodes += ,$node
             $parentNode.children = @($parentNode.children) + $newId
             $created += $node
+
+            # sweep tasks get a frozen coverage sidecar (statuses pending; worker fills via report)
+            $tType = if ($null -ne $t.PSObject.Properties['type']) { [string]$t.type } else { '' }
+            if ($tType -eq 'sweep') {
+                $granularity = @{}
+                if ($null -ne $t.manifest.PSObject.Properties['granularity'] -and $null -ne $t.manifest.granularity) {
+                    $granularity = Convert-PSObjectToHashtable $t.manifest.granularity
+                }
+                $cells = @()
+                foreach ($c in @($t.manifest.cells)) {
+                    $ivArr = @($c.interval)
+                    $cells += [ordered]@{
+                        id        = [string]$c.id
+                        interval  = @([string]$ivArr[0], [string]$ivArr[1])
+                        modality  = if ($null -ne $c.PSObject.Properties['modality']) { [string]$c.modality } else { '' }
+                        scope     = @(Convert-ToSafeArray $c.scope)
+                    }
+                }
+                $sidecar = [ordered]@{
+                    manifest_version = 1
+                    node_id          = $newId
+                    run_id           = $RunId
+                    type             = 'sweep'
+                    declared         = [ordered]@{
+                        domain_ref  = 'run'
+                        granularity = $granularity
+                        cells       = $cells
+                    }
+                    filled     = @{}
+                    updated_at = Get-UtcNowIso
+                }
+                Write-NodeManifest $RunDir $sidecar
+                $sweepManifestCount++
+            }
         }
 
         Write-TreeFile $RunDir $tree
@@ -882,10 +1221,11 @@ function Invoke-Graft {
             success = $true
             data    = @{
                 run_id     = $RunId
-                grafted    = @($created | ForEach-Object { @{ id = $_.id; title = $_.title; parent = $_.parent; status = $_.status } })
+                grafted    = @($created | ForEach-Object { @{ id = $_.id; title = $_.title; parent = $_.parent; status = $_.status; type = $_.type; role = $_.role } })
                 count      = $created.Count
                 round      = $round
                 nodes_used = "$(@($tree.nodes).Count)/$($manifest.budget.max_nodes)"
+                sweep_manifests = $sweepManifestCount
                 lock       = $lockInfo
             }
         }
@@ -963,15 +1303,34 @@ function Invoke-Settle {
             Write-ErrorResult "SETTLE_REQUIRES_REPORTED" "Node $NodeId is '$($target.status)'; settle only accepts reported nodes (pending → claim → reported → done). Use prune or re-dispatch instead." 1
         }
 
+        # --- R1 gate (task-dispatch-guide): coverage manifest completeness ---
+        # no sidecar -> legacy fail-open (no behavior change for pre-gate runs)
+        $r1Warn = $null
+        $sidecar = Read-NodeManifest $RunDir $NodeId
+        if ($null -ne $sidecar) {
+            $pendingCells = @(Get-ManifestPendingCells $sidecar)
+            if ($pendingCells.Count -gt 0) {
+                $detail = "coverage cells pending: $($pendingCells -join ', ')"
+                $mode = Resolve-GateMode $manifest 'r1_settle'
+                if ($mode -eq 'enforce') {
+                    Write-ErrorResult "SETTLE_MANIFEST_INCOMPLETE" "Node $NodeId $detail. Fill every cell (found/clean/escalated) via tree-leaf report extras.manifest, or prune/re-dispatch the node." 1
+                }
+                $r1Warn = "[R1-WARN] $detail"
+            }
+        }
+
         $target.status = "done"
         $target.settled_at = Get-UtcNowIso
-        $target.settled_note = if ([string]::IsNullOrWhiteSpace($Note)) { $null } else { $Note }
+        $finalNote = @()
+        if (-not [string]::IsNullOrWhiteSpace($Note)) { $finalNote += $Note }
+        if ($r1Warn) { $finalNote += $r1Warn }
+        $target.settled_note = if ($finalNote.Count -gt 0) { $finalNote -join " | " } else { $null }
 
         Write-TreeFile $RunDir $tree
 
         return @{
             success = $true
-            data    = @{ run_id = $RunId; node_id = $NodeId; status = "done"; ledger_refs = @($target.ledger_refs); settled_note = $target.settled_note; lock = $lockInfo }
+            data    = @{ run_id = $RunId; node_id = $NodeId; status = "done"; ledger_refs = @($target.ledger_refs); settled_note = $target.settled_note; r1_warning = $r1Warn; lock = $lockInfo }
         }
     }
     finally {
@@ -1067,6 +1426,7 @@ function Invoke-Conclude {
         $roundState = Get-RoundState $RunDir
 
         $anchor = $null
+        $r4Warn = $null
         switch ($Outcome) {
             "achieved" {
                 if ([string]::IsNullOrWhiteSpace($AnchorNodeId)) {
@@ -1076,6 +1436,23 @@ function Invoke-Conclude {
                 if ($null -eq $anchor) { Write-ErrorResult "ANCHOR_NOT_FOUND" "Anchor node not found: $AnchorNodeId" 2 }
                 if ($anchor.status -ne "done") {
                     Write-ErrorResult "ANCHOR_NOT_DONE" "Anchor $AnchorNodeId is '$($anchor.status)'; achieved requires a settled (done) anchor. settle it first." 1
+                }
+
+                # --- R4 gate (task-dispatch-guide): coverage union over the query domain ---
+                # no declared domain -> fail-open (generic long-horizon tasks without a temporal scope)
+                if ((Test-PropPresent $manifest 'domain') -and $null -ne $manifest.domain) {
+                    $tolerance = 0
+                    if ((Test-PropPresent $manifest 'coverage_tolerance_s') -and $null -ne $manifest.coverage_tolerance_s) { $tolerance = [int]$manifest.coverage_tolerance_s }
+                    $r4 = Get-R4Result $manifest $RunDir $tolerance
+                    if (@($r4.gaps).Count -gt 0) {
+                        $gapText = ConvertTo-GapText $r4.gaps
+                        $mode = Resolve-GateMode $manifest 'r4_conclude'
+                        if ($mode -eq 'enforce') {
+                            Write-ErrorResult "CONCLUDE_COVERAGE_GAPS" "Query domain not fully covered by sweep cells (found/clean): $gapText. Graft sweep nodes declaring those intervals and settle them (escalated cells count as uncovered), or conclude honestly with budget_exhausted/space_exhausted." 1
+                        }
+                        $r4Warn = "[R4-WARN] uncovered gaps: $gapText"
+                    }
+                    else { $r4Warn = "covered (sweep manifests: $($r4.sweeps))" }
                 }
             }
             "budget_exhausted" {
@@ -1123,6 +1500,7 @@ function Invoke-Conclude {
                 concluded_at  = $concludedAt
                 anchor_node   = $(if ($anchor) { $anchor.id } else { $null })
                 auto_round_closed = $autoClosed
+                r4            = $r4Warn
                 final_report  = ".rdd/tree-runs/$RunId/report/final-report.md"
                 lock          = $lockInfo
             }
@@ -1183,10 +1561,27 @@ function Invoke-Status {
         $census = Get-TreeCensus $tree
         $budget = Get-BudgetUsage $manifest $tree $roundState
 
+        $coverageView = $null
+        if ((Test-PropPresent $manifest 'domain') -and $null -ne $manifest.domain) {
+            $tolerance = 0
+            if ((Test-PropPresent $manifest 'coverage_tolerance_s') -and $null -ne $manifest.coverage_tolerance_s) { $tolerance = [int]$manifest.coverage_tolerance_s }
+            $r4v = Get-R4Result $manifest $RunDir $tolerance
+            $coverageView = [ordered]@{
+                domain        = $manifest.domain
+                gates         = if (Test-PropPresent $manifest 'gates') { $manifest.gates } else { $null }
+                sweeps        = $r4v.sweeps
+                covered_spans = @($r4v.covered | ForEach-Object { "$($_[0].ToString('yyyy-MM-dd HH:mm:ss'))..$($_[1].ToString('yyyy-MM-dd HH:mm:ss'))" })
+                gaps          = @($r4v.gaps | ForEach-Object { "$($_[0].ToString('yyyy-MM-dd HH:mm:ss'))..$($_[1].ToString('yyyy-MM-dd HH:mm:ss'))" })
+            }
+            if ($coverageView.gaps.Count -gt 0 -and $manifest.state -eq 'running') {
+                $warnings += "coverage gaps vs query domain: $($coverageView.gaps -join ', ')"
+            }
+        }
+
         $unsettled = @()
         foreach ($id in $census.reported) {
             $n = Find-Node $tree $id
-            $unsettled += @{ id = $n.id; title = $n.title; reported_at = $n.reported_at; ledger_refs = @($n.ledger_refs) }
+            $unsettled += @{ id = $n.id; title = $n.title; type = $n.type; role = $n.role; reported_at = $n.reported_at; ledger_refs = @($n.ledger_refs) }
         }
         $inFlight = @()
         foreach ($id in $census.claimed) {
@@ -1195,7 +1590,7 @@ function Invoke-Status {
             if ($n.claimed_at) {
                 try { $ageSec = [int]((Get-Date).ToUniversalTime() - [datetime]::Parse($n.claimed_at, $null, [System.Globalization.DateTimeStyles]::RoundtripKind)).TotalSeconds } catch {}
             }
-            $inFlight += @{ id = $n.id; title = $n.title; claimed_by = $n.claimed_by; claimed_at = $n.claimed_at; steal_count = $n.steal_count; age_seconds = $ageSec }
+            $inFlight += @{ id = $n.id; title = $n.title; type = $n.type; role = $n.role; claimed_by = $n.claimed_by; claimed_at = $n.claimed_at; steal_count = $n.steal_count; age_seconds = $ageSec }
         }
         if ($unsettled.Count -gt 0) { $warnings += "$($unsettled.Count) reported node(s) awaiting settle: $(($unsettled | ForEach-Object { $_.id }) -join ', ')" }
         if ($hangingRound) { $warnings += "round $hangingRound open since $($roundState.open_started_at) (round-start without round-end)" }
@@ -1229,6 +1624,7 @@ function Invoke-Status {
                     range_failures = $stats.range_failures
                     quarantined_now = $quarantined
                 }
+                coverage       = $coverageView
                 integrity      = @{ tree_read_from_backup = $readBack.used_backup; warnings = $warnings }
                 lock           = $lockInfo
             }
@@ -1271,7 +1667,7 @@ function Invoke-Resume {
         $pendingNodes = @()
         foreach ($id in $census.pending) {
             $n = Find-Node $tree $id
-            $pendingNodes += @{ id = $n.id; title = $n.title }
+            $pendingNodes += @{ id = $n.id; title = $n.title; type = $n.type; role = $n.role }
         }
         $claimedNodes = @()
         foreach ($id in $census.claimed) {
@@ -1280,12 +1676,12 @@ function Invoke-Resume {
             if ($n.claimed_at) {
                 try { $ageSec = [int]((Get-Date).ToUniversalTime() - [datetime]::Parse($n.claimed_at, $null, [System.Globalization.DateTimeStyles]::RoundtripKind)).TotalSeconds } catch {}
             }
-            $claimedNodes += @{ id = $n.id; title = $n.title; claimed_by = $n.claimed_by; age_seconds = $ageSec }
+            $claimedNodes += @{ id = $n.id; title = $n.title; type = $n.type; role = $n.role; claimed_by = $n.claimed_by; age_seconds = $ageSec }
         }
         $reportedNodes = @()
         foreach ($id in $census.reported) {
             $n = Find-Node $tree $id
-            $reportedNodes += @{ id = $n.id; title = $n.title; ledger_refs = @($n.ledger_refs) }
+            $reportedNodes += @{ id = $n.id; title = $n.title; type = $n.type; role = $n.role; ledger_refs = @($n.ledger_refs) }
         }
 
         $steps = @()
@@ -1306,6 +1702,22 @@ function Invoke-Resume {
         }
         $steps += "Already-reported nodes are never re-consumed: claim only succeeds on pending (or steal on claimed)."
 
+        $resumeCoverage = $null
+        if ((Test-PropPresent $manifest 'domain') -and $null -ne $manifest.domain) {
+            $tolerance = 0
+            if ((Test-PropPresent $manifest 'coverage_tolerance_s') -and $null -ne $manifest.coverage_tolerance_s) { $tolerance = [int]$manifest.coverage_tolerance_s }
+            $r4r = Get-R4Result $manifest $RunDir $tolerance
+            $resumeCoverage = [ordered]@{
+                domain = $manifest.domain
+                gates  = if (Test-PropPresent $manifest 'gates') { $manifest.gates } else { $null }
+                sweeps = $r4r.sweeps
+                gaps   = @($r4r.gaps | ForEach-Object { "$($_[0].ToString('yyyy-MM-dd HH:mm:ss'))..$($_[1].ToString('yyyy-MM-dd HH:mm:ss'))" })
+            }
+            if ($r4r.gaps.Count -gt 0) {
+                $steps += "Coverage gaps vs query domain: $($resumeCoverage.gaps -join ', ') — plan sweep nodes for them before concluding achieved."
+            }
+        }
+
         return @{
             success = $true
             data    = [ordered]@{
@@ -1313,6 +1725,7 @@ function Invoke-Resume {
                 state          = $manifest.state
                 goal           = $manifest.goal
                 budget         = (Get-BudgetUsage $manifest $tree $roundState)
+                coverage       = $resumeCoverage
                 breakpoint     = [ordered]@{
                     hanging_round    = $(if ($hangingRound -ne 0) { $hangingRound } else { $null })
                     hanging_since    = $(if ($hangingRound -ne 0) { $roundState.open_started_at } else { $null })

@@ -6,12 +6,14 @@
     "rdd-engine/scripts/tree-run.cmd",
     "rdd-engine/scripts/tree-leaf.ps1",
     "rdd-engine/scripts/tree-leaf.cmd",
-    "rdd-engine/references/tree-run-guide.md"
+    "rdd-engine/references/tree-run-guide.md",
+    "rdd-engine/references/task-dispatch-guide.md"
   ],
   "testCode": [
-    ".rdd/tests/tree-run/tree-run-verify.ps1"
+    ".rdd/tests/tree-run/tree-run-verify.ps1",
+    "rdd-engine/tests/test-tree-run-gates.ps1"
   ],
-  "lastChange": "2026-09-02-tree-run-engine",
+  "lastChange": "2026-09-10-rca-role-landing",
   "cases": [
     {
       "id": "TC-001", "title": "start 建运行:manifest+tree+根节点落档,预算与引用范围持久化", "type": "positive", "priority": "P0",
@@ -164,6 +166,40 @@
       "id": "TC-052", "title": "E2E 中断恢复:轮边界中断后新会话 resume 定位,续跑至终局零重复消费", "type": "boundary", "priority": "P1",
       "acceptance": "AC-6", "codeRef": ".rdd/tests/tree-run/tree-run-verify.ps1:836", "sourceChange": "2026-09-02-tree-run-engine", "status": "active",
       "expected": "R1 收轮后中断,resume 正确定位(next_round=2、pending 含下探节点、无在飞 claim);已 done 节点 claim 被拒;续跑至 achieved,每个节点恰好 1 条已接受账本条目"
+    },
+    {
+      "id": "TC-061", "title": "graft 角色声明:role/type/falsification_duty 平铺持久化,graft 回显与 leaf status 可见", "type": "positive", "priority": "P0",
+      "acceptance": "req2-AC1", "codeRef": "rdd-engine/tests/test-tree-run-gates.ps1:380", "sourceChange": "2026-09-10-rca-role-landing", "status": "active", "crossFeature": ["rca-role-cards"],
+      "steps": ["graft 带 type:probe+role+falsification_duty 的任务", "读 tree.json 验证三字段平铺", "tree-leaf status 查看节点"],
+      "expected": "graft 成功且回显 role/type;tree.json 节点三字段与入参一致;leaf status 暴露三字段"
+    },
+    {
+      "id": "TC-062", "title": "probe 派发缺/空白证伪义务字段被硬拦(GRAFT_FALSIFICATION_REQUIRED),不静默通过", "type": "negative", "priority": "P0",
+      "acceptance": "req2-AC2", "codeRef": "rdd-engine/tests/test-tree-run-gates.ps1:362", "sourceChange": "2026-09-10-rca-role-landing", "status": "active", "crossFeature": [],
+      "steps": ["graft type:probe 无 falsification_duty", "graft falsification_duty 为空白串"],
+      "expected": "两次均退出码 1 + GRAFT_FALSIFICATION_REQUIRED;树无副作用(结构契约在派发时拦截)"
+    },
+    {
+      "id": "TC-063", "title": "role 标识格式校验:大写/空格等非 kebab-case 报 ROLE_INVALID(词表不校)", "type": "negative", "priority": "P1",
+      "acceptance": "req2-AC1", "codeRef": "rdd-engine/tests/test-tree-run-gates.ps1:372", "sourceChange": "2026-09-10-rca-role-landing", "status": "active", "crossFeature": [],
+      "expected": "ROLE_INVALID(大小写敏感);角色词表权威在 rca-roles.md/角色卡,引擎只校格式"
+    },
+    {
+      "id": "TC-064", "title": "probe report 三值交付:accepted 无 R5 note,ledger 条目顶层携带 node.role", "type": "positive", "priority": "P1",
+      "acceptance": "req2-AC1", "codeRef": "rdd-engine/tests/test-tree-run-gates.ps1:390", "sourceChange": "2026-09-10-rca-role-landing", "status": "active", "crossFeature": ["rca-role-cards"],
+      "steps": ["claim probe 节点", "report 带 extras.probe{verdict:refuted,falsification_attempted}", "读 ledger.jsonl 末条"],
+      "expected": "accepted=true 且 notes 无 probe_ 前缀提示;ledger 末条 role=metric-analyst、extras.probe.verdict=refuted"
+    },
+    {
+      "id": "TC-065", "title": "probe 回调缺 extras.probe 或 verdict 非三值:note-only 对账不拒收", "type": "negative", "priority": "P2",
+      "acceptance": "req2-AC2", "codeRef": "rdd-engine/tests/test-tree-run-gates.ps1:400", "sourceChange": "2026-09-10-rca-role-landing", "status": "active", "crossFeature": [],
+      "expected": "accepted=true + probe_extras_missing / probe_verdict_invalid note 落 validation.notes(report 永不被拒)"
+    },
+    {
+      "id": "TC-066", "title": "legacy 任务(无 role/type)全链路 fail-open:graft/next/report/settle 零变化,新字段 null", "type": "boundary", "priority": "P0",
+      "acceptance": "req2-AC3", "codeRef": "rdd-engine/tests/test-tree-run-gates.ps1:420", "sourceChange": "2026-09-10-rca-role-landing", "status": "active", "crossFeature": [],
+      "steps": ["graft 无 role/type 任务", "next 列表/claim/report/settle 全链路"],
+      "expected": "graft/next 回显新字段 null;report 无 probe note;ledger role null;settle 成功——与既有行为零差异"
     }
   ]
 }

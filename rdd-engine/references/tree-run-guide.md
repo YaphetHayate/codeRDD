@@ -107,10 +107,13 @@ worker 的 `report` 必须提交固定核心 schema（引擎机械校验，领�
 | `node_id` | string | 必填，须为本人 claimed 的节点 |
 | `verdict` | enum | 必填：`done` / `failed` / `inconclusive` |
 | `confidence` | number | 必填 ∈ [0,1]；越界**截断**并记入 notes |
-| `summary` | string | 必填非空 |
+| `summary` | string | 必填非空，**≤600 字符**（超长报 `SUMMARY_TOO_LONG` 拒收） |
+| `full_report` | string | 可选：完整发现的文件路径（repo 相对或绝对）；提供时必须存在，否则报 `FULL_REPORT_NOT_FOUND` 拒收 |
 | `citations` | array | 必填：`[{ref, locator}]`；ref 必须落在声明范围内 |
 | `next_suggestion` | string | 必填（允许空串） |
 | `extras` | object | 可选，领域字段透传 |
+
+**上下文预算（B2 通道分离，硬约束）**：`summary` 只装判定层——verdict、confidence、关键时间戳、≤3 条核心发现、`full_report` 指针。完整调查过程/数据表/逐行证据**必须**写进 run 目录下的文件（约定 `report/workers/<node-id>.md`），经 `full_report` 引用。worker 的最终消息同样 ≤10 行摘要——它会被完成通知全文推送给 Manager，长文本走消息 = 上下文压力直传。Manager 侧读取纪律：settle/嫁接默认只读 summary 层；verdict 冲突或某细节是判定支柱时才按指针打开 full_report（pull 模型）；**node.task 禁止复述上游发现**，只引用账本条目（如"依据 L1/L3"）。
 
 **引用范围（RefRoots）**：start 时声明允许引用的 repo 内根路径（`,` 分隔；`.` 表示全仓库）。report 时的机械判定：
 
@@ -134,6 +137,8 @@ worker 的 `report` 必须提交固定核心 schema（引擎机械校验，领�
 
 给每个子代理的派发 prompt 模板（宿主扇出时逐 worker 填充）：
 
+> **角色卡嵌入点**：组装派发 prompt 时，按节点任务的承接性质取对应角色卡（RCA 类调查见 `rdd-engine/references/rca-roles.md` 总览表 → `rca-roles/<role-id>.md`）整卡嵌入本模板第 2 步之前，或按路径引用——worker 按卡中方法预设执行、按卡中交付 schema 回写（extras 结构与附录 A / 角色卡一致）。manager 不即兴改写卡内容；方法变更走权威文件同步（先权威后卡）。
+
 ```text
 你是 tree-run「<run-id>」的 worker，标签 <worker-label>。按以下硬顺序工作：
 
@@ -149,12 +154,15 @@ worker 的 `report` 必须提交固定核心 schema（引擎机械校验，领�
      "node_id": "<node-id>",
      "verdict": "done|failed|inconclusive",
      "confidence": 0.0~1.0,
-     "summary": "<结论与证据链摘要>",
+     "summary": "<≤600 字符：结论 + 关键时间戳 + ≤3 条发现>",
+     "full_report": "report/workers/<node-id>.md（完整发现的文件，先写文件后引用）",
      "citations": [ { "ref": "<范围内文件路径>", "locator": "<行号/时间窗等定位>" } ],
      "next_suggestion": "<建议的下一步下探方向>",
      "extras": { <领域字段自由透传> }
    }
    & "$rdd\scripts\tree-leaf.cmd" -Command report -RunId <run-id> -Worker <worker-label> -CallbackFile <cb.json>
+   注意：完整调查过程（数据表、逐行证据、方法细节）写进 full_report 文件，summary 超过 600 字符会被
+   SUMMARY_TOO_LONG 拒收。你的最终回复消息同样保持 ≤10 行摘要——全文只存在于文件里。
 
 4. 回读输出的 validation 字段：invalid 时按 reasons 修正后重新 report；downgraded 属正常入账。
    你不能也不需要修改树结构——claim/report 之外的任何树变更都由 Manager 负责。

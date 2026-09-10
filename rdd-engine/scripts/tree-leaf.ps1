@@ -97,6 +97,327 @@ function Get-LedgerPath   { param([string]$RunDir); Join-Path (Get-StateDir $Run
 function Get-RoundLogPath { param([string]$RunDir); Join-Path (Get-StateDir $RunDir) "round-log.jsonl" }
 function Get-LockPath     { param([string]$RunDir); Join-Path $RunDir ".lock" }
 
+# === Coverage manifest sidecars (task-dispatch-guide R1'; mirrors tree-run.ps1 helpers) ===
+
+function Get-ManifestsDir     { param([string]$RunDir); Join-Path (Get-StateDir $RunDir) "manifests" }
+function Get-NodeManifestPath { param([string]$RunDir, [string]$NodeId); Join-Path (Get-ManifestsDir $RunDir) "$NodeId.json" }
+
+function Test-PropPresent {
+    param($Obj, [string]$Name)
+    if ($null -eq $Obj) { return $false }
+    if ($Obj -is [System.Collections.IDictionary]) { return $Obj.Contains($Name) }
+    return ($null -ne $Obj.PSObject.Properties[$Name])
+}
+
+function Read-NodeManifest {
+    param([string]$RunDir, [string]$NodeId)
+    $p = Get-NodeManifestPath $RunDir $NodeId
+    if (-not (Test-Path -LiteralPath $p -PathType Leaf)) { return $null }
+    try {
+        return ([System.IO.File]::ReadAllText($p, [System.Text.Encoding]::UTF8) | ConvertFrom-Json)
+    }
+    catch {
+        Write-ErrorResult "NODE_MANIFEST_CORRUPT" "coverage manifest for node $NodeId failed to parse: $p" 3
+    }
+}
+
+function Write-NodeManifest {
+    param([string]$RunDir, $Sidecar)
+    $dir = Get-ManifestsDir $RunDir
+    New-Item -ItemType Directory -Path $dir -Force | Out-Null
+    $p = Get-NodeManifestPath $RunDir ([string]$Sidecar.node_id)
+    [System.IO.File]::WriteAllText($p, (ConvertTo-Json $Sidecar -Depth 10), $script:Utf8NoBom)
+}
+
+function ConvertTo-CoverageDatetime {
+    param([string]$Value)
+    $v = if ($Value) { $Value.Trim() } else { '' }
+    try { return [datetime]::ParseExact($v, 'yyyy-MM-dd HH:mm:ss', $null) } catch { return $null }
+}
+
+function ConvertTo-DayMinute {
+    # 'HH:MM(:SS)' -> minutes of day (for fold/spotcheck arithmetic); $null when unparseable
+    param([string]$Ts)
+    if ([string]::IsNullOrWhiteSpace($Ts)) { return $null }
+    $parts = $Ts.Split(':')
+    if ($parts.Count -lt 2) { return $null }
+    $h = 0; $mi = 0
+    if (-not [int]::TryParse($parts[0], [ref]$h)) { return $null }
+    if (-not [int]::TryParse($parts[1], [ref]$mi)) { return $null }
+    if ($h -lt 0 -or $h -gt 23 -or $mi -lt 0 -or $mi -gt 59) { return $null }
+    return $h * 60 + $mi
+}
+
+function Get-FoldPair {
+    # R2: two HH:MM(:SS) joined by & / / , inside ONE text field, more than 2 minutes apart,
+    # is the folded-peaks antipattern (rca-133915: "14:39 & 14:57"). Adjacent pairs and
+    # hyphen/'to' ranges are legitimate interval writing and are not flagged.
+    param([string]$Text)
+    if ([string]::IsNullOrWhiteSpace($Text)) { return $null }
+    $m = [regex]::Match($Text, '(\d{1,2}:\d{2}(?::\d{2})?)\s*(?:&|/|,)\s*(\d{1,2}:\d{2}(?::\d{2})?)')
+    if (-not $m.Success) { return $null }
+    $t1 = ConvertTo-DayMinute $m.Groups[1].Value
+    $t2 = ConvertTo-DayMinute $m.Groups[2].Value
+    if ($null -eq $t1 -or $null -eq $t2) { return $null }
+    if ([Math]::Abs($t2 - $t1) -le 2) { return $null }
+    return @{ t1 = $m.Groups[1].Value; t2 = $m.Groups[2].Value }
+}
+
+function Invoke-EvidenceSpotCheck {
+    # M2 D2 (note-only observation period): declared tmin/tmax must at least overlap the
+    # timestamp range observable in the artifact's head+tail (50 lines each, <=10MB text).
+    # Anti-lie telemetry check: reconciliation costs ~100 lines of reading, never a re-run.
+    # Returns '' or a note. Never invalidates the cell (upgrade decision deferred to post-M5).
+    param($Ev, [string]$AbsPath)
+    try {
+        if (-not (Test-Path -LiteralPath $AbsPath -PathType Leaf)) { return '' }
+        if ((Get-Item -LiteralPath $AbsPath).Length -gt 10MB) { return '' }
+        $all = [System.IO.File]::ReadAllLines($AbsPath)
+        $sample = @()
+        if ($all.Count -le 100) { $sample = $all }
+        else { $sample = @($all[0..49]) + @($all[($all.Count - 50)..($all.Count - 1)]) }
+        $obs = @{}
+        foreach ($ln in $sample) {
+            foreach ($mm in [regex]::Matches($ln, '\b(\d{1,2}:\d{2}(?::\d{2})?)\b')) {
+                $mins = ConvertTo-DayMinute $mm.Groups[1].Value
+                if ($null -ne $mins) { $obs[$mins] = $mm.Groups[1].Value }
+            }
+        }
+        if ($obs.Count -lt 2) { return '' }
+        $sorted = @($obs.Keys | Sort-Object)
+        $obsMinRaw = $obs[$sorted[0]]; $obsMaxRaw = $obs[$sorted[-1]]
+        $declMin = ConvertTo-DayMinute (([string]$Ev.tmin) -replace '^\d{4}-\d{2}-\d{2}\s+', '')
+        $declMax = ConvertTo-DayMinute (([string]$Ev.tmax) -replace '^\d{4}-\d{2}-\d{2}\s+', '')
+        if ($null -eq $declMin -or $null -eq $declMax) { return '' }
+        if ($sorted[0] -gt $declMax -or $sorted[-1] -lt $declMin) {
+            return "spotcheck_mismatch: artifact '$($Ev.ref)' shows ${obsMinRaw}..${obsMaxRaw} but evidence declares $($Ev.tmin)..$($Ev.tmax); note-only (D2 observation period)"
+        }
+    }
+    catch { return '' }
+    return ''
+}
+
+function Test-EvidenceEntry {
+    # R8: returns $null when the evidence entry backs the claim, else a rejection reason.
+    # clean claims REQUIRE an objectized entry {ref, tmin, tmax} whose artifact exists
+    # under RefRoots and whose scanned range covers the cell interval. found claims may
+    # use bare refs (the finding itself is the evidence) but objects are fully checked.
+    param($Ev, [string]$CellStart, [string]$CellEnd, [array]$RefRoots, [string]$Mode, [ref]$SpotNote)
+    $isObj = $Ev -is [System.Collections.IDictionary]
+    if (-not $isObj) {
+        if ($Mode -eq 'clean') { return 'clean claim needs objectized evidence {ref, tmin, tmax} — a bare ref proves nothing was scanned (R8)' }
+        return $null
+    }
+    $ref = if ($Ev.Contains('ref')) { [string]$Ev.ref } else { '' }
+    if ([string]::IsNullOrWhiteSpace($ref)) { return 'evidence object missing ref' }
+    $res = Resolve-CitationRange $ref $RefRoots
+    if (-not $res.in_range) { return "evidence ref '$ref' not under RefRoots ($($res.reason))" }
+    $abs = Join-Path $repoRoot (($res.normalized_ref) -replace '/', '\')
+    if (-not (Test-Path -LiteralPath $abs -PathType Leaf)) { return "evidence ref '$($res.normalized_ref)' does not exist on disk" }
+    $hasTele = ($Ev.Contains('tmin') -and $Ev.tmin) -and ($Ev.Contains('tmax') -and $Ev.tmax)
+    if (-not $hasTele) {
+        if ($Mode -eq 'clean') { return 'clean claim requires tmin/tmax telemetry so the engine can reconcile artifact range vs cell (R8)' }
+        return $null
+    }
+    $d1 = ConvertTo-CoverageDatetime ([string]$Ev.tmin)
+    $d2 = ConvertTo-CoverageDatetime ([string]$Ev.tmax)
+    if ($null -eq $d1 -or $null -eq $d2) { return "evidence tmin/tmax must use 'YYYY-MM-DD HH:mm:ss'" }
+    $cs = ConvertTo-CoverageDatetime $CellStart
+    $ce = ConvertTo-CoverageDatetime $CellEnd
+    if ($null -ne $cs -and $null -ne $ce -and ($d1 -gt $cs -or $d2 -lt $ce)) {
+        return "artifact range [$($Ev.tmin) .. $($Ev.tmax)] does not cover cell [$CellStart .. $CellEnd]"
+    }
+    $SpotNote.Value = Invoke-EvidenceSpotCheck $Ev $abs
+    return $null
+}
+
+function Update-NodeManifestFill {
+    # R1' (task-dispatch-guide): merge extras.manifest.filled into the node's sidecar.
+    # declared cells are read-only (frozen at graft); statuses must be found|clean|escalated.
+    # M2: R2 (findings/fold) + R8 (evidence reconciliation) are FILL-VALIDITY rules —
+    # invalid cells stay pending; the only enforcement points remain settle (R1) / conclude (R4).
+    # Returns validation notes; never rejects the report itself.
+    param([string]$RunDir, [string]$NodeId, $Cb, [string]$Now, [array]$RefRoots)
+    $notes = @()
+    $sidecar = Read-NodeManifest $RunDir $NodeId
+    if ($null -eq $sidecar) { return $notes }   # legacy node without a manifest: nothing to do
+
+    $fill = $null
+    if ((Test-PropPresent $Cb 'extras') -and $null -ne $Cb.extras -and (Test-PropPresent $Cb.extras 'manifest') -and $null -ne $Cb.extras.manifest) {
+        $fill = $Cb.extras.manifest
+    }
+    if ($null -eq $fill) {
+        $notes += 'manifest_missing: node has a coverage manifest but callback extras.manifest is absent; cells stay pending (settle gate R1 will flag)'
+        return $notes
+    }
+    if (Test-PropPresent $fill 'declared') {
+        $notes += 'declared_readonly: extras.manifest.declared ignored (cells are frozen at graft time)'
+    }
+    $fillMap = $null
+    if ((Test-PropPresent $fill 'filled') -and $null -ne $fill.filled) { $fillMap = $fill.filled }
+    if ($null -eq $fillMap) {
+        $notes += 'manifest_missing: extras.manifest present but filled map absent; cells stay pending'
+        return $notes
+    }
+
+    # --- R2: findings rows (one row per episode; folded peaks are discarded) ---
+    $findingsRaw = @()
+    if ((Test-PropPresent $Cb 'extras') -and $null -ne $Cb.extras -and (Test-PropPresent $Cb.extras 'findings') -and $null -ne $Cb.extras.findings) {
+        $findingsRaw = @($Cb.extras.findings)
+    }
+    $validFindings = @()
+    $ri = 0
+    foreach ($row in $findingsRaw) {
+        if ($null -eq $row -or $row -isnot [System.Management.Automation.PSCustomObject]) {
+            $notes += "findings_row_invalid: findings[$ri] must be an object; discarded"; $ri++; continue
+        }
+        $entity = if (Test-PropPresent $row 'entity') { [string]$row.entity } else { '' }
+        $rowNote = if (Test-PropPresent $row 'note') { [string]$row.note } else { '' }
+        $iv = @()
+        if (Test-PropPresent $row 'interval') { $iv = @($row.interval) }
+        if ($iv.Count -ne 2) {
+            $notes += "findings_row_invalid: findings[$ri] '$entity' must carry its own interval [start, end]; discarded (R2: one row per episode)"; $ri++; continue
+        }
+        $rowS = ConvertTo-CoverageDatetime ([string]$iv[0])
+        $rowE = ConvertTo-CoverageDatetime ([string]$iv[1])
+        if ($null -eq $rowS -or $null -eq $rowE -or $rowE -le $rowS) {
+            $notes += "findings_row_invalid: findings[$ri] '$entity' interval must be 'YYYY-MM-DD HH:mm:ss' with end after start; discarded"; $ri++; continue
+        }
+        $fold = Get-FoldPair ("$entity $rowNote")
+        if ($null -ne $fold) {
+            $notes += "fold_detected: findings[$ri] '$entity' folds $($fold.t1) & $($fold.t2) into one row — split into one row per episode (R2); row discarded and linked cells stay pending"
+            $ri++; continue
+        }
+        $rowEv = @()
+        if (Test-PropPresent $row 'evidence') { $rowEv = @($row.evidence | ForEach-Object { [string]$_ }) }
+        if ($rowEv.Count -eq 0) {
+            $notes += "findings_row_invalid: findings[$ri] '$entity' has no evidence ref; discarded"; $ri++; continue
+        }
+        $validFindings += @{ entity = $entity; interval = @([string]$iv[0], [string]$iv[1]); evidence = $rowEv; note = $rowNote }
+        $ri++
+    }
+
+    # --- per-cell fill validation (R1' status + R8 evidence + D1 findings association) ---
+    $declaredIds = @()
+    foreach ($c in @($sidecar.declared.cells)) { $declaredIds += [string]$c.id }
+
+    $updated = @{}
+    foreach ($cid in $declaredIds) {
+        if (-not (Test-PropPresent $fillMap $cid)) { continue }
+        $entry = $fillMap.$cid
+        $status = ''
+        if ($null -ne $entry -and (Test-PropPresent $entry 'status')) { $status = [string]$entry.status }
+        if (@('found', 'clean', 'escalated') -notcontains $status) {
+            $notes += "bad_status: cell '$cid' status '$status' not in found|clean|escalated; cell stays pending"
+            continue
+        }
+        $cell = @()
+        foreach ($c in @($sidecar.declared.cells)) { if ([string]$c.id -eq $cid) { $cell = @($c.interval) } }
+        $cellStart = [string]$cell[0]; $cellEnd = [string]$cell[1]
+
+        if ($status -ne 'escalated') {
+            # evidence reconciliation (R8)
+            $evArr = @()
+            if ($null -ne $entry -and (Test-PropPresent $entry 'evidence')) {
+                $evArr = @($entry.evidence | ForEach-Object { if ($_ -is [System.Collections.IDictionary] -or $_ -is [string]) { $_ } else { Convert-PSObjectToHashtable $_ } })
+            }
+            if ($evArr.Count -eq 0) {
+                $notes += "r8_evidence_rejected: cell '$cid' ($status) carries no evidence; cell stays pending"
+                continue
+            }
+            $evOk = $true
+            foreach ($ev in $evArr) {
+                $spotNote = ''
+                $reason = Test-EvidenceEntry $ev $cellStart $cellEnd $RefRoots $status ([ref]$spotNote)
+                if ($spotNote -ne '') { $notes += $spotNote }
+                if ($null -ne $reason) {
+                    $notes += "r8_evidence_rejected: cell '$cid' ($status) — $reason; cell stays pending"
+                    $evOk = $false
+                }
+            }
+            if (-not $evOk) { continue }
+
+            # D1: found claims must hang off a findings row inside the cell interval
+            if ($status -eq 'found') {
+                $linked = $false
+                foreach ($vf in $validFindings) {
+                    $fs = ConvertTo-CoverageDatetime ([string]$vf.interval[0])
+                    $fe = ConvertTo-CoverageDatetime ([string]$vf.interval[1])
+                    $cs = ConvertTo-CoverageDatetime $cellStart
+                    $ce = ConvertTo-CoverageDatetime $cellEnd
+                    if ($null -ne $fs -and $null -ne $fe -and $null -ne $cs -and $null -ne $ce -and $fs -ge $cs -and $fe -le $ce) { $linked = $true; break }
+                }
+                if (-not $linked) {
+                    $notes += "findings_missing: cell '$cid' filled found but no valid findings row falls inside [$cellStart .. $CellEnd]; cell stays pending (D1: findings rows are the sweep deliverable)"
+                    continue
+                }
+            }
+        }
+
+        $storedEv = @()
+        if ($null -ne $entry -and (Test-PropPresent $entry 'evidence')) {
+            $storedEv = @($entry.evidence | ForEach-Object { if ($_ -is [string]) { $_ } else { Convert-PSObjectToHashtable $_ } })
+        }
+        $updated[$cid] = @{
+            status   = $status
+            evidence = $storedEv
+            note     = if ($null -ne $entry -and (Test-PropPresent $entry 'note')) { [string]$entry.note } else { '' }
+        }
+    }
+    foreach ($p in @($fillMap.PSObject.Properties)) {
+        if ($declaredIds -notcontains $p.Name) { $notes += "unknown_cell: filled key '$($p.Name)' has no declared cell; ignored" }
+    }
+
+    if ($updated.Count -gt 0 -or $validFindings.Count -gt 0) {
+        $merged = @{}
+        if ((Test-PropPresent $sidecar 'filled') -and $null -ne $sidecar.filled) {
+            foreach ($p in @($sidecar.filled.PSObject.Properties)) { $merged[$p.Name] = $p.Value }
+        }
+        foreach ($k in @($updated.Keys)) { $merged[$k] = $updated[$k] }
+        $sidecar | Add-Member -Force -NotePropertyName filled -NotePropertyValue $merged
+        $existingFindings = @()
+        if ((Test-PropPresent $sidecar 'findings') -and $null -ne $sidecar.findings) { $existingFindings = @($sidecar.findings) }
+        $sidecar | Add-Member -Force -NotePropertyName findings -NotePropertyValue (@($existingFindings) + @($validFindings))
+        $sidecar | Add-Member -Force -NotePropertyName updated_at -NotePropertyValue $Now
+        Write-NodeManifest $RunDir $sidecar
+    }
+    return $notes
+}
+
+function Get-ProbeReconciliationNotes {
+    # R5 (task-dispatch-guide / rca role cards): probe nodes reconcile extras.probe against
+    # the three-valued contract {verdict: upheld|refuted|inconclusive, falsification_attempted: [..]}.
+    # Note-only observation period (mirrors spotcheck / manifest_missing precedent): notes land in
+    # validation.notes, the report is never rejected and the node still transitions.
+    # Legacy/non-probe nodes (type null) -> nothing to do (fail-open).
+    param($Node, $Cb)
+    $notes = @()
+    if ([string]$Node.type -ne 'probe') { return $notes }
+
+    $probe = $null
+    if ((Test-PropPresent $Cb 'extras') -and $null -ne $Cb.extras -and (Test-PropPresent $Cb.extras 'probe') -and $null -ne $Cb.extras.probe) {
+        $probe = $Cb.extras.probe
+    }
+    if ($null -eq $probe) {
+        $notes += 'probe_extras_missing: node is type=probe but callback extras.probe is absent (expected {verdict: upheld|refuted|inconclusive, falsification_attempted: [...]}); note-only'
+        return $notes
+    }
+    $verdict = ''
+    if (Test-PropPresent $probe 'verdict') { $verdict = [string]$probe.verdict }
+    if ([string]::IsNullOrWhiteSpace($verdict)) {
+        $notes += 'probe_verdict_missing: extras.probe.verdict absent; expected upheld|refuted|inconclusive; note-only'
+    }
+    elseif (@('upheld', 'refuted', 'inconclusive') -notcontains $verdict) {
+        $notes += "probe_verdict_invalid: extras.probe.verdict '$verdict' not in upheld|refuted|inconclusive; note-only"
+    }
+    $attempts = @()
+    if ((Test-PropPresent $probe 'falsification_attempted') -and $null -ne $probe.falsification_attempted) { $attempts = @($probe.falsification_attempted) }
+    if ($attempts.Count -eq 0) {
+        $notes += 'probe_falsification_not_recorded: extras.probe.falsification_attempted absent or empty — a pure confirmation probe violates R5; note-only'
+    }
+    return $notes
+}
+
 function Resolve-RunDir {
     param([string]$Id)
     if ([string]::IsNullOrWhiteSpace($Id)) {
@@ -196,6 +517,9 @@ function Convert-NodeToHashtable {
         parent          = if ($Node.parent) { [string]$Node.parent } else { $null }
         title           = [string]$Node.title
         task            = [string]$Node.task
+        type            = if ($Node.type) { [string]$Node.type } else { $null }
+        role            = if ($Node.role) { [string]$Node.role } else { $null }
+        falsification_duty = if ($Node.falsification_duty) { [string]$Node.falsification_duty } else { $null }
         status          = [string]$Node.status
         created_round   = if ($null -ne $Node.created_round) { [int]$Node.created_round } else { 0 }
         claimed_by      = if ($Node.claimed_by) { [string]$Node.claimed_by } else { $null }
@@ -432,6 +756,9 @@ function Convert-NodeToPublicView {
         parent          = $Node.parent
         title           = $Node.title
         task            = $Node.task
+        type            = $Node.type
+        role            = $Node.role
+        falsification_duty = $Node.falsification_duty
         status          = $Node.status
         created_round   = $Node.created_round
         claimed_by      = $Node.claimed_by
@@ -458,7 +785,7 @@ function Invoke-Next {
     $pending = @()
     foreach ($n in $tree.nodes) {
         if ($n.status -eq "pending") {
-            $pending += [ordered]@{ id = $n.id; parent = $n.parent; title = $n.title; task = $n.task; grafted_round = $n.created_round }
+            $pending += [ordered]@{ id = $n.id; parent = $n.parent; title = $n.title; task = $n.task; type = $n.type; role = $n.role; grafted_round = $n.created_round }
         }
     }
     if ($Limit -gt 0 -and $pending.Count -gt $Limit) {
@@ -568,6 +895,23 @@ function Invoke-Report {
         Write-ErrorResult "CALLBACK_NOT_JSON" "Callback is not valid JSON: $($_.Exception.Message)" 1
     }
 
+    # --- B2 channel separation (usage errors: not recorded, caller retries) ---
+    # summary is a SUMMARY: full findings belong in a file referenced by full_report.
+    # Without the cap, 2k+ char reports ride every status read / completion notice
+    # into the Manager's context (the B2 pressure source observed in rca-eval).
+    $summaryText = if ($null -ne $cb.PSObject.Properties["summary"]) { [string]$cb.summary } else { "" }
+    if ($summaryText.Length -gt 600) {
+        Write-ErrorResult "SUMMARY_TOO_LONG" "callback.summary is $($summaryText.Length) chars (limit 600). Write the FULL findings to a file under the run dir (e.g. report/workers/<node-id>.md), reference it via callback.full_report, and keep summary to verdict + key timestamps + <=3 findings." 1
+    }
+    $fullReport = $null
+    if ($null -ne $cb.PSObject.Properties["full_report"] -and -not [string]::IsNullOrWhiteSpace([string]$cb.full_report)) {
+        $fr = [string]$cb.full_report
+        $frAbs = $fr
+        if (-not [System.IO.Path]::IsPathRooted($frAbs)) { $frAbs = Join-Path $repoRoot $fr }
+        if (-not (Test-Path -LiteralPath $frAbs -PathType Leaf)) { Write-ErrorResult "FULL_REPORT_NOT_FOUND" "callback.full_report not found: $frAbs" 1 }
+        $fullReport = $fr
+    }
+
     $lockInfo = Enter-RunLock $RunDir
     try {
         $manifest = Read-Manifest $RunDir
@@ -595,6 +939,7 @@ function Invoke-Report {
                 entry_id    = $entryId
                 round       = $openRound
                 node_id     = $cbNodeId
+                role        = if ($null -ne $node -and $node.role) { [string]$node.role } else { $null }
                 worker      = $Worker
                 reported_at = $now
                 callback    = (Convert-PSObjectToHashtable $cb)
@@ -663,6 +1008,12 @@ function Invoke-Report {
             $notes += "verdict done downgraded to inconclusive: no in-range citation survived range check"
         }
 
+        # --- R1' coverage manifest fill (task-dispatch-guide): notes only, never rejects ---
+        $notes += @(Update-NodeManifestFill $RunDir ([string]$cb.node_id) $cb $now @($manifest.ref_roots))
+
+        # --- R5 probe reconciliation (task-dispatch-guide): notes only, never rejects ---
+        $notes += @(Get-ProbeReconciliationNotes $node $cb)
+
         # validation.status reflects actual DEGRADATIONS only (clamp / rejected
         # citations / verdict downgrade). Citation normalization notes are the
         # engine doing its job, not a callback defect.
@@ -674,6 +1025,7 @@ function Invoke-Report {
             verdict        = $verdict
             confidence     = $confidence
             summary        = [string]$cb.summary
+            full_report    = $fullReport
             citations      = $validCitations
             next_suggestion = [string]$cb.next_suggestion
             extras         = (Convert-PSObjectToHashtable $cb.extras)
@@ -682,6 +1034,7 @@ function Invoke-Report {
             entry_id    = $entryId
             round       = $openRound
             node_id     = [string]$cb.node_id
+            role        = if ($node.role) { [string]$node.role } else { $null }
             worker      = $Worker
             reported_at = $now
             callback    = $finalCallback
@@ -737,13 +1090,15 @@ function Invoke-LeafStatus {
     if (-not [string]::IsNullOrWhiteSpace($NodeId)) {
         $node = Find-Node $tree $NodeId
         if ($null -eq $node) { Write-ErrorResult "NODE_NOT_FOUND" "Node not found: $NodeId" 2 }
+        $nodeManifest = Read-NodeManifest $RunDir $NodeId
         return @{
             success = $true
             data    = [ordered]@{
-                run_id = $RunId
-                state  = $manifest.state
-                round  = $openRound
-                node   = (Convert-NodeToPublicView $node)
+                run_id   = $RunId
+                state    = $manifest.state
+                round    = $openRound
+                node     = (Convert-NodeToPublicView $node)
+                manifest = $nodeManifest
             }
         }
     }
