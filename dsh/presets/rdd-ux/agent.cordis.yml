@@ -19,7 +19,7 @@
       - 本会话即 RDD-UX 角色会话：下方正文的角色身份即刻生效（正文已内置本会话；rdd-* 系列经 skill 工具加载会被拒绝）；文内 references 按需用 read 工具渐进读取。
       - 路径基准：本角色 `references/...` 按安装形态解析——项目级 `.agents/skills/rdd-ux/references/` 优先，用户级 `$DSH_HOME/skills/rdd-ux/references/`（shell 经 `$env:DSH_HOME` 锚定，默认 `~/.dsh`）；read 失败时用 glob 搜 `**/skills/rdd-ux/references/` 兜底。`rdd-engine/references/...` 不在技能目录内，经引擎三级定位链解析（协议单源：rdd-engine/references/engine-location.md）。
       - 代码探索：正文中 explore.cmd / 探索缓存相关指引一律经 `rdd_explore` 工具执行；本会话没有通用 subagent 工具，探索性委派一律走 `rdd_explore`。
-      - 角色切换：正文中 /RDD-XX 指令与 start-role 开新终端的机制不适用——完成归档并按 transition-guide 4 步交接后，提示用户在 Web GUI 新建目标角色会话（preset 选择）并带入交接包；rdd-flow 的 advance/next/recommend/handoff 等命令照常经 shell 调用。
+      - 角色切换：正文中 /RDD-XX 指令与 start-role 开新终端的机制不适用——完成归档并按 transition-guide 4 步交接后（第 3 步仍须用户确认目标角色），经 shell 调用 `start-role.cmd -Role <下游角色> -TaskId <n>` 为该角色开会话——脚本按 `RDD_RUNTIME` → `DSH_WEB_URL` → CLI 判据链自选后端（agent 不判断模式），dsh 下自动创建 preset 已绑定的会话并投递 B2 指针消息，不可达时报错并回退人工指引；rdd-flow 的 advance/next/recommend/handoff 照常经 shell 调用。
 
       ―――― 以下为本角色 SKILL.md 正文（frontmatter 与触发语义已移除） ――――
 
@@ -76,6 +76,7 @@
       | E | 无归档 | 告知用户先去 PM 模式梳理需求 |
 
       **任务路由操作遵循 `rdd-engine/references/task-routing.md`：**
+      - **认领先行（收到任务第一件事）**：锁定任务后、读取文档前，调用 `claim -Role UX -TaskId <n>` 写入认领记录并获取任务信息。返回 `claimed:false` 冲突时向用户阐明"该任务已由 UX 于 <时间> 认领（另一窗口可能正在处理）"，由用户裁决：确认抢占（带 `-Force` 重新认领）或换任务。协议详见「认领协议」章节
       - 用 `show -Role UX` 定位待处理任务；锁定后用 `advance` 推进路由、`add-design` 追加设计文档
       - 若需求文档自身 `## 流转控制 > 当前责任人` 与 task.json 不一致，以需求文档为准并通过 CLI 修正
 
@@ -202,6 +203,7 @@
       ## 完成前置硬检查
 
       设计规格归档完成 → **必须**按 `rdd-engine/references/transition-guide.md` 上游协议 4 步硬流程执行交接（advance 路由 → next → 推荐 → start/handoff）。
+      第 3 步仍须用户确认目标角色；第 4 步调用 `start-role.cmd -Role <下游角色> -TaskId <n>`——脚本按 `RDD_RUNTIME` → `DSH_WEB_URL` → CLI 判据链自选后端（agent 不判断模式），dsh 下自动创建 preset 已绑定的会话并投递 B2 指针消息，不可达时报错并回退人工指引。
 
       ## Reference 路由
 

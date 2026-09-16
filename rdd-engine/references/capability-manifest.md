@@ -14,8 +14,10 @@
 | 产物注册（入热区） | `explore-store.cmd -Type register` | `$rdd = $null; $t = $null; try { $t = git rev-parse --show-toplevel } catch { }; foreach ($c in @($env:RDD_ENGINE_HOME; if ($t) { (Get-ChildItem $t -Recurse -Directory -Depth 3 -Filter 'rdd-engine').FullName }; "$HOME\.rdd\engine\current")) { if ($c -and (Test-Path "$c\scripts\rdd-flow.cmd")) { $rdd = $c; break } }; if (-not $rdd) { throw "rdd-engine 未定位（三级定位链：RDD_ENGINE_HOME → 项目内 rdd-engine → ~\.rdd\engine\current 全 miss）。安装/排障：GitHub Release 下载 rdd-engine.tgz 后运行 scripts/install-rdd-engine.ps1；协议详见 rdd-engine/references/engine-location.md" }; & "$rdd\scripts\explore-store.cmd" -Type register -Key "..." -Tags "..." -Path "..." -Brief "..." -Files "..."` | `rdd-explore` worker 探索完成后注册产物（向量配置齐备时同步 embedding） |
 | 持久化转正 | `explore-store.cmd -Type persist` | `$rdd = $null; $t = $null; try { $t = git rev-parse --show-toplevel } catch { }; foreach ($c in @($env:RDD_ENGINE_HOME; if ($t) { (Get-ChildItem $t -Recurse -Directory -Depth 3 -Filter 'rdd-engine').FullName }; "$HOME\.rdd\engine\current")) { if ($c -and (Test-Path "$c\scripts\rdd-flow.cmd")) { $rdd = $c; break } }; if (-not $rdd) { throw "rdd-engine 未定位（三级定位链：RDD_ENGINE_HOME → 项目内 rdd-engine → ~\.rdd\engine\current 全 miss）。安装/排障：GitHub Release 下载 rdd-engine.tgz 后运行 scripts/install-rdd-engine.ps1；协议详见 rdd-engine/references/engine-location.md" }; & "$rdd\scripts\explore-store.cmd" -Type persist -Key "..."` | 将热区条目转正进持久层 |
 | 向量补齐 | `explore-store.cmd -Type embed-backfill` | `$rdd = $null; $t = $null; try { $t = git rev-parse --show-toplevel } catch { }; foreach ($c in @($env:RDD_ENGINE_HOME; if ($t) { (Get-ChildItem $t -Recurse -Directory -Depth 3 -Filter 'rdd-engine').FullName }; "$HOME\.rdd\engine\current")) { if ($c -and (Test-Path "$c\scripts\rdd-flow.cmd")) { $rdd = $c; break } }; if (-not $rdd) { throw "rdd-engine 未定位（三级定位链：RDD_ENGINE_HOME → 项目内 rdd-engine → ~\.rdd\engine\current 全 miss）。安装/排障：GitHub Release 下载 rdd-engine.tgz 后运行 scripts/install-rdd-engine.ps1；协议详见 rdd-engine/references/engine-location.md" }; & "$rdd\scripts\explore-store.cmd" -Type embed-backfill [-PurgeOtherModels]` | 配置/更换 embedding 模型后，为存量条目补齐/重建 `.rdd/exploration/vectors.json` |
-| 树形长程任务运行（管理面） | `tree-run.cmd` | `$rdd = $null; $t = $null; try { $t = git rev-parse --show-toplevel } catch { }; foreach ($c in @($env:RDD_ENGINE_HOME; if ($t) { (Get-ChildItem $t -Recurse -Directory -Depth 3 -Filter 'rdd-engine').FullName }; "$HOME\.rdd\engine\current")) { if ($c -and (Test-Path "$c\scripts\rdd-flow.cmd")) { $rdd = $c; break } }; if (-not $rdd) { throw "rdd-engine 未定位（三级定位链：RDD_ENGINE_HOME → 项目内 rdd-engine → ~\.rdd\engine\current 全 miss）。安装/排障：GitHub Release 下载 rdd-engine.tgz 后运行 scripts/install-rdd-engine.ps1；协议详见 rdd-engine/references/engine-location.md" }; & "$rdd\scripts\tree-run.cmd" -Command start -RunId <id> -Goal "..." -RefRoots "..."` | 长程任务（根因调查/批量审计等）需要多轮"派发→回写→再规划"循环时，Manager 会话创建并驱动树 |
-| 树节点消费与回写（消费面） | `tree-leaf.cmd` | `$rdd = $null; $t = $null; try { $t = git rev-parse --show-toplevel } catch { }; foreach ($c in @($env:RDD_ENGINE_HOME; if ($t) { (Get-ChildItem $t -Recurse -Directory -Depth 3 -Filter 'rdd-engine').FullName }; "$HOME\.rdd\engine\current")) { if ($c -and (Test-Path "$c\scripts\rdd-flow.cmd")) { $rdd = $c; break } }; if (-not $rdd) { throw "rdd-engine 未定位（三级定位链：RDD_ENGINE_HOME → 项目内 rdd-engine → ~\.rdd\engine\current 全 miss）。安装/排障：GitHub Release 下载 rdd-engine.tgz 后运行 scripts/install-rdd-engine.ps1；协议详见 rdd-engine/references/engine-location.md" }; & "$rdd\scripts\tree-leaf.cmd" -Command next -RunId <id>` | tree-run 的子代理 worker 认领叶子节点并结构化回写结果 |
+| 树形长程任务运行（管理面） | `goal-tree.cmd` | `$rdd = $null; $t = $null; try { $t = git rev-parse --show-toplevel } catch { }; foreach ($c in @($env:RDD_ENGINE_HOME; if ($t) { (Get-ChildItem $t -Recurse -Directory -Depth 3 -Filter 'rdd-engine').FullName }; "$HOME\.rdd\engine\current")) { if ($c -and (Test-Path "$c\scripts\rdd-flow.cmd")) { $rdd = $c; break } }; if (-not $rdd) { throw "rdd-engine 未定位（三级定位链：RDD_ENGINE_HOME → 项目内 rdd-engine → ~\.rdd\engine\current 全 miss）。安装/排障：GitHub Release 下载 rdd-engine.tgz 后运行 scripts/install-rdd-engine.ps1；协议详见 rdd-engine/references/engine-location.md" }; & "$rdd\scripts\goal-tree.cmd" -Command start -RunId <id> -Goal "..." -RefRoots "..."` | 长程任务（根因调查/批量审计等）需要多轮"派发→回写→再规划"循环时，Manager 会话创建并驱动树 |
+| 树节点消费与回写（消费面） | `goal-tree-leaf.cmd` | `$rdd = $null; $t = $null; try { $t = git rev-parse --show-toplevel } catch { }; foreach ($c in @($env:RDD_ENGINE_HOME; if ($t) { (Get-ChildItem $t -Recurse -Directory -Depth 3 -Filter 'rdd-engine').FullName }; "$HOME\.rdd\engine\current")) { if ($c -and (Test-Path "$c\scripts\rdd-flow.cmd")) { $rdd = $c; break } }; if (-not $rdd) { throw "rdd-engine 未定位（三级定位链：RDD_ENGINE_HOME → 项目内 rdd-engine → ~\.rdd\engine\current 全 miss）。安装/排障：GitHub Release 下载 rdd-engine.tgz 后运行 scripts/install-rdd-engine.ps1；协议详见 rdd-engine/references/engine-location.md" }; & "$rdd\scripts\goal-tree-leaf.cmd" -Command next -RunId <id>` | goal-tree 的子代理 worker 认领叶子节点并结构化回写结果 |
+| 节点依赖管理 | `goal-tree.cmd -Command deps` | `$rdd = ...同上定位链...; & "$rdd\scripts\goal-tree.cmd" -Command deps -DepAction add -RunId <id> -NodeId <n> -On <m>` | 树内节点声明/解除依赖（DAG 机械校验 + 认领门禁 + 审计）；Manager 编排跨角色依赖场景 |
+| 交付编排桥接（Manager） | `delivery-bridge.cmd` | `$rdd = ...同上定位链...; & "$rdd\scripts\delivery-bridge.cmd" -Command promulgate -TaskJson <归档 task.json>` | PM 归档较重时启动 Manager 接管整批交付：颁布节点（任务×阶段）→ 调动角色会话 → settle 唯一流转通道 → 结案报告。协议见 `manager-guide.md` |
 
 ---
 
@@ -98,25 +100,27 @@ $rdd = $null; $t = $null; try { $t = git rev-parse --show-toplevel } catch { }; 
 
 ---
 
-## 树形长程任务运行（tree-run / tree-leaf 双面）
+## 长程目标树运行（rdd-goal-tree / goal-tree 与 goal-tree-leaf 双面）
 
-长程任务的 Manager-Worker 树形循环引擎能力（沉淀自早期 RCA PoC 实验验证过的模式）。**双接口分权**：管理面 `tree-run.cmd`（Manager 会话驱动树生长与生命周期：start / graft / prune / settle / conclude / round-start / round-end / status / resume）；消费面 `tree-leaf.cmd`（worker 子代理 next / claim / report / status，CLI 硬编码字段白名单，物理上无法篡改树结构）。
+长程任务的 Manager-Worker 树形循环引擎能力——**rdd-goal（长程目标编排）能力族的树方法 rdd-goal-tree**（沉淀自早期调查流 PoC 实验验证过的模式）。**双接口分权**：管理面 `goal-tree.cmd`（Manager 会话驱动树生长与生命周期：start / graft / prune / settle / conclude / round-start / round-end / status / resume）；消费面 `goal-tree-leaf.cmd`（worker 子代理 next / claim / report / status，CLI 硬编码字段白名单，物理上无法篡改树结构）。
 
-**核心机制**：状态文件为唯一权威（`.rdd/tree-runs/<run-id>/`，gitignore）；回写账本只追加、坏行隔离 `.corrupt`；树写前 `.bak` + 写后 read-back；每 run 一把 `.lock` 互斥所有写原语；引用范围 `-RefRoots` 机械校验 + 引擎归一；回调核心 schema 引擎强制，invalid 降级记账不破坏运行；三种终局（achieved / budget_exhausted / space_exhausted）均为正常终结并产出结案报告；轮日志起止两行制支持任意一轮中断后 `resume` 续跑，已回写节点永不重复消费。
+**核心机制**：状态文件为唯一权威（`.rdd/goal-trees/<run-id>/`，gitignore）；回写账本只追加、坏行隔离 `.corrupt`；树写前 `.bak` + 写后 read-back；每 run 一把 `.lock` 互斥所有写原语；引用范围 `-RefRoots` 机械校验 + 引擎归一；回调核心 schema 引擎强制，invalid 降级记账不破坏运行；三种终局（achieved / budget_exhausted / space_exhausted）均为正常终结并产出结案报告；轮日志起止两行制支持任意一轮中断后 `resume` 续跑，已回写节点永不重复消费。
+
+> **命名注**：`rdd-goal` 指 RDD 层的长程目标编排能力（目标 → 多轮 → 账本 → 结案，跨会话文件持久化），与宿主 harness 的会话级 goal 工具（同会话自动续跑）无关——前者是编排引擎，后者是会话机制。
 
 ```powershell
 # Manager：创建并驱动一次运行
 $rdd = $null; $t = $null; try { $t = git rev-parse --show-toplevel } catch { }; foreach ($c in @($env:RDD_ENGINE_HOME; if ($t) { (Get-ChildItem $t -Recurse -Directory -Depth 3 -Filter 'rdd-engine').FullName }; "$HOME\.rdd\engine\current")) { if ($c -and (Test-Path "$c\scripts\rdd-flow.cmd")) { $rdd = $c; break } }; if (-not $rdd) { throw "rdd-engine 未定位（三级定位链：RDD_ENGINE_HOME → 项目内 rdd-engine → ~\.rdd\engine\current 全 miss）。安装/排障：GitHub Release 下载 rdd-engine.tgz 后运行 scripts/install-rdd-engine.ps1；协议详见 rdd-engine/references/engine-location.md" }
-& "$rdd\scripts\tree-run.cmd" -Command start -RunId my-rca-001 -Goal "排查这批告警的根因" -RefRoots "docs" -CreatedBy DEV
-& "$rdd\scripts\tree-run.cmd" -Command round-start -RunId my-rca-001
-& "$rdd\scripts\tree-run.cmd" -Command graft -RunId my-rca-001 -Parent n1 -TasksFile <batch.json>   # [{title, task, note?}]
+& "$rdd\scripts\goal-tree.cmd" -Command start -RunId my-goal-001 -Goal "排查这批告警的根因" -RefRoots "docs" -CreatedBy DEV
+& "$rdd\scripts\goal-tree.cmd" -Command round-start -RunId my-goal-001
+& "$rdd\scripts\goal-tree.cmd" -Command graft -RunId my-goal-001 -Parent n1 -TasksFile <batch.json>   # [{title, task, note?}]
 
 # Worker（子代理）：领节点 → 干活 → 结构化回写
-& "$rdd\scripts\tree-leaf.cmd" -Command claim -RunId my-rca-001 -NodeId n2 -Worker w1-db
-& "$rdd\scripts\tree-leaf.cmd" -Command report -RunId my-rca-001 -Worker w1-db -CallbackFile <callback.json>
+& "$rdd\scripts\goal-tree-leaf.cmd" -Command claim -RunId my-goal-001 -NodeId n2 -Worker w1-db
+& "$rdd\scripts\goal-tree-leaf.cmd" -Command report -RunId my-goal-001 -Worker w1-db -CallbackFile <callback.json>
 ```
 
-> 完整协议（Manager 循环、worker 派发模板、workflow 扇出模板、恢复流程）见 `rdd-engine/references/tree-run-guide.md`。与 task.json 流转 / explore 链三重正交，互不影响。
+> 完整协议（Manager 循环、worker 派发模板、workflow 扇出模板、恢复流程）见 `rdd-engine/references/goal-tree-guide.md`。与 task.json 流转 / explore 链三重正交，互不影响。
 
 ---
 
@@ -142,6 +146,7 @@ $rdd = $null; $t = $null; try { $t = git rev-parse --show-toplevel } catch { }; 
 
 | 协议 | 文件 | 说明 |
 |------|------|------|
-| 角色交接协议 | `transition-guide.md` | 上游完成产物后的 4 步交接流程、下游三入口识别、双场景（self-driven/app-driven）模式检测 |
+| 角色交接协议 | `transition-guide.md` | 上游完成产物后的 4 步交接流程、下游三入口识别、双场景（self-driven/app-driven）模式检测、manager-takeover 可选分支 |
 | 驳回协议 | `rejection-protocol.md` | 角色间正式驳回上游文档的标准流程 |
 | 交接包规则 | `handoff-guide.md` | 最小上下文交接的构建规则 |
+| Manager 交付编排协议 | `manager-guide.md` | Manager（引擎编排形态）的生命周期、命令面板、硬约束、部署前提 |

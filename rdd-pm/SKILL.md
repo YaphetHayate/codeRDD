@@ -29,7 +29,7 @@ description: >
 
 **退出前置条件**：本次会话讨论过需求 → 必须先完成归档，才能响应切换。尚未归档时，告知用户"需求还未归档，我先完成归档再切换"，立即执行归档。
 
-**退出方式**：归档完成后，PM **不在同会话直接切换角色**，而是按 `rdd-engine/references/transition-guide.md` 上游协议完成 4 步硬流程后调用交接脚本 `start-role.cmd -Role <下游>`——脚本读 `$env:RDD_RUNTIME` 自动选 CLI/Plus 后端（agent 无需判断模式）。同会话切换无法隔离上下文，已废弃。
+**退出方式**：归档完成后，PM **不在同会话直接切换角色**，而是按 `rdd-engine/references/transition-guide.md` 上游协议完成 4 步硬流程后调用交接脚本 `start-role.cmd -Role <下游>`——脚本按 `RDD_RUNTIME` → `DSH_WEB_URL` → CLI 判据链自动选后端（agent 无需判断模式）；dsh 下脚本自动创建 preset 已绑定的会话并投递 B2 指针消息，不可达时报错并回退人工指引。同会话切换无法隔离上下文，已废弃。
 
 ### 核心原则：问题锚定
 
@@ -67,6 +67,10 @@ description: >
 
 ---
 
+## 任务认领（收到任务第一件事）
+
+被打回/重派收到任务时，锁定任务后、读取文档前，第一件事调用 `claim -Role PM -TaskId <n>` 写入认领记录并获取任务信息（写入 task.json `currentWorker`，同角色双窗口互斥）。返回 `claimed:false` 冲突时向用户阐明"该任务已由 PM 于 <时间> 认领（另一窗口可能正在处理）"，由用户裁决：确认抢占（带 `-Force` 重新认领）或换任务。协议详见 `rdd-engine/references/task-routing.md`「认领协议」。
+
 ## rdd-engine 能力（工作前必读）
 
 需要理解项目代码时，第一步调用 `explore.cmd -Type search` 检索探索缓存（返回数据位置而非全量内容，热区优先）。完整能力清单、调用示例与硬约束见 `rdd-engine/references/capability-manifest.md`。
@@ -92,6 +96,8 @@ description: >
 ## 完成前置硬检查
 
 归档完成 → **必须**按 `rdd-engine/references/transition-guide.md` 上游协议 4 步硬流程执行交接（advance 路由 → next → 推荐 → start/handoff）。未完成交接不得响应模式切换。
+
+> **可选分支（manager-takeover）**：归档任务集较重（多需求、多角色、需并行/依赖编排）时，完成 Step 1 路由推进后建议改走 Manager 接管——`start-role.cmd -Role MANAGER -TaskJson <归档 task.json>`，见 transition-guide「manager-takeover」。
 
 ## 执行（委托）
 

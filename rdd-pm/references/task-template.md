@@ -28,6 +28,7 @@
       "designDocs": [
         { "path": "design/<name>-cto.md", "status": "pending" }
       ],
+      "currentWorker": [],
       "remark": "备注（可选）",
       "lifecycle": "active"
     }
@@ -44,6 +45,7 @@
 | `requirement` | 需求文件路径（归档相对，如 `requirements/fixbug.md`） | — |
 | `currentOwners` | 该需求的下一条处理角色。单角色 `["DEV"]`，并行 `["CTO","UX"]` | CLI `advance`/`set-route` |
 | `designDocs` | 预填预期设计文档位置，`status` 设为 `"pending"`；无设计文档填 `[]` | CLI `add-design`（CTO/UX 归档设计时） |
+| `currentWorker` | 不填（CLI 维护，缺省 `[]` = 空闲）。运行期由各角色 `claim` 写入认领记录（`[{ "<角色>": "<认领时间>" }]`），表达"该任务的某责任人正在处理" | CLI `claim`（认领/`-Force` 抢占）；`advance`/`reject`/`complete`/`reopen`/`deprecate`/`set-route` 自动剔除失效认领 |
 | `remark` | 并行标注、特殊说明；无则空字符串 | CLI `reject` 追加驳回摘要 |
 | `lifecycle` | 不填（默认 `"active"`） | CLI `complete`/`reopen`/`deprecate` |
 

@@ -8,7 +8,7 @@
  *        package.json   @coderrdd/rdd-skills（files: skills/ + presets/）
  *        skills/        8 个角色技能目录（rdd-engine 仅 SKILL.md——协议文档经
  *                       引擎三级定位链解析到引擎侧，与脚本同版本，不随包重复）
- *        presets/       7 组 dsh 生成物（agent.cordis.yml + preset.yml）
+ *        presets/       8 组 dsh 生成物（7 角色 + rdd-manager 引导 preset）
  *   3. npm pack → 双产物：
  *        dist/skills/rdd-skills.tgz               # 固定名（Release latest 直链）
  *        dist/skills/rdd-skills-<version>.tgz     # 带版本名归档
@@ -20,7 +20,7 @@
  *   S1 技能源 junction fail-loud（codeRDD v1 junction 布局携带链接目录 = 拷贝失真）
  *   S2 rdd-engine 子树仅 SKILL.md（references/ 泄漏 = 与引擎脚本版本脱钩）
  *   S3 tarball 文件名与 package.json name/version 推导一致
- *   S4 包内条目全部位于 package/ 前缀下；契约成员（8×SKILL.md + 7×agent.cordis.yml）齐全
+ *   S4 包内条目全部位于 package/ 前缀下；契约成员（8×SKILL.md + 8×agent.cordis.yml）齐全
  *
  * --check（CI）：S1 + S2 + preset 新鲜度（委托 build-dsh-presets.mjs --check）+
  *   staging 结构完整性，不 pack、不落盘。
@@ -51,8 +51,8 @@ const fail = msg => { console.error(`✗ ${msg}`); process.exit(1) }
 /** 8 个角色技能目录（7 流程角色 + rdd-engine）。 */
 const SKILL_ROLES = ['rdd-pm', 'rdd-cto', 'rdd-ux', 'rdd-dev', 'rdd-qa', 'rdd-eval', 'rdd-pse', 'rdd-engine']
 
-/** 7 组 preset 生成物（engine 职能由 rdd-explore 插件 + CLI 承接，无 preset）。 */
-const PRESET_ROLES = ['rdd-pm', 'rdd-cto', 'rdd-ux', 'rdd-dev', 'rdd-qa', 'rdd-eval', 'rdd-pse']
+/** 8 组 preset 生成物（7 流程角色 + rdd-manager 引导 preset；engine 职能由 rdd-explore 插件 + CLI 承接，无 preset）。 */
+const PRESET_ROLES = ['rdd-pm', 'rdd-cto', 'rdd-ux', 'rdd-dev', 'rdd-qa', 'rdd-eval', 'rdd-pse', 'rdd-manager']
 
 const SKILLS_VERSION = '1.0.0'
 const PKG_NAME = '@coderrdd/rdd-skills'
@@ -102,7 +102,7 @@ mkdirSync(join(stagingRoot, 'presets'), { recursive: true })
 writeFileSync(join(stagingRoot, 'package.json'), JSON.stringify({
   name: PKG_NAME,
   version: SKILLS_VERSION,
-  description: 'RDD role skills (8) + dsh agent presets (7) as one user-level distribution: install once via install-rdd-skills.ps1 into $DSH_HOME/skills and $DSH_HOME/.agent-presets, available to every project',
+  description: 'RDD role skills (8) + dsh agent presets (8, incl. the rdd-manager bootstrap preset) as one user-level distribution: install once via install-rdd-skills.ps1 into $DSH_HOME/skills and $DSH_HOME/.agent-presets, available to every project',
   files: ['skills/', 'presets/'],
   repository: { type: 'git', url: 'git+https://github.com/YaphetHayate/codeRDD.git' },
   license: 'MIT',
@@ -136,12 +136,12 @@ for (const role of PRESET_ROLES) {
   const skillsDirs = readdirSync(join(stagingRoot, 'skills'))
   const presetDirs = readdirSync(join(stagingRoot, 'presets'))
   if (skillsDirs.length !== 8 || !SKILL_ROLES.every(r => skillsDirs.includes(r))) fail(`staging skills/ 子树不完整: ${skillsDirs.join(', ')}`)
-  if (presetDirs.length !== 7 || !PRESET_ROLES.every(r => presetDirs.includes(r))) fail(`staging presets/ 子树不完整: ${presetDirs.join(', ')}`)
+  if (presetDirs.length !== 8 || !PRESET_ROLES.every(r => presetDirs.includes(r))) fail(`staging presets/ 子树不完整: ${presetDirs.join(', ')}`)
   const engineSubtree = readdirSync(join(stagingRoot, 'skills', 'rdd-engine'))
   if (engineSubtree.length !== 1 || engineSubtree[0] !== 'SKILL.md') {
     fail(`skills/rdd-engine 子树必须仅含 SKILL.md（实际: ${engineSubtree.join(', ')}）——协议文档经引擎定位链解析，不随技能包重复`)
   }
-  console.log(`ok - staging assembled: 8 skills + 7 presets (${copied.length} files)`)
+  console.log(`ok - staging assembled: 8 skills + 8 presets (${copied.length} files)`)
 }
 
 if (checkMode) {

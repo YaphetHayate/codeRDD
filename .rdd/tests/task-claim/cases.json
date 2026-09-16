@@ -1,0 +1,361 @@
+{
+  "feature": "task-claim",
+  "status": "active",
+  "relatedCode": [
+    "rdd-engine/scripts/rdd-flow.ps1",
+    "rdd-engine/references/task-routing.md"
+  ],
+  "testCode": [
+    "rdd-engine/tests/test-task-claim.ps1"
+  ],
+  "lastChange": "2026-09-15-goal-tree-delivery-orchestration",
+  "cases": [
+    {
+      "id": "TC-001",
+      "title": "空闲任务认领：写入认领记录并返回任务完整信息",
+      "type": "positive",
+      "priority": "P0",
+      "acceptance": "AC-1",
+      "codeRef": "rdd-engine/tests/test-task-claim.ps1:104",
+      "sourceChange": "2026-09-14-task-claim-running-status",
+      "status": "active",
+      "crossFeature": [],
+      "precondition": "task.json 中任务 active 且无该角色认领记录",
+      "steps": [
+        "claim -Role DEV -TaskId 1",
+        "读取 task.json 验证落盘"
+      ],
+      "expected": "exit 0 + claimed:true + currentWorker 含 {DEV: 时间戳}（响应与 task.json 落盘一致），任务信息含 requirement 摘要、workMode、involvedFiles、running:true"
+    },
+    {
+      "id": "TC-002",
+      "title": "同角色重复认领：不写入，返回冲突信息与现有认领记录",
+      "type": "negative",
+      "priority": "P0",
+      "acceptance": "AC-2",
+      "codeRef": "rdd-engine/tests/test-task-claim.ps1:116",
+      "sourceChange": "2026-09-14-task-claim-running-status",
+      "status": "active",
+      "crossFeature": [],
+      "precondition": "该角色已有认领记录",
+      "steps": [
+        "同角色再次 claim（无 -Force）",
+        "读取 task.json 验证时间戳未变"
+      ],
+      "expected": "success:true + exit 0（正常协议分支）+ claimed:false + conflict:{role, claimedAt}；任务信息照常返回；task.json 未被写入（时间戳不变）"
+    },
+    {
+      "id": "TC-003",
+      "title": "带抢占确认的强制认领：覆盖认领记录（修订：无留痕）",
+      "type": "positive",
+      "priority": "P0",
+      "acceptance": "AC-3",
+      "codeRef": "rdd-engine/tests/test-task-claim.ps1:125",
+      "sourceChange": "2026-09-14-task-claim-running-status",
+      "status": "active",
+      "crossFeature": [],
+      "precondition": "该角色已有认领记录，用户已裁决抢占",
+      "steps": [
+        "claim -Force 同角色同任务",
+        "检查 currentWorker 条目数与时间戳"
+      ],
+      "expected": "claimed:true + forced:true；该角色恰一条记录且时间戳更新",
+      "note": "AC-3 原文「留痕可查」与实现（无留痕）的偏差已于 2026-09-14 QA 验证会话呈报用户，用户裁决：接受无留痕方案，需求按极简裁定修订生效"
+    },
+    {
+      "id": "TC-004",
+      "title": "并行责任人互不阻塞：CTO/UX 先后认领同一任务均成功",
+      "type": "positive",
+      "priority": "P0",
+      "acceptance": "AC-4",
+      "codeRef": "rdd-engine/tests/test-task-claim.ps1:134",
+      "sourceChange": "2026-09-14-task-claim-running-status",
+      "status": "active",
+      "crossFeature": [],
+      "precondition": "currentOwners=[\"CTO\",\"UX\"]",
+      "steps": [
+        "claim -Role CTO",
+        "claim -Role UX 同一任务"
+      ],
+      "expected": "两次均 claimed:true，不触发冲突；task.json 落盘两条认领记录"
+    },
+    {
+      "id": "TC-005",
+      "title": "advance 联动解除认领：-From X 清除 X 的认领记录",
+      "type": "positive",
+      "priority": "P0",
+      "acceptance": "AC-5",
+      "codeRef": "rdd-engine/tests/test-task-claim.ps1:147",
+      "sourceChange": "2026-09-14-task-claim-running-status",
+      "status": "active",
+      "crossFeature": [],
+      "precondition": "X 角色已认领该任务",
+      "steps": [
+        "advance -From DEV -To QA",
+        "读取 task.json"
+      ],
+      "expected": "DEV 认领记录被清除；QA 可重新认领且认领信息 workMode=requirement-guided（跳过 design，独立性保障）"
+    },
+    {
+      "id": "TC-006",
+      "title": "reject 联动解除认领：路由整体替换后旧认领全清",
+      "type": "positive",
+      "priority": "P0",
+      "acceptance": "AC-5",
+      "codeRef": "rdd-engine/tests/test-task-claim.ps1:170",
+      "sourceChange": "2026-09-14-task-claim-running-status",
+      "status": "active",
+      "crossFeature": [],
+      "steps": [
+        "QA 认领任务 3",
+        "reject -From QA -To PM"
+      ],
+      "expected": "reject 成功且 currentWorker 清空"
+    },
+    {
+      "id": "TC-007",
+      "title": "complete 联动解除认领",
+      "type": "positive",
+      "priority": "P1",
+      "acceptance": "AC-5",
+      "codeRef": "rdd-engine/tests/test-task-claim.ps1:196",
+      "sourceChange": "2026-09-14-task-claim-running-status",
+      "status": "active",
+      "crossFeature": [],
+      "steps": [
+        "DEV 认领任务",
+        "complete 该任务"
+      ],
+      "expected": "lifecycle=completed 且认领记录全清"
+    },
+    {
+      "id": "TC-008",
+      "title": "reopen 后认领为空（fresh owners 语义）",
+      "type": "positive",
+      "priority": "P1",
+      "acceptance": "AC-5",
+      "codeRef": "rdd-engine/tests/test-task-claim.ps1:199",
+      "sourceChange": "2026-09-14-task-claim-running-status",
+      "status": "active",
+      "crossFeature": [],
+      "steps": [
+        "reopen -To DEV",
+        "读取 task.json",
+        "DEV 重新 claim"
+      ],
+      "expected": "lifecycle=active、认领为空；重新认领成功"
+    },
+    {
+      "id": "TC-009",
+      "title": "deprecate 联动解除认领",
+      "type": "positive",
+      "priority": "P1",
+      "acceptance": "AC-5",
+      "codeRef": "rdd-engine/tests/test-task-claim.ps1:142",
+      "sourceChange": "2026-09-14-task-claim-running-status",
+      "status": "active",
+      "crossFeature": [],
+      "steps": [
+        "并行任务已有 2 条认领",
+        "deprecate 该任务"
+      ],
+      "expected": "lifecycle=deprecated 且认领记录全清"
+    },
+    {
+      "id": "TC-010",
+      "title": "set-route 联动解除认领：被移出角色的认领清除",
+      "type": "positive",
+      "priority": "P1",
+      "acceptance": "AC-5",
+      "codeRef": "rdd-engine/tests/test-task-claim.ps1:155",
+      "sourceChange": "2026-09-14-task-claim-running-status",
+      "status": "active",
+      "crossFeature": [],
+      "steps": [
+        "set-route -To PM（原 owners 不含 PM）",
+        "读取 task.json"
+      ],
+      "expected": "被移出角色的认领记录清除"
+    },
+    {
+      "id": "TC-011",
+      "title": "旧格式兼容：task.json 无 currentWorker 字段视为空闲，认领正常写入",
+      "type": "boundary",
+      "priority": "P0",
+      "acceptance": "AC-6",
+      "codeRef": "rdd-engine/tests/test-task-claim.ps1:179",
+      "sourceChange": "2026-09-14-task-claim-running-status",
+      "status": "active",
+      "crossFeature": [],
+      "precondition": "手工移除某任务的 currentWorker 字段（模拟旧格式归档）",
+      "steps": [
+        "show 读取该任务",
+        "check 校验",
+        "claim 认领该任务"
+      ],
+      "expected": "show 返回 running:false（缺省=空闲）；check 通过（issueCount=0）；claim 正常写入不报错且落盘成功"
+    },
+    {
+      "id": "TC-012",
+      "title": "check 校验认领记录字段合法性（四类非法形态）",
+      "type": "positive",
+      "priority": "P0",
+      "acceptance": "AC-6",
+      "codeRef": "rdd-engine/tests/test-task-claim.ps1:221",
+      "sourceChange": "2026-09-14-task-claim-running-status",
+      "status": "active",
+      "crossFeature": [],
+      "precondition": "手工注入四类畸形认领条目：角色越枚举（XX）、同角色重复键、多键对象、空时间值",
+      "steps": [
+        "check -Archive <fixture>"
+      ],
+      "expected": "check 恒 success:true 且 issues 分别报告：invalid currentWorker role / duplicate entry / single {role: time} object / empty claim time"
+    },
+    {
+      "id": "TC-013",
+      "title": "守卫：认领角色不在 currentOwners → ROLE_NOT_OWNER",
+      "type": "exception",
+      "priority": "P1",
+      "acceptance": "AC-1",
+      "codeRef": "rdd-engine/tests/test-task-claim.ps1:160",
+      "sourceChange": "2026-09-14-task-claim-running-status",
+      "status": "active",
+      "crossFeature": [],
+      "steps": [
+        "非 owner 角色 claim 该任务"
+      ],
+      "expected": "exit 1 + error.code=ROLE_NOT_OWNER"
+    },
+    {
+      "id": "TC-014",
+      "title": "守卫：终态任务不可认领 → TASK_NOT_CLAIMABLE",
+      "type": "exception",
+      "priority": "P1",
+      "acceptance": "AC-1",
+      "codeRef": "rdd-engine/tests/test-task-claim.ps1:162",
+      "sourceChange": "2026-09-14-task-claim-running-status",
+      "status": "active",
+      "crossFeature": [],
+      "precondition": "任务 lifecycle=completed（需求边界：completed/deprecated 不可认领）",
+      "steps": [
+        "claim 终态任务"
+      ],
+      "expected": "exit 1 + error.code=TASK_NOT_CLAIMABLE"
+    },
+    {
+      "id": "TC-015",
+      "title": "守卫：待裁决需求文档不可认领 → TASK_NOT_CLAIMABLE",
+      "type": "exception",
+      "priority": "P1",
+      "acceptance": "AC-1",
+      "codeRef": "rdd-engine/tests/test-task-claim.ps1:164",
+      "sourceChange": "2026-09-14-task-claim-running-status",
+      "status": "active",
+      "crossFeature": [],
+      "precondition": "需求文档含待裁决驳回标记",
+      "steps": [
+        "claim 该任务"
+      ],
+      "expected": "exit 1 + error.code=TASK_NOT_CLAIMABLE"
+    },
+    {
+      "id": "TC-016",
+      "title": "守卫：TaskId 不存在 → TASK_NOT_FOUND",
+      "type": "exception",
+      "priority": "P2",
+      "acceptance": "AC-1",
+      "codeRef": "rdd-engine/tests/test-task-claim.ps1:166",
+      "sourceChange": "2026-09-14-task-claim-running-status",
+      "status": "active",
+      "crossFeature": [],
+      "steps": [
+        "claim -TaskId 99"
+      ],
+      "expected": "exit 1 + error.code=TASK_NOT_FOUND"
+    },
+    {
+      "id": "TC-017",
+      "title": "handoff 透传：认领状态随任务条目透传（currentWorker + running）",
+      "type": "positive",
+      "priority": "P1",
+      "acceptance": "AC-7",
+      "codeRef": "rdd-engine/tests/test-task-claim.ps1:214",
+      "sourceChange": "2026-09-14-task-claim-running-status",
+      "status": "active",
+      "crossFeature": ["role-handoff"],
+      "steps": [
+        "DEV 认领任务后执行 handoff -Role DEV"
+      ],
+      "expected": "handoff 任务条目携带 currentWorker 数组与 running:true（消费方零推导）"
+    },
+    {
+      "id": "TC-018",
+      "title": "认领存活：不相关写命令不丢失认领记录",
+      "type": "positive",
+      "priority": "P1",
+      "acceptance": "AC-5",
+      "codeRef": "rdd-engine/tests/test-task-claim.ps1:206",
+      "sourceChange": "2026-09-14-task-claim-running-status",
+      "status": "active",
+      "crossFeature": [],
+      "steps": [
+        "认领任务 6",
+        "对其他任务执行 advance / add-design",
+        "读取任务 6 的认领"
+      ],
+      "expected": "不相关写命令后任务 6 的认领记录原样保留（写路径透传风险防护）"
+    },
+    {
+      "id": "TC-019",
+      "title": "init/add-task 产生的新任务写空 currentWorker（空闲基线）",
+      "type": "positive",
+      "priority": "P1",
+      "acceptance": "AC-6",
+      "codeRef": "rdd-engine/tests/test-task-claim.ps1:91",
+      "sourceChange": "2026-09-14-task-claim-running-status",
+      "status": "active",
+      "crossFeature": [],
+      "steps": [
+        "init 导入 6 任务",
+        "add-task 追加任务",
+        "读取两者的 currentWorker"
+      ],
+      "expected": "均为空数组（空闲基线）"
+    },
+    {
+      "id": "TC-020",
+      "title": "多设计文档解析：\" + \" 拼接格逐项解析，摘要跨文档合并",
+      "type": "positive",
+      "priority": "P0",
+      "acceptance": "BR-AC-2",
+      "codeRef": "rdd-engine/tests/test-task-claim.ps1:229",
+      "sourceChange": "2026-09-15-goal-tree-delivery-orchestration",
+      "status": "active",
+      "crossFeature": ["delivery-bridge"],
+      "precondition": "task.json designDocs 含多个 ready 文档（主设计 + 决策记录），任务为 DEV 可认领",
+      "steps": [
+        "add-design 依次挂两个设计文档",
+        "claim -Role DEV",
+        "检查响应中 workMode / design.path / involvedFiles / design.risks / design.technicalPlan"
+      ],
+      "expected": "认领成功且 workMode=design-guided；design.path 以 \" + \" 并列两个文档；involvedFiles 为跨文档并集；次级文档独有的风险区（风险提示）与主文档的技术方案均透出"
+    },
+    {
+      "id": "TC-021",
+      "title": "守卫：登记的设计文档任一缺失 → TASK_NOT_CLAIMABLE 并指名缺失文档",
+      "type": "exception",
+      "priority": "P0",
+      "acceptance": "BR-AC-2",
+      "codeRef": "rdd-engine/tests/test-task-claim.ps1:242",
+      "sourceChange": "2026-09-15-goal-tree-delivery-orchestration",
+      "status": "active",
+      "crossFeature": [],
+      "precondition": "designDocs 含指向不存在文件的 ready 条目",
+      "steps": [
+        "add-design 挂缺失路径 design/missing.md",
+        "claim -Role DEV"
+      ],
+      "expected": "exit 1 + error.code=TASK_NOT_CLAIMABLE，错误信息含 \"Design file not found\" 并指名缺失文档路径"
+    }
+  ]
+}

@@ -1,0 +1,131 @@
+{
+    "verifier":  "delivery-bridge-verify.ps1",
+    "suite":  "all",
+    "ranAt":  "2026-09-16T05:12:35Z",
+    "total":  12,
+    "passed":  12,
+    "failed":  0,
+    "warned":  0,
+    "results":  [
+                    {
+                        "id":  "TC-B01",
+                        "title":  "promulgate:run 建立 + 任务×阶段节点 + bridge.json 1:N 映射落盘 + ref 指针 + 依赖自动推导",
+                        "priority":  "P0",
+                        "acceptance":  "BR-AC-2",
+                        "status":  "PASS",
+                        "fails":  [
+
+                                  ]
+                    },
+                    {
+                        "id":  "TC-B02",
+                        "title":  "重复 promulgate 防护(RUN_EXISTS);dispatch -DryRun 预演不误开窗",
+                        "priority":  "P1",
+                        "acceptance":  "BR-AC-1",
+                        "status":  "PASS",
+                        "fails":  [
+
+                                  ]
+                    },
+                    {
+                        "id":  "TC-B03",
+                        "title":  "claim 双上下文:树侧节点(task 指针/ref)+ 流侧任务(requirement/design)+ 开工指引",
+                        "priority":  "P0",
+                        "acceptance":  "BR-AC-2",
+                        "status":  "PASS",
+                        "fails":  [
+
+                                  ]
+                    },
+                    {
+                        "id":  "TC-B04",
+                        "title":  "重复唤起:第二会话得确定性冲突反馈(认领者+可领清单),引导改领;依赖阻塞直达",
+                        "priority":  "P0",
+                        "acceptance":  "BR-AC-3",
+                        "status":  "PASS",
+                        "fails":  [
+
+                                  ]
+                    },
+                    {
+                        "id":  "TC-B05",
+                        "title":  "角色不符/非映射节点/生命周期终态的确定性拒绝",
+                        "priority":  "P1",
+                        "acceptance":  "BR-AC-3",
+                        "status":  "PASS",
+                        "fails":  [
+
+                                  ]
+                    },
+                    {
+                        "id":  "TC-B06",
+                        "title":  "三查门禁:verdict≠done / citations 空 / 虚假路径 / extras.verification 缺失 全部拒绝且不流转",
+                        "priority":  "P0",
+                        "acceptance":  "BR-AC-4",
+                        "status":  "PASS",
+                        "fails":  [
+
+                                  ]
+                    },
+                    {
+                        "id":  "TC-B07",
+                        "title":  "合格 settle:三查通过 → advance + 链式 graft QA 节点(父子关系/ref);QA settle → complete(lifecycle=completed)",
+                        "priority":  "P0",
+                        "acceptance":  "BR-AC-4",
+                        "status":  "PASS",
+                        "fails":  [
+
+                                  ]
+                    },
+                    {
+                        "id":  "TC-B08",
+                        "title":  "CTO 起步链:CTO settle → advance CTO-\u003eDEV;跨任务阶段互不干扰",
+                        "priority":  "P1",
+                        "acceptance":  "BR-AC-4",
+                        "status":  "PASS",
+                        "fails":  [
+
+                                  ]
+                    },
+                    {
+                        "id":  "TC-B09",
+                        "title":  "reclaim 双模式:dead-claim(泊位+重派接管)与 rejected-delivery(剪枝+替换节点);reported 永不重复消费",
+                        "priority":  "P0",
+                        "acceptance":  "BR-AC-5",
+                        "status":  "PASS",
+                        "fails":  [
+
+                                  ]
+                    },
+                    {
+                        "id":  "TC-B10",
+                        "title":  "status/resume:全程视图(阶段/终态计数/死 claim/pending_sync 修复)与断点恢复步骤",
+                        "priority":  "P1",
+                        "acceptance":  "BR-AC-5",
+                        "status":  "PASS",
+                        "fails":  [
+
+                                  ]
+                    },
+                    {
+                        "id":  "TC-B11",
+                        "title":  "conclude:未全终态拒绝;全终态后产出 final-report + delivery-annex(任务终态表+check 结果)+ 租约释放",
+                        "priority":  "P0",
+                        "acceptance":  "BR-AC-6",
+                        "status":  "PASS",
+                        "fails":  [
+
+                                  ]
+                    },
+                    {
+                        "id":  "TC-B12",
+                        "title":  "回归:纯 goal-tree run 零桥接文件;rdd-flow 纯流程照常;桥接命令不触碰真实归档",
+                        "priority":  "P0",
+                        "acceptance":  "BR-AC-7",
+                        "status":  "PASS",
+                        "fails":  [
+
+                                  ]
+                    }
+                ]
+}

@@ -37,6 +37,7 @@
         { "path": "design/multi-owner-cto.md", "status": "pending" },
         { "path": "design/multi-owner-ux.md", "status": "pending" }
       ],
+      "currentWorker": [ { "CTO": "2026-06-18T09:30:00" } ],
       "remark": "复合需求，CTO+UX 并行",
       "lifecycle": "active"
     },
@@ -46,6 +47,7 @@
       "requirement": "requirements/fix-login-bug.md",
       "currentOwners": ["DEV"],
       "designDocs": [],
+      "currentWorker": [],
       "remark": "",
       "lifecycle": "active"
     }
@@ -65,6 +67,7 @@
 | `tasks[].requirement` | string | 需求文件路径，repo-relative，`/` 分隔（如 `requirements/fix-login-bug.md`） |
 | `tasks[].currentOwners` | string[] | 当前责任人角色数组。单元素 = 单角色；多元素 = 并行。取值：`PM`/`CTO`/`UX`/`DEV`/`QA` |
 | `tasks[].designDocs` | object[] | 关联设计文档集合。每项含 `path`（repo-relative）和 `status`（`pending`/`ready`）。无设计文档时为空数组 `[]` |
+| `tasks[].currentWorker` | object[] | 认领记录（工作状态 running 的存储单源）。每项为单键对象 `{ "<角色>": "<认领时间>" }`；每角色至多一条；同一任务可多条（并行责任人各自认领）。空数组 `[]` 或字段缺省 = 空闲。由 CLI `claim` 写入、流转命令自动剔除，角色不手填 |
 | `tasks[].remark` | string | 自由文本备注（并行标注、驳回摘要等） |
 | `tasks[].lifecycle` | string | 生命周期：`active`（流转中）/ `deprecated`（被驳回废弃）/ `completed`（已闭环） |
 
@@ -75,6 +78,10 @@
 **`lifecycle` 与路由的关系**：
 - `completed` 的任务不会被 `next`/`handoff`/`start` 匹配给任何角色，天然跳过已闭环需求
 - `deprecated` 的任务保留行用于审计追溯，不进入流转
+
+**`currentWorker` 与 running 状态**：
+- `running` 是**派生态**（非独立存储字段）：`currentWorker` 非空 = 该任务有人正在处理；CLI 读面（`show`/`handoff`/`start`/`claim`）机械附加 `currentWorker` + `running` 布尔，消费方零推导
+- 判定收口在 CLI（`claim` 返回 `claimed`/`conflict`），存储单源无漂移
 
 ---
 
@@ -101,6 +108,22 @@
 - `-TaskId <n>` → 返回指定单条详情
 
 各角色定位自己的任务一律用 `show -Role <本角色>`。
+
+#### `claim` — 认领任务（收到任务后的第一件事）
+
+```powershell
+& "$rdd\scripts\rdd-flow.cmd" -Command claim -Archive ".rdd/changes/archive/<name>" -Role DEV -TaskId 1
+& "$rdd\scripts\rdd-flow.cmd" -Command claim -Archive ".rdd/changes/archive/<name>" -Role DEV -TaskId 1 -Force
+```
+
+角色-任务级认领接口，读-判-写单进程闭环：
+
+- **空闲**（本角色无认领记录）→ 写入 `currentWorker`（角色 + `(Get-Date).ToString("s")` 时间戳），返回 `claimed:true` + 任务完整信息（requirement 摘要、workMode、involvedFiles）——认领即得开工上下文
+- **同角色重复认领**（该角色已有认领记录，典型场景：同角色第二窗口/旧窗口残留）→ 不写入，返回 `claimed:false` + `conflict:{role, claimedAt}`，任务信息照常返回（供换任务参考）。**冲突是正常协议分支（`success:true`），不是 error exit**；角色据此向用户阐明并由用户裁决
+- **`-Force`**（用户确认抢占后）→ 覆盖本角色的认领时间戳，无留痕（用户极简裁定：完成即剔除、不留历史）
+- **守卫**（均 exit 1）：`TASK_NOT_FOUND`（TaskId 不存在）/ `TASK_NOT_CLAIMABLE`（lifecycle 终态，或需求/设计文档侧 deprecated/待裁决）/ `ROLE_NOT_OWNER`（认领角色不在 `currentOwners` 中）
+- **排斥语义**：写入排斥（同角色冲突拒写），不是可见性过滤——冲突任务仍完整返回，保证第二窗口能向用户阐明冲突
+- **并行责任人互不阻塞**：`currentOwners=["CTO","UX"]` 时 CTO 认领后 UX 认领同一任务正常成功；冲突提示仅在**同角色重复认领**时触发
 
 #### `version` — 输出引擎版本与安装根
 
@@ -244,6 +267,50 @@ CTO/UX 完成设计归档后，先 `add-design` 再 `advance`。
 
 ---
 
+## 认领协议（claim）
+
+### 动机
+
+task.json 此前只有 `lifecycle`（生命周期）与 `currentOwners`（路由归属），"谁正在处理"在数据层不存在。多窗口/多会话并发处理同一任务时（两个窗口 start-role 同一 TaskId、交接后旧窗口残留继续干活），数据层无感知，产物互相覆盖。认领协议为并发冲突提供数据层防护：**乐观标记 + 人工裁决**，不追求严格锁（文件型存储无真正互斥，竞态窗口 ms 级，需求明示接受）。
+
+### 第一件事 = claim
+
+角色会话**锁定任务后、读取需求/设计文档前**，第一件事调用 `claim -Role <本角色> -TaskId <n>`：
+
+1. `claimed:true` → 拿到任务信息，直接开工
+2. `claimed:false` + `conflict` → 向用户阐明，等待裁决（见下）
+3. error exit（守卫）→ 按错误码处理：换 TaskId / 修正路由 / 处理文档驳回
+
+不 claim 直接开工不产生硬阻断，但会失去并发防护——同角色双窗口互斥完全依赖双方都遵守本协议。
+
+### 冲突裁决话术
+
+```
+该任务已由 <conflict.role> 角色于 <conflict.claimedAt> 认领，可能正在处理。
+- 认领时间明显久远且无进展 → 大概率是旧窗口残留（会话中断后卡 running）
+- 刚刚认领 → 另一窗口很可能正在干活
+
+请裁决：确认抢占继续（我将带 -Force 重新认领，覆盖原记录），或换一个任务？
+```
+
+- 抢占 = 再次调用 `claim -Force`，覆盖本角色时间戳；**无留痕**（被抢占信息不保留，极简裁定）
+- 凭认领时间戳判断死窗口是唯一手段（CLI 后端无会话/窗口身份标识）
+
+### 联动原则
+
+认领解除无需记忆任何显式释放命令：**角色不再拥有该任务即解除其认领**。
+
+- `advance` / `reject` / `complete` / `reopen` / `deprecate` / `set-route` 六个写命令落盘前统一调用 `Sync-TaskClaims`，纯过滤不变式：`currentWorker ⊆ currentOwners ∩ lifecycle=active`
+- 任务完成（`complete`）、废弃（`deprecate`）、推进（`advance -From <自己>`）后，认领记录自动剔除
+- 未来新增写命令自动继承该联动（共享函数收口）
+- `init` / `migrate` 产生的新数据恒为空（空闲）
+
+### 校验
+
+`check` 命令对 `currentWorker` 增加三项字段合法性校验：键 ∈ 五角色枚举（`PM`/`CTO`/`UX`/`DEV`/`QA`）、同任务无重复角色键、每条为单键对象且时间值非空。
+
+---
+
 ## 各角色操作速查
 
 | 角色 | 典型场景 | 命令 |
@@ -252,6 +319,7 @@ CTO/UX 完成设计归档后，先 `add-design` 再 `advance`。
 | **PM** | 追加需求 | `add-task` |
 | **PM** | 设置/重派路由 | `set-route` |
 | **PM** | 被打回后修订完成 | `set-route`（重新路由） |
+| **任意角色** | 收到任务第一件事 | `claim -Role <自己> -TaskId <n>`（冲突 → 用户裁决 `-Force` 抢占或换任务） |
 | **CTO** | 定位自己的任务 | `show -Role CTO` |
 | **CTO** | 设计归档后推进 | `add-design` → `advance -From CTO -To DEV`（或 `-To UX`） |
 | **CTO** | L1 快速结论直接发开发 | `advance -From CTO -To DEV`（无设计文档则跳过 add-design） |
@@ -294,6 +362,21 @@ task.json 与文档自身 `## 流转控制` 的关系：
 
 - `currentOwners`：数组天然支持并行，无需字符串拼接
 - `designDocs`：每个设计文档独立带状态，多人各自 `add-design` 不会互相覆盖
+- `currentWorker`：认领粒度为**角色-任务级**——并行责任人各自独立认领互不阻塞；排斥仅在**同角色重复认领**时触发（写入排斥，非可见性过滤）
+
+### 认领与并行的关系
+
+`currentOwners` 表达"谁该做"（路由归属），`currentWorker` 表达"谁正在做"（工作状态）：
+
+```
+currentOwners = ["CTO", "UX"]，CTO 已认领：
+  currentWorker = [ { "CTO": "T1" } ]   ← UX 仍可认领（并行互不阻塞）
+  UX claim → [ { "CTO": "T1" }, { "UX": "T2" } ]   ← 正常成功
+  CTO 第二窗口 claim → claimed:false + conflict{role:CTO, claimedAt:T1}
+```
+
+- `advance -From CTO -To DEV` 后：CTO 的认领自动剔除，`currentWorker ⊆ currentOwners` 恒成立
+- 会话中断后任务卡 running：新窗口 claim 触发冲突 → 用户凭 `claimedAt` 判断旧窗口已死 → `-Force` 抢占
 
 ---
 

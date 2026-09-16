@@ -1,12 +1,12 @@
-﻿# tree-run-verify.ps1 — 树形长程任务循环引擎能力 验收验证器（QA 独立实现，零依赖）
+﻿# goal-tree-verify.ps1 — 树形长程任务循环引擎能力 验收验证器（QA 独立实现，零依赖）
 #
-# 被测对象:rdd-engine/scripts/tree-run.cmd(管理面) + tree-leaf.cmd(消费面)
-#   黑盒集成测试:仅通过 CLI 接口与运行目录状态文件(.rdd/tree-runs/<run-id>/)驱动与断言,
-#   不触碰引擎内部函数;断言锚定需求验收标准 AC-1~AC-6 与引擎公开协议 tree-run-guide.md。
-# 用例规约:.rdd/tests/tree-run/cases.json(TC-001 ~ TC-052,映射 AC-1 ~ AC-6)
+# 被测对象:rdd-engine/scripts/goal-tree.cmd(管理面) + goal-tree-leaf.cmd(消费面)
+#   黑盒集成测试:仅通过 CLI 接口与运行目录状态文件(.rdd/goal-trees/<run-id>/)驱动与断言,
+#   不触碰引擎内部函数;断言锚定需求验收标准 AC-1~AC-6 与引擎公开协议 goal-tree-guide.md。
+# 用例规约:.rdd/tests/goal-tree/cases.json(TC-001 ~ TC-052,映射 AC-1 ~ AC-6)
 #
 # 用法:
-#   pwsh -File .rdd/tests/tree-run/tree-run-verify.ps1 [-Suite all|basic|consume|callback|recovery|ending|e2e] [-KeepRuns] [-Json]
+#   pwsh -File .rdd/tests/goal-tree/goal-tree-verify.ps1 [-Suite all|basic|consume|callback|recovery|ending|e2e] [-KeepRuns] [-Json]
 #   (Windows PowerShell 5.1 亦可运行;建议 pwsh 7+)
 #
 # 套件说明:
@@ -16,16 +16,17 @@
 #   recovery 悬挂轮 resume/不重复消费/tree.json 自愈/账本坏行隔离/跨会话续跑 —— TC-031~035
 #   ending   三终局与前置校验/预算强制/结案产物 —— TC-041~046
 #   e2e      根因调查式全流程 + 中断恢复 —— TC-051~052
+#   deps      节点依赖管理:声明/门禁/字段存活/审计/渲染/兼容/并行 —— TC-067~073
 #   all      全部
 #
 # 严重度语义:P0 失败=阻塞(退出码 1);P1 失败=严重不阻塞;P2 失败=备忘警告(WARN)。
 # 退出码:0=无 P0 失败;1=存在 P0 失败;2=验证器自身错误。
 #
 # 环境说明:本验证器为 PowerShell 原生实现(不依赖 Node 子进程管道捕获,兼容受限沙箱)。
-# 测试产生的运行目录(.rdd/tree-runs/qa-verify-*)默认结束后清理,-KeepRuns 保留供排查。
+# 测试产生的运行目录(.rdd/goal-trees/qa-verify-*)默认结束后清理,-KeepRuns 保留供排查。
 
 param(
-    [ValidateSet("all", "basic", "consume", "callback", "recovery", "ending", "e2e")]
+    [ValidateSet("all", "basic", "consume", "callback", "recovery", "ending", "e2e", "deps")]
     [string]$Suite = "all",
     [switch]$KeepRuns,
     [switch]$Json
@@ -39,18 +40,18 @@ try { [Console]::OutputEncoding = [System.Text.Encoding]::UTF8 } catch {}
 $RepoRoot = (git rev-parse --show-toplevel).Trim()
 if (-not $RepoRoot) { Write-Error "not inside a git repo"; exit 2 }
 $RepoRoot = $RepoRoot -replace '/', '\'
-$TreeRunCmd  = Join-Path $RepoRoot "rdd-engine\scripts\tree-run.cmd"
-$TreeLeafCmd = Join-Path $RepoRoot "rdd-engine\scripts\tree-leaf.cmd"
-if (-not (Test-Path $TreeRunCmd))  { Write-Host "FATAL: tree-run.cmd not found: $TreeRunCmd";  exit 2 }
-if (-not (Test-Path $TreeLeafCmd)) { Write-Host "FATAL: tree-leaf.cmd not found: $TreeLeafCmd"; exit 2 }
+$GoalTreeCmd     = Join-Path $RepoRoot "rdd-engine\scripts\goal-tree.cmd"
+$GoalTreeLeafCmd = Join-Path $RepoRoot "rdd-engine\scripts\goal-tree-leaf.cmd"
+if (-not (Test-Path $GoalTreeCmd))     { Write-Host "FATAL: goal-tree.cmd not found: $GoalTreeCmd";     exit 2 }
+if (-not (Test-Path $GoalTreeLeafCmd)) { Write-Host "FATAL: goal-tree-leaf.cmd not found: $GoalTreeLeafCmd"; exit 2 }
 
 $script:RunStamp   = "qa-verify-{0}-{1}" -f (Get-Date -Format "yyyyMMdd-HHmmss"), $PID
-$script:WorkDir    = Join-Path $RepoRoot (".rdd\tmp\tree-run-verify\{0}" -f $script:RunStamp)
+$script:WorkDir    = Join-Path $RepoRoot (".rdd\tmp\goal-tree-verify\{0}" -f $script:RunStamp)
 $script:CreatedRuns = New-Object System.Collections.Generic.List[string]
 New-Item -ItemType Directory -Path $script:WorkDir -Force | Out-Null
 
 $Utf8NoBom = New-Object System.Text.UTF8Encoding($false)
-$PlaneRepoRel = ".rdd/tests/tree-run/fixtures/mock-001/plane"   # E2E 引用范围(测试自持 mock-001 观测面)
+$PlaneRepoRel = ".rdd/tests/goal-tree/fixtures/mock-001/plane"   # E2E 引用范围(测试自持 mock-001 观测面)
 
 # ---------- CLI 调用与状态读取 ----------
 
@@ -63,15 +64,15 @@ function Invoke-EngineCli {
     if ($text) { try { $json = $text | ConvertFrom-Json } catch { $json = $null } }
     return @{ exit = $exitCode; text = $text; json = $json }
 }
-function TRun  { param([string[]]$A) Invoke-EngineCli $TreeRunCmd $A }
-function TLeaf { param([string[]]$A) Invoke-EngineCli $TreeLeafCmd $A }
+function TRun  { param([string[]]$A) Invoke-EngineCli $GoalTreeCmd $A }
+function TLeaf { param([string[]]$A) Invoke-EngineCli $GoalTreeLeafCmd $A }
 
 function New-RunId { param([string]$Tag)
     $id = "{0}-{1}" -f $script:RunStamp, $Tag
     $script:CreatedRuns.Add($id)
     return $id
 }
-function Get-RunDirPath { param([string]$Id) Join-Path $RepoRoot (".rdd\tree-runs\{0}" -f $Id) }
+function Get-RunDirPath { param([string]$Id) Join-Path $RepoRoot (".rdd\goal-trees\{0}" -f $Id) }
 function Read-RunFileText { param([string]$Id, [string]$Rel)
     [System.IO.File]::ReadAllText((Join-Path (Get-RunDirPath $Id) ($Rel -replace '/', '\')), [System.Text.Encoding]::UTF8)
 }
@@ -174,7 +175,7 @@ function Suite-Basic {
         param($c)
         $rid = New-RunId "basic-start"
         $r = TRun @("-Command", "start", "-RunId", $rid, "-Goal", "acceptance test: verify start persistence",
-                    "-RefRoots", ".rdd/tests/tree-run/fixtures/mock-001", "-CreatedBy", "QA", "-Notes", "TC-001",
+                    "-RefRoots", ".rdd/tests/goal-tree/fixtures/mock-001", "-CreatedBy", "QA", "-Notes", "TC-001",
                     "-MaxRounds", "3", "-NodeWidth", "3", "-MaxNodes", "20")
         Assert $c ($r.exit -eq 0) "start 退出码 $($r.exit),期望 0;输出: $($r.text)"
         Assert $c ($null -ne $r.json -and $r.json.success -eq $true) "start 未返回 success=true"
@@ -187,7 +188,7 @@ function Suite-Basic {
         $m = Read-RunManifest $rid
         Assert $c ($m.goal -eq "acceptance test: verify start persistence") "manifest.goal 未持久化: $($m.goal)"
         Assert $c ([int]$m.budget.max_rounds -eq 3 -and [int]$m.budget.node_width -eq 3 -and [int]$m.budget.max_nodes -eq 20) "manifest.budget 与入参不符: $($m.budget | ConvertTo-Json -Compress)"
-        Assert $c (@($m.ref_roots) -contains ".rdd/tests/tree-run/fixtures/mock-001") "manifest.ref_roots 未含声明的根: $($m.ref_roots -join ',')"
+        Assert $c (@($m.ref_roots) -contains ".rdd/tests/goal-tree/fixtures/mock-001") "manifest.ref_roots 未含声明的根: $($m.ref_roots -join ',')"
         $t = Read-RunTree $rid
         Assert $c (@($t.nodes).Count -eq 1) "初始树节点数 $(@($t.nodes).Count),期望 1"
         Assert $c ($t.nodes[0].id -eq "n1" -and $t.nodes[0].status -eq "pending") "根节点 n1 状态异常: $($t.nodes[0].status)"
@@ -215,7 +216,7 @@ function Suite-Basic {
     Run-Tc "TC-004" "重复 start 同 RunId 被拒(RUN_EXISTS),已有运行状态不被覆盖" "P2" "AC-1" {
         param($c)
         $rid = New-RunId "basic-dup"
-        $null = TRun @("-Command", "start", "-RunId", $rid, "-Goal", "original goal", "-RefRoots", ".rdd/tests/tree-run/fixtures/mock-001")
+        $null = TRun @("-Command", "start", "-RunId", $rid, "-Goal", "original goal", "-RefRoots", ".rdd/tests/goal-tree/fixtures/mock-001")
         $before = (Read-RunFileText $rid "manifest.json")
         $r = TRun @("-Command", "start", "-RunId", $rid, "-Goal", "overwriting goal", "-RefRoots", ".rdd/tests")
         Assert $c ($r.exit -eq 1) "重复 start 退出码 $($r.exit),期望 1"
@@ -224,9 +225,9 @@ function Suite-Basic {
         Assert $c ($before -eq $after) "重复 start 改写了已有 manifest"
     }
 
-    Run-Tc "TC-005" ".rdd/tree-runs/ 被 gitignore 覆盖(运行数据不入版本库)" "P2" "AC-1" {
+    Run-Tc "TC-005" ".rdd/goal-trees/ 被 gitignore 覆盖(运行数据不入版本库)" "P2" "AC-1" {
         param($c)
-        & git check-ignore ".rdd/tree-runs/any-run/manifest.json" 2>$null | Out-Null
+        & git check-ignore ".rdd/goal-trees/any-run/manifest.json" 2>$null | Out-Null
         Assert $c ($LASTEXITCODE -eq 0) "git check-ignore 退出码 $LASTEXITCODE(非 0 = 未被忽略)"
     }
 }
@@ -361,7 +362,7 @@ function Suite-Callback {
                   @{ ref = "$PlaneRepoRel/logs/db-slow-query.log"; locator = "L10-L40" },
                   @{ ref = "metrics/db-cpu.csv"; locator = "col:db_cpu_pct" }
               ) `
-              -Next "check pool config" -Extras @{ layer = "db"; ticket = "RCA-1" }
+              -Next "check pool config" -Extras @{ layer = "db"; ticket = "INC-1" }
         $rp = Submit-Report $rid "w1" $cb
         Assert $c ($rp.exit -eq 0 -and $rp.json.data.accepted -eq $true) "有效回调未被接受: $($rp.text)"
         Assert $c ($rp.json.data.validation.status -eq "valid") "validation.status=$($rp.json.data.validation.status)"
@@ -909,6 +910,263 @@ function Suite-E2E {
 }
 
 # ============================================================
+# 套件:deps — TC-067 ~ TC-073(树内节点依赖管理,DEP-AC-1 ~ DEP-AC-4:需求 node-dependency-management 验收 1~4;
+#          编号自 2026-09-15 起续编——TC-061~066 已被 2026-09-10-rca-role-landing 的 probe 角色用例占用)
+# ============================================================
+
+function Suite-Deps {
+    Write-Host "`n== suite: deps (节点依赖:建模/门禁/审计/渲染/兼容) =="
+
+    Run-Tc "TC-067" "graft 声明 depends_on/ref:字段落树、ref ≤128 强制、CLI 级默认生效" "P0" "DEP-AC-1" {
+        param($c)
+        $rid = New-RunId "deps-graft"
+        $null = TRun @("-Command", "start", "-RunId", $rid, "-Goal", "deps suite: graft declaration",
+                       "-RefRoots", $PlaneRepoRel, "-CreatedBy", "QA", "-MaxRounds", "3", "-NodeWidth", "6", "-MaxNodes", "30")
+        $null = TRun @("-Command", "round-start", "-RunId", $rid)
+        $tf = Write-TasksFile @(
+            @{ title = "style"; task = "define global visual style"; ref = "arch-2099#7" },
+            @{ title = "panel-a"; task = "panel a design"; ref = "arch-2099#8"; depends_on = @("n2") },
+            @{ title = "panel-b"; task = "panel b design"; depends_on = @("n2") }
+        )
+        $g = TRun @("-Command", "graft", "-RunId", $rid, "-Parent", "n1", "-TasksFile", $tf)
+        Assert $c ($g.exit -eq 0) "带依赖 graft 失败: $($g.text)"
+        $t = Read-RunTree $rid
+        $n2 = $t.nodes | Where-Object id -eq "n2"
+        $n3 = $t.nodes | Where-Object id -eq "n3"
+        $n4 = $t.nodes | Where-Object id -eq "n4"
+        Assert $c ([string]$n2.ref -eq "arch-2099#7") "n2.ref=$($n2.ref),期望 arch-2099#7"
+        Assert $c (@($n3.depends_on) -contains "n2") "n3.depends_on 未含 n2: $($n3.depends_on -join ',')"
+        Assert $c (@($n4.depends_on) -contains "n2") "n4.depends_on 未含 n2"
+        Assert $c (@($n2.depends_on).Count -eq 0) "n2 不应有依赖: $($n2.depends_on -join ',')"
+        # CLI 级默认:全部节点继承 -DependsOn / -Ref(条目级优先)
+        $tf2 = Write-TasksFile @(
+            @{ title = "x1"; task = "t" },
+            @{ title = "x2"; task = "t"; ref = "explicit#2" }
+        )
+        $g2 = TRun @("-Command", "graft", "-RunId", $rid, "-Parent", "n2", "-TasksFile", $tf2, "-DependsOn", "n1", "-Ref", "cli-default#0")
+        Assert $c ($g2.exit -eq 0) "CLI 级默认 graft 失败: $($g2.text)"
+        $t = Read-RunTree $rid
+        $n5 = $t.nodes | Where-Object id -eq "n5"
+        $n6 = $t.nodes | Where-Object id -eq "n6"
+        Assert $c ((@($n5.depends_on) -contains "n1") -and ([string]$n5.ref -eq "cli-default#0")) "CLI 默认未生效: deps=$($n5.depends_on -join ',') ref=$($n5.ref)"
+        Assert $c ((@($n6.depends_on) -contains "n1") -and ([string]$n6.ref -eq "explicit#2")) "条目级优先未生效: ref=$($n6.ref)"
+        # ref >128 拒绝
+        $longRef = "r" * 129
+        $tf3 = Write-TasksFile @( @{ title = "bad"; task = "t"; ref = $longRef } )
+        $w = TRun @("-Command", "graft", "-RunId", $rid, "-Parent", "n1", "-TasksFile", $tf3)
+        Assert $c ($w.exit -eq 1 -and $w.json.error.code -eq "REF_TOO_LONG") "超长 ref 未拒: $($w.text)"
+        # 依赖目标不存在:原子拒绝且树不破坏
+        $before = @((Read-RunTree $rid).nodes).Count
+        $tf4 = Write-TasksFile @( @{ title = "bad2"; task = "t"; depends_on = @("n999") } )
+        $w2 = TRun @("-Command", "graft", "-RunId", $rid, "-Parent", "n1", "-TasksFile", $tf4)
+        Assert $c ($w2.exit -eq 1 -and $w2.json.error.code -eq "DEP_GRAPH_INVALID" -and $w2.text.Contains("DEP_TARGET_NOT_FOUND")) "缺失目标未拒: $($w2.text)"
+        Assert $c (@((Read-RunTree $rid).nodes).Count -eq $before) "被拒 graft 改动了树"
+    }
+
+    Run-Tc "TC-068" "依赖门禁:阻塞节点 claim 报 NODE_BLOCKED_BY_DEPS 附阻塞源;next 排除并单列 blocked;满足后放行" "P0" "DEP-AC-2" {
+        param($c)
+        $rid = New-RunId "deps-gate"
+        $null = TRun @("-Command", "start", "-RunId", $rid, "-Goal", "deps suite: claim gate", "-RefRoots", $PlaneRepoRel, "-CreatedBy", "QA")
+        $null = TRun @("-Command", "round-start", "-RunId", $rid)
+        $tf = Write-TasksFile @(
+            @{ title = "style"; task = "style first" },
+            @{ title = "panel-a"; task = "panel"; depends_on = @("n2") },
+            @{ title = "panel-b"; task = "panel"; depends_on = @("n2") }
+        )
+        $null = TRun @("-Command", "graft", "-RunId", $rid, "-Parent", "n1", "-TasksFile", $tf)
+        # n3 阻塞
+        $w = TLeaf @("-Command", "claim", "-RunId", $rid, "-NodeId", "n3", "-Worker", "ux1")
+        Assert $c ($w.exit -eq 1 -and $w.json.error.code -eq "NODE_BLOCKED_BY_DEPS" -and $w.text.Contains("n2")) "阻塞 claim 未报源: $($w.text)"
+        # next:n3/n4 在 blocked,n2 在 pending
+        $nx = TLeaf @("-Command", "next", "-RunId", $rid)
+        $pend = @($nx.json.data.pending | ForEach-Object { $_.id })
+        $blk = @($nx.json.data.blocked | ForEach-Object { $_.id })
+        Assert $c (($pend -contains "n2") -and ($pend -notcontains "n3")) "next pending 异常: $($pend -join ',')"
+        Assert $c (($blk -contains "n3") -and ($blk -contains "n4")) "next blocked 异常: $($blk -join ',')"
+        $b3 = @($nx.json.data.blocked | Where-Object { $_.id -eq "n3" })[0]
+        Assert $c (@($b3.blocked_by) -contains "n2") "blocked_by 未附阻塞源"
+        # n2 完成(settle)后 n3/n4 放行 —— 风格节点 done 解锁面板节点
+        $null = TLeaf @("-Command", "claim", "-RunId", $rid, "-NodeId", "n2", "-Worker", "ux1")
+        $null = Submit-Report $rid "ux1" (New-ValidCb "n2" "done" 0.9 "style defined" @(@{ ref = "$PlaneRepoRel/logs/db-slow-query.log"; locator = "L1" }) "" @{ verification = "ok" })
+        $null = TRun @("-Command", "settle", "-RunId", $rid, "-NodeId", "n2")
+        $ok = TLeaf @("-Command", "claim", "-RunId", $rid, "-NodeId", "n3", "-Worker", "ux2")
+        Assert $c ($ok.exit -eq 0) "依赖满足后 claim 仍被拒: $($ok.text)"
+        # 并行:n3/n4 互不依赖,n4 也可领(多 UX 并行场景)
+        $ok2 = TLeaf @("-Command", "claim", "-RunId", $rid, "-NodeId", "n4", "-Worker", "ux3")
+        Assert $c ($ok2.exit -eq 0) "互不依赖节点并行认领失败: $($ok2.text)"
+    }
+
+    Run-Tc "TC-069" "P1 风险断言:depends_on/ref 经 leaf claim/report 写路径后字段存活(双面白名单同步)" "P0" "DEP-AC-1" {
+        param($c)
+        $rid = New-RunId "deps-survival"
+        $null = TRun @("-Command", "start", "-RunId", $rid, "-Goal", "deps suite: field survival", "-RefRoots", $PlaneRepoRel, "-CreatedBy", "QA")
+        $null = TRun @("-Command", "round-start", "-RunId", $rid)
+        $tf = Write-TasksFile @(
+            @{ title = "a"; task = "t"; ref = "survive#1" },
+            @{ title = "b"; task = "t"; ref = "survive#2"; depends_on = @("n2") }
+        )
+        $null = TRun @("-Command", "graft", "-RunId", $rid, "-Parent", "n1", "-TasksFile", $tf)
+        # claim → report → settle 全链路重写节点后断言字段仍在
+        $null = TLeaf @("-Command", "claim", "-RunId", $rid, "-NodeId", "n2", "-Worker", "w1")
+        $null = Submit-Report $rid "w1" (New-ValidCb "n2" "done" 0.9 "a done" @(@{ ref = "$PlaneRepoRel/logs/db-slow-query.log"; locator = "L1" }) "" @{ verification = "ok" })
+        $null = TRun @("-Command", "settle", "-RunId", $rid, "-NodeId", "n2")
+        $null = TLeaf @("-Command", "claim", "-RunId", $rid, "-NodeId", "n3", "-Worker", "w2")
+        $null = Submit-Report $rid "w2" (New-ValidCb "n3" "done" 0.9 "b done" @(@{ ref = "$PlaneRepoRel/logs/db-slow-query.log"; locator = "L1" }) "" @{ verification = "ok" })
+        $t = Read-RunTree $rid
+        $n3 = $t.nodes | Where-Object id -eq "n3"
+        $n2 = $t.nodes | Where-Object id -eq "n2"
+        Assert $c ((@($n3.depends_on) -contains "n2") -and ([string]$n3.ref -eq "survive#2")) "leaf 写路径后字段丢失: deps=$($n3.depends_on -join ',') ref=$($n3.ref)"
+        Assert $c ([string]$n2.ref -eq "survive#1") "n2.ref 在 settle 重写后丢失: $($n2.ref)"
+        # claim 后公共视图也带字段
+        $sv = TLeaf @("-Command", "status", "-RunId", $rid, "-NodeId", "n3")
+        Assert $c ((@($sv.json.data.node.depends_on) -contains "n2") -and ([string]$sv.json.data.node.ref -eq "survive#2")) "公共视图丢字段"
+    }
+
+    Run-Tc "TC-070" "deps 命令:add/remove 双向维护 + 环形/自依/缺失目标机械拒绝 + deps-log.jsonl 审计留痕" "P0" "DEP-AC-4" {
+        param($c)
+        $rid = New-RunId "deps-cmd"
+        $null = TRun @("-Command", "start", "-RunId", $rid, "-Goal", "deps suite: deps command", "-RefRoots", $PlaneRepoRel, "-CreatedBy", "QA")
+        $null = TRun @("-Command", "round-start", "-RunId", $rid)
+        $tf = Write-TasksFile @(
+            @{ title = "a"; task = "t" }, @{ title = "b"; task = "t" }, @{ title = "c"; task = "t" }
+        )
+        $null = TRun @("-Command", "graft", "-RunId", $rid, "-Parent", "n1", "-TasksFile", $tf)
+        $add = TRun @("-Command", "deps", "-DepAction", "add", "-RunId", $rid, "-NodeId", "n3", "-On", "n2")
+        Assert $c ($add.exit -eq 0 -and @($add.json.data.depends_on) -contains "n2") "deps add 失败: $($add.text)"
+        # 重复 add 拒绝
+        $dup = TRun @("-Command", "deps", "-DepAction", "add", "-RunId", $rid, "-NodeId", "n3", "-On", "n2")
+        Assert $c ($dup.exit -eq 1 -and $dup.json.error.code -eq "DEP_EXISTS") "重复 add 未拒"
+        # 环形:n2 已被 n3 依赖,再让 n2 依赖 n3 → 拒
+        $cyc = TRun @("-Command", "deps", "-DepAction", "add", "-RunId", $rid, "-NodeId", "n2", "-On", "n3")
+        Assert $c ($cyc.exit -eq 1 -and $cyc.json.error.code -eq "DEP_GRAPH_INVALID" -and $cyc.text.Contains("DEP_CYCLE")) "环形未拒: $($cyc.text)"
+        # 自依
+        $self = TRun @("-Command", "deps", "-DepAction", "add", "-RunId", $rid, "-NodeId", "n4", "-On", "n4")
+        Assert $c ($self.exit -eq 1 -and $self.text.Contains("DEP_SELF")) "自依未拒: $($self.text)"
+        # 缺失目标
+        $miss = TRun @("-Command", "deps", "-DepAction", "add", "-RunId", $rid, "-NodeId", "n4", "-On", "n99")
+        Assert $c ($miss.exit -eq 1 -and $miss.text.Contains("DEP_TARGET_NOT_FOUND")) "缺失目标未拒"
+        # remove
+        $rem = TRun @("-Command", "deps", "-DepAction", "remove", "-RunId", $rid, "-NodeId", "n3", "-On", "n2")
+        Assert $c ($rem.exit -eq 0 -and @($rem.json.data.depends_on).Count -eq 0) "deps remove 失败: $($rem.text)"
+        $remMiss = TRun @("-Command", "deps", "-DepAction", "remove", "-RunId", $rid, "-NodeId", "n3", "-On", "n2")
+        Assert $c ($remMiss.exit -eq 1 -and $remMiss.json.error.code -eq "DEP_NOT_FOUND") "重复 remove 未拒"
+        # list
+        $null = TRun @("-Command", "deps", "-DepAction", "add", "-RunId", $rid, "-NodeId", "n4", "-On", "n2")
+        $lst = TRun @("-Command", "deps", "-DepAction", "list", "-RunId", $rid)
+        Assert $c ($lst.exit -eq 0 -and $lst.json.data.dependencies.Count -ge 1) "deps list 失败: $($lst.text)"
+        # 审计:graft/add/remove 全留痕且事件正确
+        $logPath = Join-Path (Get-RunDirPath $rid) "state\deps-log.jsonl"
+        Assert $c (Test-Path -LiteralPath $logPath) "deps-log.jsonl 缺失"
+        $events = @([System.IO.File]::ReadAllLines($logPath) | Where-Object { $_.Trim() -ne "" } | ForEach-Object { ($_ | ConvertFrom-Json).event })
+        Assert $c (@($events | Where-Object { $_ -eq "dep-add" }).Count -ge 2) "dep-add 审计行不足: $($events -join ',')"
+        Assert $c (@($events | Where-Object { $_ -eq "dep-remove" }).Count -ge 1) "dep-remove 审计行缺失"
+        # 收轮后变更被拒(与 graft 纪律对齐)
+        $null = TRun @("-Command", "round-end", "-RunId", $rid, "-Summary", "s", "-Decision", "continue")
+        $after = TRun @("-Command", "deps", "-DepAction", "add", "-RunId", $rid, "-NodeId", "n3", "-On", "n4")
+        Assert $c ($after.exit -eq 1) "收轮后 deps 变更未被拒: $($after.text)"
+    }
+
+    Run-Tc "TC-071" "pruned 满足依赖 + 显式警告;状态输出与轮/结案报告渲染依赖区(含 ⏸ 标记)" "P1" "DEP-AC-1" {
+        param($c)
+        $rid = New-RunId "deps-render"
+        $null = TRun @("-Command", "start", "-RunId", $rid, "-Goal", "deps suite: render and prune semantics", "-RefRoots", $PlaneRepoRel, "-CreatedBy", "QA")
+        $null = TRun @("-Command", "round-start", "-RunId", $rid)
+        $tf = Write-TasksFile @(
+            @{ title = "a"; task = "t" },
+            @{ title = "b"; task = "t"; depends_on = @("n2") },
+            @{ title = "c"; task = "t"; depends_on = @("n3") }
+        )
+        $null = TRun @("-Command", "graft", "-RunId", $rid, "-Parent", "n1", "-TasksFile", $tf)
+        # 树形 outline 阻塞标记
+        $st = TRun @("-Command", "status", "-RunId", $rid)
+        Assert $c ($st.json.data.dependencies.edges.Count -eq 2) "status 依赖区边数 $($st.json.data.dependencies.edges.Count),期望 2"
+        Assert $c (@($st.json.data.dependencies.blocked_pending | ForEach-Object { $_.id }) -contains "n4") "blocked_pending 未含 n4"
+        $outline = [string]$st.json.data.tree_outline
+        if (-not $outline) { $outline = ($st.json.data | ConvertTo-Json -Depth 6 -Compress) }
+        # 剪枝 n2:n3 的依赖经 pruned 满足(警告标记)且可 claim
+        $null = TRun @("-Command", "prune", "-RunId", $rid, "-NodeId", "n2", "-Reason", "superseded by n5 approach")
+        $st2 = TRun @("-Command", "status", "-RunId", $rid)
+        $edgeN3 = @($st2.json.data.dependencies.edges | Where-Object { $_.node -eq "n3" })[0]
+        Assert $c ($null -ne $edgeN3 -and @($edgeN3.via_prune) -contains "n2") "pruned 满足未带警告标记: $($st2.text)"
+        $ok = TLeaf @("-Command", "claim", "-RunId", $rid, "-NodeId", "n3", "-Worker", "w1")
+        Assert $c ($ok.exit -eq 0) "pruned 依赖未放行: $($ok.text)"
+        Assert $c ($null -ne $ok.json.data.dep_note -and [string]$ok.json.data.dep_note -ne "") "claim 输出未附 pruned 满足提示"
+        # 轮快照与结案报告渲染依赖区
+        $null = Submit-Report $rid "w1" (New-ValidCb "n3" "done" 0.9 "done" @(@{ ref = "$PlaneRepoRel/logs/db-slow-query.log"; locator = "L1" }) "" @{ verification = "ok" })
+        $null = TRun @("-Command", "settle", "-RunId", $rid, "-NodeId", "n3")
+        $null = TRun @("-Command", "round-end", "-RunId", $rid, "-Summary", "deps render", "-Decision", "continue")
+        $snap = Read-RunFileText $rid "report/rounds/round-01.md"
+        Assert $c ($snap.Contains([string][char]0x4F9D + [string][char]0x8D56)) "轮快照缺依赖关系区"
+        $null = TRun @("-Command", "round-start", "-RunId", $rid)   # claim 前置:开放轮
+        $null = TLeaf @("-Command", "claim", "-RunId", $rid, "-NodeId", "n4", "-Worker", "w2")
+        $null = Submit-Report $rid "w2" (New-ValidCb "n4" "done" 0.9 "done" @(@{ ref = "$PlaneRepoRel/logs/db-slow-query.log"; locator = "L1" }) "" @{ verification = "ok" })
+        $null = TRun @("-Command", "settle", "-RunId", $rid, "-NodeId", "n4")
+        # 注:根节点 n1 恒为 pending(结构性锚),space_exhausted 要求无 pending+claimed,
+        # 故此处用 achieved 结案验证报告渲染
+        $null = TRun @("-Command", "conclude", "-RunId", $rid, "-Outcome", "achieved", "-AnchorNodeId", "n4", "-Summary", "DEPS-RENDER-FINAL")
+        $fin = Read-RunFileText $rid "report/final-report.md"
+        Assert $c ($fin.Contains([string][char]0x4F9D + [string][char]0x8D56)) "结案报告缺依赖关系区"
+        Assert $c ($fin.Contains("DEPS-RENDER-FINAL")) "结案报告缺摘要"
+    }
+
+    Run-Tc "TC-072" "向后兼容:旧 tree.json(无 depends_on/ref)读取规整为空值;写回带新字段;无依赖运行零 deps 产物" "P1" "DEP-AC-1" {
+        param($c)
+        $rid = New-RunId "deps-compat"
+        $null = TRun @("-Command", "start", "-RunId", $rid, "-Goal", "deps suite: backward compat", "-RefRoots", $PlaneRepoRel, "-CreatedBy", "QA")
+        $null = TRun @("-Command", "round-start", "-RunId", $rid)
+        $tf = Write-TasksFile @( @{ title = "plain"; task = "no deps at all" } )
+        $null = TRun @("-Command", "graft", "-RunId", $rid, "-Parent", "n1", "-TasksFile", $tf)
+        # 手工剥掉 depends_on/ref 字段模拟旧版本 tree.json
+        $treePath = Join-Path (Get-RunDirPath $rid) "state\tree.json"
+        $tree = [System.IO.File]::ReadAllText($treePath, [System.Text.Encoding]::UTF8) | ConvertFrom-Json
+        foreach ($n in $tree.nodes) {
+            if ($n.PSObject.Properties['depends_on']) { $n.PSObject.Properties.Remove('depends_on') }
+            if ($n.PSObject.Properties['ref']) { $n.PSObject.Properties.Remove('ref') }
+        }
+        [System.IO.File]::WriteAllText($treePath, ($tree | ConvertTo-Json -Depth 10), $Utf8NoBom)
+        # claim(写路径)后:字段被规整为 []/$null 且不报错
+        $ok = TLeaf @("-Command", "claim", "-RunId", $rid, "-NodeId", "n2", "-Worker", "w1")
+        Assert $c ($ok.exit -eq 0) "旧 tree 读取后 claim 失败: $($ok.text)"
+        $t2 = Read-RunTree $rid
+        $n2 = $t2.nodes | Where-Object id -eq "n2"
+        Assert $c (@($n2.depends_on).Count -eq 0 -and $null -eq $n2.ref) "规整值异常: deps=$($n2.depends_on) ref=$($n2.ref)"
+        # 无依赖运行不产 deps-log(零变更零审计)
+        Assert $c (-not (Test-RunFile $rid "state/deps-log.jsonl")) "无依赖运行不应产 deps-log.jsonl"
+        # 引擎命令面照常
+        $st = TRun @("-Command", "status", "-RunId", $rid)
+        Assert $c ($st.exit -eq 0 -and $st.json.data.dependencies.edges.Count -eq 0) "兼容 status 失败或依赖区非空"
+    }
+
+    Run-Tc "TC-073" "互不依赖节点并行认领:同轮内 a/b 被不同 worker 同时领走,依赖节点 c 同时被阻(对照)" "P0" "DEP-AC-3" {
+        param($c)
+        $rid = New-RunId "deps-parallel"
+        $null = TRun @("-Command", "start", "-RunId", $rid, "-Goal", "deps suite: parallel claim of independent nodes",
+                       "-RefRoots", $PlaneRepoRel, "-CreatedBy", "QA")
+        $null = TRun @("-Command", "round-start", "-RunId", $rid)
+        $tf = Write-TasksFile @(
+            @{ title = "a"; task = "independent a" },
+            @{ title = "b"; task = "independent b" },
+            @{ title = "c"; task = "depends on a"; depends_on = @("n2") }
+        )
+        $null = TRun @("-Command", "graft", "-RunId", $rid, "-Parent", "n1", "-TasksFile", $tf)
+        # 正向:a/b 互不依赖,同轮被不同 worker 并行认领(多角色/多窗口场景)
+        $ca = TLeaf @("-Command", "claim", "-RunId", $rid, "-NodeId", "n2", "-Worker", "ux1")
+        Assert $c ($ca.exit -eq 0) "独立节点 a 认领失败: $($ca.text)"
+        $cb2 = TLeaf @("-Command", "claim", "-RunId", $rid, "-NodeId", "n3", "-Worker", "ux2")
+        Assert $c ($cb2.exit -eq 0) "独立节点 b 并行认领失败: $($cb2.text)"
+        # 反向对照:依赖 a 的 c 仍被门禁阻住
+        $cc = TLeaf @("-Command", "claim", "-RunId", $rid, "-NodeId", "n4", "-Worker", "ux3")
+        Assert $c ($cc.exit -eq 1 -and $cc.json.error.code -eq "NODE_BLOCKED_BY_DEPS" -and $cc.text.Contains("n2")) "依赖节点未被阻或未附阻塞源: $($cc.text)"
+        # next 视图一致:a/b 已在 claimed 出离 pending,c 单列 blocked
+        $nx = TLeaf @("-Command", "next", "-RunId", $rid)
+        $pend = @($nx.json.data.pending | ForEach-Object { $_.id })
+        $blk = @($nx.json.data.blocked | ForEach-Object { $_.id })
+        Assert $c (($pend -notcontains "n2") -and ($pend -notcontains "n3")) "已并行认领节点仍在 pending: $($pend -join ',')"
+        Assert $c ($blk -contains "n4") "next blocked 未含 n4: $($blk -join ',')"
+    }
+}
+
+# ============================================================
 # 正交性终检(TC-003,任何套件执行后对比)
 # ============================================================
 
@@ -916,7 +1174,7 @@ function Invoke-OrthogonalityCheck {
     Run-Tc "TC-003" "与 task.json 归档流转正交:全部操作后 .rdd/changes/ 零改动" "P1" "AC-1" {
         param($c)
         $after = Get-ChangesSnapshot
-        Assert $c ($after -eq $ChangesBefore) ".rdd/changes/ 在测试期间被改动(要求:tree-run 与 task.json 流转互不影响)"
+        Assert $c ($after -eq $ChangesBefore) ".rdd/changes/ 在测试期间被改动(要求:goal-tree 与 task.json 流转互不影响)"
     }
 }
 
@@ -924,10 +1182,10 @@ function Invoke-OrthogonalityCheck {
 # 主流程
 # ============================================================
 
-Write-Host "tree-run-verify — repo: $RepoRoot"
-Write-Host "suite: $Suite  (runs under .rdd/tree-runs/, stamp: $script:RunStamp)"
+Write-Host "goal-tree-verify — repo: $RepoRoot"
+Write-Host "suite: $Suite  (runs under .rdd/goal-trees/, stamp: $script:RunStamp)"
 
-$selected = if ($Suite -eq "all") { @("basic", "consume", "callback", "recovery", "ending", "e2e") } else { @($Suite) }
+$selected = if ($Suite -eq "all") { @("basic", "consume", "callback", "recovery", "ending", "e2e", "deps") } else { @($Suite) }
 foreach ($s in $selected) {
     switch ($s) {
         "basic"    { Suite-Basic }
@@ -936,6 +1194,7 @@ foreach ($s in $selected) {
         "recovery" { Suite-Recovery }
         "ending"   { Suite-Ending }
         "e2e"      { Suite-E2E }
+        "deps"     { Suite-Deps }
     }
 }
 if ($Suite -in @("all", "basic")) { Invoke-OrthogonalityCheck }
@@ -949,7 +1208,7 @@ $p0fail = @($fail | Where-Object { $_.priority -eq "P0" })
 $p1fail = @($fail | Where-Object { $_.priority -eq "P1" })
 
 $summary = [ordered]@{
-    verifier   = "tree-run-verify.ps1"
+    verifier   = "goal-tree-verify.ps1"
     suite      = $Suite
     ranAt      = (Get-Date).ToUniversalTime().ToString("yyyy-MM-dd'T'HH:mm:ss'Z'")
     total      = $script:Results.Count
@@ -961,7 +1220,7 @@ $summary = [ordered]@{
     blocking   = ($p0fail.Count -gt 0)
     results    = $script:Results
 }
-$resultsPath = Join-Path $RepoRoot (".rdd\tests\tree-run\results.json")
+$resultsPath = Join-Path $RepoRoot (".rdd\tests\goal-tree\results.json")
 try {
     $summary | ConvertTo-Json -Depth 6 | ForEach-Object { [System.IO.File]::WriteAllText($resultsPath, $_, $Utf8NoBom) }
 } catch { Write-Host "WARN: results.json 写入失败: $($_.Exception.Message)" }

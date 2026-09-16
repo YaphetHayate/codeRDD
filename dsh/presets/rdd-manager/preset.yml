@@ -1,0 +1,3 @@
+name: RDD-MANAGER
+description: Manager 交付编排模式（引擎编排形态，非角色卡）。归档较重时接管整批交付：颁布节点、调动角色会话、统一流转与结案报告。
+order: 9

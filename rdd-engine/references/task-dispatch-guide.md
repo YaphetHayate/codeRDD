@@ -1,8 +1,8 @@
 # 任务派发验收契约（task-dispatch-guide）
 
-> **定位**：tree-run 节点派发与验收的**标准协议**。Manager 在 graft 时按本文档定型任务、附带验收契约；worker 按契约交付；引擎按硬门禁对账。与 `tree-run-guide.md`（循环权威）配套——本文档管"每个节点派什么、怎么算完成"。
+> **定位**：goal-tree 节点派发与验收的**标准协议**。Manager 在 graft 时按本文档定型任务、附带验收契约；worker 按契约交付；引擎按硬门禁对账。与 `goal-tree-guide.md`（循环权威）配套——本文档管"每个节点派什么、怎么算完成"。
 >
-> **版本**: V1.1（2026-09-09 增补附录 A：M1/M2 引擎落地 schema——graft/回调的具体格式与错误码处置。协议文本见 V1 种子版）。来源事故与设计论证：`D:\YaphetHayate\projects\todo\2026-09-08-openrca-treerun-验收契约设计.md`。
+> **版本**: V1.2（2026-09-10 命名同步：tree-run → goal-tree、rca-roles → investigation-roles；R 表与 §六的基准语境降级至 `investigation-roles.md`「来源与验证记录」）。V1.1（2026-09-09 增补附录 A：M1/M2 引擎落地 schema——graft/回调的具体格式与错误码处置。协议文本见 V1 种子版）。来源事故与设计论证：`D:\YaphetHayate\projects\todo\2026-09-08-openrca-treerun-验收契约设计.md`。
 >
 > **V1 粒度规则（已拍板）**：覆盖清单粒度由 **manager 单方决定**（时间 × 模态，5–15 格）；worker 细化协商为 V2 backlog。
 
@@ -55,13 +55,13 @@
 
 ## 二、四类契约模板（manager 填槽）
 
-> **角色卡选卡引用（填槽第一步）**：定性（A 轴）之后按承接性质选角色卡，整卡嵌入派发 prompt 或按路径引用（`rca-roles/<role-id>.md`）——卡内已固化该角色的方法预设与交付 schema，manager 填槽时**零即兴改写**：
+> **角色卡选卡引用（填槽第一步）**：定性（A 轴）之后按承接性质选角色卡，整卡嵌入派发 prompt 或按路径引用（`investigation-roles/<role-id>.md`）——卡内已固化该角色的方法预设与交付 schema，manager 填槽时**零即兴改写**：
 >
-> | 定性 | 可选角色卡（权威定义见 `rca-roles.md`） |
+> | 定性 | 可选角色卡（权威定义见 `investigation-roles.md`） |
 > |------|------------------------------------------|
-> | Transform | `rca-roles/data-prep.md` |
-> | Sweep / Probe | `rca-roles/metric-analyst.md` · `rca-roles/log-analyst.md` · `rca-roles/trace-analyst.md`（按模态选） |
-> | Synthesis | `rca-roles/root-cause-analyst.md` |
+> | Transform | `investigation-roles/data-prep.md` |
+> | Sweep / Probe | `investigation-roles/metric-analyst.md` · `investigation-roles/log-analyst.md` · `investigation-roles/trace-analyst.md`（按模态选） |
+> | Synthesis | `investigation-roles/root-cause-analyst.md` |
 >
 > Probe 派发额外带 `falsification_duty` 字段（见 §2.2 与附录 A.1）；一次派发只绑定一种性质。
 
@@ -143,17 +143,17 @@ FEASIBILITY {
 
 | # | 反模式 / 规则 | 出处 |
 |---|---|---|
-| R1 | Sweep 派发无预分区清单，worker 自选扫描范围 | rca-133915 n3：只扫 14:28–14:41，[14:41,15:00] 从未被分配 |
-| R2 | 多峰折叠为首峰 + "episodic" 标签 | rca-133915 n2：`14:39 & 14:57 → 14:39`，真值分钟被表格自己丢掉 |
-| R3 | 域覆盖缺口沉默（把域问题当方法问题） | rca-133915 n3：扫描范围从兄弟结论倒推 |
+| R1 | Sweep 派发无预分区清单，worker 自选扫描范围 | 回放尸检：只扫 14:28–14:41，[14:41,15:00] 从未被分配 |
+| R2 | 多峰折叠为首峰 + "episodic" 标签 | 回放尸检：`14:39 & 14:57 → 14:39`，真值分钟被表格自己丢掉 |
+| R3 | 域覆盖缺口沉默（把域问题当方法问题） | 回放尸检：扫描范围从兄弟结论倒推 |
 | R4 | Synthesis 收尾不查覆盖并集 | [14:50,15:00] 无人认领，GT 14:57 正在其中 |
-| R5 | 纯确认式 probe / inherited 结论当证据 | rca-133915 round-2 "pre-window verification"；"与前次收敛"自证 |
+| R5 | 纯确认式 probe / inherited 结论当证据 | 回放尸检：round-2 "pre-window verification"；"与前次收敛"自证 |
 | R6 | 名义规模不预采，规模靠猜 | 1.25GB trace 事后才知；schema 缺列开工才知 |
 | R7 | 披露缺口受罚（逼 worker 隐瞒） | 设计推演：不对称惩罚——披露=pass-with-caveats，未披露=fail |
-| R8 | clean 声明不挂工件 | rca-133915 pass1 输出自带 tmin/tmax（工件自证的实证） |
+| R8 | clean 声明不挂工件 | 回放尸检：pass1 输出自带 tmin/tmax（工件自证的实证） |
 | R9 | 兄弟域零重叠（放弃免费测谎） | n2/n3 模态冗余本可交叉验证 |
 
-**新增规则必须带事故出处**（post-mortem PR 纪律）。
+**新增规则必须带事故出处**（post-mortem PR 纪律）。上表例证的验证载体与事故题号统一记录在 `investigation-roles.md`「来源与验证记录」。
 
 ## 五、瞒报防线（五层摘要）
 
@@ -166,26 +166,26 @@ FEASIBILITY {
 ## 六、归属分层
 
 - **引擎层（本目录）**：速查卡、四类模板骨架、FEASIBILITY 格式、反模式清单——跨项目通用。
-- **领域物挂引擎目录**：RCA 角色族（`rca-roles.md` 权威索引 + `rca-roles/` 落地卡）是 OpenRCA 类根因调查的领域方法论，挂在引擎层 `references/` 供跨项目取用；其内容受红线约束（只含通用 SRE 方法论，零基准题目特有答案知识），引擎对其只做格式级机械支持（role 标识格式校验，不校词表——词表权威在 `rca-roles.md`）。
-- **项目层（`<project>/.rdd/`）**：领域槽位（如 OpenRCA 的时间窗语义、遥测模态定义、粒度默认值）。派发引用模板 ID + 项目槽位填充。
+- **领域物挂引擎目录**：调查角色族（`investigation-roles.md` 权威索引 + `investigation-roles/` 落地卡）是证据驱动调查类长程任务的场景方法论，挂在引擎层 `references/` 供跨项目取用；其内容受红线约束（只含通用 SRE 方法论，零基准题目特有答案知识），引擎对其只做格式级机械支持（role 标识格式校验，不校词表——词表权威在 `investigation-roles.md`）。
+- **项目层（`<project>/.rdd/`）**：领域槽位（如时间窗语义、遥测模态定义、粒度默认值）。派发引用模板 ID + 项目槽位填充。
 
 ## 七、落地状态
 
 - **M1 ✅（2026-09-09）**：R1（settle 清单完整性）+ R4（conclude 覆盖并集）已接入引擎 CLI，warn/enforce 两档，legacy run fail-open 零影响。
 - **M2 ✅（2026-09-09）**：R2（findings 折叠检测）+ R8（clean 工件对账）+ found 挂 findings 行 + spotcheck 防伪抽查（note-only 观察期）已接入 report 链路。单测累计 48 项。
-- **M3 ✅（2026-09-10，角色感知部分）**：R5 已机械接入——graft 硬拦 `GRAFT_FALSIFICATION_REQUIRED`（结构契约派发时拦截）+ report 对 `extras.probe` 三值 note-only 对账；`role` 标识 graft 声明 → node 持久化 → ledger 追溯（`ROLE_INVALID` 格式校验，不校词表）；与 RCA 角色卡（`rca-roles/`）构成"文档定义 + 引擎校验"闭环。单测累计 65 项。R6 名义规模预采、R7 settle 三值化维持 V2 backlog（角色卡 worker 侧规模预采不受影响）。
+- **M3 ✅（2026-09-10，角色感知部分）**：R5 已机械接入——graft 硬拦 `GRAFT_FALSIFICATION_REQUIRED`（结构契约派发时拦截）+ report 对 `extras.probe` 三值 note-only 对账；`role` 标识 graft 声明 → node 持久化 → ledger 追溯（`ROLE_INVALID` 格式校验，不校词表）；与调查角色卡（`investigation-roles/`）构成"文档定义 + 引擎校验"闭环。单测累计 65 项。R6 名义规模预采、R7 settle 三值化维持 V2 backlog（角色卡 worker 侧规模预采不受影响）。
 - **附录 A = 机械格式权威**：与以上协议文本冲突时，以附录 A 为准。
 
 ## 附录 A：引擎落地 schema（M1/M2 已接入，机械格式权威）
 
-> 时间戳一律 `YYYY-MM-DD HH:MM:SS`，区间为闭区间。本附录描述 `tree-run.ps1` / `tree-leaf.ps1` 实际校验的格式。
+> 时间戳一律 `YYYY-MM-DD HH:MM:SS`，区间为闭区间。本附录描述 `goal-tree.ps1` / `goal-tree-leaf.ps1` 实际校验的格式。
 
 ### A.1 Manager：run 启动与 sweep 派发
 
 **run 启动（时间域任务）**：
 
 ```powershell
-tree-run.cmd -Command start -RunId <id> -Goal "<goal>" -RefRoots .
+goal-tree.cmd -Command start -RunId <id> -Goal "<goal>" -RefRoots .
   -DomainJsonFile <domain.json> -GateMode enforce -CoverageToleranceS <秒>
 ```
 
@@ -231,7 +231,7 @@ tree-run.cmd -Command start -RunId <id> -Goal "<goal>" -RefRoots .
 
 - `type: "sweep"` 无 `manifest` → `GRAFT_MANIFEST_REQUIRED`；cells 非法（重复 id / 时间戳格式错 / end≤start）→ `GRAFT_MANIFEST_INVALID`
 - `type: "probe"` 缺 `falsification_duty`（或空白串）→ `GRAFT_FALSIFICATION_REQUIRED`（结构契约在派发时拦截，Manager 补齐后重 graft）
-- `role`：可选字段，kebab-case `^[a-z0-9]+(-[a-z0-9]+)*$`、长度 ≤64，否则 `ROLE_INVALID`。**引擎只校格式不校词表**——角色词表权威在 `rca-roles.md` / `rca-roles/` 角色卡（引擎层跨项目通用，领域槽位在引用层）。`type` / `role` / `falsification_duty` 平铺持久化进 node（可选字段，可 null；legacy run 无这些字段 → null，fail-open 零影响）
+- `role`：可选字段，kebab-case `^[a-z0-9]+(-[a-z0-9]+)*$`、长度 ≤64，否则 `ROLE_INVALID`。**引擎只校格式不校词表**——角色词表权威在 `investigation-roles.md` / `investigation-roles/` 角色卡（引擎层跨项目通用，领域槽位在引用层）。`type` / `role` / `falsification_duty` 平铺持久化进 node（可选字段，可 null；legacy run 无这些字段 → null，fail-open 零影响）
 - 多个 sweep 的 cells 并集须铺满查询域（R4 在 conclude 按全部 found/clean 格并集对账）；相邻格共享边界时间戳合法
 - 非 sweep/probe 任务不写 type/manifest/falsification_duty，行为零变化（role 可选声明）
 
@@ -257,19 +257,21 @@ tree-run.cmd -Command start -RunId <id> -Goal "<goal>" -RefRoots .
 }
 ```
 
-> `extras.probe` 仅 `type: "probe"` 节点对账（结构定义与角色卡 probe 差异节单点对齐：`rca-roles/metric-analyst.md` 等）；其余性质的 extras 命名空间见角色卡交付 schema（`extras.deliverables` = Transform / `extras.conclusion` = Synthesis，机械面透传不校验）。
+> `extras.probe` 仅 `type: "probe"` 节点对账（结构定义与角色卡 probe 差异节单点对齐：`investigation-roles/metric-analyst.md` 等）；其余性质的 extras 命名空间见角色卡交付 schema（`extras.deliverables` = Transform / `extras.conclusion` = Synthesis，机械面透传不校验）。
 
 **填格规则（引擎在 report 时机械校验；违规格退回 pending 并记 notes；report 本身永不被拒）**：
 
 | 格状态 | 要求 |
 |---|---|
-| `found` | ≥1 条 findings 行且其 interval 落在该格 interval 内；evidence 可为裸引用字符串 |
+| `found` | ≥1 条 findings 行且其 interval 落在该格 interval 内；evidence 可为裸引用字符串，**须非空**（空串/空白 → 该格退回 pending 并记 `r8_evidence_rejected` notes，禁止静默接受或丢弃） |
 | `clean` | evidence 必须是对象化条目 `{ref, tmin, tmax}`：ref 在 RefRoots 内且磁盘存在；**格子 interval ⊆ [tmin, tmax]**；裸字符串不够 |
 | `escalated` | 豁免（诚实上报没有工件）；note 须写明原因与缺口影响 |
 
 **findings 行铁律（R2）**：同实体多 episode 必须多行，每行自带独立 interval + ≥1 evidence 引用。行内文本出现 `14:39 & 14:57` / `14:39/14:57` / `14:39,14:57`（两个相隔 >2 分钟的时间戳并列）= 折叠模式 → 行作废 + 关联格退 pending。写区间用 `14:39-14:41`（连字符）合法。
 
 **evidence 工件**：扫描输出落盘在仓库内（RefRoots 覆盖），工件自带时间遥测（首/末行时间戳）——引擎抽查首尾 50 行对账声明 tmin/tmax，不符记 `spotcheck_mismatch` note（观察期只记不罚）。
+
+**tmin/tmax 语义（rca-212114 事故澄清）**：`tmin/tmax` 是 artifact **声明的覆盖区间**，必须整体罩住格子 interval——不是"最后观测时刻"。观测数据通常止于格内最后一次采样（如 14:39:59.983），若 worker 把最后观测时刻写成 tmax，R8 会判 "artifact range does not cover cell" 并把该格退回 pending（首跑实证：三个 trace 格全部因此被退，settle 只能靠 `-Override warn` 人为放行）。**声明 tmax 一律写到格的名义终点**（如 14:40:00），工件实际观测范围由 spotcheck 对账。
 
 ### A.3 门禁错误码与处置
 
@@ -281,7 +283,7 @@ tree-run.cmd -Command start -RunId <id> -Goal "<goal>" -RefRoots .
 | `ROLE_INVALID` | graft | `role` 非 kebab-case 或长度 >64 → 改为 `^[a-z0-9]+(-[a-z0-9]+)*$` 格式（词表不校验，权威在角色卡） |
 | `DOMAIN_UNPARSEABLE` / `DOMAIN_FILE_NOT_FOUND` | start | 域 JSON 非法/文件不存在 → 改用 `-DomainJsonFile` |
 | `SETTLE_MANIFEST_INCOMPLETE` | settle (enforce) | 有格子未达终态（pending 或被 R2/R8 打回）→ report 一次性语义：节点不能重报，只能 `prune` + 重新 graft 补扫 |
-| `CONCLUDE_COVERAGE_GAPS` | conclude achieved (enforce) | 查询域有未覆盖缺口（错误信息列出区间）→ graft 覆盖缺口的 sweep 并 settle；或诚实 `budget_exhausted`（需预算真实耗尽） |
+| `CONCLUDE_COVERAGE_GAPS` | conclude achieved (enforce) | 查询域有未覆盖缺口，或存在**声明在册但未填报**的 sweep 格（错误信息列出区间+模态）→ 前者 graft 覆盖缺口的 sweep 并 settle；后者把该 sweep 的每格填到终态（report 一次性语义，未报的节点正常 claim→report 即可）或 `prune` 放弃该 sweep 解除义务；或诚实 `budget_exhausted`（需预算真实耗尽） |
 | `BUDGET_NOT_EXHAUSTED` | conclude | budget_exhausted 但预算没用完 → 继续干活，或改 achieved/space_exhausted |
 
 **probe 三值对账（note-only 观察期）**：`type:"probe"` 节点 report 时，引擎对 `extras.probe` 做 note-only 对账（对齐 spotcheck / manifest_missing"只记不罚"先例，report 永不被拒）——缺 `extras.probe` → `probe_extras_missing`；缺 verdict → `probe_verdict_missing`；verdict 非 `upheld|refuted|inconclusive` → `probe_verdict_invalid`；`falsification_attempted` 空 → `probe_falsification_not_recorded`（纯确认式 probe 违反 R5）。全部落 ledger 条目 `validation.notes`。
@@ -290,8 +292,10 @@ tree-run.cmd -Command start -RunId <id> -Goal "<goal>" -RefRoots .
 
 **escalated 是 R1 合法终态**（settle 放行）但 **R4 计为未覆盖**——诚实披露让你能结算，不给你伪装覆盖。
 
+**declared-but-unfilled 视为未覆盖（rca-212114 事故，R4 语义收紧）**：R4 的覆盖义务 = **全部 grafted sweep 的 declared cells 全集**，不是"已填报格的时间并集"。已声明但未达终态（pending / 被 R2/R8 打回 / 从未 report）的格子**逐格计为未覆盖**，即使其他 sweep 的填报铺满了同一区间——声明在册的模态义务不能被别的模态抵消，否则一次填报静默丢失就让整个模态从覆盖义务中蒸发（首跑实证：trace sweep 三格填报被 R8 退回 pending，metric+log 恰好铺满时间域，R4 照常放行 achieved）。处置：把该 sweep 每格填到终态（found/clean/escalated），或 `prune` 该 sweep（pruned 节点的声明义务解除），再 conclude。`-Override warn` 可以单次压制，但那等于人为放行伪装覆盖——审计口径下与门禁失效同罪。
+
 ### A.4 可见性
 
-- `tree-run status/resume` → `coverage` 块（domain / gates / sweeps / covered_spans / gaps）
-- `tree-leaf status -NodeId <n>` → 该节点 `manifest`（declared + filled + findings 全景）
+- `goal-tree status/resume` → `coverage` 块（domain / gates / sweeps / covered_spans / gaps / **unfilled**——声明在册未填报的格，逐格列 `[区间] 模态 (节点.格)`）
+- `goal-tree-leaf status -NodeId <n>` → 该节点 `manifest`（declared + filled + findings 全景）
 - ledger 条目 `validation.notes` → 全部 R1'/R2/R8/spotcheck 提示的落点

@@ -1,6 +1,6 @@
-﻿# tree-leaf.ps1 — tree-run consumption plane CLI (worker/subagent sessions only)
+﻿# goal-tree-leaf.ps1 — goal-tree consumption plane CLI (worker/subagent sessions only)
 #
-# Workers consume LEAF tasks of a tree-run created by a Manager session:
+# Workers consume LEAF tasks of a goal-tree run created by a Manager session:
 #   next    — locate claimable pending nodes (read-only)
 #   claim   — atomically take a pending node (lock-protected read-modify-write);
 #             -Steal recovers a node stuck in claimed state
@@ -11,7 +11,7 @@
 #
 # Separation of powers: this CLI can only update claim/status fields of the node
 # it owns (hardcoded whitelist). Tree structure changes (graft/prune/settle/
-# conclude) are physically impossible here — they live in tree-run.ps1.
+# conclude) are physically impossible here — they live in goal-tree.ps1.
 #
 # Node lifecycle: pending → claimed → reported → done (or → pruned).
 # Reported nodes are never re-claimable: interruption + resume cannot
@@ -37,11 +37,11 @@ $OutputEncoding = [System.Text.Encoding]::UTF8
 $repoRoot = (git rev-parse --show-toplevel).Trim()
 
 $script:Utf8NoBom = New-Object System.Text.UTF8Encoding($false)
-$script:TreeRunsRoot = Join-Path $repoRoot ".rdd/tree-runs"
+$script:GoalTreesRoot = Join-Path $repoRoot ".rdd/goal-trees"
 $script:LockStream = $null
 $script:LockPath = $null
 
-# === Generic helpers (same contract as tree-run.ps1) ===
+# === Generic helpers (same contract as goal-tree.ps1) ===
 
 function ConvertTo-PortableJson {
     param($Object, [int]$Depth = 6)
@@ -89,7 +89,7 @@ function Convert-ToSafeArray {
     return @($Value)
 }
 
-function Get-RunDir       { param([string]$Id); Join-Path $script:TreeRunsRoot $Id }
+function Get-RunDir       { param([string]$Id); Join-Path $script:GoalTreesRoot $Id }
 function Get-ManifestPath { param([string]$RunDir); Join-Path $RunDir "manifest.json" }
 function Get-StateDir     { param([string]$RunDir); Join-Path $RunDir "state" }
 function Get-TreePath     { param([string]$RunDir); Join-Path (Get-StateDir $RunDir) "tree.json" }
@@ -97,7 +97,7 @@ function Get-LedgerPath   { param([string]$RunDir); Join-Path (Get-StateDir $Run
 function Get-RoundLogPath { param([string]$RunDir); Join-Path (Get-StateDir $RunDir) "round-log.jsonl" }
 function Get-LockPath     { param([string]$RunDir); Join-Path $RunDir ".lock" }
 
-# === Coverage manifest sidecars (task-dispatch-guide R1'; mirrors tree-run.ps1 helpers) ===
+# === Coverage manifest sidecars (task-dispatch-guide R1'; mirrors goal-tree.ps1 helpers) ===
 
 function Get-ManifestsDir     { param([string]$RunDir); Join-Path (Get-StateDir $RunDir) "manifests" }
 function Get-NodeManifestPath { param([string]$RunDir, [string]$NodeId); Join-Path (Get-ManifestsDir $RunDir) "$NodeId.json" }
@@ -150,7 +150,7 @@ function ConvertTo-DayMinute {
 
 function Get-FoldPair {
     # R2: two HH:MM(:SS) joined by & / / , inside ONE text field, more than 2 minutes apart,
-    # is the folded-peaks antipattern (rca-133915: "14:39 & 14:57"). Adjacent pairs and
+    # is the folded-peaks antipattern ("14:39 & 14:57" names two distinct peaks). Adjacent pairs and
     # hyphen/'to' ranges are legitimate interval writing and are not flagged.
     param([string]$Text)
     if ([string]::IsNullOrWhiteSpace($Text)) { return $null }
@@ -206,6 +206,9 @@ function Test-EvidenceEntry {
     $isObj = $Ev -is [System.Collections.IDictionary]
     if (-not $isObj) {
         if ($Mode -eq 'clean') { return 'clean claim needs objectized evidence {ref, tmin, tmax} — a bare ref proves nothing was scanned (R8)' }
+        # rca-212114 audit fix (Issue 1): a blank bare-ref used to pass silently; now it
+        # rejects with a note so the cell bounces back to pending instead of landing empty
+        if ([string]::IsNullOrWhiteSpace([string]$Ev)) { return 'bare-ref evidence is empty/blank — a found claim needs at least one non-empty artifact ref (A.2)' }
         return $null
     }
     $ref = if ($Ev.Contains('ref')) { [string]$Ev.ref } else { '' }
@@ -385,7 +388,7 @@ function Update-NodeManifestFill {
 }
 
 function Get-ProbeReconciliationNotes {
-    # R5 (task-dispatch-guide / rca role cards): probe nodes reconcile extras.probe against
+    # R5 (task-dispatch-guide / investigation role cards): probe nodes reconcile extras.probe against
     # the three-valued contract {verdict: upheld|refuted|inconclusive, falsification_attempted: [..]}.
     # Note-only observation period (mirrors spotcheck / manifest_missing precedent): notes land in
     # validation.notes, the report is never rejected and the node still transitions.
@@ -428,7 +431,7 @@ function Resolve-RunDir {
     }
     $dir = Get-RunDir $Id
     if (-not (Test-Path -LiteralPath $dir -PathType Container)) {
-        Write-ErrorResult "RUN_NOT_FOUND" "Tree run not found: .rdd/tree-runs/$Id" 2
+        Write-ErrorResult "RUN_NOT_FOUND" "Goal tree run not found: .rdd/goal-trees/$Id" 2
     }
     return $dir
 }
@@ -520,6 +523,8 @@ function Convert-NodeToHashtable {
         type            = if ($Node.type) { [string]$Node.type } else { $null }
         role            = if ($Node.role) { [string]$Node.role } else { $null }
         falsification_duty = if ($Node.falsification_duty) { [string]$Node.falsification_duty } else { $null }
+        depends_on      = @(ConvertTo-NodeIdList $Node.depends_on)
+        ref             = if ($Node.ref) { [string]$Node.ref } else { $null }
         status          = [string]$Node.status
         created_round   = if ($null -ne $Node.created_round) { [int]$Node.created_round } else { 0 }
         claimed_by      = if ($Node.claimed_by) { [string]$Node.claimed_by } else { $null }
@@ -624,12 +629,62 @@ function Find-Node {
     return $null
 }
 
+# === Node dependency gate (depends_on[]) — mirrors goal-tree.ps1 helpers ===
+#
+# HARD SYNC CONSTRAINT: Convert-NodeToHashtable above is a DUPLICATED whitelist on
+# both planes (claim/report rewrite whole nodes). depends_on / ref must survive the
+# leaf write path — a whitelist desync silently erases the fields and the gate
+# stops working. goal-tree-verify asserts field survival through claim/report.
+
+function ConvertTo-NodeIdList {
+    param($Value)
+    $ids = @()
+    foreach ($v in @(Convert-ToSafeArray $Value)) {
+        $s = ([string]$v).Trim()
+        if ($s -ne '') { $ids += $s }
+    }
+    return @($ids)
+}
+
+function Get-NodeBlockedDeps {
+    # returns @{ blocked = @(unsatisfied target ids); via_prune = @(satisfied-by-prune target ids) }
+    # satisfaction = every target status in {done, pruned}; pruned satisfies with an explicit warning
+    param($Tree, $Node)
+    $blocked = @()
+    $viaPrune = @()
+    foreach ($target in @(ConvertTo-NodeIdList $Node.depends_on)) {
+        $tn = Find-Node $Tree $target
+        if ($null -eq $tn) { $blocked += $target; continue }
+        if ($tn.status -eq 'done') { continue }
+        if ($tn.status -eq 'pruned') { $viaPrune += $target; continue }
+        $blocked += $target
+    }
+    return @{ blocked = @($blocked); via_prune = @($viaPrune) }
+}
+
+function Get-NodeDependencyDetail {
+    # per-target state rows for the leaf status view
+    param($Tree, $Node)
+    $rows = @()
+    foreach ($target in @(ConvertTo-NodeIdList $Node.depends_on)) {
+        $tn = Find-Node $Tree $target
+        $st = if ($null -ne $tn) { [string]$tn.status } else { 'missing' }
+        $rows += [ordered]@{
+            target    = $target
+            status    = $st
+            satisfied = ($st -eq 'done' -or $st -eq 'pruned')
+            via_prune = ($st -eq 'pruned')
+        }
+    }
+    return $rows
+}
+
 # === Citation range check ===
 #
 # A citation ref is IN RANGE when either:
 #   (a) its normalized repo-relative form equals / is prefixed by a declared
 #       RefRoot, or
-#   (b) joining it under a RefRoot yields an existing path — the rca-poc
+#   (b) joining it under a RefRoot yields an existing path — a PoC-era
 #       lesson: workers echo refs relative to the case root (plane/logs/x.log)
 #       or as absolute paths; the engine normalizes both mechanically instead
 #       of leaving that to the Manager. Existence is the mechanical witness
@@ -640,7 +695,7 @@ function Normalize-Ref {
     param([string]$Ref)
     $r = $Ref.Trim() -replace '\\', '/'
     $r = $r -replace '^\./', ''
-    # strip absolute repo-root prefix (rca-poc lesson: workers echo full paths)
+    # strip absolute repo-root prefix (observed lesson: workers echo full paths)
     $rootFwd = ($repoRoot -replace '\\', '/')
     $rootBak = $repoRoot
     foreach ($form in @($rootFwd, $rootBak)) {
@@ -759,6 +814,8 @@ function Convert-NodeToPublicView {
         type            = $Node.type
         role            = $Node.role
         falsification_duty = $Node.falsification_duty
+        depends_on      = @(ConvertTo-NodeIdList $Node.depends_on)
+        ref             = $Node.ref
         status          = $Node.status
         created_round   = $Node.created_round
         claimed_by      = $Node.claimed_by
@@ -783,9 +840,19 @@ function Invoke-Next {
     $openRound = Get-OpenRound $RunDir
 
     $pending = @()
+    $blocked = @()
     foreach ($n in $tree.nodes) {
         if ($n.status -eq "pending") {
-            $pending += [ordered]@{ id = $n.id; parent = $n.parent; title = $n.title; task = $n.task; type = $n.type; role = $n.role; grafted_round = $n.created_round }
+            $entry = [ordered]@{ id = $n.id; parent = $n.parent; title = $n.title; task = $n.task; type = $n.type; role = $n.role; grafted_round = $n.created_round; depends_on = @(ConvertTo-NodeIdList $n.depends_on); ref = $n.ref }
+            $blockedBy = @(Get-NodeBlockedDeps $tree $n).blocked
+            if ($blockedBy.Count -gt 0) {
+                # dependency gate: unsatisfied depends_on — excluded from claimable, listed with sources
+                $entry['blocked_by'] = @($blockedBy)
+                $blocked += $entry
+            }
+            else {
+                $pending += $entry
+            }
         }
     }
     if ($Limit -gt 0 -and $pending.Count -gt $Limit) {
@@ -803,8 +870,9 @@ function Invoke-Next {
             budget      = $manifest.budget
             ref_roots   = @($manifest.ref_roots)
             pending     = $pending
+            blocked     = $blocked
             pending_all = (@($tree.nodes | Where-Object { $_.status -eq "pending" })).Count
-            hint        = $(if ($openRound -eq 0) { "no open round — claim will be rejected until the Manager runs round-start" } else { "claim one node with: tree-leaf.cmd -Command claim -RunId $RunId -NodeId <id> -Worker <label>" })
+            hint        = $(if ($openRound -eq 0) { "no open round — claim will be rejected until the Manager runs round-start" } elseif ($blocked.Count -gt 0 -and $pending.Count -eq 0) { "all pending nodes are blocked by unsatisfied dependencies (NODE_BLOCKED_BY_DEPS); wait for the Manager or dependency completion" } else { "claim one node with: goal-tree-leaf.cmd -Command claim -RunId $RunId -NodeId <id> -Worker <label>" })
         }
     }
 }
@@ -844,6 +912,15 @@ function Invoke-Claim {
             if ($node.status -ne "pending") {
                 Write-ErrorResult "NODE_NOT_CLAIMABLE" "Node $NodeId is '$($node.status)'; only pending nodes can be claimed (reported/done nodes are never re-consumed; stuck claimed nodes need -Steal)." 1
             }
+            # --- dependency gate: unsatisfied depends_on blocks the claim (deterministic feedback with sources) ---
+            $depState = Get-NodeBlockedDeps $tree $node
+            if ($depState.blocked.Count -gt 0) {
+                Write-ErrorResult "NODE_BLOCKED_BY_DEPS" "Node $NodeId is blocked by unsatisfied dependencies: [$($depState.blocked -join ', ')] (current status: $(($depState.blocked | ForEach-Object { $tn = Find-Node $tree $_; if ($tn) { "$_" + '=' + $tn.status } else { "$_=missing" } }) -join ', ')). Wait for those nodes to settle (done) or be pruned, or pick another node via next." 1
+            }
+            if ($depState.via_prune.Count -gt 0) {
+                # pruned targets satisfy the gate but are surfaced loudly, never silently
+                $pruneNote = "deps satisfied via pruned targets: [$($depState.via_prune -join ', ')] (prune discharges the obligation — visible, not silent)"
+            }
             $node.status = "claimed"
             $node.claimed_by = $Worker
             $node.claimed_at = Get-UtcNowIso
@@ -859,7 +936,8 @@ function Invoke-Claim {
                 round   = $openRound
                 stolen  = $stole
                 node    = (Convert-NodeToPublicView $node)
-                report_next = "tree-leaf.cmd -Command report -RunId $RunId -Worker $Worker -CallbackFile <path-to-callback.json>"
+                dep_note = $(if ($pruneNote) { $pruneNote } else { $null })
+                report_next = "goal-tree-leaf.cmd -Command report -RunId $RunId -Worker $Worker -CallbackFile <path-to-callback.json>"
                 lock    = $lockInfo
             }
         }
@@ -898,7 +976,7 @@ function Invoke-Report {
     # --- B2 channel separation (usage errors: not recorded, caller retries) ---
     # summary is a SUMMARY: full findings belong in a file referenced by full_report.
     # Without the cap, 2k+ char reports ride every status read / completion notice
-    # into the Manager's context (the B2 pressure source observed in rca-eval).
+    # into the Manager's context (the B2 pressure source observed in early evaluation replays).
     $summaryText = if ($null -ne $cb.PSObject.Properties["summary"]) { [string]$cb.summary } else { "" }
     if ($summaryText.Length -gt 600) {
         Write-ErrorResult "SUMMARY_TOO_LONG" "callback.summary is $($summaryText.Length) chars (limit 600). Write the FULL findings to a file under the run dir (e.g. report/workers/<node-id>.md), reference it via callback.full_report, and keep summary to verdict + key timestamps + <=3 findings." 1
@@ -1091,6 +1169,8 @@ function Invoke-LeafStatus {
         $node = Find-Node $tree $NodeId
         if ($null -eq $node) { Write-ErrorResult "NODE_NOT_FOUND" "Node not found: $NodeId" 2 }
         $nodeManifest = Read-NodeManifest $RunDir $NodeId
+        $depDetail = @(Get-NodeDependencyDetail $tree $node)
+        $blockedBy = @($depDetail | Where-Object { -not $_.satisfied } | ForEach-Object { $_.target })
         return @{
             success = $true
             data    = [ordered]@{
@@ -1098,6 +1178,11 @@ function Invoke-LeafStatus {
                 state    = $manifest.state
                 round    = $openRound
                 node     = (Convert-NodeToPublicView $node)
+                dependencies = [ordered]@{
+                    detail     = $depDetail
+                    blocked_by = @($blockedBy)
+                    satisfied  = ($blockedBy.Count -eq 0 -and $depDetail.Count -ge 0)
+                }
                 manifest = $nodeManifest
             }
         }
@@ -1105,8 +1190,13 @@ function Invoke-LeafStatus {
 
     $nodes = @()
     foreach ($n in $tree.nodes) {
-        $nodes += (Convert-NodeToPublicView $n)
+        $view = Convert-NodeToPublicView $n
+        if ($n.status -eq 'pending') {
+            $view['blocked_by'] = @((Get-NodeBlockedDeps $tree $n).blocked)
+        }
+        $nodes += $view
     }
+    $blockedPending = @($nodes | Where-Object { $_.status -eq 'pending' -and @($_.blocked_by).Count -gt 0 })
     return @{
         success = $true
         data    = [ordered]@{
@@ -1117,6 +1207,7 @@ function Invoke-LeafStatus {
             budget        = $manifest.budget
             ref_roots     = @($manifest.ref_roots)
             nodes         = $nodes
+            blocked_pending = @($blockedPending | ForEach-Object { $_.id })
             tree_read_from_backup = $readBack.used_backup
         }
     }

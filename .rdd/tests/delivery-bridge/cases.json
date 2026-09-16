@@ -1,0 +1,95 @@
+{
+  "feature": "delivery-bridge",
+  "status": "active",
+  "relatedCode": [
+    "rdd-engine/scripts/delivery-bridge.ps1",
+    "rdd-engine/scripts/delivery-bridge.cmd",
+    "rdd-engine/scripts/goal-tree.ps1",
+    "rdd-engine/scripts/goal-tree-leaf.ps1",
+    "rdd-engine/scripts/rdd-flow.ps1",
+    "rdd-engine/scripts/start-role.ps1",
+    "rdd-engine/references/manager-guide.md"
+  ],
+  "testCode": [
+    ".rdd/tests/delivery-bridge/delivery-bridge-verify.ps1"
+  ],
+  "lastChange": "2026-09-15-goal-tree-delivery-orchestration",
+  "cases": [
+    {
+      "id": "TC-B01", "title": "promulgate:run 建立 + 任务×阶段节点 + bridge.json 1:N 映射落盘 + ref 指针 + 依赖自动推导", "type": "positive", "priority": "P0",
+      "acceptance": "BR-AC-2", "codeRef": ".rdd/tests/delivery-bridge/delivery-bridge-verify.ps1:174", "sourceChange": "2026-09-15-goal-tree-delivery-orchestration", "status": "active", "crossFeature": ["goal-tree"],
+      "precondition": "fixture 归档(3 任务:T1 无依赖/T2 依赖 T1/T3 独立)建于 .rdd/tmp 下,不触碰真实归档",
+      "steps": ["delivery-bridge promulgate -TaskJson <fixture>/task.json", "读 run 目录 bridge.json 与 state/tree.json", "goal-tree status 查预算与开放轮"],
+      "expected": "退出码 0;run 建立,任务×阶段节点颁布;bridge.json 双向映射可查(nodes.n2.task_id=1/stage=DEV,tasks.'1'.stages.DEV=n2);节点 ref=归档#TaskId;T2→T1 依赖自动推导为 depends_on;node_width≥任务数;round 1 开放;manager-lease.json 落盘"
+    },
+    {
+      "id": "TC-B02", "title": "重复 promulgate 防护(RUN_EXISTS);dispatch -DryRun 预演不误开窗;非桥接 run 拒绝", "type": "negative", "priority": "P1",
+      "acceptance": "BR-AC-1", "codeRef": ".rdd/tests/delivery-bridge/delivery-bridge-verify.ps1:203", "sourceChange": "2026-09-15-goal-tree-delivery-orchestration", "status": "active", "crossFeature": [],
+      "steps": ["对同一归档二次 promulgate", "dispatch 指定节点带 -DryRun", "对纯 goal-tree run 调桥接 status"],
+      "expected": "二次 promulgate 退出码 1 + RUN_EXISTS;dispatch DryRun 退出码 0 且 dry_run=true、映射正确、不实际开窗;纯 run 报 NOT_A_BRIDGE_RUN(桥接命令不越界)"
+    },
+    {
+      "id": "TC-B03", "title": "claim 双上下文:树侧节点(task 指针/ref)+ 流侧任务(requirement/design)+ 开工指引", "type": "positive", "priority": "P0",
+      "acceptance": "BR-AC-2", "codeRef": ".rdd/tests/delivery-bridge/delivery-bridge-verify.ps1:229", "sourceChange": "2026-09-15-goal-tree-delivery-orchestration", "status": "active", "crossFeature": ["goal-tree"],
+      "precondition": "桥接 run 已颁布且 round 开放",
+      "steps": ["被调动会话以对应角色 claim 指定节点", "检查输出的树侧与流侧上下文"],
+      "expected": "claim 成功;输出同时含节点侧(task_id/stage/ref 指针)与任务侧(requirement/design 文档指针)及开工指引——认领即得开工上下文,无需用户记忆分配状态"
+    },
+    {
+      "id": "TC-B04", "title": "重复唤起:第二会话得确定性冲突反馈(认领者+可领清单),引导改领;依赖阻塞直达", "type": "boundary", "priority": "P0",
+      "acceptance": "BR-AC-3", "codeRef": ".rdd/tests/delivery-bridge/delivery-bridge-verify.ps1:251", "sourceChange": "2026-09-15-goal-tree-delivery-orchestration", "status": "active", "crossFeature": ["goal-tree"],
+      "precondition": "目标节点已被第一会话认领",
+      "steps": ["第二会话对同一节点 claim", "按反馈改领清单中的未领节点", "对依赖未满足节点 claim"],
+      "expected": "第二会话得到确定性冲突反馈(含当前认领者与可领节点清单),零空转;改领成功;依赖阻塞反馈直达阻塞源"
+    },
+    {
+      "id": "TC-B05", "title": "角色不符/非映射节点/生命周期终态的确定性拒绝", "type": "negative", "priority": "P1",
+      "acceptance": "BR-AC-3", "codeRef": ".rdd/tests/delivery-bridge/delivery-bridge-verify.ps1:269", "sourceChange": "2026-09-15-goal-tree-delivery-orchestration", "status": "active", "crossFeature": [],
+      "steps": ["以错误角色 claim 节点", "claim 非本桥接映射的节点", "对终态任务节点操作"],
+      "expected": "三类误用均确定性拒绝(明确错误码),不产生半认领状态"
+    },
+    {
+      "id": "TC-B06", "title": "三查门禁:verdict≠done / citations 空 / 虚假路径 / extras.verification 缺失 全部拒绝且不流转", "type": "negative", "priority": "P0",
+      "acceptance": "BR-AC-4", "codeRef": ".rdd/tests/delivery-bridge/delivery-bridge-verify.ps1:289", "sourceChange": "2026-09-15-goal-tree-delivery-orchestration", "status": "active", "crossFeature": ["task-claim"],
+      "steps": ["分别以四类不合格交付回调执行 settle", "检查 task.json 流转与节点状态"],
+      "expected": "四类均拒绝(不合格交付不得流转为硬约束);task.json 不 advance;节点状态不被污染"
+    },
+    {
+      "id": "TC-B07", "title": "合格 settle:三查通过 → advance + 链式 graft QA 节点(父子关系/ref);QA settle → complete(lifecycle=completed)", "type": "positive", "priority": "P0",
+      "acceptance": "BR-AC-4", "codeRef": ".rdd/tests/delivery-bridge/delivery-bridge-verify.ps1:337", "sourceChange": "2026-09-15-goal-tree-delivery-orchestration", "status": "active", "crossFeature": ["task-claim", "goal-tree"],
+      "steps": ["DEV 节点合格交付 settle", "检查 task.json advance 与链式 QA 节点", "QA 节点合格交付 settle"],
+      "expected": "DEV settle 触发 task.json 对应任务 advance(QA 列就绪)并自动 graft QA 子节点(父子关系/ref 正确);QA settle 后任务 complete(lifecycle=completed);全程无手工双写"
+    },
+    {
+      "id": "TC-B08", "title": "CTO 起步链:CTO settle → advance CTO->DEV;跨任务阶段互不干扰", "type": "positive", "priority": "P1",
+      "acceptance": "BR-AC-4", "codeRef": ".rdd/tests/delivery-bridge/delivery-bridge-verify.ps1:370", "sourceChange": "2026-09-15-goal-tree-delivery-orchestration", "status": "active", "crossFeature": ["task-claim"],
+      "steps": ["CTO 阶段节点走完 claim→report→settle", "检查 task.json 流转方向", "并行推进另一任务的独立节点"],
+      "expected": "CTO settle 后 advance CTO→DEV 方向正确;多任务并行阶段互不干扰"
+    },
+    {
+      "id": "TC-B09", "title": "reclaim 双模式:dead-claim(泊位+重派接管)与 rejected-delivery(剪枝+替换节点);reported 永不重复消费", "type": "boundary", "priority": "P0",
+      "acceptance": "BR-AC-5", "codeRef": ".rdd/tests/delivery-bridge/delivery-bridge-verify.ps1:393", "sourceChange": "2026-09-15-goal-tree-delivery-orchestration", "status": "active", "crossFeature": ["goal-tree"],
+      "steps": ["制造死 claim 并 reclaim", "制造拒收交付并 reclaim", "尝试对 reported 节点再次消费"],
+      "expected": "死 claim 回收为泊位态并可重派接管;拒收交付走剪枝+替换节点路径;reported 节点永不被重复消费(-Steal 亦不可)"
+    },
+    {
+      "id": "TC-B10", "title": "status/resume:全程视图(阶段/终态计数/死 claim/pending_sync 修复)与断点恢复步骤", "type": "positive", "priority": "P1",
+      "acceptance": "BR-AC-5", "codeRef": ".rdd/tests/delivery-bridge/delivery-bridge-verify.ps1:429", "sourceChange": "2026-09-15-goal-tree-delivery-orchestration", "status": "active", "crossFeature": ["goal-tree"],
+      "steps": ["多阶段推进后调 status", "制造 pending_sync 偏差后修复", "中断后 resume"],
+      "expected": "status 呈现整批交付状态(待办/在办/完成/阻塞+死 claim);pending_sync 可修复;resume 给出断点恢复步骤,已 reported 节点不重复消费"
+    },
+    {
+      "id": "TC-B11", "title": "conclude:未全终态拒绝;全终态后产出 final-report + delivery-annex(任务终态表+check 结果)+ 租约释放", "type": "positive", "priority": "P0",
+      "acceptance": "BR-AC-6", "codeRef": ".rdd/tests/delivery-bridge/delivery-bridge-verify.ps1:464", "sourceChange": "2026-09-15-goal-tree-delivery-orchestration", "status": "active", "crossFeature": ["goal-tree"],
+      "steps": ["任务未全终态时 conclude", "推进至全部终态后 conclude", "检查结案产物与租约"],
+      "expected": "未全终态时确定性拒绝;全终态后产出 final-report(复用惯例)与 delivery-annex(任务终态表+rdd-flow check 结果);manager-lease 释放"
+    },
+    {
+      "id": "TC-B12", "title": "回归:纯 goal-tree run 零桥接文件;rdd-flow 纯流程照常;桥接命令不触碰真实归档", "type": "boundary", "priority": "P0",
+      "acceptance": "BR-AC-7", "codeRef": ".rdd/tests/delivery-bridge/delivery-bridge-verify.ps1:510", "sourceChange": "2026-09-15-goal-tree-delivery-orchestration", "status": "active", "crossFeature": ["goal-tree", "task-claim"],
+      "precondition": "套件执行前对真实 .rdd/changes/ 归档做内容快照",
+      "steps": ["运行纯 goal-tree run 全流程", "检查 run 目录是否出现桥接产物", "执行 rdd-flow 纯流程命令", "结束后比对真实归档快照"],
+      "expected": "纯 run 零桥接文件(bridge.json 等不出现);rdd-flow 纯流程行为与改动前一致(无桥接感知);真实归档零触碰——未采用 Manager 的项目完全不受影响"
+    }
+  ]
+}

@@ -7,7 +7,7 @@
 > | role id | `metric-analyst` |
 > | 中文名 | 指标分析者 |
 > | 承接性质 | Sweep / Probe（一次派发只绑定一种） |
-> | 权威来源 | `rca-roles.md` §「metric-analyst（指标分析者）」——方法变更**先改权威再同步本卡**，禁止反向 |
+> | 权威来源 | `investigation-roles.md` §「metric-analyst（指标分析者）」——方法变更**先改权威再同步本卡**，禁止反向 |
 > | 适用场景 | 连续数值时序（gauge/counter）的异常检测、onset 定位、episode 分段、跨天基线检验；冲突假设的定向证伪（probe 模式） |
 >
 > **红线**：本卡只固化通用 SRE 方法论，不含任何具体题目的答案知识。

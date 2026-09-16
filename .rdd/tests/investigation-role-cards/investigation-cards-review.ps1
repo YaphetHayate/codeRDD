@@ -1,13 +1,13 @@
-﻿# rca-role-cards 文档面复验（QA 独立验收，2026-09-10-rca-role-landing 需求1）
+﻿# investigation-role-cards 文档面复验（QA 独立验收；源自 2026-09-10-rca-role-landing 需求1，2026-09-10 随 rca-roles → investigation-roles 更名同步）
 # 断言：5 卡要素齐全（TC-001）、红线零基准题目知识（TC-002）、
 #       四方引用链无断链（TC-003）、卡 schema 与派发契约可填槽（TC-004）。
-# 用法：powershell -NoProfile -ExecutionPolicy Bypass -File rca-cards-review.ps1
+# 用法：powershell -NoProfile -ExecutionPolicy Bypass -File investigation-cards-review.ps1
 $ErrorActionPreference = 'Stop'
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 
 $root = Split-Path -Parent (Split-Path -Parent (Split-Path -Parent $PSScriptRoot))
 $RefsDir  = Join-Path $root 'rdd-engine/references'
-$CardsDir = Join-Path $RefsDir 'rca-roles'
+$CardsDir = Join-Path $RefsDir 'investigation-roles'
 $Roles    = @('data-prep', 'metric-analyst', 'log-analyst', 'trace-analyst', 'root-cause-analyst')
 $Analysts = @('metric-analyst', 'log-analyst', 'trace-analyst')
 
@@ -17,9 +17,9 @@ function Assert-True { param([bool]$Cond, [string]$Name, [string]$Detail = '')
     if ($Cond) { Write-Output ("PASS  {0}" -f $Name) } else { Write-Output ("FAIL  {0}   {1}" -f $Name, $Detail) }
 }
 
-$authority = Get-Content (Join-Path $RefsDir 'rca-roles.md') -Raw -Encoding UTF8
+$authority = Get-Content (Join-Path $RefsDir 'investigation-roles.md') -Raw -Encoding UTF8
 $dispatch  = Get-Content (Join-Path $RefsDir 'task-dispatch-guide.md') -Raw -Encoding UTF8
-$loopGuide = Get-Content (Join-Path $RefsDir 'tree-run-guide.md') -Raw -Encoding UTF8
+$loopGuide = Get-Content (Join-Path $RefsDir 'goal-tree-guide.md') -Raw -Encoding UTF8
 $cards = @{}
 foreach ($r in $Roles) { $cards[$r] = Get-Content (Join-Path $CardsDir "$r.md") -Raw -Encoding UTF8 }
 
@@ -64,13 +64,13 @@ Assert-True ($redlineHits.Count -eq 0) 'TC-002 redline: cards carry generic SRE 
 # ===== TC-003 引用链：权威文件 <-> 卡 <-> 派发契约 <-> 循环指南 =====
 $chain = @()
 foreach ($r in $Roles) {
-    if ($authority.IndexOf("rca-roles/$r.md") -lt 0) { $chain += "authority -> $r.md link missing" }
-    if ($dispatch.IndexOf("rca-roles/$r.md") -lt 0) { $chain += "dispatch -> $r.md link missing" }
-    $secTitle = [regex]::Match($cards[$r], 'rca-roles\.md` §「([^」]+)」').Groups[1].Value
+    if ($authority.IndexOf("investigation-roles/$r.md") -lt 0) { $chain += "authority -> $r.md link missing" }
+    if ($dispatch.IndexOf("investigation-roles/$r.md") -lt 0) { $chain += "dispatch -> $r.md link missing" }
+    $secTitle = [regex]::Match($cards[$r], 'investigation-roles\.md` §「([^」]+)」').Groups[1].Value
     if ($secTitle -eq '' -or $authority.IndexOf("## $secTitle") -lt 0) { $chain += "$r.md authority-section anchor missing" }
     if ($cards[$r].IndexOf('task-dispatch-guide.md') -lt 0 -or $cards[$r].IndexOf('附录 A.2') -lt 0) { $chain += "$r.md -> dispatch A.2 link missing" }
 }
-if ($loopGuide.IndexOf('rca-roles.md') -lt 0 -or $loopGuide.IndexOf('角色卡嵌入点') -lt 0) { $chain += 'loop guide embed point missing' }
+if ($loopGuide.IndexOf('investigation-roles.md') -lt 0 -or $loopGuide.IndexOf('角色卡嵌入点') -lt 0) { $chain += 'loop guide embed point missing' }
 Assert-True ($chain.Count -eq 0) 'TC-003 cross-reference chain intact in all four directions' ($chain -join '; ')
 
 # ===== TC-004 可填槽：卡 schema 与附录 A 机械契约同名对齐 =====

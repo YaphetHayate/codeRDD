@@ -41,7 +41,7 @@ description: >
 
 ### 优先级 A — 用户指定归档路径
 
-用户提供了归档目录路径 → 调用 `rdd-flow show -Archive <path>` 读取 task.json 任务路由，读取 requirement.md。
+用户提供了归档目录路径，或首条消息为应用层指针消息（`请处理 .rdd/changes/archive/<name>/ 下的需求。`，Plus/dsh 自动交接入口，角色 preset 已绑定）→ 提取归档路径，调用 `rdd-flow show -Archive <path>` 读取 task.json 任务路由，读取 requirement.md。
 
 ### 优先级 B — 自动查找最新归档
 

@@ -5,8 +5,8 @@ node_modules/
 # RDD workflow runtime data
 .rdd/changes/
 .rdd/handoff/
-# tree-run runtime data (state files are the sole authority; gitignored like .rdd/changes/)
-.rdd/tree-runs/
+# goal-tree runtime data (state files are the sole authority; gitignored like .rdd/changes/)
+.rdd/goal-trees/
 # exploration cache: machine-local runtime data (zero-init on fresh clone; vectors rebuildable via embed-backfill)
 .rdd/exploration/
 # rdd e2e sandbox homes / scratch

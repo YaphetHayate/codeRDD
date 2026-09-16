@@ -18,37 +18,85 @@
       "lastChange": "2026-08-29-search-precision-ranking"
     },
     {
-      "feature": "tree-run",
+      "feature": "goal-tree",
       "relatedCode": [
-        "rdd-engine/scripts/tree-run.ps1",
-        "rdd-engine/scripts/tree-run.cmd",
-        "rdd-engine/scripts/tree-leaf.ps1",
-        "rdd-engine/scripts/tree-leaf.cmd",
-        "rdd-engine/references/tree-run-guide.md",
+        "rdd-engine/scripts/goal-tree.ps1",
+        "rdd-engine/scripts/goal-tree.cmd",
+        "rdd-engine/scripts/goal-tree-leaf.ps1",
+        "rdd-engine/scripts/goal-tree-leaf.cmd",
+        "rdd-engine/references/goal-tree-guide.md",
         "rdd-engine/references/task-dispatch-guide.md"
       ],
       "testCode": [
-        ".rdd/tests/tree-run/tree-run-verify.ps1",
-        "rdd-engine/tests/test-tree-run-gates.ps1"
+        ".rdd/tests/goal-tree/goal-tree-verify.ps1",
+        "rdd-engine/tests/test-goal-tree-gates.ps1"
       ],
-      "activeCount": 33,
+      "activeCount": 40,
       "deprecatedCount": 0,
-      "lastUpdated": "2026-09-10",
-      "lastChange": "2026-09-10-rca-role-landing"
+      "lastUpdated": "2026-09-15",
+      "lastChange": "2026-09-15-goal-tree-delivery-orchestration"
     },
     {
-      "feature": "rca-role-cards",
+      "feature": "delivery-bridge",
       "relatedCode": [
-        "rdd-engine/references/rca-roles.md",
-        "rdd-engine/references/rca-roles/"
+        "rdd-engine/scripts/delivery-bridge.ps1",
+        "rdd-engine/scripts/delivery-bridge.cmd",
+        "rdd-engine/scripts/goal-tree.ps1",
+        "rdd-engine/scripts/goal-tree-leaf.ps1",
+        "rdd-engine/scripts/rdd-flow.ps1",
+        "rdd-engine/scripts/start-role.ps1",
+        "rdd-engine/references/manager-guide.md"
       ],
       "testCode": [
-        ".rdd/tests/rca-role-cards/rca-cards-review.ps1"
+        ".rdd/tests/delivery-bridge/delivery-bridge-verify.ps1"
+      ],
+      "activeCount": 12,
+      "deprecatedCount": 0,
+      "lastUpdated": "2026-09-15",
+      "lastChange": "2026-09-15-goal-tree-delivery-orchestration"
+    },
+    {
+      "feature": "investigation-role-cards",
+      "relatedCode": [
+        "rdd-engine/references/investigation-roles.md",
+        "rdd-engine/references/investigation-roles/"
+      ],
+      "testCode": [
+        ".rdd/tests/investigation-role-cards/investigation-cards-review.ps1"
       ],
       "activeCount": 4,
       "deprecatedCount": 0,
       "lastUpdated": "2026-09-10",
       "lastChange": "2026-09-10-rca-role-landing"
+    },
+    {
+      "feature": "task-claim",
+      "relatedCode": [
+        "rdd-engine/scripts/rdd-flow.ps1",
+        "rdd-engine/references/task-routing.md"
+      ],
+      "testCode": [
+        "rdd-engine/tests/test-task-claim.ps1"
+      ],
+      "activeCount": 21,
+      "deprecatedCount": 0,
+      "lastUpdated": "2026-09-16",
+      "lastChange": "2026-09-15-goal-tree-delivery-orchestration"
+    },
+    {
+      "feature": "role-handoff",
+      "relatedCode": [
+        "rdd-engine/scripts/start-role.ps1",
+        "rdd-engine/references/transition-guide.md",
+        "rdd-engine/SKILL.md",
+        "scripts/build-dsh-presets.mjs",
+        "scripts/install-rdd-skills.ps1"
+      ],
+      "testCode": [".rdd/tests/role-handoff/run-tests.ps1"],
+      "activeCount": 20,
+      "deprecatedCount": 0,
+      "lastUpdated": "2026-09-16",
+      "lastChange": "2026-09-15-goal-tree-delivery-orchestration"
     }
   ]
 }

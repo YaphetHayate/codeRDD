@@ -100,6 +100,7 @@ QA 在工作流中有两个触发时机，职责范围不同：
 
 ### 任务路由操作
 
+- **认领先行（收到任务第一件事）**：锁定任务后、读取文档前，调用 `claim -Role QA -TaskId <n>` 写入认领记录并获取任务信息。返回 `claimed:false` 冲突时向用户阐明"该任务已由 QA 于 <时间> 认领（另一窗口可能正在处理）"，由用户裁决：确认抢占（带 `-Force` 重新认领）或换任务。协议详见 `rdd-engine/references/task-routing.md`「认领协议」
 - 遵循 `rdd-engine/references/task-routing.md`
 - 用 `show -Role QA` 定位任务；验证通过后用 `complete` 标记闭环；发现问题用 `reopen` 回退
 
@@ -108,6 +109,7 @@ QA 在工作流中有两个触发时机，职责范围不同：
 ## 完成前置硬检查
 
 验证决策完成（complete 闭环 / reopen 回 DEV）→ **必须**按 `rdd-engine/references/transition-guide.md` 上游协议引导下一步（advance 路由 → next → 推荐 → start/handoff）。
+第 3 步仍须用户确认目标角色；第 4 步调用 `start-role.cmd -Role <下游角色> -TaskId <n>`——脚本按 `RDD_RUNTIME` → `DSH_WEB_URL` → CLI 判据链自选后端（agent 不判断模式），dsh 下自动创建 preset 已绑定的会话并投递 B2 指针消息，不可达时报错并回退人工指引。
 
 ## 执行（委托）
 

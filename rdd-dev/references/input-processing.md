@@ -21,6 +21,8 @@ $rdd = $null; $t = $null; try { $t = git rev-parse --show-toplevel } catch { }; 
 
 两种模式下都只处理指针指向的单条任务，不扫描整个归档。
 
+**认领先行（拉到 packet 后的第一件事）**：读取文档前，调用 `claim -Role DEV -TaskId <n> -Archive <归档路径>` 认领该任务并获取任务信息。返回 `claimed:false` 冲突时向用户阐明"该任务已由 DEV 于 <时间> 认领（另一窗口可能正在处理）"，由用户裁决：确认抢占（带 `-Force` 重新认领）或换任务。协议见 `rdd-engine/references/task-routing.md`「认领协议」。
+
 ## 优先级 A — 用户指定了文档
 
 用户提供了需求文档或设计文档路径，或者明确说"按设计方案开发 XX"。
@@ -47,6 +49,8 @@ DEV 有两种入口方式：
 $rdd = $null; $t = $null; try { $t = git rev-parse --show-toplevel } catch { }; foreach ($c in @($env:RDD_ENGINE_HOME; if ($t) { (Get-ChildItem $t -Recurse -Directory -Depth 3 -Filter 'rdd-engine').FullName }; "$HOME\.rdd\engine\current")) { if ($c -and (Test-Path "$c\scripts\rdd-flow.cmd")) { $rdd = $c; break } }; if (-not $rdd) { throw "rdd-engine 未定位（三级定位链：RDD_ENGINE_HOME → 项目内 rdd-engine → ~\.rdd\engine\current 全 miss）。安装/排障：GitHub Release 下载 rdd-engine.tgz 后运行 scripts/install-rdd-engine.ps1；协议详见 rdd-engine/references/engine-location.md" }; & "$rdd\scripts\rdd-flow.cmd" -Command handoff -Role DEV
 ```
 
+拉到交接包后同样遵循「认领先行」：按 B3 的步骤锁定单条后第一件事 `claim` 认领，再开工。
+
 ### B3 — 应用层指针消息（app-driven）
 
 收到形如 `请处理 .rdd/changes/archive/<archive-name>/ 下的需求。` 的消息时，识别为应用层交接触发（Plus 模式）。提取归档路径，主动拉取交接包：
@@ -60,11 +64,12 @@ $rdd = $null; $t = $null; try { $t = git rev-parse --show-toplevel } catch { }; 
 脚本自动定位最新归档，生成 DEV 的交接包。读取交接包后：
 
 1. **锁定单条**：handoff 仅 1 条 DEV 任务 → 直接处理；多条时锁定一条深耕（推荐依赖根/优先级高的，其余留待后续 `/new` 会话）。一次会话只实现一条需求
-2. 只处理锁定任务对应的需求/设计文档，不默认扫描整个归档目录
-3. 不读取 `ignored` 中的文档，除非依赖缺失、验收标准不清或用户明确要求
-4. 代码探索从交接包 `involvedFiles` 和对应需求/设计文档开始
-5. 按 task 的 `workMode` 进入设计引导或需求引导模式
-6. 设计文档（UX 规格）「视觉稿参考」章节登记的 mockup（如 `design/mockups/final.html`）必须读取作为视觉参考，不属扫描禁令范围；具体参数以规格文档为准
+2. **认领任务（第一件事）**：锁定后、读取文档前，调用 `claim -Role DEV -TaskId <n>` 认领并获取任务信息（`claimed:true` → 开工；`claimed:false` 冲突 → 向用户阐明认领角色与时间，由用户裁决 `-Force` 抢占或换任务）
+3. 只处理锁定任务对应的需求/设计文档，不默认扫描整个归档目录
+4. 不读取 `ignored` 中的文档，除非依赖缺失、验收标准不清或用户明确要求
+5. 代码探索从交接包 `involvedFiles` 和对应需求/设计文档开始
+6. 按 task 的 `workMode` 进入设计引导或需求引导模式
+7. 设计文档（UX 规格）「视觉稿参考」章节登记的 mockup（如 `design/mockups/final.html`）必须读取作为视觉参考，不属扫描禁令范围；具体参数以规格文档为准
 
 ### 脚本返回值处理
 

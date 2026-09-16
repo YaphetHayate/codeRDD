@@ -1,0 +1,42 @@
+{
+  "feature": "investigation-role-cards",
+  "status": "active",
+  "relatedCode": [
+    "rdd-engine/references/investigation-roles.md",
+    "rdd-engine/references/investigation-roles/data-prep.md",
+    "rdd-engine/references/investigation-roles/metric-analyst.md",
+    "rdd-engine/references/investigation-roles/log-analyst.md",
+    "rdd-engine/references/investigation-roles/trace-analyst.md",
+    "rdd-engine/references/investigation-roles/root-cause-analyst.md"
+  ],
+  "testCode": [
+    ".rdd/tests/investigation-role-cards/investigation-cards-review.ps1"
+  ],
+  "lastChange": "2026-09-10-rca-role-landing",
+  "cases": [
+    {
+      "id": "TC-001", "title": "5 张角色卡齐全且要素覆盖:对象/性质/编号方法/交付 schema/验收挂钩+probe 差异声明", "type": "positive", "priority": "P0",
+      "acceptance": "req1-AC1", "codeRef": ".rdd/tests/investigation-role-cards/investigation-cards-review.ps1:34", "sourceChange": "2026-09-10-rca-role-landing", "status": "active", "crossFeature": [],
+      "steps": ["校验 5 卡存在与六要素小节", "校验三分析角色 probe 差异非空、两非分析角色显式无", "校验权威文件编号方法步骤逐一落在卡内"],
+      "expected": "三项 PASS:要素齐备;probe 声明正确;方法步骤无缺失"
+    },
+    {
+      "id": "TC-002", "title": "红线:全部角色卡零基准题目特有知识(事故时间戳/实体名/事故编号 grep 零命中)", "type": "negative", "priority": "P0",
+      "acceptance": "req1-AC3", "codeRef": ".rdd/tests/investigation-role-cards/investigation-cards-review.ps1:62", "sourceChange": "2026-09-10-rca-role-landing", "status": "active", "crossFeature": [],
+      "steps": ["对 5 卡执行红线正则 grep:mysql/tomcat/bank/cpu-数字/14 时段时间戳/rca-四位以上编号"],
+      "expected": "零命中——卡内容为通用 SRE 方法论(方法依据含事故细节,仅存权威文件不进卡)"
+    },
+    {
+      "id": "TC-003", "title": "引用链四方互链无断链:investigation-roles ↔ 卡 ↔ task-dispatch-guide ↔ goal-tree-guide,权威归属单向", "type": "positive", "priority": "P1",
+      "acceptance": "req1-AC4", "codeRef": ".rdd/tests/investigation-role-cards/investigation-cards-review.ps1:74", "sourceChange": "2026-09-10-rca-role-landing", "status": "active", "crossFeature": [],
+      "steps": ["权威/派发双向链接逐卡存在", "卡内权威来源小节锚点在 investigation-roles.md 实际存在", "goal-tree-guide 角色卡嵌入点存在"],
+      "expected": "四方链接全部落点存在,无断链;同步方向先权威后卡,禁止反向"
+    },
+    {
+      "id": "TC-004", "title": "可填槽:卡交付 schema 与附录 A 机械契约同名对齐,整卡可嵌入派发模板", "type": "positive", "priority": "P1",
+      "acceptance": "req1-AC2", "codeRef": ".rdd/tests/investigation-role-cards/investigation-cards-review.ps1:88", "sourceChange": "2026-09-10-rca-role-landing", "status": "active", "crossFeature": ["goal-tree"],
+      "steps": ["校验 extras 命名空间(extras.deliverables/extras.conclusion/extras.probe/manifest.filled)与附录 A.2 同名", "校验 falsification_duty 与 GRAFT_FALSIFICATION_REQUIRED 派发字段闭环"],
+      "expected": "命名空间与派发字段逐一同名对齐;卡自包含,Manager 填槽零即兴改写"
+    }
+  ]
+}

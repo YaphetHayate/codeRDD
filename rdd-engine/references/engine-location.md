@@ -76,6 +76,6 @@ if (-not $rdd) { throw "rdd-engine 未定位（……见单行版全文……）
 ## 边界与适用范围
 
 - **仅 Windows**（本期验收）：`.cmd` 包装器 + junction；pwsh 跨平台预留后续评估。
-- **git 必需**：引擎数据落点（`.rdd/changes|tree-runs|labs`）全部由 git-root 推导，非 git 项目 CLI 不可用（继承现状，README 已声明）。
+- **git 必需**：引擎数据落点（`.rdd/changes|goal-trees|labs`）全部由 git-root 推导，非 git 项目 CLI 不可用（继承现状，README 已声明）。
 - **start-role**：Plus 后端（`RDD_RUNTIME=app`）仅定制环境生效；标准 DSH 环境无此变量，脚本内建自动降级 CLI 后端，交接主载体是 handoff/start 输出——随包分发，零改动。
 - **sync-ux-subagents**：opencode 流专用；标准 DSH 环境惰性（不调用即无影响）——随包分发，零改动。

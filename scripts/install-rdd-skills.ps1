@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     Install / remove the RDD role system (skills + presets) at the user level.
 
@@ -13,6 +13,21 @@
     Install semantics: clean-then-copy (target rdd-* dirs are removed before the
     new copy lands, so upgrades never leave stale files behind). Re-running the
     installer IS the upgrade; pointing it at an older tarball IS the rollback.
+
+    Reparse-point protection: a target rdd-* directory that is a junction or a
+    symbolic link is NEVER deleted - it is the dev-machine form of a skill or
+    engine pointer, and the skills/rdd-engine entry of the package holds only
+    SKILL.md, so overwriting the link would truncate a whole engine checkout.
+    Install keeps such a link when the files the package would place there are
+    already byte-identical behind it, and fails before touching any root when
+    they are not; -Remove refuses those links and exits non-zero, listing what
+    it left in place.
+
+    Package guidance gate: after extraction and before anything lands, every
+    packaged preset must carry the start-role.cmd handoff guidance and must not
+    carry the retired manual-session wording - a stale tarball fails here
+    instead of silently reinstalling the old persona. After the copy the
+    installed skills and presets are checked byte-for-byte against the package.
 
     Post-install self-checks (warnings, not failures):
       1. engine three-tier location chain probe (skills reference rdd-engine
@@ -42,7 +57,9 @@
     powershell -ExecutionPolicy Bypass -File scripts\install-rdd-skills.ps1 -Tarball .\rdd-skills.tgz
 
 .NOTES
-    Exit codes: 0 = installed (or removed) & self-checked; 1 = actionable failure.
+    Exit codes: 0 = installed (or removed) & self-checked; 1 = actionable failure
+    (including a protected reparse point that -Remove left in place, or a package
+    whose presets carry stale guidance).
 #>
 [CmdletBinding()]
 param(
@@ -66,6 +83,32 @@ function Info {
     Write-Host $Message
 }
 
+function Test-ReparsePoint {
+    # Junctions/symbolic links are the dev-machine form of a skill or engine
+    # pointer. Deleting one replaces it with a plain directory and breaks the
+    # link, so no code path in this installer ever removes one.
+    param([string]$Path)
+    $item = Get-Item -LiteralPath $Path -Force -ErrorAction SilentlyContinue
+    if (-not $item) { return $false }
+    return [bool]($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint)
+}
+
+function Test-EntryContentPreserved {
+    # True when every file the package would install for one entry is already
+    # byte-identical behind the link. Only this case lets a protected reparse
+    # point stand in for a normal clean-then-copy of that entry.
+    param([string]$SourceDir, [string]$TargetDir)
+    foreach ($file in Get-ChildItem -LiteralPath $SourceDir -Recurse -File) {
+        $rel = $file.FullName.Substring($SourceDir.Length).TrimStart('\', '/')
+        $dst = Join-Path $TargetDir $rel
+        if (-not (Test-Path -LiteralPath $dst -PathType Leaf)) { return $false }
+        $srcHash = (Get-FileHash -LiteralPath $file.FullName -Algorithm SHA256).Hash
+        $dstHash = (Get-FileHash -LiteralPath $dst -Algorithm SHA256).Hash
+        if ($srcHash -ne $dstHash) { return $false }
+    }
+    return $true
+}
+
 if (-not $DshHome) { $DshHome = if ($env:DSH_HOME) { $env:DSH_HOME } else { Join-Path $HOME '.dsh' } }
 if (-not $LedgerHome) { $LedgerHome = Join-Path $HOME '.rdd\skills' }
 $skillsRoot = Join-Path $DshHome 'skills'
@@ -75,13 +118,27 @@ $ledgerPath = Join-Path $LedgerHome 'manifest.json'
 # --- Remove flow -------------------------------------------------------------
 if ($Remove) {
     Info "[1/2] Removing rdd-* from user-level roots..."
+    $keptLinks = @()
     foreach ($root in @($skillsRoot, $presetsRoot)) {
         if (Test-Path -LiteralPath $root) {
             Get-ChildItem -LiteralPath $root -Directory -Filter 'rdd-*' -ErrorAction SilentlyContinue | ForEach-Object {
+                if (Test-ReparsePoint -Path $_.FullName) {
+                    $keptLinks += $_.FullName
+                    return
+                }
                 Info "  removing $($_.FullName)"
                 Remove-Item -LiteralPath $_.FullName -Recurse -Force
             }
         }
+    }
+    if ($keptLinks.Count -gt 0) {
+        Write-Host "[ERROR] refusing to delete reparse points (junction/symbolic link):" -ForegroundColor Red
+        foreach ($link in $keptLinks) {
+            Write-Host "        $link -> $((Get-Item -LiteralPath $link -Force).Target)" -ForegroundColor Red
+        }
+        Write-Host "        These point at another checkout - delete them by hand only if they are truly obsolete." -ForegroundColor Yellow
+        Write-Host "        Ledger kept: the uninstall is incomplete." -ForegroundColor Yellow
+        exit 1
     }
     if (Test-Path -LiteralPath $ledgerPath) {
         Remove-Item -LiteralPath $ledgerPath -Force
@@ -140,16 +197,73 @@ try {
         Fail "Extracted tarball is missing skills/ or presets/ subtrees - not a valid rdd-skills layout. Re-download from the GitHub Release."
     }
 
+    # Guidance gate: a stale tarball silently reinstalls the retired persona.
+    # Check the packaged presets here, before anything lands on disk.
+    foreach ($entry in Get-ChildItem -LiteralPath $pkgPresets -Directory -Filter 'rdd-*') {
+        $persona = [System.IO.File]::ReadAllText((Join-Path $entry.FullName 'agent.cordis.yml'))
+        if ($persona -notmatch 'start-role\.cmd') {
+            Fail "package preset $($entry.Name) lacks the start-role.cmd handoff guidance - stale tarball. Rebuild with scripts\build-skills-package.mjs."
+        }
+        if ($persona -match '新建目标角色会话') {
+            Fail "package preset $($entry.Name) still carries the retired manual-session guidance - stale tarball. Rebuild with scripts\build-skills-package.mjs."
+        }
+    }
+
     # --- 4. Clean-then-copy distribution (upgrade = clean overwrite) ---------
+    $presetEntries = @(Get-ChildItem -LiteralPath $pkgPresets -Directory -Filter 'rdd-*')
+    $skillEntries = @(Get-ChildItem -LiteralPath $pkgSkills -Directory -Filter 'rdd-*')
+
+    # Pre-flight: never delete a reparse point, and fail before any root is
+    # modified when one does not already carry the package content.
+    foreach ($root in @(@($presetsRoot, $presetEntries), @($skillsRoot, $skillEntries))) {
+        $targetRoot, $entries = $root
+        foreach ($entry in $entries) {
+            $dst = Join-Path $targetRoot $entry.Name
+            if (-not (Test-Path -LiteralPath $dst)) { continue }
+            if (-not (Test-ReparsePoint -Path $dst)) { continue }
+            if (-not (Test-EntryContentPreserved -SourceDir $entry.FullName -TargetDir $dst)) {
+                Fail "refusing to overwrite reparse point '$dst' (junction/symbolic link): its content differs from the package. Remove the link, or install into another -DshHome."
+            }
+        }
+    }
+
     Info "[2/5] Distributing into user-level roots (clean-then-copy)..."
-    foreach ($root in @(@($presetsRoot, $pkgPresets), @($skillsRoot, $pkgSkills))) {
-        $targetRoot, $sourceRoot = $root
+    foreach ($root in @(@($presetsRoot, $presetEntries), @($skillsRoot, $skillEntries))) {
+        $targetRoot, $entries = $root
         New-Item -ItemType Directory -Path $targetRoot -Force | Out-Null
-        Get-ChildItem -LiteralPath $sourceRoot -Directory -Filter 'rdd-*' | ForEach-Object {
-            $dst = Join-Path $targetRoot $_.Name
-            if (Test-Path -LiteralPath $dst) { Remove-Item -LiteralPath $dst -Recurse -Force }
-            Copy-Item -LiteralPath $_.FullName -Destination $dst -Recurse
-            Info "  $($_.Name) -> $dst"
+        foreach ($entry in $entries) {
+            $dst = Join-Path $targetRoot $entry.Name
+            if (Test-Path -LiteralPath $dst) {
+                if (Test-ReparsePoint -Path $dst) {
+                    Info "  preserved reparse point (content already matches): $dst"
+                    continue
+                }
+                Remove-Item -LiteralPath $dst -Recurse -Force
+            }
+            Copy-Item -LiteralPath $entry.FullName -Destination $dst -Recurse
+            Info "  $($entry.Name) -> $dst"
+        }
+    }
+
+    # Post-copy check: every installed entry must equal the packaged one (a link
+    # kept in place or a silently failed copy would otherwise pass unnoticed).
+    foreach ($entry in $presetEntries) {
+        $installed = Join-Path $presetsRoot $entry.Name
+        foreach ($name in @('agent.cordis.yml', 'preset.yml')) {
+            $src = Join-Path $entry.FullName $name
+            $dst = Join-Path $installed $name
+            if (-not (Test-Path -LiteralPath $dst -PathType Leaf)) { Fail "installed preset missing after copy: $dst" }
+            if ((Get-FileHash -LiteralPath $src -Algorithm SHA256).Hash -ne (Get-FileHash -LiteralPath $dst -Algorithm SHA256).Hash) {
+                Fail "installed preset differs from the package: $dst"
+            }
+        }
+    }
+    foreach ($entry in $skillEntries) {
+        $src = Join-Path $entry.FullName 'SKILL.md'
+        $dst = Join-Path (Join-Path $skillsRoot $entry.Name) 'SKILL.md'
+        if (-not (Test-Path -LiteralPath $dst -PathType Leaf)) { Fail "installed skill missing after copy: $dst" }
+        if ((Get-FileHash -LiteralPath $src -Algorithm SHA256).Hash -ne (Get-FileHash -LiteralPath $dst -Algorithm SHA256).Hash) {
+            Fail "installed skill differs from the package: $dst"
         }
     }
 

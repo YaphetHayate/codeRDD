@@ -1,13 +1,13 @@
-# RCA 角色族（rca-roles）
+# 调查角色族（investigation-roles）
 
-> **定位**：OpenRCA 类遥测根因调查的 **worker 角色权威定义**，双职责索引：
+> **定位**：证据驱动调查类长程任务的 **worker 角色权威定义**——适用于任何以静态工件为观测面、需要多轮"派发 → 回写 → 再规划"推进的调查场景（遥测根因调查是首个验证场景），双职责索引：
 >
-> 1. **权威索引（本文件）**：角色族总览、命名规范、各角色方法与 schema 的权威正文、方法依据（含事故论证，**不进卡**）；
-> 2. **落地物索引（`rca-roles/` 目录）**：5 张自包含角色卡——Manager 派发时按承接性质选卡、整卡嵌入派发 prompt（选卡与嵌入见 `task-dispatch-guide.md` §二、`tree-run-guide.md`「worker 派发模板」）。
+> 1. **权威索引（本文件）**：角色族总览、命名规范、各角色方法与 schema 的权威正文（来源论证见文末「来源与验证记录」，**不进卡**）；
+> 2. **落地物索引（`investigation-roles/` 目录）**：5 张自包含角色卡——Manager 派发时按承接性质选卡、整卡嵌入派发 prompt（选卡与嵌入见 `task-dispatch-guide.md` §二、`goal-tree-guide.md`「worker 派发模板」）。
 >
-> **同步方向固定**：方法变更**先改本文件再同步卡**，卡头部标注权威来源小节，禁止反向。Manager 按 `task-dispatch-guide.md` 定型任务时，从本文件取角色模板填槽；worker 按角色的方法预设与交付 schema 执行。与 `tree-run-guide.md`（循环权威）、`task-dispatch-guide.md`（派发契约权威）配套——本文件管"**谁来干、用什么方法干、交什么**"。
+> **同步方向固定**：方法变更**先改本文件再同步卡**，卡头部标注权威来源小节，禁止反向。Manager 按 `task-dispatch-guide.md` 定型任务时，从本文件取角色模板填槽；worker 按角色的方法预设与交付 schema 执行。与 `goal-tree-guide.md`（循环权威）、`task-dispatch-guide.md`（派发契约权威）配套——本文件管"**谁来干、用什么方法干、交什么**"。
 >
-> **版本**：V1 草案（2026-09-10）。来源事故：rca-233149 / rca-100303 尸检（详见各角色"方法依据"）。
+> **版本**：V1.1（2026-09-10：`rca-roles` 更名 `investigation-roles`，与 OpenRCA 基准解耦——定位改写为通用调查场景，事故题号等基准语境集中降级至文末「来源与验证记录」；方法正文 V1 不变）。
 >
 > **红线**：角色固化的是**通用 SRE 方法论**（基线构造、episode 纪律、覆盖对账、因果排序、阴性证据规范），**禁止沉淀任何基准特有答案知识**。方法论对全部题目一视同仁才保得住评测有效性。
 
@@ -23,12 +23,12 @@
 
 | ID | 中文名 | 承接性质 | 一句话职责 | 落地卡 |
 |---|---|---|---|---|
-| `manager` | 协调者 | —（tree-run 管理面） | 只管派发与门禁，**不做终局综合** | —（管理面协议由 `tree-run-guide.md` 承载） |
-| `data-prep` | 备料者 | Transform | 切窗、基线表、规模预采、缓存——对数据负责 | [`rca-roles/data-prep.md`](rca-roles/data-prep.md) |
-| `metric-analyst` | 指标分析者 | Sweep / Probe | 时序异常检测、onset 定位、episode 分段、跨天基线——对行为负责 | [`rca-roles/metric-analyst.md`](rca-roles/metric-analyst.md) |
-| `log-analyst` | 日志分析者 | Sweep / Probe | 错误模式抽取、阴性证据声明——对证词负责 | [`rca-roles/log-analyst.md`](rca-roles/log-analyst.md) |
-| `trace-analyst` | 链路分析者 | Sweep / Probe | 传播路径还原、上下游因果仲裁——对扩散负责 | [`rca-roles/trace-analyst.md`](rca-roles/trace-analyst.md) |
-| `root-cause-analyst` | 根因推理者 | Synthesis | 消耗全部 ledger 保证等级，产出带证据链的终局结论——对结论负责 | [`rca-roles/root-cause-analyst.md`](rca-roles/root-cause-analyst.md) |
+| `manager` | 协调者 | —（goal-tree 管理面） | 只管派发与门禁，**不做终局综合** | —（管理面协议由 `goal-tree-guide.md` 承载） |
+| `data-prep` | 备料者 | Transform | 切窗、基线表、规模预采、缓存——对数据负责 | [`investigation-roles/data-prep.md`](investigation-roles/data-prep.md) |
+| `metric-analyst` | 指标分析者 | Sweep / Probe | 时序异常检测、onset 定位、episode 分段、跨天基线——对行为负责 | [`investigation-roles/metric-analyst.md`](investigation-roles/metric-analyst.md) |
+| `log-analyst` | 日志分析者 | Sweep / Probe | 错误模式抽取、阴性证据声明——对证词负责 | [`investigation-roles/log-analyst.md`](investigation-roles/log-analyst.md) |
+| `trace-analyst` | 链路分析者 | Sweep / Probe | 传播路径还原、上下游因果仲裁——对扩散负责 | [`investigation-roles/trace-analyst.md`](investigation-roles/trace-analyst.md) |
+| `root-cause-analyst` | 根因推理者 | Synthesis | 消耗全部 ledger 保证等级，产出带证据链的终局结论——对结论负责 | [`investigation-roles/root-cause-analyst.md`](investigation-roles/root-cause-analyst.md) |
 
 轮次编排参考（manager 拍板）：R1 `data-prep` → R2 三通道 Sweep（manifest 铺满查询域）→ R3 冲突 probe + `root-cause-analyst` 定案。
 
@@ -36,7 +36,7 @@
 
 ## data-prep（备料者）
 
-> **落地卡**：[`rca-roles/data-prep.md`](rca-roles/data-prep.md)（Manager 派发 Transform 任务时整卡嵌入）
+> **落地卡**：[`investigation-roles/data-prep.md`](investigation-roles/data-prep.md)（Manager 派发 Transform 任务时整卡嵌入）
 
 **对象**：原始遥测文件（metric/log/trace CSV）。**不产生任何关于系统健康的断言**，只产生关于数据的元断言。
 
@@ -48,13 +48,12 @@
 
 **交付 schema**：`{ caches: [{ref, tmin, tmax, rows}], baseline_table: ref, scale_census: [{file, rows, cols, cadence_s}], anomalies_noted: [] }`。
 **验收挂钩**：对账验收（Transform）+ R8（clean 工件遥测自证）。
-**方法依据**：rca-100303 中 n2 与 n5 各自整读同一 125 万行文件、各自发明基线统计（一错一对）——备料统一地基后，分析者只比方法不比地基。
 
 ---
 
 ## metric-analyst（指标分析者）
 
-> **落地卡**：[`rca-roles/metric-analyst.md`](rca-roles/metric-analyst.md)（Manager 派发 Sweep / Probe 任务时整卡嵌入）
+> **落地卡**：[`investigation-roles/metric-analyst.md`](investigation-roles/metric-analyst.md)（Manager 派发 Sweep / Probe 任务时整卡嵌入）
 
 **对象**：连续数值时序（gauge/counter）。证据是**相对的**——必须对照基线才有意义。
 
@@ -67,13 +66,12 @@
 
 **交付 schema**：findings 逐 episode 行（entity/interval/evidence/note）+ 每候选的跨天检验结论 + `deferred:` 行（必填）。
 **验收挂钩**：Sweep 覆盖图（R1 完整性）+ R2 反折叠 + spotcheck。
-**方法依据**：rca-100303 n2 用窗口均值 z 漏掉 14:57 onset、误排 Mysql02 读量塌缩；n5 的 median/MAD 逐采样 ranker 一次抓对——两者合并固化。
 
 ---
 
 ## log-analyst（日志分析者）
 
-> **落地卡**：[`rca-roles/log-analyst.md`](rca-roles/log-analyst.md)（Manager 派发 Sweep / Probe 任务时整卡嵌入）
+> **落地卡**：[`investigation-roles/log-analyst.md`](investigation-roles/log-analyst.md)（Manager 派发 Sweep / Probe 任务时整卡嵌入）
 
 **对象**：离散文本事件。证据是**绝对的**——一行 OOM 堆栈本身就是断言；但"日志干净"只能排除**被埋点过的机制**。
 
@@ -83,13 +81,12 @@
 3. **量溺防护**：大文件分块 + 先过滤错误级别再归并。
 
 **交付 schema**：`{ error_templates: [{pattern, count, first, last, sample}], negative_evidence: {clean_intervals: [...], silence_scope: "..."} }` + `deferred:` 行。
-**方法依据**：rca-100303 n3 交回"日志干净"有效排除了 OOM/GC 机制，但无沉默范围声明——阴性证据的认识论边界必须显式化。
 
 ---
 
 ## trace-analyst（链路分析者）
 
-> **落地卡**：[`rca-roles/trace-analyst.md`](rca-roles/trace-analyst.md)（Manager 派发 Sweep / Probe 任务时整卡嵌入）
+> **落地卡**：[`investigation-roles/trace-analyst.md`](investigation-roles/trace-analyst.md)（Manager 派发 Sweep / Probe 任务时整卡嵌入）
 
 **对象**：离散 span 事件（数值载荷 + 父子结构）。指标方法与语义结构的杂交体——传播推理住在这里。
 
@@ -100,13 +97,12 @@
 
 **交付 schema**：`{ first_crossing: {component, minute, evidence}, propagation_chain: [{from, to, minute}], verdict?: "upstream-driven" | "intrinsic" }` + `deferred:` 行。
 **验收挂钩**：Sweep/Probe 契约。
-**方法依据**：rca-100303 n6 的方法（首越 + 父子相关）直接固化。
 
 ---
 
 ## root-cause-analyst（根因推理者）
 
-> **落地卡**：[`rca-roles/root-cause-analyst.md`](rca-roles/root-cause-analyst.md)（Manager 派发 Synthesis 任务时整卡嵌入）
+> **落地卡**：[`investigation-roles/root-cause-analyst.md`](investigation-roles/root-cause-analyst.md)（Manager 派发 Synthesis 任务时整卡嵌入）
 
 **对象**：全部 ledger 条目 + 覆盖并集。**终局综合只由此角色完成**，manager 不得 inline 定案。
 
@@ -118,7 +114,6 @@
 5. 输出结构化结案：`{ occurrence, component, reason, evidence_chain: [ledger refs], dismissed: [{item, why}] }`。
 
 **验收挂钩**：Synthesis 无缺口验收 + R4 conclude 覆盖门禁。
-**方法依据**：rca-100303 结案由 manager 即兴综合——排除法猜 reason、occurrence 取首症状时刻（14:33）、Mysql02 deferred 线索无人清算。
 
 ---
 
@@ -128,3 +123,16 @@
 - 任务文本必须**单向**：证伪义务字段写明"什么观测会推翻该假设"；
 - 产出只有三值：`upheld / refuted / inconclusive`（附证据）；
 - 禁止纯确认式 probe（"再验证一下已有结论"不算证伪，对齐 R5）。
+
+---
+
+## 来源与验证记录
+
+本角色族的方法预设归纳自早期调查回放尸检。**验证载体**：OpenRCA 基准回放（事故题号 rca-233149 / rca-100303 / rca-133915）——它是本方法族的**首个验证场景与论证来源**，不是方法论的适用边界；正文与角色卡不携带任何题号、实体名、时间戳等基准语境（红线），全部出处证据集中记录于此：
+
+- **data-prep**：rca-100303 中 n2 与 n5 各自整读同一 125 万行文件、各自发明基线统计（一错一对）——备料统一地基后，分析者只比方法不比地基。
+- **metric-analyst**：rca-100303 n2 用窗口均值 z 漏掉 14:57 onset、误排 Mysql02 读量塌缩；n5 的 median/MAD 逐采样 ranker 一次抓对——两者合并固化。
+- **log-analyst**：rca-100303 n3 交回"日志干净"有效排除了 OOM/GC 机制，但无沉默范围声明——阴性证据的认识论边界必须显式化。
+- **trace-analyst**：rca-100303 n6 的方法（首越 + 父子相关）直接固化。
+- **root-cause-analyst**：rca-100303 结案由 manager 即兴综合——排除法猜 reason、occurrence 取首症状时刻（14:33）、Mysql02 deferred 线索无人清算。
+- **反模式清单 R1–R9**（`task-dispatch-guide.md` §四）的例证同源，出自上述回放尸检。

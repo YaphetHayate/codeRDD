@@ -1,10 +1,10 @@
-﻿# tree-run.ps1 — tree-run management plane CLI (Manager sessions only)
+﻿# goal-tree.ps1 — goal-tree management plane CLI (Manager sessions only)
 #
 # Drives the lifecycle of a tree-shaped long-running task run:
 #   start / graft / prune / settle / conclude / round-start / round-end / status / resume
 #
-# Layout (per design/tree-run-engine-cto.md):
-#   .rdd/tree-runs/<run-id>/
+# Layout (per the archived tree-run engine CTO design):
+#   .rdd/goal-trees/<run-id>/
 #   ├── manifest.json          budget / outcome / ref roots
 #   ├── state/
 #   │   ├── tree.json          authoritative snapshot (pre-write .bak + read-back)
@@ -16,12 +16,12 @@
 #       └── final-report.md    conclusion artifact (all three outcomes)
 #
 # Structure-change rights (graft/prune/settle/conclude) live ONLY here.
-# Worker sessions use tree-leaf.ps1 (consumption plane: next/claim/report).
+# Worker sessions use goal-tree-leaf.ps1 (consumption plane: next/claim/report).
 # Fully orthogonal to task.json routing and the explore chain — zero shared data.
 
 [CmdletBinding()]
 param(
-    [ValidateSet("start", "graft", "prune", "settle", "conclude", "round-start", "round-end", "status", "resume")]
+    [ValidateSet("start", "graft", "prune", "settle", "conclude", "round-start", "round-end", "status", "resume", "deps")]
     [string]$Command = "status",
 
     [string]$RunId,
@@ -47,6 +47,15 @@ param(
     [string]$Reason,
     [string]$Note,
 
+    # graft (dependency/ref passthrough; per-task depends_on / ref win over the CLI defaults)
+    [string]$DependsOn,
+    [string]$Ref,
+
+    # deps command
+    [ValidateSet("add", "remove", "list")]
+    [string]$DepAction = "list",
+    [string]$On,
+
     # conclude / round-end
     [ValidateSet("achieved", "budget_exhausted", "space_exhausted")]
     [string]$Outcome,
@@ -70,7 +79,7 @@ $OutputEncoding = [System.Text.Encoding]::UTF8
 $repoRoot = (git rev-parse --show-toplevel).Trim()
 
 $script:Utf8NoBom = New-Object System.Text.UTF8Encoding($false)
-$script:TreeRunsRoot = Join-Path $repoRoot ".rdd/tree-runs"
+$script:GoalTreesRoot = Join-Path $repoRoot ".rdd/goal-trees"
 $script:LockStream = $null
 $script:LockPath = $null
 
@@ -124,7 +133,7 @@ function Convert-ToSafeArray {
 
 # === Run directory layout ===
 
-function Get-RunDir       { param([string]$Id); Join-Path $script:TreeRunsRoot $Id }
+function Get-RunDir       { param([string]$Id); Join-Path $script:GoalTreesRoot $Id }
 function Get-ManifestPath { param([string]$RunDir); Join-Path $RunDir "manifest.json" }
 function Get-StateDir     { param([string]$RunDir); Join-Path $RunDir "state" }
 function Get-TreePath     { param([string]$RunDir); Join-Path (Get-StateDir $RunDir) "tree.json" }
@@ -263,9 +272,54 @@ function Get-CoveredIntervals {
     foreach ($pair in $merged) { Write-Output -NoEnumerate $pair }
 }
 
+function Get-PrunedNodeIds {
+    # node ids whose subtree was abandoned via prune; their coverage obligations are
+    # discharged (R1's documented escape hatch: "fill every cell ... or prune/re-dispatch")
+    param($Tree)
+    return @(@($Tree.nodes) | Where-Object { $_.status -eq 'pruned' } | ForEach-Object { [string]$_.id })
+}
+
+function Get-ManifestUnfilledCells {
+    # R4 audit fix (rca-212114, Issue 2): declared cells that never reached a TERMINAL
+    # fill (found/clean/escalated). Each one counts as uncovered AT CELL LEVEL — another
+    # sweep's fill over the same interval cannot discharge it (a declared modality that
+    # silently evaporates is exactly the fake coverage R4 exists to catch). escalated
+    # stays terminal (settle-legal; its interval stays R4-uncovered and healable by a
+    # later sweep). Pruned sweeps are excluded: prune is the documented way out.
+    param([string]$RunDir, [string[]]$PrunedNodeIds = @())
+    $unfilled = @()
+    $dir = Get-ManifestsDir $RunDir
+    if (-not (Test-Path -LiteralPath $dir -PathType Container)) { return $unfilled }
+    foreach ($f in @(Get-ChildItem -LiteralPath $dir -Filter '*.json' -File)) {
+        $nodeId = $f.BaseName
+        if ($PrunedNodeIds -contains $nodeId) { continue }
+        $sc = Read-NodeManifest $RunDir $nodeId
+        if ($null -eq $sc) { continue }
+        if (-not (Test-PropPresent $sc 'declared')) { continue }
+        $filled = $null
+        if ((Test-PropPresent $sc 'filled') -and $null -ne $sc.filled) { $filled = $sc.filled }
+        foreach ($c in @($sc.declared.cells)) {
+            $cid = [string]$c.id
+            $status = ''
+            if ($null -ne $filled -and (Test-PropPresent $filled $cid) -and $null -ne $filled.$cid) { $status = [string]$filled.$cid.status }
+            if (@('found', 'clean', 'escalated') -notcontains $status) {
+                $ivArr = @($c.interval)
+                $unfilled += @{
+                    node_id  = $nodeId
+                    cell_id  = $cid
+                    interval = @("$($ivArr[0])", "$($ivArr[1])")
+                    modality = if ($c.modality) { [string]$c.modality } else { '' }
+                }
+            }
+        }
+    }
+    return $unfilled
+}
+
 function Get-R4Result {
     # coverage union vs the run's declared query domain
-    param($Manifest, [string]$RunDir, [int]$ToleranceSec = 0)
+    # + unfilled declarations (cell-level obligation, see Get-ManifestUnfilledCells)
+    param($Manifest, [string]$RunDir, [int]$ToleranceSec = 0, [string[]]$PrunedNodeIds = @())
     $hasDomain = $false
     $domainIntervals = @()
     if ((Test-PropPresent $Manifest 'domain') -and $null -ne $Manifest.domain) {
@@ -278,6 +332,7 @@ function Get-R4Result {
     $dir = Get-ManifestsDir $RunDir
     if (Test-Path -LiteralPath $dir -PathType Container) { $sweepCount = @(Get-ChildItem -LiteralPath $dir -Filter '*.json' -File).Count }
     $covered = @(Get-CoveredIntervals $RunDir)
+    $unfilled = @(Get-ManifestUnfilledCells $RunDir $PrunedNodeIds)
     $gaps = @()
     if ($hasDomain) {
         foreach ($d in $domainIntervals) {
@@ -297,7 +352,7 @@ function Get-R4Result {
             if ($cursor -lt $de -and (($de - $cursor).TotalSeconds -gt $ToleranceSec)) { $gaps += ,@($cursor, $de) }
         }
     }
-    return @{ has_domain = $hasDomain; sweeps = $sweepCount; covered = $covered; gaps = $gaps }
+    return @{ has_domain = $hasDomain; sweeps = $sweepCount; covered = $covered; gaps = $gaps; unfilled = $unfilled }
 }
 
 function Resolve-GateMode {
@@ -322,6 +377,15 @@ function ConvertTo-GapText {
     return (@($Gaps) | ForEach-Object { "[$($_[0].ToString('yyyy-MM-dd HH:mm:ss')) .. $($_[1].ToString('yyyy-MM-dd HH:mm:ss'))]" }) -join ', '
 }
 
+function ConvertTo-UnfilledText {
+    # one line per declared-but-unfilled cell: interval + modality + owner (audit trail)
+    param($Unfilled)
+    return @(@($Unfilled) | ForEach-Object {
+        $mod = if ($_.modality) { $_.modality } else { 'unknown' }
+        "[$($_.interval[0]) .. $($_.interval[1])] $mod ($($_.node_id).$($_.cell_id))"
+    })
+}
+
 function Resolve-RunDir {
     param([string]$Id)
     if ([string]::IsNullOrWhiteSpace($Id)) {
@@ -332,7 +396,7 @@ function Resolve-RunDir {
     }
     $dir = Get-RunDir $Id
     if (-not (Test-Path -LiteralPath $dir -PathType Container)) {
-        Write-ErrorResult "RUN_NOT_FOUND" "Tree run not found: .rdd/tree-runs/$Id" 2
+        Write-ErrorResult "RUN_NOT_FOUND" "Goal tree run not found: .rdd/goal-trees/$Id" 2
     }
     return $dir
 }
@@ -479,6 +543,8 @@ function Convert-NodeToHashtable {
         type            = if ($Node.type) { [string]$Node.type } else { $null }
         role            = if ($Node.role) { [string]$Node.role } else { $null }
         falsification_duty = if ($Node.falsification_duty) { [string]$Node.falsification_duty } else { $null }
+        depends_on      = @(ConvertTo-NodeIdList $Node.depends_on)
+        ref             = if ($Node.ref) { [string]$Node.ref } else { $null }
         status          = [string]$Node.status
         created_round   = if ($null -ne $Node.created_round) { [int]$Node.created_round } else { 0 }
         claimed_by      = if ($Node.claimed_by) { [string]$Node.claimed_by } else { $null }
@@ -664,6 +730,181 @@ function Get-RoundState {
     }
 }
 
+# === state/deps-log.jsonl (append-only dependency change audit) ===
+
+function Get-DepsLogPath { param([string]$RunDir); Join-Path (Get-StateDir $RunDir) "deps-log.jsonl" }
+
+function Add-DepsLogLine {
+    # one line per dependency change: {event: dep-add|dep-remove, node, target, round, at}
+    param([string]$RunDir, [string]$Event, [string]$Node, [string]$Target, [int]$Round)
+    $p = Get-DepsLogPath $RunDir
+    $line = ConvertTo-Json @{
+        event  = $Event
+        node   = $Node
+        target = $Target
+        round  = $Round
+        at     = (Get-UtcNowIso)
+    } -Depth 4 -Compress
+    [System.IO.File]::AppendAllText($p, $line + "`n", $script:Utf8NoBom)
+    # read-back finish: last non-empty line must parse (same contract as ledger/round-log)
+    $all = @([System.IO.File]::ReadAllLines($p) | Where-Object { $_.Trim() -ne "" })
+    if ($all.Count -eq 0) { Write-ErrorResult "DEPSLOG_READBACK_FAILED" "deps-log.jsonl empty after append" 3 }
+    try { $null = $all[-1] | ConvertFrom-Json }
+    catch { Write-ErrorResult "DEPSLOG_READBACK_FAILED" "deps-log.jsonl last line failed to parse after append" 3 }
+}
+
+# === Node dependency graph (depends_on[]) ===
+#
+# Explicit dependency edges — orthogonal to the parent/children structure:
+# parent = structural decomposition, depends_on = ordering constraint. Satisfaction
+# judgment: every target must be status in {done, pruned}; pruned satisfies the
+# gate but is surfaced as an explicit warning (prune discharges the obligation,
+# visible never silent). Mechanical DAG validation (cycle / self / missing
+# target) runs at BOTH write entry points: graft and deps.
+
+function ConvertTo-NodeIdList {
+    # normalize a depends_on payload (array of strings, single string, $null) into a clean string array
+    param($Value)
+    $ids = @()
+    foreach ($v in @(Convert-ToSafeArray $Value)) {
+        $s = ([string]$v).Trim()
+        if ($s -ne '') { $ids += $s }
+    }
+    return @($ids)
+}
+
+function Test-DependencyGraph {
+    # Full-graph mechanical validation over an edge map {nodeId -> string[] targets}.
+    # The map must carry EVERY node id as a key (nodes without deps get an empty
+    # array) so target-existence checks see the whole node set, not just
+    # dep-carrying nodes. Returns problems like "DEP_TARGET_NOT_FOUND: n9 depends on missing n42".
+    param($EdgeMap)
+    $problems = @()
+    foreach ($nodeId in @($EdgeMap.Keys)) {
+        foreach ($target in @($EdgeMap[$nodeId])) {
+            if ($target -eq $nodeId) {
+                $problems += "DEP_SELF: node $nodeId depends on itself"
+            }
+            elseif (-not $EdgeMap.ContainsKey($target)) {
+                $problems += "DEP_TARGET_NOT_FOUND: node $nodeId depends on missing node $target"
+            }
+        }
+    }
+    # cycle detection: DFS with colors (0=white, 1=gray, 2=black) over node -> depends_on edges
+    $color = @{}
+    foreach ($k in @($EdgeMap.Keys)) { $color[$k] = 0 }
+    foreach ($start in @($EdgeMap.Keys)) {
+        if ($color[$start] -ne 0) { continue }
+        $stack = @(@{ id = $start; iter = 0; path = @($start) })
+        $color[$start] = 1
+        while ($stack.Count -gt 0) {
+            $frame = $stack[-1]
+            $targets = @($EdgeMap[$frame.id])
+            if ($frame.iter -lt $targets.Count) {
+                $next = $targets[$frame.iter]
+                $frame.iter++
+                if (-not $EdgeMap.ContainsKey($next)) { continue }
+                if ($color[$next] -eq 1) {
+                    $problems += "DEP_CYCLE: dependency cycle detected: $(($frame.path + $next) -join ' -> ')"
+                }
+                elseif ($color[$next] -eq 0) {
+                    $color[$next] = 1
+                    $stack += @{ id = $next; iter = 0; path = @($frame.path) + $next }
+                }
+            }
+            else {
+                $color[$frame.id] = 2
+                $stack = @($stack | Select-Object -First ($stack.Count - 1))
+            }
+        }
+    }
+    return $problems
+}
+
+function Get-TreeEdgeMap {
+    # every node id as a key (empty target lists included) — the Test-DependencyGraph contract
+    param($Tree)
+    $map = @{}
+    foreach ($n in $Tree.nodes) { $map[[string]$n.id] = @(ConvertTo-NodeIdList $n.depends_on) }
+    return $map
+}
+
+function Get-NodeBlockedDeps {
+    # returns @{ blocked = @(unsatisfied target ids); via_prune = @(satisfied-by-prune target ids) }
+    param($Tree, $Node)
+    $blocked = @()
+    $viaPrune = @()
+    foreach ($target in @(ConvertTo-NodeIdList $Node.depends_on)) {
+        $tn = Find-Node $Tree $target
+        if ($null -eq $tn) { $blocked += $target; continue }
+        if ($tn.status -eq 'done') { continue }
+        if ($tn.status -eq 'pruned') { $viaPrune += $target; continue }
+        $blocked += $target
+    }
+    return @{ blocked = @($blocked); via_prune = @($viaPrune) }
+}
+
+function Get-TreeDependencyView {
+    # readable dependency overview for status/resume/report rendering
+    param($Tree)
+    $edges = @()
+    $blockedPending = @()
+    foreach ($n in $Tree.nodes) {
+        $deps = @(ConvertTo-NodeIdList $n.depends_on)
+        if ($deps.Count -eq 0) { continue }
+        $states = @()
+        $unsatisfied = @()
+        $pruneWarn = @()
+        foreach ($t in $deps) {
+            $tn = Find-Node $Tree $t
+            $st = if ($null -ne $tn) { [string]$tn.status } else { 'missing' }
+            $states += @{ target = $t; status = $st }
+            if ($st -eq 'pruned') { $pruneWarn += $t }
+            elseif ($st -ne 'done') { $unsatisfied += $t }
+        }
+        $edges += @{
+            node         = $n.id
+            title        = $n.title
+            status       = $n.status
+            depends_on   = $states
+            unsatisfied  = @($unsatisfied)
+            via_prune    = @($pruneWarn)
+        }
+        if ($n.status -eq 'pending' -and $unsatisfied.Count -gt 0) {
+            $blockedPending += @{ id = $n.id; title = $n.title; blocked_by = @($unsatisfied) }
+        }
+    }
+    return @{ edges = $edges; blocked_pending = $blockedPending }
+}
+
+function ConvertTo-DependencySectionText {
+    # markdown block for round snapshots / final report (empty string when the run has no deps)
+    param($Tree)
+    $view = Get-TreeDependencyView $Tree
+    if ($view.edges.Count -eq 0) { return "" }
+    $lines = @()
+    $lines += "## 依赖关系"
+    $lines += ""
+    foreach ($e in $view.edges) {
+        $marks = @()
+        foreach ($st in $e.depends_on) {
+            if ($st.status -eq 'done') { $marks += "$($st.target)(done)" }
+            elseif ($st.status -eq 'pruned') { $marks += "$($st.target)(pruned ⚠ 满足但经剪枝)" }
+            else { $marks += "$($st.target)($($st.status) ⏸ 未满足)" }
+        }
+        $lines += "- $($e.node) [$($e.status)] 依赖: $($marks -join ', ')"
+    }
+    if ($view.blocked_pending.Count -gt 0) {
+        $lines += ""
+        $lines += "阻塞中的待认领节点:"
+        foreach ($b in $view.blocked_pending) {
+            $lines += "- ⏸ $($b.id) 被 $($b.blocked_by -join ', ') 阻塞"
+        }
+    }
+    $lines += ""
+    return ($lines -join "`n")
+}
+
 # === Tree analysis helpers ===
 
 function Find-Node {
@@ -726,6 +967,12 @@ function Render-TreeOutline {
             $childrenOf[$n.parent] += $n.id
         }
     }
+    # pre-compute unsatisfied dependency markers (short ⏸[ids] on the node line; details live in the dependency section)
+    $blockedOf = @{}
+    foreach ($n in $Tree.nodes) {
+        $blocked = @(Get-NodeBlockedDeps $Tree $n).blocked
+        if ($blocked.Count -gt 0) { $blockedOf[$n.id] = ($blocked -join ',') }
+    }
     $lines = @()
     foreach ($root in @($Tree.nodes | Where-Object { -not $_.parent })) {
         $stack = @(@{ id = $root.id; depth = 0 })
@@ -733,7 +980,8 @@ function Render-TreeOutline {
             $cur = $stack[0]
             $stack = @($stack | Select-Object -Skip 1)
             $n = $nodeById[$cur.id]
-            $lines += (("  " * $cur.depth) + "- $($n.id) [$($n.status)] $($n.title)")
+            $mark = if ($blockedOf.ContainsKey($n.id)) { " ⏸[$($blockedOf[$n.id])]" } else { "" }
+            $lines += (("  " * $cur.depth) + "- $($n.id) [$($n.status)]$mark $($n.title)")
             $kids = @(Convert-ToSafeArray $childrenOf[$cur.id])
             if ($kids.Count -eq 0) { continue }
             [array]::Reverse($kids)
@@ -810,6 +1058,8 @@ function Write-RoundSnapshot {
     $lines += (Render-TreeOutline $Tree)
     $lines += '```'
     $lines += ""
+    $depSection = ConvertTo-DependencySectionText $Tree
+    if ($depSection -ne "") { $lines += $depSection }
 
     $path = Join-Path $dir ("round-{0:D2}.md" -f [int]$Round)
     [System.IO.File]::WriteAllText($path, ($lines -join "`n"), $script:Utf8NoBom)
@@ -838,7 +1088,7 @@ function Write-FinalReport {
     }[$Outcome]
 
     $lines = @()
-    $lines += "# Tree-Run 结案报告 — $($Manifest.run_id)"
+    $lines += "# Goal-Tree 结案报告 — $($Manifest.run_id)"
     $lines += ""
     $lines += "- 终局: **$Outcome**（$outcomeText）"
     $lines += "- 结案时间: $(Get-UtcNowIso) · 创建时间: $($Manifest.created_at) · 发起: $($Manifest.created_by)"
@@ -877,6 +1127,8 @@ function Write-FinalReport {
     $lines += (Render-TreeOutline $Tree)
     $lines += '```'
     $lines += ""
+    $depSection = ConvertTo-DependencySectionText $Tree
+    if ($depSection -ne "") { $lines += $depSection }
     $lines += "## 过程产物"
     $lines += ""
     $lines += "- 每轮快照: report/rounds/round-NN.md"
@@ -916,7 +1168,7 @@ function Invoke-Start {
 
     $runDir = Get-RunDir $RunId
     if (Test-Path -LiteralPath $runDir -PathType Container) {
-        Write-ErrorResult "RUN_EXISTS" "Tree run already exists: .rdd/tree-runs/$RunId" 1
+        Write-ErrorResult "RUN_EXISTS" "Goal tree run already exists: .rdd/goal-trees/$RunId" 1
     }
 
     # normalize ref roots: forward slashes, trimmed; each must exist (typo guard)
@@ -1012,6 +1264,8 @@ function Invoke-Start {
                 type            = $null
                 role            = $null
                 falsification_duty = $null
+                depends_on      = @()
+                ref             = $null
                 status          = "pending"
                 created_round   = 0
                 claimed_by      = $null
@@ -1044,7 +1298,7 @@ function Invoke-Start {
         $fs.Close()
     }
     catch [System.IO.IOException] {
-        Write-ErrorResult "RUN_EXISTS" "Tree run already exists (manifest.json race-lost): .rdd/tree-runs/$RunId" 1
+        Write-ErrorResult "RUN_EXISTS" "Goal tree run already exists (manifest.json race-lost): .rdd/goal-trees/$RunId" 1
     }
     Write-TreeFile $RunDir $tree
     [System.IO.File]::WriteAllText((Get-LedgerPath $runDir), "", $script:Utf8NoBom)
@@ -1055,7 +1309,7 @@ function Invoke-Start {
         data    = @{
             started   = $true
             run_id    = $RunId
-            directory = ".rdd/tree-runs/$RunId"
+            directory = ".rdd/goal-trees/$RunId"
             root_node = "n1"
             budget    = $manifest.budget
             ref_roots = $roots
@@ -1063,7 +1317,7 @@ function Invoke-Start {
             domain    = $domain
             gates     = $manifest.gates
             coverage_tolerance_s = $manifest.coverage_tolerance_s
-            next_step = "tree-run.cmd -Command round-start -RunId $RunId"
+            next_step = "goal-tree.cmd -Command round-start -RunId $RunId"
         }
     }
 }
@@ -1093,12 +1347,25 @@ function Invoke-Graft {
     foreach ($t in $inputTasks) {
         if ([string]::IsNullOrWhiteSpace([string]$t.title)) { Write-ErrorResult "INVALID_TASK" "Every grafted task requires a non-empty title" 1 }
         if ([string]::IsNullOrWhiteSpace([string]$t.task)) { Write-ErrorResult "INVALID_TASK" "Every grafted task requires a non-empty task body (title: $($t.title))" 1 }
-        # --- role identifier format check (engine-generic; vocabulary authority lives in references/rca-roles.md) ---
+        # --- role identifier format check (engine-generic; vocabulary authority lives in references/investigation-roles.md) ---
         $tRole = ''
         if ($null -ne $t.PSObject.Properties['role'] -and $null -ne $t.role) { $tRole = [string]$t.role }
         if ($tRole.Trim() -ne '') {
             if ($tRole.Length -gt 64 -or $tRole -CNotMatch '^[a-z0-9]+(-[a-z0-9]+)*$') {
                 Write-ErrorResult "ROLE_INVALID" "task '$($t.title)' role '$tRole' must be kebab-case ^[a-z0-9]+(-[a-z0-9]+)*$ and <=64 chars (the engine checks format only — role vocabulary is defined by the role cards, not validated here)" 1
+            }
+        }
+        # --- ref / depends_on structural contract (opaque pointer <=128; node-id strings) ---
+        $tRef = ''
+        if ($null -ne $t.PSObject.Properties['ref'] -and $null -ne $t.ref) { $tRef = [string]$t.ref }
+        if ($tRef.Length -gt 128) {
+            Write-ErrorResult "REF_TOO_LONG" "task '$($t.title)' ref exceeds 128 chars (got $($tRef.Length)); ref is an opaque pointer, keep it short" 1
+        }
+        if ($null -ne $t.PSObject.Properties['depends_on'] -and $null -ne $t.depends_on) {
+            foreach ($d in @(ConvertTo-NodeIdList $t.depends_on)) {
+                if ($d -notmatch '^[A-Za-z0-9][A-Za-z0-9._-]*$') {
+                    Write-ErrorResult "DEP_TARGET_INVALID" "task '$($t.title)' depends_on entry '$d' is not a valid node id" 1
+                }
             }
         }
         # --- probe falsification duty (task-dispatch-guide R5): structural contract missing at dispatch time ---
@@ -1135,8 +1402,15 @@ function Invoke-Graft {
         if ($parentNode.status -eq "pruned") { Write-ErrorResult "PARENT_PRUNED" "Parent $Parent is pruned; grafting onto a pruned subtree is not allowed" 1 }
 
         $incoming = @($inputTasks).Count
-        if ((@($parentNode.children).Count + $incoming) -gt [int]$manifest.budget.node_width) {
-            Write-ErrorResult "WIDTH_EXCEEDED" "Graft would exceed node_width $($manifest.budget.node_width): parent $Parent already has $(@($parentNode.children).Count) children, incoming $incoming" 1
+        # 宽度预算只计活跃子节点:prune 的语义就是作废该分支并释放宽度,
+        # 否则 rejected-delivery 反复回收(prune+重graft)会被已剪枝节点永久挤占预算
+        $activeChildren = 0
+        foreach ($cid in @($parentNode.children)) {
+            $cnode = Find-Node $tree ([string]$cid)
+            if ($null -ne $cnode -and [string]$cnode.status -ne "pruned") { $activeChildren++ }
+        }
+        if (($activeChildren + $incoming) -gt [int]$manifest.budget.node_width) {
+            Write-ErrorResult "WIDTH_EXCEEDED" "Graft would exceed node_width $($manifest.budget.node_width): parent $Parent has $activeChildren active children (pruned excluded), incoming $incoming" 1
         }
         if ((@($tree.nodes).Count + $incoming) -gt [int]$manifest.budget.max_nodes) {
             Write-ErrorResult "NODES_EXCEEDED" "Graft would exceed max_nodes $($manifest.budget.max_nodes): tree already has $(@($tree.nodes).Count) nodes, incoming $incoming. Consider concluding with budget_exhausted." 1
@@ -1144,7 +1418,11 @@ function Invoke-Graft {
 
         $created = @()
         $sweepManifestCount = 0
+        $graftedDeps = @()   # @{ node; target } pairs for the deps audit log
         $round = [int]$roundState.open_round
+        # CLI-level defaults (per-task depends_on / ref win when present)
+        $cliDeps = @(ConvertTo-NodeIdList $DependsOn)
+        $cliRef = if ([string]::IsNullOrWhiteSpace($Ref)) { $null } else { $Ref.Trim() }
         foreach ($t in $inputTasks) {
             $newId = Get-NextNodeId $tree
             $gRole = ''
@@ -1152,6 +1430,10 @@ function Invoke-Graft {
             $gType = if ($null -ne $t.PSObject.Properties['type']) { [string]$t.type } else { '' }
             $gDuty = ''
             if ($gType -eq 'probe' -and $null -ne $t.PSObject.Properties['falsification_duty'] -and $null -ne $t.falsification_duty) { $gDuty = [string]$t.falsification_duty }
+            $gDeps = $cliDeps
+            if ($null -ne $t.PSObject.Properties['depends_on'] -and $null -ne $t.depends_on) { $gDeps = @(ConvertTo-NodeIdList $t.depends_on) }
+            $gRef = $cliRef
+            if ($null -ne $t.PSObject.Properties['ref'] -and $null -ne $t.ref -and -not [string]::IsNullOrWhiteSpace([string]$t.ref)) { $gRef = ([string]$t.ref).Trim() }
             $node = [ordered]@{
                 id              = $newId
                 parent          = $Parent
@@ -1160,6 +1442,8 @@ function Invoke-Graft {
                 type            = if ($gType.Trim() -ne '') { $gType.Trim() } else { $null }
                 role            = if ($gRole.Trim() -ne '') { $gRole.Trim() } else { $null }
                 falsification_duty = if ($gDuty.Trim() -ne '') { $gDuty.Trim() } else { $null }
+                depends_on      = @($gDeps)
+                ref             = $gRef
                 status          = "pending"
                 created_round   = $round
                 claimed_by      = $null
@@ -1179,6 +1463,7 @@ function Invoke-Graft {
             $tree.nodes += ,$node
             $parentNode.children = @($parentNode.children) + $newId
             $created += $node
+            foreach ($dep in @($gDeps)) { $graftedDeps += @{ node = $newId; target = $dep } }
 
             # sweep tasks get a frozen coverage sidecar (statuses pending; worker fills via report)
             $tType = if ($null -ne $t.PSObject.Properties['type']) { [string]$t.type } else { '' }
@@ -1215,13 +1500,24 @@ function Invoke-Graft {
             }
         }
 
+        # --- dependency graph mechanical validation (whole resulting tree, atomic reject) ---
+        $edgeMap = Get-TreeEdgeMap $tree
+        $depProblems = @(Test-DependencyGraph $edgeMap)
+        if ($depProblems.Count -gt 0) {
+            Write-ErrorResult "DEP_GRAPH_INVALID" "graft rejected (nothing written): $($depProblems -join '; ')" 1
+        }
+
         Write-TreeFile $RunDir $tree
+
+        foreach ($pair in $graftedDeps) {
+            Add-DepsLogLine $RunDir "dep-add" $pair.node $pair.target $round
+        }
 
         return @{
             success = $true
             data    = @{
                 run_id     = $RunId
-                grafted    = @($created | ForEach-Object { @{ id = $_.id; title = $_.title; parent = $_.parent; status = $_.status; type = $_.type; role = $_.role } })
+                grafted    = @($created | ForEach-Object { @{ id = $_.id; title = $_.title; parent = $_.parent; status = $_.status; type = $_.type; role = $_.role; depends_on = @($_.depends_on); ref = $_.ref } })
                 count      = $created.Count
                 round      = $round
                 nodes_used = "$(@($tree.nodes).Count)/$($manifest.budget.max_nodes)"
@@ -1313,7 +1609,7 @@ function Invoke-Settle {
                 $detail = "coverage cells pending: $($pendingCells -join ', ')"
                 $mode = Resolve-GateMode $manifest 'r1_settle'
                 if ($mode -eq 'enforce') {
-                    Write-ErrorResult "SETTLE_MANIFEST_INCOMPLETE" "Node $NodeId $detail. Fill every cell (found/clean/escalated) via tree-leaf report extras.manifest, or prune/re-dispatch the node." 1
+                    Write-ErrorResult "SETTLE_MANIFEST_INCOMPLETE" "Node $NodeId $detail. Fill every cell (found/clean/escalated) via goal-tree-leaf report extras.manifest, or prune/re-dispatch the node." 1
                 }
                 $r1Warn = "[R1-WARN] $detail"
             }
@@ -1397,7 +1693,7 @@ function Invoke-RoundEnd {
                 round         = $round
                 ended_at      = $endedAt
                 auto          = $Auto
-                snapshot      = ".rdd/tree-runs/$RunId/report/rounds/$(Split-Path $snapshotPath -Leaf)"
+                snapshot      = ".rdd/goal-trees/$RunId/report/rounds/$(Split-Path $snapshotPath -Leaf)"
                 next_round    = ($round + 1)
                 budget_hint   = $(if (($round + 1) -gt [int]$manifest.budget.max_rounds) { "max_rounds reached — conclude (budget_exhausted) when appropriate" } else { "round-start to continue" })
                 lock          = $lockInfo
@@ -1443,14 +1739,19 @@ function Invoke-Conclude {
                 if ((Test-PropPresent $manifest 'domain') -and $null -ne $manifest.domain) {
                     $tolerance = 0
                     if ((Test-PropPresent $manifest 'coverage_tolerance_s') -and $null -ne $manifest.coverage_tolerance_s) { $tolerance = [int]$manifest.coverage_tolerance_s }
-                    $r4 = Get-R4Result $manifest $RunDir $tolerance
-                    if (@($r4.gaps).Count -gt 0) {
-                        $gapText = ConvertTo-GapText $r4.gaps
+                    $r4 = Get-R4Result $manifest $RunDir $tolerance (Get-PrunedNodeIds $tree)
+                    $gapText = ConvertTo-GapText $r4.gaps
+                    $unfilledText = (ConvertTo-UnfilledText $r4.unfilled) -join ', '
+                    if (@($r4.gaps).Count -gt 0 -or @($r4.unfilled).Count -gt 0) {
+                        $detailParts = @()
+                        if (@($r4.gaps).Count -gt 0) { $detailParts += "domain gaps: $gapText" }
+                        if (@($r4.unfilled).Count -gt 0) { $detailParts += "declared-but-unfilled sweep cells (count as uncovered): $unfilledText" }
+                        $detail = $detailParts -join '; '
                         $mode = Resolve-GateMode $manifest 'r4_conclude'
                         if ($mode -eq 'enforce') {
-                            Write-ErrorResult "CONCLUDE_COVERAGE_GAPS" "Query domain not fully covered by sweep cells (found/clean): $gapText. Graft sweep nodes declaring those intervals and settle them (escalated cells count as uncovered), or conclude honestly with budget_exhausted/space_exhausted." 1
+                            Write-ErrorResult "CONCLUDE_COVERAGE_GAPS" "Query domain not fully covered by sweep cells (found/clean): $detail. Declared-but-unfilled cells stay uncovered even when another sweep covers the same interval — fill every declared cell (found/clean/escalated) via report extras.manifest, prune abandoned sweeps, graft sweep nodes for open domain gaps and settle them, or conclude honestly with budget_exhausted/space_exhausted." 1
                         }
-                        $r4Warn = "[R4-WARN] uncovered gaps: $gapText"
+                        $r4Warn = "[R4-WARN] $detail"
                     }
                     else { $r4Warn = "covered (sweep manifests: $($r4.sweeps))" }
                 }
@@ -1501,7 +1802,7 @@ function Invoke-Conclude {
                 anchor_node   = $(if ($anchor) { $anchor.id } else { $null })
                 auto_round_closed = $autoClosed
                 r4            = $r4Warn
-                final_report  = ".rdd/tree-runs/$RunId/report/final-report.md"
+                final_report  = ".rdd/goal-trees/$RunId/report/final-report.md"
                 lock          = $lockInfo
             }
         }
@@ -1561,20 +1862,29 @@ function Invoke-Status {
         $census = Get-TreeCensus $tree
         $budget = Get-BudgetUsage $manifest $tree $roundState
 
+        $depView = Get-TreeDependencyView $tree
+        if ($depView.blocked_pending.Count -gt 0 -and $manifest.state -eq 'running') {
+            $warnings += "$( $depView.blocked_pending.Count ) pending node(s) blocked by unsatisfied dependencies: $(($depView.blocked_pending | ForEach-Object { "$($_.id)⇽$($_.blocked_by -join '+')" }) -join ', ')"
+        }
+
         $coverageView = $null
         if ((Test-PropPresent $manifest 'domain') -and $null -ne $manifest.domain) {
             $tolerance = 0
             if ((Test-PropPresent $manifest 'coverage_tolerance_s') -and $null -ne $manifest.coverage_tolerance_s) { $tolerance = [int]$manifest.coverage_tolerance_s }
-            $r4v = Get-R4Result $manifest $RunDir $tolerance
+            $r4v = Get-R4Result $manifest $RunDir $tolerance (Get-PrunedNodeIds $tree)
             $coverageView = [ordered]@{
                 domain        = $manifest.domain
                 gates         = if (Test-PropPresent $manifest 'gates') { $manifest.gates } else { $null }
                 sweeps        = $r4v.sweeps
                 covered_spans = @($r4v.covered | ForEach-Object { "$($_[0].ToString('yyyy-MM-dd HH:mm:ss'))..$($_[1].ToString('yyyy-MM-dd HH:mm:ss'))" })
                 gaps          = @($r4v.gaps | ForEach-Object { "$($_[0].ToString('yyyy-MM-dd HH:mm:ss'))..$($_[1].ToString('yyyy-MM-dd HH:mm:ss'))" })
+                unfilled      = @(ConvertTo-UnfilledText $r4v.unfilled)
             }
             if ($coverageView.gaps.Count -gt 0 -and $manifest.state -eq 'running') {
                 $warnings += "coverage gaps vs query domain: $($coverageView.gaps -join ', ')"
+            }
+            if (@($coverageView.unfilled).Count -gt 0 -and $manifest.state -eq 'running') {
+                $warnings += "declared-but-unfilled cells (R4 counts them uncovered): $($coverageView.unfilled -join ', ')"
             }
         }
 
@@ -1625,6 +1935,7 @@ function Invoke-Status {
                     quarantined_now = $quarantined
                 }
                 coverage       = $coverageView
+                dependencies   = $depView
                 integrity      = @{ tree_read_from_backup = $readBack.used_backup; warnings = $warnings }
                 lock           = $lockInfo
             }
@@ -1665,9 +1976,16 @@ function Invoke-Resume {
         $roundsExhausted = ($nextRound -gt [int]$manifest.budget.max_rounds)
 
         $pendingNodes = @()
+        $blockedPending = @()
         foreach ($id in $census.pending) {
             $n = Find-Node $tree $id
-            $pendingNodes += @{ id = $n.id; title = $n.title; type = $n.type; role = $n.role }
+            $entry = @{ id = $n.id; title = $n.title; type = $n.type; role = $n.role }
+            $blocked = @(Get-NodeBlockedDeps $tree $n).blocked
+            if ($blocked.Count -gt 0) {
+                $entry['blocked_by'] = @($blocked)
+                $blockedPending += $entry
+            }
+            $pendingNodes += $entry
         }
         $claimedNodes = @()
         foreach ($id in $census.claimed) {
@@ -1686,19 +2004,22 @@ function Invoke-Resume {
 
         $steps = @()
         if ($hangingRound -ne 0) {
-            $steps += "Round $hangingRound is OPEN (started $($roundState.open_started_at)) — either keep dispatching remaining pending nodes (tree-leaf next/claim) or close it with: tree-run.cmd round-end -RunId $RunId -Summary <...>"
+            $steps += "Round $hangingRound is OPEN (started $($roundState.open_started_at)) — either keep dispatching remaining pending nodes (goal-tree-leaf next/claim) or close it with: goal-tree.cmd round-end -RunId $RunId -Summary <...>"
         }
         elseif ($roundsExhausted) {
-            $steps += "Rounds budget exhausted (next would be $nextRound > max_rounds $($manifest.budget.max_rounds)) — conclude with: tree-run.cmd conclude -RunId $RunId -Outcome budget_exhausted -Summary <honest progress>"
+            $steps += "Rounds budget exhausted (next would be $nextRound > max_rounds $($manifest.budget.max_rounds)) — conclude with: goal-tree.cmd conclude -RunId $RunId -Outcome budget_exhausted -Summary <honest progress>"
         }
         else {
-            $steps += "No hanging round — continue with: tree-run.cmd round-start -RunId $RunId (round $nextRound)"
+            $steps += "No hanging round — continue with: goal-tree.cmd round-start -RunId $RunId (round $nextRound)"
         }
         if ($reportedNodes.Count -gt 0) {
-            $steps += "Settle reported node(s) before re-planning: $(($reportedNodes | ForEach-Object { $_.id }) -join ', ') → tree-run.cmd settle"
+            $steps += "Settle reported node(s) before re-planning: $(($reportedNodes | ForEach-Object { $_.id }) -join ', ') → goal-tree.cmd settle"
         }
         if ($claimedNodes.Count -gt 0) {
-            $steps += "In-flight claim(s) exist ($(($claimedNodes | ForEach-Object { $_.id }) -join ', ')); workers may still be running — verify, or steal stale claims via tree-leaf.cmd claim -Steal"
+            $steps += "In-flight claim(s) exist ($(($claimedNodes | ForEach-Object { $_.id }) -join ', ')); workers may still be running — verify, or steal stale claims via goal-tree-leaf.cmd claim -Steal"
+        }
+        if ($blockedPending.Count -gt 0) {
+            $steps += "Blocked pending node(s) (unsatisfied depends_on, claim will be rejected with NODE_BLOCKED_BY_DEPS): $(($blockedPending | ForEach-Object { "$($_.id)⇽$($_.blocked_by -join '+')" }) -join ', ')"
         }
         $steps += "Already-reported nodes are never re-consumed: claim only succeeds on pending (or steal on claimed)."
 
@@ -1706,15 +2027,19 @@ function Invoke-Resume {
         if ((Test-PropPresent $manifest 'domain') -and $null -ne $manifest.domain) {
             $tolerance = 0
             if ((Test-PropPresent $manifest 'coverage_tolerance_s') -and $null -ne $manifest.coverage_tolerance_s) { $tolerance = [int]$manifest.coverage_tolerance_s }
-            $r4r = Get-R4Result $manifest $RunDir $tolerance
+            $r4r = Get-R4Result $manifest $RunDir $tolerance (Get-PrunedNodeIds $tree)
             $resumeCoverage = [ordered]@{
                 domain = $manifest.domain
                 gates  = if (Test-PropPresent $manifest 'gates') { $manifest.gates } else { $null }
                 sweeps = $r4r.sweeps
                 gaps   = @($r4r.gaps | ForEach-Object { "$($_[0].ToString('yyyy-MM-dd HH:mm:ss'))..$($_[1].ToString('yyyy-MM-dd HH:mm:ss'))" })
+                unfilled = @(ConvertTo-UnfilledText $r4r.unfilled)
             }
             if ($r4r.gaps.Count -gt 0) {
                 $steps += "Coverage gaps vs query domain: $($resumeCoverage.gaps -join ', ') — plan sweep nodes for them before concluding achieved."
+            }
+            if (@($r4r.unfilled).Count -gt 0) {
+                $steps += "Declared-but-unfilled cells (R4 counts them uncovered even if other sweeps cover the interval): $($resumeCoverage.unfilled -join ', ') — fill them via report extras.manifest or prune the sweep."
             }
         }
 
@@ -1745,6 +2070,93 @@ function Invoke-Resume {
     }
 }
 
+# === Command: deps (add / remove / list) ===
+#
+# Manager-maintained dependency edges with mechanical DAG validation at the write
+# entry (graft is the other one): self / missing-target / cycle are rejected, never
+# silently accepted. Changes are limited to open rounds (same discipline as graft)
+# and audited to state/deps-log.jsonl (append-only, one line per change).
+
+function Invoke-Deps {
+    param([string]$RunDir)
+
+    if ($DepAction -eq "list") {
+        $readBack = Read-TreeEditable $RunDir
+        $view = Get-TreeDependencyView $readBack.tree
+        return @{
+            success = $true
+            data    = [ordered]@{
+                run_id         = $RunId
+                dependencies   = $view.edges
+                blocked_pending = $view.blocked_pending
+                deps_log       = ".rdd/goal-trees/$RunId/state/deps-log.jsonl"
+            }
+        }
+    }
+
+    if ([string]::IsNullOrWhiteSpace($NodeId)) { Write-ErrorResult "MISSING_NODE_ID" "-NodeId is required for deps $DepAction" 1 }
+    if ([string]::IsNullOrWhiteSpace($On))    { Write-ErrorResult "MISSING_DEP_TARGET" "-On (dependency target node id) is required for deps $DepAction" 1 }
+
+    $lockInfo = Enter-RunLock $RunDir
+    try {
+        $manifest = Read-ManifestEditable $RunDir
+        Assert-Running $manifest
+        $roundState = Get-RoundState $RunDir
+        Assert-OpenRound $roundState
+        $round = [int]$roundState.open_round
+
+        $readBack = Read-TreeEditable $RunDir
+        $tree = $readBack.tree
+        $node = Find-Node $tree $NodeId
+        if ($null -eq $node) { Write-ErrorResult "NODE_NOT_FOUND" "Node not found: $NodeId" 2 }
+
+        $current = @(ConvertTo-NodeIdList $node.depends_on)
+
+        if ($DepAction -eq "add") {
+            if ($current -contains $On) {
+                Write-ErrorResult "DEP_EXISTS" "Node $NodeId already depends on $On" 1
+            }
+            $newDeps = @($current) + $On
+        }
+        else {
+            if ($current -notcontains $On) {
+                Write-ErrorResult "DEP_NOT_FOUND" "Node $NodeId does not depend on $On (nothing to remove)" 1
+            }
+            $newDeps = @($current | Where-Object { $_ -ne $On })
+        }
+
+        # apply to an in-memory copy of the whole edge map, then validate mechanically
+        $edgeMap = Get-TreeEdgeMap $tree
+        $edgeMap[[string]$NodeId] = $newDeps
+        $problems = @(Test-DependencyGraph $edgeMap)
+        if ($problems.Count -gt 0) {
+            Write-ErrorResult "DEP_GRAPH_INVALID" "deps $DepAction rejected (nothing written): $($problems -join '; ')" 1
+        }
+
+        $node.depends_on = $newDeps
+        Write-TreeFile $RunDir $tree
+        Add-DepsLogLine $RunDir $(if ($DepAction -eq "add") { "dep-add" } else { "dep-remove" }) $NodeId $On $round
+
+        $depView = Get-TreeDependencyView $tree
+        return @{
+            success = $true
+            data    = @{
+                run_id     = $RunId
+                action     = $DepAction
+                node       = $NodeId
+                target     = $On
+                depends_on = @($node.depends_on)
+                blocked_pending = @($depView.blocked_pending | ForEach-Object { $_.id })
+                round      = $round
+                lock       = $lockInfo
+            }
+        }
+    }
+    finally {
+        Exit-RunLock
+    }
+}
+
 # === Dispatch ===
 
 switch ($Command) {
@@ -1757,6 +2169,7 @@ switch ($Command) {
     "conclude"    { $runDir = Resolve-RunDir $RunId; $result = Invoke-Conclude $runDir }
     "status"      { $runDir = Resolve-RunDir $RunId; $result = Invoke-Status $runDir }
     "resume"      { $runDir = Resolve-RunDir $RunId; $result = Invoke-Resume $runDir }
+    "deps"        { $runDir = Resolve-RunDir $RunId; $result = Invoke-Deps $runDir }
 }
 
 ConvertTo-PortableJson $result -Depth 14

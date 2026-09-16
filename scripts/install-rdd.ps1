@@ -326,5 +326,5 @@ Write-Host '  verify  : powershell -ExecutionPolicy Bypass -File install-rdd.ps1
 Write-Host '  restart : reopen the dsh profile so the plugin bundle layer composes'
 Write-Host '  upgrade : re-run install-rdd.ps1 (latest) or -Release <tag> to downgrade'
 Write-Host '  remove  : powershell -ExecutionPolicy Bypass -File install-rdd.ps1 -Remove'
-Write-Host '  data    : project-level .rdd/ data (changes/exploration/tree-runs) is never touched'
+Write-Host '  data    : project-level .rdd/ data (changes/exploration/goal-trees) is never touched'
 exit 0

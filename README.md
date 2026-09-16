@@ -60,7 +60,7 @@ powershell -ExecutionPolicy Bypass -File install-rdd.ps1 -Remove           # 卸
 
 - **插件装完需重启 profile**（重开 `dsh web` / 新会话），bundle 层在启动时组合；skills / presets 热生效无需重启
 - **升级 / 卸载只动用户级落点**（`~\.rdd\engine`、`$DSH_HOME\skills` 与 `.agent-presets`、profile 依赖行），项目内 `.rdd/` 数据零触碰
-- **项目内旧数据兼容**：`task.json` v1、探索缓存（`.rdd/exploration/` 只读格式）、`tree-runs` 状态文件均向后兼容——用户级安装与其并存，互不改动
+- **项目内旧数据兼容**：`task.json` v1、探索缓存（`.rdd/exploration/` 只读格式）、`goal-trees` 状态文件均向后兼容——用户级安装与其并存，互不改动
 - 组件级细节见下方各节与 [dsh/dsh-rdd-explore/README.md](./dsh/dsh-rdd-explore/README.md)
 
 ### 方式一：源码安装（推荐）
@@ -169,7 +169,7 @@ coderrdd uninstall .  # 删链接/薄文件/角色目录，还原合并配置；
 
 只需要 rdd-engine 命令行工具（角色技能已由其他渠道安装，或只想在任意项目里直接用流转 / 任务树 / 探索缓存 CLI）时，走独立分发通道：GitHub Release 提供固定名 `rdd-engine.tgz` 与配套安装器，**用户侧零 node/npm 依赖**。
 
-**前置**：Windows 10 1803+（自带 `tar.exe`）、PowerShell 5.1+、git（引擎数据落点 `.rdd/changes|tree-runs` 由 git 仓库根推导，非 git 项目不可用——继承现状）。
+**前置**：Windows 10 1803+（自带 `tar.exe`）、PowerShell 5.1+、git（引擎数据落点 `.rdd/changes|goal-trees` 由 git 仓库根推导，非 git 项目不可用——继承现状）。
 
 ```powershell
 # 1) 从 GitHub Release 下载 rdd-engine.tgz 与 scripts/install-rdd-engine.ps1
@@ -191,7 +191,7 @@ powershell -ExecutionPolicy Bypass -File install-rdd-engine.ps1 -Tarball .\rdd-e
 
 ### 角色体系用户级安装（rdd-skills.tgz）
 
-把 8 个 RDD 角色技能 + 7 组 DSH presets 装到**用户级**，装一次后该用户的所有 DSH 项目可用，无需克隆 codeRDD。与一体化安装的关系：本节是组件级高级通道（只装技能体系）；普通用户走上方**一体化安装**主入口，不要重复执行本节。
+把 8 个 RDD 角色技能 + 8 组 DSH presets（7 角色 + `rdd-manager` 引导 preset）装到**用户级**，装一次后该用户的所有 DSH 项目可用，无需克隆 codeRDD。与一体化安装的关系：本节是组件级高级通道（只装技能体系）；普通用户走上方**一体化安装**主入口，不要重复执行本节。
 
 ```powershell
 Invoke-WebRequest https://github.com/YaphetHayate/codeRDD/releases/latest/download/rdd-skills.tgz -OutFile .\rdd-skills.tgz
@@ -203,7 +203,7 @@ powershell -ExecutionPolicy Bypass -File scripts\install-rdd-skills.ps1 -Tarball
 - **装后自检**：① 引擎三级定位链探测（miss 时 WARN 并输出安装指引，不阻断）；② rdd-explore 插件缺失 WARN（rdd-* presets 的探索委派依赖该插件，未装则挂载 broken）——推荐先装引擎与插件（或直接走一体化安装）
 - **升级 / 降级**：对新（旧）版本 tarball 重跑安装器；分发前清落点 `rdd-*` 再拷，升级不留旧文件残留
 - **卸载**：`install-rdd-skills.ps1 -Remove`——删两落点 `rdd-*` 与 `~\.rdd\skills\manifest.json` 版本账本；项目内 `.rdd/` 数据零触碰
-- **包内结构**：`skills/`（8 技能；`rdd-engine` 仅 SKILL.md——协议文档经引擎三级定位链解析到引擎侧，与脚本同版本，不随包重复）+ `presets/`（7 组生成物），子树边界 = 安装器分发边界；v1 coderrdd 项目布局（`.rdd/skills/rdd-engine`）经定位链候选② 命中，与用户级安装互不影响
+- **包内结构**：`skills/`（8 技能；`rdd-engine` 仅 SKILL.md——协议文档经引擎三级定位链解析到引擎侧，与脚本同版本，不随包重复）+ `presets/`（8 组生成物，含 `rdd-manager`——Manager 为引擎编排形态非角色卡，preset 为自举指针），子树边界 = 安装器分发边界；v1 coderrdd 项目布局（`.rdd/skills/rdd-engine`）经定位链候选② 命中，与用户级安装互不影响
 - **构建（维护者）**：仓根 `node scripts/build-skills-package.mjs` 产出 `dist/skills/rdd-skills.tgz` 双产物（先自动再生成 presets 保证新鲜；junction 技能源 fail-loud；`--check` 为 CI 模式）
 
 ### 一体化发布（维护者）

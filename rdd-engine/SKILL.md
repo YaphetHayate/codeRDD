@@ -131,9 +131,10 @@ explore-store.cmd（写面）：
 
 ### 交接脚本（start-role）
 
-为下游角色一键开启会话，免去手动 `/new` + 敲命令。脚本读 `$env:RDD_RUNTIME` **自动选择后端**，agent 无需判断运行模式：
-- **CLI 后端**（`RDD_RUNTIME` 未设置）：开新 Windows Terminal 窗口，预填 `/rdd-<角色> ...`
+为下游角色一键开启会话，免去手动 `/new` + 敲命令。脚本按判据链（`RDD_RUNTIME` → `DSH_WEB_URL` → CLI）**自动选择后端**，agent 无需判断运行模式：
+- **CLI 后端**（判据链均未命中）：开新 Windows Terminal 窗口，预填 `/rdd-<角色> ...`
 - **Plus 后端**（`RDD_RUNTIME=app`，运行在 Plus 应用内）：POST 到 Plus `/api/rdd/handoff`，Plus 创建对话并自动驱动目标角色；需追加 `-EmployeeId <uuid>`
+- **dsh 后端**（`DSH_WEB_URL` 非空，运行在 dsh Web GUI 会话内）：经 dsh 现有 `/api` 载波 `workspace.create`（resolve-or-create 项目 workspace）→ `session.create {workspaceId, agentPreset: rdd-<角色>}`（绑定 preset 并入账 workspace）→ `session.prompt`（指针消息）自动创建会话并开工；无需 `-EmployeeId`
 
 上游 agent 完成路由推进后调用：
 
@@ -150,6 +151,7 @@ $rdd = $null; $t = $null; try { $t = git rev-parse --show-toplevel } catch { }; 
 | `-EmployeeId` | 仅 Plus | — | Plus 模式必填，目标角色对应的员工 UUID |
 | `-Project` | 否 | git root | 项目根，非 git 环境必须显式指定 |
 | `-PlusUrl` | 否 | `http://127.0.0.1:8000` | Plus 后端地址 |
+| `-DshUrl` | 否 | `$env:DSH_WEB_URL` | dsh 后端地址（Web GUI `/api` 载波基地址） |
 | `-DryRun` | 否 | — | 只打印将执行的命令，不实际交接 |
 
 **CLI 后端 prompt 模式**（按 Handoff > TaskId > 纯角色 优先）：
@@ -158,6 +160,8 @@ $rdd = $null; $t = $null; try { $t = git rev-parse --show-toplevel } catch { }; 
 - 都不传 → `/rdd-<role>`（目标角色自行拉 handoff）
 
 **Plus 后端**：脚本据 TaskId/TaskJson 定位归档，发送指针消息 `请处理 .rdd/changes/archive/<name>/ 下的需求。`（见 `transition-guide.md` 入口 B2），由目标员工的 `agent_mode` 绑定的角色 SKILL 接管。
+
+**dsh 后端**：发送同样的 B2 指针消息；preset 按命名约定 `rdd-<角色小写>` 绑定（先经 `agentPreset.list` 预检，miss 报错并列出可用 preset），会话先经 `workspace.create` resolve-or-create 项目 workspace、再以 `workspaceId` 创建入账，新会话直接出现在 Web GUI 侧栏的项目 workspace 文件夹内（cwd-only 创建不入 workspace 账，只会落入侧栏底部 Ungrouped 区），指针消息被接受即自动驱动目标角色开工。dsh 不可达时报错并回退人工指引（不降级 CLI 开窗）；`-EmployeeId` 属 Plus 语义，dsh 分支显式忽略。
 
 脚本不校验 TaskId 有效性，由目标角色拉 handoff 时自行判断。详见 `references/transition-guide.md` 入口 B0。
 

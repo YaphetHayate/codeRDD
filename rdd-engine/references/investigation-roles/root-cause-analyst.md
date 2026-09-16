@@ -7,7 +7,7 @@
 > | role id | `root-cause-analyst` |
 > | 中文名 | 根因推理者 |
 > | 承接性质 | Synthesis（只此一种，不承接 probe） |
-> | 权威来源 | `rca-roles.md` §「root-cause-analyst（根因推理者）」——方法变更**先改权威再同步本卡**，禁止反向 |
+> | 权威来源 | `investigation-roles.md` §「root-cause-analyst（根因推理者）」——方法变更**先改权威再同步本卡**，禁止反向 |
 > | 适用场景 | 全部 ledger 条目到齐、覆盖并集无缺口后的终局综合轮；产出带证据链的结构化结案 |
 >
 > **红线**：本卡只固化通用 SRE 方法论，不含任何具体题目的答案知识。

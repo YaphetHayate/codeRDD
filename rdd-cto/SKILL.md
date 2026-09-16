@@ -74,6 +74,7 @@ description: >
 
 ### 读取任务路由
 
+- **认领先行（收到任务第一件事）**：锁定任务后、读取文档前，调用 `claim -Role CTO -TaskId <n>` 写入认领记录并获取任务信息。返回 `claimed:false` 冲突时向用户阐明"该任务已由 CTO 于 <时间> 认领（另一窗口可能正在处理）"，由用户裁决：确认抢占（带 `-Force` 重新认领）或换任务。协议详见 `rdd-engine/references/task-routing.md`「认领协议」
 - 任务路由操作遵循 `rdd-engine/references/task-routing.md`
 - 用 `show -Role CTO` 定位自己的任务；锁定单条后用 `advance` 推进路由、`add-design` 追加设计文档
 - 若筛选出多条 CTO 待处理需求，按各流程文件的「锁定单条」步骤执行——列出剩余需求 + 强相关簇识别 + 推荐 + 请求用户确认 → 锁定本次专注的一条
@@ -85,6 +86,7 @@ description: >
 ## 完成前置硬检查
 
 设计归档完成 → **必须**按 `rdd-engine/references/transition-guide.md` 上游协议 4 步硬流程执行交接（advance 路由 → next → 推荐 → start/handoff）。
+第 3 步仍须用户确认目标角色；第 4 步调用 `start-role.cmd -Role <下游角色> -TaskId <n>`——脚本按 `RDD_RUNTIME` → `DSH_WEB_URL` → CLI 判据链自选后端（agent 不判断模式），dsh 下自动创建 preset 已绑定的会话并投递 B2 指针消息，不可达时报错并回退人工指引。
 
 ## 执行（委托）
 

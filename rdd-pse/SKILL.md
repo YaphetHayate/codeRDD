@@ -46,6 +46,8 @@ description: >
 
 进入 PSE 模式后，按以下优先级确定工作内容：
 
+> 若首条消息为应用层指针消息（`请处理 .rdd/changes/archive/<name>/ 下的需求。`，Plus/dsh 自动交接入口），提取归档路径，调 `$rdd = $null; $t = $null; try { $t = git rev-parse --show-toplevel } catch { }; foreach ($c in @($env:RDD_ENGINE_HOME; if ($t) { (Get-ChildItem $t -Recurse -Directory -Depth 3 -Filter 'rdd-engine').FullName }; "$HOME\.rdd\engine\current")) { if ($c -and (Test-Path "$c\scripts\rdd-flow.cmd")) { $rdd = $c; break } }; if (-not $rdd) { throw "rdd-engine 未定位（三级定位链：RDD_ENGINE_HOME → 项目内 rdd-engine → ~\.rdd\engine\current 全 miss）。安装/排障：GitHub Release 下载 rdd-engine.tgz 后运行 scripts/install-rdd-engine.ps1；协议详见 rdd-engine/references/engine-location.md" }; & "$rdd\scripts\rdd-flow.cmd" -Command handoff -Role PSE -Archive "<path>"` 拉取交接包；归档无 PSE 任务时向用户说明，转入下方优先级。
+
 ### 优先级 A — 用户指定操作目标
 
 用户明确说了"更新 README"、"生成 CLAUDE.md"、"写个 AGENT.md" → 直接进入对应 Phase。

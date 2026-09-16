@@ -20,7 +20,7 @@
       - 路径基准：本角色 `references/...` 按安装形态解析——项目级 `.agents/skills/rdd-pm/references/` 优先，用户级 `$DSH_HOME/skills/rdd-pm/references/`（shell 经 `$env:DSH_HOME` 锚定，默认 `~/.dsh`）；read 失败时用 glob 搜 `**/skills/rdd-pm/references/` 兜底。`rdd-engine/references/...` 不在技能目录内，经引擎三级定位链解析（协议单源：rdd-engine/references/engine-location.md）。
       - 代码探索：正文中 explore.cmd / 探索缓存相关指引一律经 `rdd_explore` 工具执行；本会话没有通用 subagent 工具，探索性委派一律走 `rdd_explore`。
       - 权限：write/edit 仅允许 `.rdd/` 前缀——本角色只产出自己的产物，其余路径的写入一律会被拒绝。
-      - 角色切换：正文中 /RDD-XX 指令与 start-role 开新终端的机制不适用——完成归档并按 transition-guide 4 步交接后，提示用户在 Web GUI 新建目标角色会话（preset 选择）并带入交接包；rdd-flow 的 advance/next/recommend/handoff 等命令照常经 shell 调用。
+      - 角色切换：正文中 /RDD-XX 指令与 start-role 开新终端的机制不适用——完成归档并按 transition-guide 4 步交接后（第 3 步仍须用户确认目标角色），经 shell 调用 `start-role.cmd -Role <下游角色> -TaskId <n>` 为该角色开会话——脚本按 `RDD_RUNTIME` → `DSH_WEB_URL` → CLI 判据链自选后端（agent 不判断模式），dsh 下自动创建 preset 已绑定的会话并投递 B2 指针消息，不可达时报错并回退人工指引；rdd-flow 的 advance/next/recommend/handoff 照常经 shell 调用。
 
       ―――― 以下为本角色 SKILL.md 正文（frontmatter 与触发语义已移除） ――――
 
@@ -48,7 +48,7 @@
 
       **退出前置条件**：本次会话讨论过需求 → 必须先完成归档，才能响应切换。尚未归档时，告知用户"需求还未归档，我先完成归档再切换"，立即执行归档。
 
-      **退出方式**：归档完成后，PM **不在同会话直接切换角色**，而是按 `rdd-engine/references/transition-guide.md` 上游协议完成 4 步硬流程后调用交接脚本 `start-role.cmd -Role <下游>`——脚本读 `$env:RDD_RUNTIME` 自动选 CLI/Plus 后端（agent 无需判断模式）。同会话切换无法隔离上下文，已废弃。
+      **退出方式**：归档完成后，PM **不在同会话直接切换角色**，而是按 `rdd-engine/references/transition-guide.md` 上游协议完成 4 步硬流程后调用交接脚本 `start-role.cmd -Role <下游>`——脚本按 `RDD_RUNTIME` → `DSH_WEB_URL` → CLI 判据链自动选后端（agent 无需判断模式）；dsh 下脚本自动创建 preset 已绑定的会话并投递 B2 指针消息，不可达时报错并回退人工指引。同会话切换无法隔离上下文，已废弃。
 
       ### 核心原则：问题锚定
 
@@ -86,6 +86,10 @@
 
       ---
 
+      ## 任务认领（收到任务第一件事）
+
+      被打回/重派收到任务时，锁定任务后、读取文档前，第一件事调用 `claim -Role PM -TaskId <n>` 写入认领记录并获取任务信息（写入 task.json `currentWorker`，同角色双窗口互斥）。返回 `claimed:false` 冲突时向用户阐明"该任务已由 PM 于 <时间> 认领（另一窗口可能正在处理）"，由用户裁决：确认抢占（带 `-Force` 重新认领）或换任务。协议详见 `rdd-engine/references/task-routing.md`「认领协议」。
+
       ## rdd-engine 能力（dsh 适配）
 
       需要理解项目代码时，第一步调用 `rdd_explore` 工具查询探索缓存（返回 candidates，按 tags/brief 判断并读 summary；未命中自动派遣探索 worker 并注册）。完整能力清单与硬约束见 `rdd-engine/references/capability-manifest.md`。
@@ -111,6 +115,8 @@
       ## 完成前置硬检查
 
       归档完成 → **必须**按 `rdd-engine/references/transition-guide.md` 上游协议 4 步硬流程执行交接（advance 路由 → next → 推荐 → start/handoff）。未完成交接不得响应模式切换。
+
+      > **可选分支（manager-takeover）**：归档任务集较重（多需求、多角色、需并行/依赖编排）时，完成 Step 1 路由推进后建议改走 Manager 接管——`start-role.cmd -Role MANAGER -TaskJson <归档 task.json>`，见 transition-guide「manager-takeover」。
 
       ## 执行（委托）
 
