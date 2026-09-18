@@ -8,7 +8,7 @@
  *        package.json   @coderrdd/rdd-skills（files: skills/ + presets/）
  *        skills/        8 个角色技能目录（rdd-engine 仅 SKILL.md——协议文档经
  *                       引擎三级定位链解析到引擎侧，与脚本同版本，不随包重复）
- *        presets/       8 组 dsh 生成物（7 角色 + rdd-manager 引导 preset）
+ *        presets/       8 组 dsh 生成物（7 角色 + rdd-planner 引导 preset）
  *   3. npm pack → 双产物：
  *        dist/skills/rdd-skills.tgz               # 固定名（Release latest 直链）
  *        dist/skills/rdd-skills-<version>.tgz     # 带版本名归档
@@ -51,8 +51,8 @@ const fail = msg => { console.error(`✗ ${msg}`); process.exit(1) }
 /** 8 个角色技能目录（7 流程角色 + rdd-engine）。 */
 const SKILL_ROLES = ['rdd-pm', 'rdd-cto', 'rdd-ux', 'rdd-dev', 'rdd-qa', 'rdd-eval', 'rdd-pse', 'rdd-engine']
 
-/** 8 组 preset 生成物（7 流程角色 + rdd-manager 引导 preset；engine 职能由 rdd-explore 插件 + CLI 承接，无 preset）。 */
-const PRESET_ROLES = ['rdd-pm', 'rdd-cto', 'rdd-ux', 'rdd-dev', 'rdd-qa', 'rdd-eval', 'rdd-pse', 'rdd-manager']
+/** 8 组 preset 生成物（7 流程角色 + rdd-planner 引导 preset；engine 职能由 rdd-explore 插件 + CLI 承接，无 preset）。 */
+const PRESET_ROLES = ['rdd-pm', 'rdd-cto', 'rdd-ux', 'rdd-dev', 'rdd-qa', 'rdd-eval', 'rdd-pse', 'rdd-planner']
 
 const SKILLS_VERSION = '1.0.0'
 const PKG_NAME = '@coderrdd/rdd-skills'
@@ -102,7 +102,7 @@ mkdirSync(join(stagingRoot, 'presets'), { recursive: true })
 writeFileSync(join(stagingRoot, 'package.json'), JSON.stringify({
   name: PKG_NAME,
   version: SKILLS_VERSION,
-  description: 'RDD role skills (8) + dsh agent presets (8, incl. the rdd-manager bootstrap preset) as one user-level distribution: install once via install-rdd-skills.ps1 into $DSH_HOME/skills and $DSH_HOME/.agent-presets, available to every project',
+  description: 'RDD role skills (8) + dsh agent presets (8, incl. the rdd-planner bootstrap preset) as one user-level distribution: install once via install-rdd-skills.ps1 into $DSH_HOME/skills and $DSH_HOME/.agent-presets, available to every project',
   files: ['skills/', 'presets/'],
   repository: { type: 'git', url: 'git+https://github.com/YaphetHayate/codeRDD.git' },
   license: 'MIT',

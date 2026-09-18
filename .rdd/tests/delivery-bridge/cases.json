@@ -8,19 +8,19 @@
     "rdd-engine/scripts/goal-tree-leaf.ps1",
     "rdd-engine/scripts/rdd-flow.ps1",
     "rdd-engine/scripts/start-role.ps1",
-    "rdd-engine/references/manager-guide.md"
+    "rdd-engine/references/planner-guide.md"
   ],
   "testCode": [
     ".rdd/tests/delivery-bridge/delivery-bridge-verify.ps1"
   ],
-  "lastChange": "2026-09-15-goal-tree-delivery-orchestration",
+  "lastChange": "2026-09-18-planner-goal-tree-upgrade",
   "cases": [
     {
       "id": "TC-B01", "title": "promulgate:run 建立 + 任务×阶段节点 + bridge.json 1:N 映射落盘 + ref 指针 + 依赖自动推导", "type": "positive", "priority": "P0",
       "acceptance": "BR-AC-2", "codeRef": ".rdd/tests/delivery-bridge/delivery-bridge-verify.ps1:174", "sourceChange": "2026-09-15-goal-tree-delivery-orchestration", "status": "active", "crossFeature": ["goal-tree"],
       "precondition": "fixture 归档(3 任务:T1 无依赖/T2 依赖 T1/T3 独立)建于 .rdd/tmp 下,不触碰真实归档",
       "steps": ["delivery-bridge promulgate -TaskJson <fixture>/task.json", "读 run 目录 bridge.json 与 state/tree.json", "goal-tree status 查预算与开放轮"],
-      "expected": "退出码 0;run 建立,任务×阶段节点颁布;bridge.json 双向映射可查(nodes.n2.task_id=1/stage=DEV,tasks.'1'.stages.DEV=n2);节点 ref=归档#TaskId;T2→T1 依赖自动推导为 depends_on;node_width≥任务数;round 1 开放;manager-lease.json 落盘"
+      "expected": "退出码 0;run 建立,任务×阶段节点颁布;bridge.json 双向映射可查(nodes.n2.task_id=1/stage=DEV,tasks.'1'.stages.DEV=n2);节点 ref=归档#TaskId;T2→T1 依赖自动推导为 depends_on;node_width≥任务数;round 1 开放;planner-lease.json 落盘"
     },
     {
       "id": "TC-B02", "title": "重复 promulgate 防护(RUN_EXISTS);dispatch -DryRun 预演不误开窗;非桥接 run 拒绝", "type": "negative", "priority": "P1",
@@ -82,14 +82,21 @@
       "id": "TC-B11", "title": "conclude:未全终态拒绝;全终态后产出 final-report + delivery-annex(任务终态表+check 结果)+ 租约释放", "type": "positive", "priority": "P0",
       "acceptance": "BR-AC-6", "codeRef": ".rdd/tests/delivery-bridge/delivery-bridge-verify.ps1:464", "sourceChange": "2026-09-15-goal-tree-delivery-orchestration", "status": "active", "crossFeature": ["goal-tree"],
       "steps": ["任务未全终态时 conclude", "推进至全部终态后 conclude", "检查结案产物与租约"],
-      "expected": "未全终态时确定性拒绝;全终态后产出 final-report(复用惯例)与 delivery-annex(任务终态表+rdd-flow check 结果);manager-lease 释放"
+      "expected": "未全终态时确定性拒绝;全终态后产出 final-report(复用惯例)与 delivery-annex(任务终态表+rdd-flow check 结果);planner-lease 释放"
     },
     {
       "id": "TC-B12", "title": "回归:纯 goal-tree run 零桥接文件;rdd-flow 纯流程照常;桥接命令不触碰真实归档", "type": "boundary", "priority": "P0",
       "acceptance": "BR-AC-7", "codeRef": ".rdd/tests/delivery-bridge/delivery-bridge-verify.ps1:510", "sourceChange": "2026-09-15-goal-tree-delivery-orchestration", "status": "active", "crossFeature": ["goal-tree", "task-claim"],
       "precondition": "套件执行前对真实 .rdd/changes/ 归档做内容快照",
       "steps": ["运行纯 goal-tree run 全流程", "检查 run 目录是否出现桥接产物", "执行 rdd-flow 纯流程命令", "结束后比对真实归档快照"],
-      "expected": "纯 run 零桥接文件(bridge.json 等不出现);rdd-flow 纯流程行为与改动前一致(无桥接感知);真实归档零触碰——未采用 Manager 的项目完全不受影响"
+      "expected": "纯 run 零桥接文件(bridge.json 等不出现);rdd-flow 纯流程行为与改动前一致(无桥接感知);真实归档零触碰——未采用规划者的项目完全不受影响"
+    },
+    {
+      "id": "TC-B13", "title": "存量 run 旧命名 sidecar 零兼容:manager-lease 活跃租约不被尊重(acquire 照常成功) + manager-reclaim 停泊节点不被识别(经新 reclaim 回收后可认领)", "type": "boundary", "priority": "P0",
+      "acceptance": "PR-AC-2", "codeRef": ".rdd/tests/delivery-bridge/delivery-bridge-verify.ps1:536", "sourceChange": "2026-09-18-planner-goal-tree-upgrade", "status": "active", "crossFeature": ["goal-tree"],
+      "precondition": "fixture 归档 promulgate 后,将 planner-lease.json 改名为 manager-lease.json(模拟 2026-09-15 版存量 run);再手工把 n2 置为 claimed/claimed_by=manager-reclaim(旧版 reclaim 泊位值)",
+      "steps": ["manager-lease.json 在场(他方持有、未超时)时 status/resume/lease -Acquire(无 -Takeover)", "n2 置为 claimed_by=manager-reclaim 后 delivery-bridge claim -NodeId n2 -Role DEV", "对 n2 跑新版 reclaim(dead-claim 模式)后再 claim"],
+      "expected": "status/resume exit 0(读面不失效);无 -Takeover 的 acquire 照常成功并落盘 planner-lease.json(旧命名租约不被读取);旧泊位值 claim 报 NODE_NOT_CLAIMABLE(不识别为新版泊位);经新版 reclaim 回收为 planner-reclaim 后 claim exit 0——用户 2026-09-18 裁定零兼容,存量处置走显式迁移路径(决策 #4/#7)"
     }
   ]
 }

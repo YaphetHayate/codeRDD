@@ -824,7 +824,7 @@ function Suite-E2E {
            -Summary "traffic surge ruled out by access log volume" `
            -Citations @(@{ ref = "$PlaneRepoRel/logs/api-access.log"; locator = "L1-L99" }) -Next ""
     $rp3 = Submit-Report $rid "w3-traffic" $cb3
-    # Manager 整合:settle n2/n3,prune n4,下探 n5
+    # 规划者整合:settle n2/n3,prune n4,下探 n5
     $null = TRun @("-Command", "settle", "-RunId", $rid, "-NodeId", "n2", "-Note", "causal chain confirmed")
     $null = TRun @("-Command", "settle", "-RunId", $rid, "-NodeId", "n3", "-Note", "degraded but recorded")
     $null = TRun @("-Command", "prune", "-RunId", $rid, "-NodeId", "n4", "-Reason", "traffic ruled out by access log")

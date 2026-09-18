@@ -13,8 +13,8 @@
  * - 生成前断言 persona 携带 start-role.cmd 交接指引且无旧式人工指引（加固闸②）
  * - persona 尾部附加防重复加载声明
  *
- * rdd-manager 特例：Manager 是引擎编排形态（无 SKILL.md），persona 为自举指针
- * （指向 rdd-engine/references/manager-guide.md），由本生成器内建常量装配。
+ * rdd-planner 特例：规划者（PLANNER）是引擎编排形态（无 SKILL.md），persona 为自举指针
+ * （指向 rdd-engine/references/planner-guide.md），由本生成器内建常量装配。
  *
  * 用法:
  *   node scripts/build-dsh-presets.mjs                 # 生成到 dsh/presets/
@@ -34,28 +34,28 @@ const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..')
 const ROLES = ['rdd-pm', 'rdd-cto', 'rdd-ux', 'rdd-dev', 'rdd-qa', 'rdd-eval', 'rdd-pse']
 
 /**
- * Manager 引导 preset（rdd-manager）：Manager 是引擎编排形态而非角色卡（无 SKILL.md），
- * persona 是自举指针——行为载荷唯一事实源在引擎侧 manager-guide.md，随引擎版本分发。
- * start-role -Role MANAGER 的 dsh 后端依赖本 preset 创建会话（见 manager-guide 部署前提）。
+ * 规划者引导 preset（rdd-planner）：规划者（PLANNER）是引擎编排形态而非角色卡（无 SKILL.md），
+ * persona 是自举指针——行为载荷唯一事实源在引擎侧 planner-guide.md，随引擎版本分发。
+ * start-role -Role PLANNER 的 dsh 后端依赖本 preset 创建会话（见 planner-guide 部署前提）。
  */
-const MANAGER_PRESET = {
-  role: 'rdd-manager',
-  name: 'RDD-MANAGER',
-  description: 'Manager 交付编排模式（引擎编排形态，非角色卡）。归档较重时接管整批交付：颁布节点、调动角色会话、统一流转与结案报告。',
+const PLANNER_PRESET = {
+  role: 'rdd-planner',
+  name: 'RDD-PLANNER',
+  description: '规划者（PLANNER）交付编排模式（引擎编排形态，非角色卡）。归档较重时接管整批交付：颁布节点、调动角色会话、统一流转与结案报告。',
 }
 
-/** Manager 自举 persona（与角色 persona 同头部的环境适配 + 指向 manager-guide 的引导载荷）。 */
-function assembleManagerPersona() {
+/** 规划者自举 persona（与角色 persona 同头部的环境适配 + 指向 planner-guide 的引导载荷）。 */
+function assemblePlannerPersona() {
   const lines = [
     'You are a coding agent powered by the {{model}} model. Your working directory is {{cwd}}.',
     '',
     '【dsh 环境适配】',
-    '- 本会话即 RDD-MANAGER 编排会话。Manager 是 rdd-engine 的引擎编排形态（非第六张角色卡），没有技能正文可加载——行为载荷的唯一事实源是 `rdd-engine/references/manager-guide.md`：任何动作前先读它。',
+    '- 本会话即 RDD-PLANNER 编排会话。规划者（PLANNER）是 rdd-engine 的引擎编排形态（非第六张角色卡），没有技能正文可加载——行为载荷的唯一事实源是 `rdd-engine/references/planner-guide.md`：任何动作前先读它。',
     '- 引擎定位：`rdd-engine/references/...` 与 `scripts/*.cmd` 经引擎三级定位链解析（协议单源：`rdd-engine/references/engine-location.md`）。',
     '- 代码探索：需要理解项目代码时调用 `rdd_explore` 工具查询探索缓存；本会话没有通用 subagent 工具，探索性委派一律走 `rdd_explore`。',
     '- 编排操作：一律经桥接 CLI `delivery-bridge.cmd`（promulgate / dispatch / claim / reclaim / settle / status / resume / conclude / lease）；树内依赖维护经 `goal-tree.cmd -Command deps`；为节点调动角色会话经 `start-role.cmd -Role <CTO/UX/DEV/QA>`（复用现有交接链路，不新造机制）。',
-    '- 硬约束（详见 manager-guide.md）：桥接 run 的 task.json 流转只能走 bridge settle，禁止手工 advance/complete；不合格交付（三查不过）不得流转；Manager 变更操作需持租约；中断恢复不重复消费已回写节点。',
-    '- 汇报风格：进展用进度表，异常先查 manager-guide.md「异常处置速查」再行动。',
+    '- 硬约束（详见 planner-guide.md）：桥接 run 的 task.json 流转只能走 bridge settle，禁止手工 advance/complete；不合格交付（三查不过）不得流转；规划者变更操作需持租约；中断恢复不重复消费已回写节点。',
+    '- 汇报风格：进展用进度表，异常先查 planner-guide.md「异常处置速查」再行动。',
   ]
   return lines.join('\n') + '\n'
 }
@@ -179,7 +179,7 @@ function assemblePersona(role, skillName, body, policy) {
 }
 
 /**
- * 渲染 preset 文件对（模板填充）：SKILL 角色与 Manager 引导 preset 共用。
+ * 渲染 preset 文件对（模板填充）：SKILL 角色与规划者引导 preset 共用。
  * @param {string} template - 模板原文（含占位符）。
  * @param {string} persona - 组装完成的 persona 全文。
  * @param {{ writePrefixes?: string[], sessionReadOnly?: boolean } | undefined} policy - 权限策略。
@@ -225,15 +225,15 @@ function buildPreset(template, role, order) {
 }
 
 /**
- * 生成 Manager 引导 preset 文件对（persona 为自举指针，非角色卡）。
+ * 生成规划者引导 preset 文件对（persona 为自举指针，非角色卡）。
  * @param {string} template - 模板原文（含占位符）。
  * @param {number} order - preset 排序值。
  * @returns {{ cordis: string, preset: string, personaChars: number }} 生成内容。
  */
-function buildManagerPreset(template, order) {
-  const persona = assembleManagerPersona()
-  assertHandoffGuidance(persona, MANAGER_PRESET.role)
-  return renderPreset(template, persona, undefined, MANAGER_PRESET.name, MANAGER_PRESET.description, order)
+function buildPlannerPreset(template, order) {
+  const persona = assemblePlannerPersona()
+  assertHandoffGuidance(persona, PLANNER_PRESET.role)
+  return renderPreset(template, persona, undefined, PLANNER_PRESET.name, PLANNER_PRESET.description, order)
 }
 
 const checkMode = process.argv.includes('--check')
@@ -243,15 +243,15 @@ const template = readFileSync(join(repoRoot, 'scripts', 'dsh-preset-template.yml
 
 const summary = []
 let mismatch = false
-// 生成任务序列：7 个 SKILL 角色 preset + 1 个 Manager 引导 preset（非角色卡，殿后）
+// 生成任务序列：7 个 SKILL 角色 preset + 1 个规划者引导 preset（非角色卡，殿后）
 const buildTasks = [
   ...ROLES.map(role => ({ kind: 'skill', role })),
-  { kind: 'manager', role: MANAGER_PRESET.role },
+  { kind: 'planner', role: PLANNER_PRESET.role },
 ]
 for (const [index, task] of buildTasks.entries()) {
   const { cordis, preset, personaChars } = task.kind === 'skill'
     ? buildPreset(template, task.role, index + 2)
-    : buildManagerPreset(template, index + 2)
+    : buildPlannerPreset(template, index + 2)
   const role = task.role
   const dir = join(outDir, role)
   const cordisPath = join(dir, 'agent.cordis.yml')

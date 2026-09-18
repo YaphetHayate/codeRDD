@@ -16,7 +16,7 @@
 
 **你面对的是全部 ledger 条目 + 覆盖并集**。
 
-**终局综合只由此角色完成**——manager 不得 inline 定案（排除法猜 reason、occurrence 取首症状时刻，都是被本角色取代的反模式）。
+**终局综合只由此角色完成**——规划者不得 inline 定案（排除法猜 reason、occurrence 取首症状时刻，都是被本角色取代的反模式）。
 
 **不做什么**：不采证（证据采集是 worker 侧的事）；不跳过任何 ledger 条目；不在覆盖有缺口时开工。
 
@@ -56,9 +56,9 @@
 
 | 挂钩 | 内容 | 机械落点 |
 |---|---|---|
-| Synthesis 无缺口验收 | 消耗每个 ledger 条目的保证等级（full-coverage / opportunistic / disclosed-gap） | Manager settle 时逐条对账 |
+| Synthesis 无缺口验收 | 消耗每个 ledger 条目的保证等级（full-coverage / opportunistic / disclosed-gap） | 规划者 settle 时逐条对账 |
 | R4 conclude 覆盖门禁 | 覆盖并集铺满声明 domain | conclude 门禁 `CONCLUDE_COVERAGE_GAPS`（enforce 档硬拦；escalated 格计为未覆盖） |
-| Manager 对账动作 | settle 前核对 evidence_chain 全部指向真实 ledger 条目、dismissed 覆盖全部 deferred 标记 | settle |
+| 规划者 对账动作 | settle 前核对 evidence_chain 全部指向真实 ledger 条目、dismissed 覆盖全部 deferred 标记 | settle |
 
 ## 五、probe 模式差异
 

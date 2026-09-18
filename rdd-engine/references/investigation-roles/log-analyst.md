@@ -46,7 +46,7 @@
 }
 ```
 
-**full_report 领域结构**（机械面不校验，Manager 对账读取）：
+**full_report 领域结构**（机械面不校验，规划者 对账读取）：
 
 ```json
 {
@@ -64,7 +64,7 @@
 | R1 Sweep 清单完整性 | 声明的 cells 全部达终态 | settle 门禁 `SETTLE_MANIFEST_INCOMPLETE`（enforce 档硬拦） |
 | R2 反折叠 | 错误模板多 episode 逐行 | 引擎 report 时折叠检测 |
 | R8 工件对账 | clean 格挂对象化工件遥测（tmin/tmax 覆盖格子区间） | 引擎 evidence 校验 + spotcheck 抽查 |
-| Manager 对账动作 | settle 前查 manifest 无 pending 格；核对 silence_scope 是否覆盖结论依赖的排除链 | settle / round-end |
+| 规划者 对账动作 | settle 前查 manifest 无 pending 格；核对 silence_scope 是否覆盖结论依赖的排除链 | settle / round-end |
 
 ## 五、probe 模式差异（承接性质 = Probe 时生效）
 
@@ -73,4 +73,4 @@
 - **方法变化——单向证伪表述**：任务文本只写"什么日志观测会推翻该假设"；主动尝试推翻，不找支持证据。纯确认式 probe 禁止。
 - **沉默范围纪律在 probe 下加倍重要**："日志里没有 X" 作为证伪证据时，必须先声明 X 是否在此日志源的埋点可见性内——不可见的机制不能用日志缺失来证伪。
 - **交付三值**：`extras.probe = { "verdict": "upheld" | "refuted" | "inconclusive", "falsification_attempted": ["<逐条反例路径与结果>"] }`——verdict 三值必填（引擎 note-only 对账）。
-- **`falsification_duty` 字段**：与 `task-dispatch-guide.md` §2.2 派发字段同名——graft 时由 Manager 声明"必须尝试的反例路径"，持久化在 node 上；执行时对照逐条清算。
+- **`falsification_duty` 字段**：与 `task-dispatch-guide.md` §2.2 派发字段同名——graft 时由 规划者 声明"必须尝试的反例路径"，持久化在 node 上；执行时对照逐条清算。

@@ -1,4 +1,4 @@
-﻿# goal-tree.ps1 — goal-tree management plane CLI (Manager sessions only)
+﻿# goal-tree.ps1 — goal-tree management plane CLI (Planner sessions only)
 #
 # Drives the lifecycle of a tree-shaped long-running task run:
 #   start / graft / prune / settle / conclude / round-start / round-end / status / resume
@@ -1039,7 +1039,7 @@ function Write-RoundSnapshot {
         }
     }
     $lines += ""
-    $lines += "## Manager 整合"
+    $lines += "## 规划者整合"
     $lines += ""
     $lines += "- summary: $(if ($SummaryText) { $SummaryText } else { '-' })"
     $lines += "- decision: $(if ($DecisionText) { $DecisionText } else { '-' })"
@@ -1095,7 +1095,7 @@ function Write-FinalReport {
     $lines += "- 目标: $($Manifest.goal)"
     if ($AnchorNode) { $lines += "- 锚点节点: $AnchorNode（status=done）" }
     $lines += ""
-    $lines += "## Manager 结案摘要"
+    $lines += "## 规划者结案摘要"
     $lines += ""
     $lines += $SummaryText
     $lines += ""
@@ -1303,6 +1303,18 @@ function Invoke-Start {
     Write-TreeFile $RunDir $tree
     [System.IO.File]::WriteAllText((Get-LedgerPath $runDir), "", $script:Utf8NoBom)
     [System.IO.File]::WriteAllText((Get-RoundLogPath $runDir), "", $script:Utf8NoBom)
+
+    # --- dsh session binding (additive sidecar; the DSH GoalTreeBar uses it to
+    #     route worker-report callbacks back to the Planner session's inbox).
+    #     Absent outside dsh shells (plain CLI usage writes dsh_session_id=null).
+    $plannerRecord = [ordered]@{
+        format_version = 1
+        run_id         = $RunId
+        dsh_session_id = if ([string]::IsNullOrWhiteSpace($env:DSH_SESSION_ID)) { $null } else { [string]$env:DSH_SESSION_ID }
+        worker_label   = if ([string]::IsNullOrWhiteSpace($CreatedBy)) { $null } else { [string]$CreatedBy }
+        recorded_at    = $now
+    }
+    [System.IO.File]::WriteAllText((Join-Path (Get-StateDir $runDir) "planner.json"), (ConvertTo-Json $plannerRecord -Depth 4), $script:Utf8NoBom)
 
     return @{
         success = $true
@@ -2072,7 +2084,7 @@ function Invoke-Resume {
 
 # === Command: deps (add / remove / list) ===
 #
-# Manager-maintained dependency edges with mechanical DAG validation at the write
+# Planner-maintained dependency edges with mechanical DAG validation at the write
 # entry (graft is the other one): self / missing-target / cycle are rejected, never
 # silently accepted. Changes are limited to open rounds (same discipline as graft)
 # and audited to state/deps-log.jsonl (append-only, one line per change).

@@ -626,18 +626,18 @@ function Test-PresetPersona {
         $dstText = Get-FileText $dst
         $checks += @{ name = "落点 $r 无旧式人工指引"; ok = (-not $dstText.Contains($LegacyPhrase)); actual = "落点仍是旧 persona" }
     }
-    # rdd-manager 引导 preset（非角色卡）：源仓生成物存在且指向 manager-guide（落点 hash 校验仅限已安装的 7 角色——
-    # manager preset 新装前落点缺失不算失败，安装后经 TC-095 的 8 组计数覆盖）
-    $mgrSrc = Join-Path $PresetSourceRoot 'rdd-manager\agent.cordis.yml'
-    if (-not (Test-Path -LiteralPath $mgrSrc -PathType Leaf)) {
-        $checks += @{ name = "生成物存在 rdd-manager"; ok = $false; actual = "缺 Manager 引导 preset 生成物" }
+    # rdd-planner 引导 preset（非角色卡）：源仓生成物存在且指向 planner-guide（落点 hash 校验仅限已安装的 7 角色——
+    # planner preset 新装前落点缺失不算失败，安装后经 TC-095 的 8 组计数覆盖）
+    $plannerSrc = Join-Path $PresetSourceRoot 'rdd-planner\agent.cordis.yml'
+    if (-not (Test-Path -LiteralPath $plannerSrc -PathType Leaf)) {
+        $checks += @{ name = "生成物存在 rdd-planner"; ok = $false; actual = "缺规划者引导 preset 生成物" }
     }
     else {
-        $mgrText = Get-FileText $mgrSrc
-        $mgrPresetYml = Join-Path $PresetSourceRoot 'rdd-manager\preset.yml'
-        $checks += @{ name = "rdd-manager persona 指向 manager-guide.md"; ok = ($mgrText -match "manager-guide\.md"); actual = "未指向 manager-guide" }
-        $checks += @{ name = "rdd-manager persona 含 start-role.cmd 调动指引"; ok = ($mgrText.Contains("start-role.cmd")); actual = "缺 start-role 指引" }
-        $checks += @{ name = "rdd-manager preset.yml 存在且命名 RDD-MANAGER"; ok = ((Test-Path -LiteralPath $mgrPresetYml -PathType Leaf) -and ((Get-FileText $mgrPresetYml) -match "name:\s*RDD-MANAGER")); actual = "缺 preset.yml 或命名不符" }
+        $plannerText = Get-FileText $plannerSrc
+        $plannerPresetYml = Join-Path $PresetSourceRoot 'rdd-planner\preset.yml'
+        $checks += @{ name = "rdd-planner persona 指向 planner-guide.md"; ok = ($plannerText -match "planner-guide\.md"); actual = "未指向 planner-guide" }
+        $checks += @{ name = "rdd-planner persona 含 start-role.cmd 调动指引"; ok = ($plannerText.Contains("start-role.cmd")); actual = "缺 start-role 指引" }
+        $checks += @{ name = "rdd-planner preset.yml 存在且命名 RDD-PLANNER"; ok = ((Test-Path -LiteralPath $plannerPresetYml -PathType Leaf) -and ((Get-FileText $plannerPresetYml) -match "name:\s*RDD-PLANNER")); actual = "缺 preset.yml 或命名不符" }
     }
     Assert-All "TC-075" "preset 生成物与 \$DSH_HOME 落点均为新指引且 hash 一致" $checks
 }
@@ -759,10 +759,32 @@ function Test-ReparseProtection {
         @{ name = "输出标注 junction 被保留"; ok = (($install.stdout) -match "preserved reparse point"); actual = $install.stdout }
         @{ name = "安装后 junction 仍在"; ok = $junctionsAfterInstall; actual = "junction 消失" }
         @{ name = "7 个角色技能目录到位"; ok = ($roleDirs -eq 7); actual = "实到 $roleDirs 个" }
-        @{ name = "8 组 preset 落点到位（7 角色 + rdd-manager）"; ok = ($presetsInstalled -eq 8); actual = "实到 $presetsInstalled 组" }
+        @{ name = "8 组 preset 落点到位（7 角色 + rdd-planner）"; ok = ($presetsInstalled -eq 8); actual = "实到 $presetsInstalled 组" }
         @{ name = "-Remove exit 1（保护即报错）"; ok = ($remove.exit -eq 1); actual = "exit=$($remove.exit)" }
         @{ name = "-Remove 报错指明拒绝删除"; ok = ($removeAll -match "refusing to delete reparse points"); actual = $removeAll }
         @{ name = "-Remove 后 junction 仍在"; ok = $junctionAfterRemove; actual = "junction 被删除" }
+    )
+}
+
+# --- TC-105 负向 PR-AC-1（修订）：-Role MANAGER 旧值移除（2026-09-18 更名需求） ----------
+
+function Test-PlannerOldValueRemoved {
+    # 用户 2026-09-18 裁定零兼容（planner-rename-cto-decisions #2，撤销原验收 1 后半句“别名仍可用”）：
+    # ValidateSet 移除 MANAGER 仅留 PLANNER——旧值传入即参数校验错,报错自带的合法值列表即天然迁移指引；
+    # 新值 dsh 后端 DryRun 全链路走 rdd-planner preset 与 planner-guide 指针。
+    $common = @("-TaskJson", $TaskJson, "-Project", $FixtureRoot, "-DryRun")
+    $envDsh = @{ DSH_WEB_URL = "http://127.0.0.1:3080"; RDD_RUNTIME = $null }
+    $old = Invoke-StartRole -Tag "t105a" -RoleArgs (@("-Role", "MANAGER") + $common) -EnvOverrides $envDsh
+    $new = Invoke-StartRole -Tag "t105b" -RoleArgs (@("-Role", "PLANNER") + $common) -EnvOverrides $envDsh
+    $oldFlat = ($old.stdout + $old.stderr) -replace "`r?`n", " | "
+    $newFlat = ($new.stdout + $new.stderr) -replace "`r?`n", " | "
+    Assert-All "TC-105" "-Role MANAGER 旧值已移除:参数校验错并列出合法值 PLANNER;新值 PLANNER 全链路可用" @(
+        @{ name = "旧值 MANAGER exit 非 0(参数校验错)"; ok = ($old.exit -ne 0); actual = "exit=$($old.exit); out=$oldFlat" }
+        @{ name = "报错回显旧值 MANAGER"; ok = ($old.stderr -match '"MANAGER"'); actual = $oldFlat }
+        @{ name = "报错列出合法值 PLANNER(迁移指引)"; ok = ($old.stderr -match 'PLANNER'); actual = $oldFlat }
+        @{ name = "新值 PLANNER exit 0"; ok = ($new.exit -eq 0); actual = "exit=$($new.exit); out=$newFlat" }
+        @{ name = "PLANNER 走 rdd-planner preset"; ok = ($new.stdout -match "rdd-planner"); actual = $newFlat }
+        @{ name = "PLANNER 指针指向 planner-guide.md"; ok = ($new.stdout -match "planner-guide\.md"); actual = $newFlat }
     )
 }
 
@@ -778,6 +800,7 @@ try {
     Test-TrustFence
     Test-CliUnchanged
     Test-PresetMissing
+    Test-PlannerOldValueRemoved
     Test-PlusUnchanged
     Test-EnvChainPriority
     Test-BusinessError

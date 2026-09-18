@@ -123,16 +123,16 @@ $rdd = $null; $t = $null; try { $t = git rev-parse --show-toplevel } catch { }; 
 
 **并行交接**：同一归档需要同时交多个角色时（如 PM 同时交 CTO+QA），上游 agent 循环调用脚本，每次指定不同 `-Role`，各自开独立窗口 / 各自建独立对话。TaskId 相同时多角色共享同一 task.json 指针。
 
-### 交接类型：manager-takeover（PM 可选分支）
+### 交接类型：planner-takeover（PM 可选分支）
 
-PM 归档完成后判断任务集较重（多需求、多角色、需并行/依赖编排）时，可不逐条交接下游，而是把整批交付交给 Manager（引擎编排形态，非第六角色）：
+PM 归档完成后判断任务集较重（多需求、多角色、需并行/依赖编排）时，可不逐条交接下游，而是把整批交付交给规划者（PLANNER，引擎编排形态，非第六角色）：
 
 ```powershell
-$rdd = $null; $t = $null; try { $t = git rev-parse --show-toplevel } catch { }; foreach ($c in @($env:RDD_ENGINE_HOME; if ($t) { (Get-ChildItem $t -Recurse -Directory -Depth 3 -Filter 'rdd-engine').FullName }; "$HOME\.rdd\engine\current")) { if ($c -and (Test-Path "$c\scripts\rdd-flow.cmd")) { $rdd = $c; break } }; if (-not $rdd) { throw "rdd-engine 未定位" }; & "$rdd\scripts\start-role.cmd" -Role MANAGER -TaskJson <归档 task.json>
+$rdd = $null; $t = $null; try { $t = git rev-parse --show-toplevel } catch { }; foreach ($c in @($env:RDD_ENGINE_HOME; if ($t) { (Get-ChildItem $t -Recurse -Directory -Depth 3 -Filter 'rdd-engine').FullName }; "$HOME\.rdd\engine\current")) { if ($c -and (Test-Path "$c\scripts\rdd-flow.cmd")) { $rdd = $c; break } }; if (-not $rdd) { throw "rdd-engine 未定位" }; & "$rdd\scripts\start-role.cmd" -Role PLANNER -TaskJson <归档 task.json>
 ```
 
-- 脚本投递的是**自举式指针消息**（"请以 Manager 身份接管 … 先读 manager-guide.md，随后执行 delivery-bridge promulgate …"）——Manager 无角色卡，身份由消息 + `rdd-engine/references/manager-guide.md` 装载；三后端（CLI/Plus/dsh）一致。dsh 后端需 preset `rdd-manager`（部署前提见 manager-guide）。
-- 中断续跑：`start-role.cmd -Role MANAGER -RunId <run-id>`。
+- 脚本投递的是**自举式指针消息**（"请以规划者（PLANNER）身份接管 … 先读 planner-guide.md，随后执行 delivery-bridge promulgate …"）——规划者无角色卡，身份由消息 + `rdd-engine/references/planner-guide.md` 装载；三后端（CLI/Plus/dsh）一致。dsh 后端需 preset `rdd-planner`（部署前提见 planner-guide）。
+- 中断续跑：`start-role.cmd -Role PLANNER -RunId <run-id>`。
 - 该分支**纯可选**：未采用时按正常 4 步硬流程逐条交接，行为不变。任务路由仍先按 Step 1 推进到首个下游角色（promulgate 按当前 currentOwners 建阶段节点）。
 
 ### 入口 B1 — 手动新会话角色命令（self-driven，降级）

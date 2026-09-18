@@ -36,7 +36,7 @@
       "id": "TC-004", "title": "可填槽:卡交付 schema 与附录 A 机械契约同名对齐,整卡可嵌入派发模板", "type": "positive", "priority": "P1",
       "acceptance": "req1-AC2", "codeRef": ".rdd/tests/investigation-role-cards/investigation-cards-review.ps1:88", "sourceChange": "2026-09-10-rca-role-landing", "status": "active", "crossFeature": ["goal-tree"],
       "steps": ["校验 extras 命名空间(extras.deliverables/extras.conclusion/extras.probe/manifest.filled)与附录 A.2 同名", "校验 falsification_duty 与 GRAFT_FALSIFICATION_REQUIRED 派发字段闭环"],
-      "expected": "命名空间与派发字段逐一同名对齐;卡自包含,Manager 填槽零即兴改写"
+      "expected": "命名空间与派发字段逐一同名对齐;卡自包含,规划者填槽零即兴改写"
     }
   ]
 }

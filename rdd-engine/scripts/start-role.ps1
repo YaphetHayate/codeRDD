@@ -1,7 +1,7 @@
 ﻿[CmdletBinding()]
 param(
     [Parameter(Mandatory = $true)]
-    [ValidateSet("PM", "CTO", "UX", "DEV", "QA", "EVAL", "PSE", "MANAGER")]
+    [ValidateSet("PM", "CTO", "UX", "DEV", "QA", "EVAL", "PSE", "PLANNER")]
     [string]$Role,
 
     [int]$TaskId = -1,
@@ -74,11 +74,11 @@ function Build-PromptMessage {
     $roleLower = $Role.ToLower()
     $base = "/rdd-$roleLower"
 
-    # MANAGER 自举式指针：Manager 是引擎编排形态而非角色卡（无 /rdd-manager
-    # 斜杠命令可加载），CLI 预填消息本身携带身份引导——指向 manager-guide.md。
-    if ($Role -eq "MANAGER") {
+    # PLANNER 自举式指针：规划者（PLANNER）是引擎编排形态而非角色卡（无 /rdd-planner
+    # 斜杠命令可加载），CLI 预填消息本身携带身份引导——指向 planner-guide.md。
+    if ($Role -eq "PLANNER") {
         if (-not [string]::IsNullOrWhiteSpace($RunId)) {
-            return "你是 RDD Manager。先读 rdd-engine/references/manager-guide.md，然后执行 delivery-bridge resume -RunId $RunId 续跑交付。"
+            return "你是 RDD PLANNER（规划者）。先读 rdd-engine/references/planner-guide.md，然后执行 delivery-bridge resume -RunId $RunId 续跑交付。"
         }
         $taskJsonAbs = if (-not [string]::IsNullOrWhiteSpace($TaskJson)) {
             Resolve-AbsolutePath -Path $TaskJson -Root $root
@@ -88,7 +88,7 @@ function Build-PromptMessage {
         if (-not $taskJsonAbs) {
             Write-Err "未找到 task.json。请用 -TaskJson 显式指定，或确保 .rdd/changes/archive/ 下有归档。"
         }
-        return "你是 RDD Manager。先读 rdd-engine/references/manager-guide.md，然后用 delivery-bridge promulgate -TaskJson $taskJsonAbs 接管该归档的整批交付。"
+        return "你是 RDD PLANNER（规划者）。先读 rdd-engine/references/planner-guide.md，然后用 delivery-bridge promulgate -TaskJson $taskJsonAbs 接管该归档的整批交付。"
     }
 
     if (-not [string]::IsNullOrWhiteSpace($Handoff)) {
@@ -175,12 +175,12 @@ function Build-PointerMessage {
     # (transition-guide entry B2/C), which the role's SKILL recognizes and
     # pulls handoff from.
     #
-    # MANAGER variant: bootstrap pointer (no role card exists to bind) — the
-    # message itself names the Manager identity and the first-read document
-    # (manager-guide.md), plus the concrete bridge command for takeover/resume.
-    if ($Role -eq "MANAGER") {
+    # PLANNER variant: bootstrap pointer (no role card exists to bind) — the
+    # message itself names the Planner identity and the first-read document
+    # (planner-guide.md), plus the concrete bridge command for takeover/resume.
+    if ($Role -eq "PLANNER") {
         if (-not [string]::IsNullOrWhiteSpace($RunId)) {
-            return "请以 Manager 身份续跑 goal-tree 交付 run ${RunId}：先读 rdd-engine/references/manager-guide.md，随后执行 delivery-bridge -Command resume -RunId $RunId 按断点续跑。"
+            return "请以规划者（PLANNER）身份续跑 goal-tree 交付 run ${RunId}：先读 rdd-engine/references/planner-guide.md，随后执行 delivery-bridge -Command resume -RunId $RunId 按断点续跑。"
         }
         $taskJsonAbs = Resolve-TaskJsonAbsolute
         if (-not $taskJsonAbs) {
@@ -188,7 +188,7 @@ function Build-PointerMessage {
         }
         $archiveRel = Resolve-ArchiveRelativePath -TaskJsonAbs $taskJsonAbs -RootPath $root
         if (-not $archiveRel) { Write-Err "无法从 task.json 路径推导归档相对路径: $taskJsonAbs" }
-        return "请以 Manager 身份接管 ${archiveRel}的整批交付：先读 rdd-engine/references/manager-guide.md，随后执行 delivery-bridge -Command promulgate -TaskJson $taskJsonAbs 颁布交付节点并按需调动角色会话。"
+        return "请以规划者（PLANNER）身份接管 ${archiveRel}的整批交付：先读 rdd-engine/references/planner-guide.md，随后执行 delivery-bridge -Command promulgate -TaskJson $taskJsonAbs 颁布交付节点并按需调动角色会话。"
     }
 
     $taskJsonAbs = Resolve-TaskJsonAbsolute

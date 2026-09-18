@@ -46,7 +46,7 @@
 }
 ```
 
-**full_report 领域结构**（机械面不校验，Manager 对账读取）：
+**full_report 领域结构**（机械面不校验，规划者 对账读取）：
 
 ```json
 {
@@ -66,7 +66,7 @@
 | R2 反折叠 | 首越/传播事件逐行 | 引擎 report 时折叠检测 |
 | R8 工件对账 | clean 格挂对象化工件遥测 | 引擎 evidence 校验 + spotcheck 抽查 |
 | Sweep/Probe 契约 | probe 任务按三值交付（见 §五） | 引擎 note-only 对账 |
-| Manager 对账动作 | settle 前查 manifest 无 pending 格；传播链每跳有证据引用 | settle / round-end |
+| 规划者 对账动作 | settle 前查 manifest 无 pending 格；传播链每跳有证据引用 | settle / round-end |
 
 ## 五、probe 模式差异（承接性质 = Probe 时生效）
 
@@ -75,4 +75,4 @@
 - **方法变化——单向证伪表述**：任务文本只写"什么链路观测会推翻该假设"（如"若父 span 先于子 span 越界则上游驱动假设被推翻"）；主动尝试推翻。纯确认式 probe 禁止。
 - **父子相关性仲裁是 probe 主战场**：冲突对抽样慢 trace、比较父子时长，是链路侧最直接的证伪工具。
 - **交付三值**：`extras.probe = { "verdict": "upheld" | "refuted" | "inconclusive", "falsification_attempted": ["<逐条反例路径与结果>"] }`——verdict 三值必填（引擎 note-only 对账）。
-- **`falsification_duty` 字段**：与 `task-dispatch-guide.md` §2.2 派发字段同名——graft 时由 Manager 声明"必须尝试的反例路径"，持久化在 node 上；执行时对照逐条清算。
+- **`falsification_duty` 字段**：与 `task-dispatch-guide.md` §2.2 派发字段同名——graft 时由 规划者 声明"必须尝试的反例路径"，持久化在 node 上；执行时对照逐条清算。

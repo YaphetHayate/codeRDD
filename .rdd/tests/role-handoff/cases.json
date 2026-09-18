@@ -16,7 +16,7 @@
     "scripts/install-rdd-skills.ps1"
   ],
   "testCode": [".rdd/tests/role-handoff/run-tests.ps1"],
-  "lastChange": "2026-08-30-rdd-dsh-auto-handoff",
+  "lastChange": "2026-09-18-planner-goal-tree-upgrade",
   "cases": [
     {
       "id": "TC-005",
@@ -297,6 +297,20 @@
       "precondition": "mock agentPreset.list 以原始 HTTP 403 回包（信任栅栏拒绝，不是 ok:false 业务错误）",
       "steps": ["start-role -Role QA -Project <fixture> -DshUrl <mock403>", "读取 exit code 与 stdout"],
       "expected": "exit 1；报错含「dsh 服务不可达」与基地址、403 对用户可见且未被当成业务错误、命中 403 信任栅栏专用提示（--trusted-host）且尾部无空括号、含人工回退指引与指针消息全文——三条不可达原因中的信任栅栏场景不静默失败"
+    },
+    {
+      "id": "TC-105",
+      "title": "-Role MANAGER 旧值移除:参数校验错并列出合法值 PLANNER;新值 PLANNER 全链路可用（PLANNER 更名回归,零兼容裁定）",
+      "type": "negative",
+      "priority": "P0",
+      "acceptance": "PR-AC-1",
+      "codeRef": ".rdd/tests/role-handoff/run-tests.ps1",
+      "sourceChange": "2026-09-18-planner-goal-tree-upgrade",
+      "status": "active",
+      "crossFeature": ["delivery-bridge"],
+      "precondition": "DSH_WEB_URL 已设置（dsh 会话内），夹具归档存在；dsh 后端 DryRun 不依赖 mock 与 opencode",
+      "steps": ["start-role -Role MANAGER -TaskJson <fixture> -DryRun（dsh 环境）", "start-role -Role PLANNER 同参对照"],
+      "expected": "旧值 exit 非 0:ValidateSet 参数校验错,stderr 回显 MANAGER 且合法值列表含 PLANNER（天然迁移指引）;新值 exit 0,DryRun 走 rdd-planner preset、指针指向 planner-guide.md——用户 2026-09-18 裁定零兼容,旧别名不做保留(planner-rename-cto-decisions #2)"
     }
   ]
 }

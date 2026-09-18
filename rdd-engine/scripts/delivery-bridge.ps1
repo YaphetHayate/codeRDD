@@ -1,4 +1,4 @@
-﻿# delivery-bridge.ps1 — goal-tree × rdd-flow delivery orchestration CLI (Manager tooling)
+﻿# delivery-bridge.ps1 — goal-tree × rdd-flow delivery orchestration CLI (Planner tooling)
 #
 # Black-box bridge between the two engines: it orchestrates EXCLUSIVELY through the
 # public CLIs of goal-tree.cmd / goal-tree-leaf.cmd / rdd-flow.cmd / start-role.cmd
@@ -15,19 +15,19 @@
 #               tree settle -> flow advance/complete -> auto-graft next stage node
 #   status      joined view: tree census + task stages + dep blocking + dead claims +
 #               pending_sync divergence detection and repair
-#   resume      breakpoint view for a fresh Manager session
+#   resume      breakpoint view for a fresh Planner session
 #   conclude    final report after all tasks reach terminal state (+ delivery-annex.md)
-#   lease       advisory Manager session lease (manager-lease.json, stale 30 min)
+#   lease       advisory Planner session lease (planner-lease.json, stale 30 min)
 #
 # Run artifacts (inside the goal-tree run dir, gitignored):
 #   bridge.json           authoritative node<->TaskId mapping (1 task : N stage nodes)
-#   manager-lease.json    advisory session lease
+#   planner-lease.json    advisory session lease
 #   report/delivery-annex.md  per-task terminal states + rdd-flow check result
 #
 # Hard constraint: "不合格交付不得流转" — settle enforces the three evidence checks
 # (verdict=done / citations non-empty and real paths / extras.verification non-empty)
 # before any task.json transition. Manual rdd-flow advance under a bridged run is
-# forbidden by protocol (see references/manager-guide.md).
+# forbidden by protocol (see references/planner-guide.md).
 
 [CmdletBinding()]
 param(
@@ -41,12 +41,12 @@ param(
     [int]$MaxRounds = 12,
     [int]$NodeWidth = 0,          # 0 = auto (>= task count, floor 4)
     [int]$MaxNodes = 0,           # 0 = auto (task count * 5 + 6)
-    [string]$CreatedBy = "manager",
+    [string]$CreatedBy = "planner",
 
     # dispatch / claim / reclaim / settle
     [string]$NodeId,
     [string]$Role,                # stage role (CTO/UX/DEV/QA) for claim; inferred from node for others
-    [string]$Session,             # Manager lease holder label
+    [string]$Session,             # Planner lease holder label
 
     # settle
     [string]$Note,
@@ -177,7 +177,7 @@ function Get-BridgeRunDir {
 }
 
 function Get-BridgePath { param([string]$RunDir); Join-Path $RunDir "bridge.json" }
-function Get-LeasePath  { param([string]$RunDir); Join-Path $RunDir "manager-lease.json" }
+function Get-LeasePath  { param([string]$RunDir); Join-Path $RunDir "planner-lease.json" }
 function Get-AnnexPath  { param([string]$RunDir); Join-Path (Join-Path $RunDir "report") "delivery-annex.md" }
 
 function Read-Bridge {
@@ -259,9 +259,9 @@ function Set-NodeTaskStage {
     $tEntry['stages'][$Stage] = $NodeId
 }
 
-# === Manager lease (advisory, session-scale) ===
+# === Planner lease (advisory, session-scale) ===
 #
-# Distinct from the per-run .lock (command-scale, 60s stale): a Manager conversation
+# Distinct from the per-run .lock (command-scale, 60s stale): a Planner conversation
 # spans many commands, so the lease uses LastWriteTime staleness with an independent
 # 30-minute threshold. -Takeover force-overrides with an audit trail in the file.
 
@@ -287,7 +287,7 @@ function Get-LeaseState {
 function Get-SessionLabel {
     if (-not [string]::IsNullOrWhiteSpace($Session)) { return $Session }
     if (-not [string]::IsNullOrWhiteSpace($env:DSH_SESSION_ID)) { return "dsh-$env:DSH_SESSION_ID" }
-    return "manager-pid$PID"
+    return "planner-pid$PID"
 }
 
 function Invoke-LeaseAcquire {
@@ -295,7 +295,7 @@ function Invoke-LeaseAcquire {
     $state = Get-LeaseState $RunDir
     $me = Get-SessionLabel
     if ($state.exists -and -not $state.corrupt -and -not $state.stale -and $state.holder -ne $me -and -not $Takeover) {
-        Write-ErrorResult "LEASE_HELD" "Run $RunId is under an active Manager lease held by '$($state.holder)' (age $([int]($state.age_seconds/60)) min < $LeaseStaleMinutes min stale threshold). Wait, or pass -Takeover to force-take with an audit trail." 1
+        Write-ErrorResult "LEASE_HELD" "Run $RunId is under an active Planner lease held by '$($state.holder)' (age $([int]($state.age_seconds/60)) min < $LeaseStaleMinutes min stale threshold). Wait, or pass -Takeover to force-take with an audit trail." 1
     }
     $p = Get-LeasePath $RunDir
     $payload = @{
@@ -317,8 +317,8 @@ function Invoke-LeaseRelease {
     return @{ released = $false; note = "no lease file" }
 }
 
-function Enter-ManagerLease {
-    # gate for Manager-orchestration mutations (claim by a dispatched worker is exempt)
+function Enter-PlannerLease {
+    # gate for Planner-orchestration mutations (claim by a dispatched worker is exempt)
     param([string]$RunDir)
     return Invoke-LeaseAcquire $RunDir
 }
@@ -505,7 +505,7 @@ function Invoke-Promulgate {
     if ($r.exit -ne 0 -or -not $r.json.success) { Write-ErrorResult "PROMULGATE_START_FAILED" "goal-tree start failed: $($r.text)" 3 }
     $runDir = Join-Path $script:GoalTreesRoot $runId
 
-    $null = Enter-ManagerLease $runDir
+    $null = Enter-PlannerLease $runDir
 
     # 2) open round 1 (kept open for the whole delivery; conclude auto-closes it)
     $r = Invoke-GoalTree @("-Command", "round-start", "-RunId", $runId)
@@ -584,7 +584,7 @@ function Invoke-Dispatch {
     $bridge = Require-Bridge $runDir
     if ([string]::IsNullOrWhiteSpace($NodeId)) { Write-ErrorResult "MISSING_NODE_ID" "-NodeId is required" 1 }
 
-    $null = Enter-ManagerLease $runDir
+    $null = Enter-PlannerLease $runDir
 
     $mapping = Get-NodeTaskStage $bridge $NodeId
     if ($null -eq $mapping) { Write-ErrorResult "NODE_NOT_MAPPED" "Node $NodeId is not in this run's bridge mapping" 2 }
@@ -636,8 +636,8 @@ function Invoke-BridgeClaim {
     }
     $node = $leafStatus.json.data.node
     # "parked" = recycled by reclaim and waiting for the next claimant: the tree side
-    # shows claimed_by=manager-reclaim. A parked node is claimable (steal + force).
-    $parked = ($node.status -eq "claimed" -and [string]$node.claimed_by -eq "manager-reclaim")
+    # shows claimed_by=planner-reclaim. A parked node is claimable (steal + force).
+    $parked = ($node.status -eq "claimed" -and [string]$node.claimed_by -eq "planner-reclaim")
     if ($node.status -ne "pending" -and -not $parked) {
         # deterministic conflict feedback + claimable list (acceptance: duplicate sessions never spin);
         # only bridge-mapped nodes count (the structural root n1 is not a delivery unit)
@@ -698,7 +698,7 @@ function Invoke-BridgeClaim {
                 $flowForce = $true
                 continue
             }
-            Write-ErrorResult "FLOW_CLAIM_CONFLICT" "TaskId $taskId already has a currentWorker entry for $stage (claimed at $t0). If that session is dead, ask the Manager to run: delivery-bridge.cmd -Command reclaim -RunId $RunId -NodeId $NodeId" 1
+            Write-ErrorResult "FLOW_CLAIM_CONFLICT" "TaskId $taskId already has a currentWorker entry for $stage (claimed at $t0). If that session is dead, ask the Planner to run: delivery-bridge.cmd -Command reclaim -RunId $RunId -NodeId $NodeId" 1
         }
     }
 
@@ -745,13 +745,13 @@ function Invoke-BridgeReclaim {
     $bridge = Require-Bridge $runDir
     if ([string]::IsNullOrWhiteSpace($NodeId)) { Write-ErrorResult "MISSING_NODE_ID" "-NodeId is required" 1 }
 
-    $null = Enter-ManagerLease $runDir
+    $null = Enter-PlannerLease $runDir
 
     $mapping = Get-NodeTaskStage $bridge $NodeId
     if ($null -eq $mapping) { Write-ErrorResult "NODE_NOT_MAPPED" "Node $NodeId is not in this run's bridge mapping" 2 }
     $stage = $mapping.stage
     $taskId = $mapping.task_id
-    $worker = "manager-reclaim"
+    $worker = "planner-reclaim"
 
     # read-only state check: the recovery path depends on the node's status
     $leafStatus = Invoke-GoalTreeLeaf @("-Command", "status", "-RunId", $RunId, "-NodeId", $NodeId)
@@ -883,7 +883,7 @@ function Invoke-BridgeSettle {
     $bridge = Require-Bridge $runDir
     if ([string]::IsNullOrWhiteSpace($NodeId)) { Write-ErrorResult "MISSING_NODE_ID" "-NodeId is required" 1 }
 
-    $null = Enter-ManagerLease $runDir
+    $null = Enter-PlannerLease $runDir
 
     $mapping = Get-NodeTaskStage $bridge $NodeId
     if ($null -eq $mapping) { Write-ErrorResult "NODE_NOT_MAPPED" "Node $NodeId is not in this run's bridge mapping" 2 }
@@ -1242,7 +1242,7 @@ function Invoke-BridgeConclude {
     $bridge = Require-Bridge $runDir
     if ([string]::IsNullOrWhiteSpace($Summary)) { Write-ErrorResult "MISSING_SUMMARY" "-Summary is required (closing summary for the delivery)" 1 }
 
-    $null = Enter-ManagerLease $runDir
+    $null = Enter-PlannerLease $runDir
 
     $flow = Read-ArchiveTasks $Bridge.archive
     $notTerminal = @($flow.tasks | Where-Object { ([string]$_.lifecycle) -notin @("completed", "deprecated") })
@@ -1331,7 +1331,7 @@ function Invoke-BridgeConclude {
         foreach ($i in $checkIssues) { $lines += "- $i" }
         $lines += ""
     }
-    $lines += "## Manager 结案摘要"
+    $lines += "## 规划者结案摘要"
     $lines += ""
     $lines += $Summary
     $lines += ""

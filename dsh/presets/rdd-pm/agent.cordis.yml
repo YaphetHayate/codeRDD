@@ -116,7 +116,7 @@
 
       归档完成 → **必须**按 `rdd-engine/references/transition-guide.md` 上游协议 4 步硬流程执行交接（advance 路由 → next → 推荐 → start/handoff）。未完成交接不得响应模式切换。
 
-      > **可选分支（manager-takeover）**：归档任务集较重（多需求、多角色、需并行/依赖编排）时，完成 Step 1 路由推进后建议改走 Manager 接管——`start-role.cmd -Role MANAGER -TaskJson <归档 task.json>`，见 transition-guide「manager-takeover」。
+      > **可选分支（planner-takeover）**：归档任务集较重（多需求、多角色、需并行/依赖编排）时，完成 Step 1 路由推进后建议改走规划者（PLANNER）接管——`start-role.cmd -Role PLANNER -TaskJson <归档 task.json>`，见 transition-guide「planner-takeover」。
 
       ## 执行（委托）
 

@@ -1,6 +1,6 @@
 ﻿# goal-tree-leaf.ps1 — goal-tree consumption plane CLI (worker/subagent sessions only)
 #
-# Workers consume LEAF tasks of a goal-tree run created by a Manager session:
+# Workers consume LEAF tasks of a goal-tree run created by a Planner session:
 #   next    — locate claimable pending nodes (read-only)
 #   claim   — atomically take a pending node (lock-protected read-modify-write);
 #             -Steal recovers a node stuck in claimed state
@@ -687,7 +687,7 @@ function Get-NodeDependencyDetail {
 #   (b) joining it under a RefRoot yields an existing path — a PoC-era
 #       lesson: workers echo refs relative to the case root (plane/logs/x.log)
 #       or as absolute paths; the engine normalizes both mechanically instead
-#       of leaving that to the Manager. Existence is the mechanical witness
+#       of leaving that to the Planner. Existence is the mechanical witness
 #       that a relative ref truly lives under the root.
 # Path traversal (../ segments) can never be in range.
 
@@ -764,7 +764,7 @@ function Resolve-CitationRange {
 #   extras         object   optional, passed through unvalidated (domain fields)
 #
 # Structural failures -> entry recorded with validation.status=invalid and the
-# node is NOT transitioned (stays claimed; Manager re-dispatches or steals).
+# node is NOT transitioned (stays claimed; Planner re-dispatches or steals).
 # Designed degradations -> validation.status=downgraded and the node advances.
 
 function Test-CallbackStructure {
@@ -872,7 +872,7 @@ function Invoke-Next {
             pending     = $pending
             blocked     = $blocked
             pending_all = (@($tree.nodes | Where-Object { $_.status -eq "pending" })).Count
-            hint        = $(if ($openRound -eq 0) { "no open round — claim will be rejected until the Manager runs round-start" } elseif ($blocked.Count -gt 0 -and $pending.Count -eq 0) { "all pending nodes are blocked by unsatisfied dependencies (NODE_BLOCKED_BY_DEPS); wait for the Manager or dependency completion" } else { "claim one node with: goal-tree-leaf.cmd -Command claim -RunId $RunId -NodeId <id> -Worker <label>" })
+            hint        = $(if ($openRound -eq 0) { "no open round — claim will be rejected until the Planner runs round-start" } elseif ($blocked.Count -gt 0 -and $pending.Count -eq 0) { "all pending nodes are blocked by unsatisfied dependencies (NODE_BLOCKED_BY_DEPS); wait for the Planner or dependency completion" } else { "claim one node with: goal-tree-leaf.cmd -Command claim -RunId $RunId -NodeId <id> -Worker <label>" })
         }
     }
 }
@@ -929,6 +929,22 @@ function Invoke-Claim {
 
         Write-TreeFile $RunDir $tree
 
+        # --- dsh session binding (additive sidecar; the DSH GoalTreeBar joins it
+        #     to show a worker session its own node instead of the whole tree).
+        #     Absent outside dsh shells (plain CLI usage writes dsh_session_id=null).
+        $claimsDir = Join-Path (Get-StateDir $RunDir) "claims"
+        New-Item -ItemType Directory -Path $claimsDir -Force | Out-Null
+        $claimRecord = [ordered]@{
+            format_version = 1
+            run_id         = $RunId
+            node_id        = [string]$node.id
+            worker         = [string]$Worker
+            dsh_session_id = if ([string]::IsNullOrWhiteSpace($env:DSH_SESSION_ID)) { $null } else { [string]$env:DSH_SESSION_ID }
+            claimed_at     = [string]$node.claimed_at
+            stolen         = [bool]$stole
+        }
+        [System.IO.File]::WriteAllText((Join-Path $claimsDir "$([string]$node.id).json"), (ConvertTo-Json $claimRecord -Depth 4), $script:Utf8NoBom)
+
         return @{
             success = $true
             data    = @{
@@ -976,7 +992,7 @@ function Invoke-Report {
     # --- B2 channel separation (usage errors: not recorded, caller retries) ---
     # summary is a SUMMARY: full findings belong in a file referenced by full_report.
     # Without the cap, 2k+ char reports ride every status read / completion notice
-    # into the Manager's context (the B2 pressure source observed in early evaluation replays).
+    # into the Planner's context (the B2 pressure source observed in early evaluation replays).
     $summaryText = if ($null -ne $cb.PSObject.Properties["summary"]) { [string]$cb.summary } else { "" }
     if ($summaryText.Length -gt 600) {
         Write-ErrorResult "SUMMARY_TOO_LONG" "callback.summary is $($summaryText.Length) chars (limit 600). Write the FULL findings to a file under the run dir (e.g. report/workers/<node-id>.md), reference it via callback.full_report, and keep summary to verdict + key timestamps + <=3 findings." 1
@@ -1054,7 +1070,7 @@ function Invoke-Report {
             Write-ErrorResult "NODE_NOT_CLAIMED" "Node $cbNodeId is '$($node.status)'; report requires the node to be claimed by you. done/reported nodes are never re-consumed." 1
         }
         if ([string]$node.claimed_by -ne $Worker) {
-            Write-ErrorResult "CLAIM_OWNER_MISMATCH" "Node $cbNodeId is claimed by '$($node.claimed_by)', not '$Worker'. Only the current holder may report; a Manager can recover the node via claim -Steal." 1
+            Write-ErrorResult "CLAIM_OWNER_MISMATCH" "Node $cbNodeId is claimed by '$($node.claimed_by)', not '$Worker'. Only the current holder may report; a Planner can recover the node via claim -Steal." 1
         }
 
         # --- designed degradations ---

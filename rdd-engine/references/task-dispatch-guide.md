@@ -1,14 +1,14 @@
 # 任务派发验收契约（task-dispatch-guide）
 
-> **定位**：goal-tree 节点派发与验收的**标准协议**。Manager 在 graft 时按本文档定型任务、附带验收契约；worker 按契约交付；引擎按硬门禁对账。与 `goal-tree-guide.md`（循环权威）配套——本文档管"每个节点派什么、怎么算完成"。
+> **定位**：goal-tree 节点派发与验收的**标准协议**。规划者 在 graft 时按本文档定型任务、附带验收契约；worker 按契约交付；引擎按硬门禁对账。与 `goal-tree-guide.md`（循环权威）配套——本文档管"每个节点派什么、怎么算完成"。
 >
 > **版本**: V1.2（2026-09-10 命名同步：tree-run → goal-tree、rca-roles → investigation-roles；R 表与 §六的基准语境降级至 `investigation-roles.md`「来源与验证记录」）。V1.1（2026-09-09 增补附录 A：M1/M2 引擎落地 schema——graft/回调的具体格式与错误码处置。协议文本见 V1 种子版）。来源事故与设计论证：`D:\YaphetHayate\projects\todo\2026-09-08-openrca-treerun-验收契约设计.md`。
 >
-> **V1 粒度规则（已拍板）**：覆盖清单粒度由 **manager 单方决定**（时间 × 模态，5–15 格）；worker 细化协商为 V2 backlog。
+> **V1 粒度规则（已拍板）**：覆盖清单粒度由 **规划者单方决定**（时间 × 模态，5–15 格）；worker 细化协商为 V2 backlog。
 
 ---
 
-## 速查卡（Manager graft 前必读，≤60 行）
+## 速查卡（规划者 graft 前必读，≤60 行）
 
 ```
 ┌─ 1. 定性：这句 goal 在问什么？ ─────────────────────────────┐
@@ -53,9 +53,9 @@
 
 **名义规模 vs 有效规模**：引擎 graft 前预采客观数据指标（文件大小、行数、目录结构）写入派发——tier 判定不靠猜；worker 只上报**有效规模 delta**（schema 意外、实际遍耗时），FEASIBILITY 是增量报告不是求救信号。
 
-## 二、四类契约模板（manager 填槽）
+## 二、四类契约模板（规划者填槽）
 
-> **角色卡选卡引用（填槽第一步）**：定性（A 轴）之后按承接性质选角色卡，整卡嵌入派发 prompt 或按路径引用（`investigation-roles/<role-id>.md`）——卡内已固化该角色的方法预设与交付 schema，manager 填槽时**零即兴改写**：
+> **角色卡选卡引用（填槽第一步）**：定性（A 轴）之后按承接性质选角色卡，整卡嵌入派发 prompt 或按路径引用（`investigation-roles/<role-id>.md`）——卡内已固化该角色的方法预设与交付 schema，规划者填槽时**零即兴改写**：
 >
 > | 定性 | 可选角色卡（权威定义见 `investigation-roles.md`） |
 > |------|------------------------------------------|
@@ -137,7 +137,7 @@ FEASIBILITY {
 }
 ```
 
-拆分模式固定 map-reduce：叶子切片 + 聚合节点折叠。拆分键 worker 提议（局部知识）、manager 批准（全局一致）；扇出 ≤ NodeWidth；最大拆解深度 2；低于阈值必须自扛。
+拆分模式固定 map-reduce：叶子切片 + 聚合节点折叠。拆分键 worker 提议（局部知识）、规划者批准（全局一致）；扇出 ≤ NodeWidth；最大拆解深度 2；低于阈值必须自扛。
 
 ## 四、反模式清单（R1–R9，每条注事故出处）
 
@@ -180,7 +180,7 @@ FEASIBILITY {
 
 > 时间戳一律 `YYYY-MM-DD HH:MM:SS`，区间为闭区间。本附录描述 `goal-tree.ps1` / `goal-tree-leaf.ps1` 实际校验的格式。
 
-### A.1 Manager：run 启动与 sweep 派发
+### A.1 规划者：run 启动与 sweep 派发
 
 **run 启动（时间域任务）**：
 
@@ -230,7 +230,7 @@ goal-tree.cmd -Command start -RunId <id> -Goal "<goal>" -RefRoots .
 ```
 
 - `type: "sweep"` 无 `manifest` → `GRAFT_MANIFEST_REQUIRED`；cells 非法（重复 id / 时间戳格式错 / end≤start）→ `GRAFT_MANIFEST_INVALID`
-- `type: "probe"` 缺 `falsification_duty`（或空白串）→ `GRAFT_FALSIFICATION_REQUIRED`（结构契约在派发时拦截，Manager 补齐后重 graft）
+- `type: "probe"` 缺 `falsification_duty`（或空白串）→ `GRAFT_FALSIFICATION_REQUIRED`（结构契约在派发时拦截，规划者 补齐后重 graft）
 - `role`：可选字段，kebab-case `^[a-z0-9]+(-[a-z0-9]+)*$`、长度 ≤64，否则 `ROLE_INVALID`。**引擎只校格式不校词表**——角色词表权威在 `investigation-roles.md` / `investigation-roles/` 角色卡（引擎层跨项目通用，领域槽位在引用层）。`type` / `role` / `falsification_duty` 平铺持久化进 node（可选字段，可 null；legacy run 无这些字段 → null，fail-open 零影响）
 - 多个 sweep 的 cells 并集须铺满查询域（R4 在 conclude 按全部 found/clean 格并集对账）；相邻格共享边界时间戳合法
 - 非 sweep/probe 任务不写 type/manifest/falsification_duty，行为零变化（role 可选声明）

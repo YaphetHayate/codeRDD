@@ -1,9 +1,9 @@
-﻿# delivery-bridge-verify.ps1 — Manager 交付编排桥接 验收验证器（QA 独立实现，零依赖）
+﻿# delivery-bridge-verify.ps1 — 规划者交付编排桥接 验收验证器（QA 独立实现，零依赖）
 #
 # 被测对象:rdd-engine/scripts/delivery-bridge.cmd(桥接编排黑盒)
 #   黑盒集成测试:仅通过 CLI 接口驱动——delivery-bridge.cmd 组合 goal-tree / goal-tree-leaf /
 #   rdd-flow / start-role 公开 CLI;fixture 归档建在 .rdd/tmp 下(绝不触碰真实归档)。
-#   断言锚定需求 manager-orchestration 验收标准 1~7 与 manager-guide.md 协议。
+#   断言锚定规划者交付编排需求验收标准 1~7 与 planner-guide.md 协议。
 #
 # 用例规约:TC-B01 ~ TC-B12(映射 BR-AC-1 ~ BR-AC-7)
 #
@@ -26,7 +26,7 @@
 # 测试产生的运行目录与 fixture 归档默认结束后清理,-KeepRuns 保留供排查。
 
 param(
-    [ValidateSet("all", "promulgate", "claim", "settle", "recover", "conclude", "regression")]
+    [ValidateSet("all", "promulgate", "claim", "settle", "recover", "conclude", "regression", "compat")]
     [string]$Suite = "all",
     [switch]$KeepRuns,
     [switch]$Json
@@ -197,7 +197,7 @@ function Suite-Promulgate {
         # 开放轮:round 1 打开(claim 可用)
         Assert $c ([int]$st.json.data.round.open -eq 1) "round.open=$($st.json.data.round.open),期望 1"
         # 租约自动获取
-        Assert $c ($null -ne (Get-Item (Join-Path (Get-RunDirPath $fx.run_id) "manager-lease.json") -ErrorAction SilentlyContinue)) "manager-lease.json 未落盘"
+        Assert $c ($null -ne (Get-Item (Join-Path (Get-RunDirPath $fx.run_id) "planner-lease.json") -ErrorAction SilentlyContinue)) "planner-lease.json 未落盘"
     }
 
     Run-Tc "TC-B02" "重复 promulgate 防护(RUN_EXISTS);dispatch -DryRun 预演不误开窗" "P1" "BR-AC-1" {
@@ -496,7 +496,7 @@ function Suite-Conclude {
         # run 已冻结;租约已释放
         $m = (Read-RunFileText $fx.run_id "manifest.json") | ConvertFrom-Json
         Assert $c ([string]$m.state -eq "concluded") "run 未冻结: $($m.state)"
-        Assert $c (-not (Test-Path (Join-Path (Get-RunDirPath $fx.run_id) "manager-lease.json"))) "租约未释放"
+        Assert $c (-not (Test-Path (Join-Path (Get-RunDirPath $fx.run_id) "planner-lease.json"))) "租约未释放"
     }
 }
 
@@ -505,11 +505,11 @@ function Suite-Conclude {
 # ============================================================
 
 function Suite-Regression {
-    Write-Host "`n== suite: regression (BR-AC-7 未采用 Manager 的行为零变化) =="
+    Write-Host "`n== suite: regression (BR-AC-7 未采用规划者的行为零变化) =="
 
     Run-Tc "TC-B12" "回归:纯 goal-tree run 零桥接文件;rdd-flow 纯流程照常;桥接命令不触碰真实归档" "P0" "BR-AC-7" {
         param($c)
-        # 1) 纯 goal-tree run:core 命令后 run 目录无 bridge.json / manager-lease.json / delivery-annex.md
+        # 1) 纯 goal-tree run:core 命令后 run 目录无 bridge.json / planner-lease.json / delivery-annex.md
         $rid = "qa-bridge-reg-$($script:RunStamp)"
         $script:CreatedRuns.Add($rid) | Out-Null
         $null = TRun @("-Command", "start", "-RunId", $rid, "-Goal", "regression plain run", "-RefRoots", ".", "-CreatedBy", "QA")
@@ -525,7 +525,7 @@ function Suite-Regression {
         $null = TRun @("-Command", "status", "-RunId", $rid)
         $null = TRun @("-Command", "resume", "-RunId", $rid)
         $runDir = Get-RunDirPath $rid
-        foreach ($f in @("bridge.json", "manager-lease.json", "report\delivery-annex.md")) {
+        foreach ($f in @("bridge.json", "planner-lease.json", "report\delivery-annex.md")) {
             Assert $c (-not (Test-Path (Join-Path $runDir $f))) "纯 run 出现桥接文件: $f"
         }
         # 2) 纯 rdd-flow 流程:fixture 归档 init→claim→advance→complete 照常(桥接零影响)
@@ -560,13 +560,62 @@ $script:ChangesBeforeRun = Get-ChangesSnapshot
 $script:ChangesAfterRun = Get-ChangesSnapshot   # filled at the end of main flow
 
 # ============================================================
+# 套件:compat — TC-B13(2026-09-18 更名需求;用户裁定零兼容:旧命名 sidecar 不识别)
+# ============================================================
+
+function Suite-Compat {
+    Write-Host "`n== suite: compat (PR-AC-2 修订:旧命名 sidecar 不被识别,显式 reclaim 是迁移路径) =="
+
+    Run-Tc "TC-B13" "存量 run 旧命名 sidecar 零兼容:manager-lease 活跃租约不被尊重(acquire 照常成功) + manager-reclaim 停泊节点不被识别(经新 reclaim 回收后可认领)" "P0" "PR-AC-2" {
+        param($c)
+        $fx = New-FixtureArchive "compat"
+        $r = TB @("-Command", "promulgate", "-TaskJson", (Join-Path $fx.dir "task.json"), "-CreatedBy", "QA")
+        Assert $c ($r.exit -eq 0 -and $r.json.success) "promulgate 失败: $($r.text)"
+        $runDir = Get-RunDirPath $fx.run_id
+
+        # --- 旧命名租约:把新版租约改名为 manager-lease.json,模拟存量 run 的活跃他方租约 ---
+        Rename-Item (Join-Path $runDir "planner-lease.json") "manager-lease.json"
+        # 读面(status/resume)不受影响:旧命名文件对读路径只是不可见文件
+        $st = TB @("-Command", "status", "-RunId", $fx.run_id)
+        Assert $c ($st.exit -eq 0) "存量旧租约在场时 status 失败: $($st.text)"
+        $rs = TB @("-Command", "resume", "-RunId", $fx.run_id)
+        Assert $c ($rs.exit -eq 0) "存量旧租约在场时 resume 失败: $($rs.text)"
+        # 零兼容裁定(planner-rename-cto-decisions #1/#4):manager-lease.json 不被读取,
+        # 无 -Takeover 的 acquire 照常成功并落盘 planner-lease.json(旧租约孤儿化,无害)
+        $acq = TB @("-Command", "lease", "-RunId", $fx.run_id, "-Acquire", "-Session", "qa-compat-new")
+        Assert $c ($acq.exit -eq 0 -and $acq.json.success) "旧命名租约被尊重(与零兼容裁定不符,acquire 应照常成功): $($acq.text)"
+        Assert $c ($null -ne (Get-Item (Join-Path $runDir "planner-lease.json") -ErrorAction SilentlyContinue)) "acquire 未落盘 planner-lease.json"
+        # 清场:释放新租约,移除旧命名残留
+        $null = TB @("-Command", "lease", "-RunId", $fx.run_id, "-Release", "-Session", "qa-compat-new")
+        Remove-Item (Join-Path $runDir "manager-lease.json") -Force -ErrorAction SilentlyContinue
+
+        # --- 旧命名停泊节点:claimed_by=manager-reclaim(2026-09-15 版 reclaim 写入值)不被识别 ---
+        $treePath = Join-Path $runDir "state\tree.json"
+        $tree = [System.IO.File]::ReadAllText($treePath) | ConvertFrom-Json
+        $n2 = $tree.nodes | Where-Object id -eq "n2"
+        $n2.status = "claimed"
+        $n2.claimed_by = "manager-reclaim"
+        $n2.claimed_at = (Get-Date).ToUniversalTime().ToString("o")
+        [System.IO.File]::WriteAllText($treePath, ($tree | ConvertTo-Json -Depth 12), $Utf8NoBom)
+        $cl = TB @("-Command", "claim", "-RunId", $fx.run_id, "-NodeId", "n2", "-Role", "DEV")
+        Assert $c ($cl.exit -ne 0 -and $cl.text -match "NODE_NOT_CLAIMABLE") "manager-reclaim 停泊节点被当成新版泊位认领(零兼容裁定:旧值不识别,应报 NODE_NOT_CLAIMABLE): $($cl.text)"
+        # 迁移路径(决策 #7 风险表:存量泊位需人工重新 reclaim):对新停泊节点跑新版
+        # reclaim(dead-claim 模式),回收为 planner-reclaim 泊位后即可再认领
+        $rc = TB @("-Command", "reclaim", "-RunId", $fx.run_id, "-NodeId", "n2")
+        Assert $c ($rc.exit -eq 0 -and $rc.json.success) "新版 reclaim 回收旧停泊节点失败: $($rc.text)"
+        $cl2 = TB @("-Command", "claim", "-RunId", $fx.run_id, "-NodeId", "n2", "-Role", "DEV")
+        Assert $c ($cl2.exit -eq 0 -and $cl2.json.success) "reclaim 回收为 planner-reclaim 泊位后仍不可认领: $($cl2.text)"
+    }
+}
+
+# ============================================================
 # 主流程
 # ============================================================
 
 Write-Host "delivery-bridge-verify — repo: $RepoRoot"
 Write-Host "suite: $Suite  (runs under .rdd/goal-trees/ + fixture archives in .rdd/tmp, stamp: $script:RunStamp)"
 
-$selected = if ($Suite -eq "all") { @("promulgate", "claim", "settle", "recover", "conclude", "regression") } else { @($Suite) }
+$selected = if ($Suite -eq "all") { @("promulgate", "claim", "settle", "recover", "conclude", "regression", "compat") } else { @($Suite) }
 foreach ($s in $selected) {
     switch ($s) {
         "promulgate" { Suite-Promulgate }
@@ -575,6 +624,7 @@ foreach ($s in $selected) {
         "recover"    { Suite-Recover }
         "conclude"   { Suite-Conclude }
         "regression" { $script:ChangesAfterRun = Get-ChangesSnapshot; Suite-Regression }
+        "compat"     { Suite-Compat }
     }
 }
 

@@ -24,7 +24,7 @@
 
 1. **切窗**：按 run 级 domain 声明的 intervals 过滤/分片大文件，落缓存工件（parquet 或过滤后 CSV）；工件自带首/末行时间戳遥测。
 2. **基线表**：逐 `(cmdb_id, kpi_name)` 计算窗口前基线（median / MAD / 包络），落一张基线表工件——**后续所有分析者共用，禁止各自重算**。
-3. **规模预采**：文件大小、行数、列 schema、每 cmdb 采样粒度，写入交付物——manager 的规模分级不再靠猜（worker 侧承接 R6）。
+3. **规模预采**：文件大小、行数、列 schema、每 cmdb 采样粒度，写入交付物——规划者的规模分级不再靠猜（worker 侧承接 R6）。
 4. **口径统一**：时间戳单位（s vs ms）、时区（UTC+8）、计数器与 gauge 的粗分类标注。
 
 **红线禁止项**：跳过规模预采直接交付；基线口径不落盘只存在脑内；缓存工件不带时间遥测。
@@ -54,9 +54,9 @@
 
 | 挂钩 | 内容 | 机械落点 |
 |---|---|---|
-| Transform 对账验收 | 行数/计数对账、输出可解析、幂等（重跑同结果） | Manager settle 时抽查 |
+| Transform 对账验收 | 行数/计数对账、输出可解析、幂等（重跑同结果） | 规划者 settle 时抽查 |
 | R8 clean 工件遥测自证 | caches 每项带 ref + tmin/tmax/rows，工件真实存在 | 引擎 spotcheck 抽查首尾行对账（note-only） |
-| Manager 对账动作 | 对照 `scale_census` 与 `caches` 遥测抽查一致性；后续 graft 按 scale_census 定规模档 | settle 前 |
+| 规划者 对账动作 | 对照 `scale_census` 与 `caches` 遥测抽查一致性；后续 graft 按 scale_census 定规模档 | settle 前 |
 
 ## 五、probe 模式差异
 

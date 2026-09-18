@@ -1,9 +1,9 @@
 {
     "verifier":  "delivery-bridge-verify.ps1",
     "suite":  "all",
-    "ranAt":  "2026-09-16T05:12:35Z",
-    "total":  12,
-    "passed":  12,
+    "ranAt":  "2026-09-18T07:56:00Z",
+    "total":  13,
+    "passed":  13,
     "failed":  0,
     "warned":  0,
     "results":  [
@@ -122,6 +122,16 @@
                         "title":  "回归:纯 goal-tree run 零桥接文件;rdd-flow 纯流程照常;桥接命令不触碰真实归档",
                         "priority":  "P0",
                         "acceptance":  "BR-AC-7",
+                        "status":  "PASS",
+                        "fails":  [
+
+                                  ]
+                    },
+                    {
+                        "id":  "TC-B13",
+                        "title":  "存量 run 旧命名 sidecar 零兼容:manager-lease 活跃租约不被尊重(acquire 照常成功) + manager-reclaim 停泊节点不被识别(经新 reclaim 回收后可认领)",
+                        "priority":  "P0",
+                        "acceptance":  "PR-AC-2",
                         "status":  "PASS",
                         "fails":  [
 

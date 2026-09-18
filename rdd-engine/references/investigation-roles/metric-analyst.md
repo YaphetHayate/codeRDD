@@ -58,7 +58,7 @@
 | R2 反折叠 | findings 逐 episode 一行 | 引擎 report 时折叠检测（违规格退 pending） |
 | R8 工件对账 | clean 格挂对象化工件遥测 | 引擎 evidence 校验 + spotcheck 抽查 |
 | spotcheck 防伪 | 声明 tmin/tmax 与工件首尾行对账 | note-only 观察 |
-| Manager 对账动作 | settle 前查 manifest 无 pending 格；读 deferred 小节决定下轮下探或清算 | settle / round-end |
+| 规划者 对账动作 | settle 前查 manifest 无 pending 格；读 deferred 小节决定下轮下探或清算 | settle / round-end |
 
 ## 五、probe 模式差异（承接性质 = Probe 时生效）
 
@@ -66,5 +66,5 @@
 
 - **方法变化——单向证伪表述**：任务文本只写"什么观测会推翻该假设"；你的工作是**主动尝试推翻**，不是再找支持证据。纯确认式 probe（"再验证一下已有结论"）是确认偏误放大器，禁止。
 - **交付三值**：`extras.probe = { "verdict": "upheld" | "refuted" | "inconclusive", "falsification_attempted": ["<逐条反例路径与结果>"] }`——verdict 三值必填（引擎 note-only 对账），falsification_attempted 逐条记录尝试过的推翻路径及其结果。
-- **`falsification_duty` 字段**：与 `task-dispatch-guide.md` §2.2 派发字段同名——graft 时由 Manager 声明"必须尝试的反例路径"，持久化在 node 上；执行时对照逐条清算，未尝试的路径写入 falsification_attempted 并说明原因。
+- **`falsification_duty` 字段**：与 `task-dispatch-guide.md` §2.2 派发字段同名——graft 时由 规划者 声明"必须尝试的反例路径"，持久化在 node 上；执行时对照逐条清算，未尝试的路径写入 falsification_attempted 并说明原因。
 - 证据纪律不变：结论仍须挂工件引用（citations 落 RefRoots），跨天检验方法照常适用于候选指标。

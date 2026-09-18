@@ -1,12 +1,12 @@
 # Goal-Tree 协议（goal-tree-guide）
 
-> **定位**：树形长程任务循环引擎能力的**唯一权威协议**。Manager 循环协议、worker 派发契约、恢复流程、审计与保留策略均以本文档为准。
+> **定位**：树形长程任务循环引擎能力的**唯一权威协议**。规划者 循环协议、worker 派发契约、恢复流程、审计与保留策略均以本文档为准。
 >
 > **适用场景**：任意角色遇到长程任务（根因调查、批量审计、深度评估等需要多轮"派发 → 回写 → 再规划"的场景）时，启动一次 goal-tree run。
 >
 > **与现有体系的关系**：与 task.json 平铺流转、explore 探索链**三重正交**（目录 / 命令 / 数据零共享）。goal-tree 不替代 rdd-flow 的需求流转——它是角色在执行某条任务**期间**可用的执行引擎。
 >
-> **与 rdd-flow 的受控交汇（交付编排）**：`delivery-bridge.cmd`（见 `manager-guide.md`）作为第三组件黑盒编排两侧公开 CLI，将归档任务集颁布为 run 节点并同步 task.json 生命周期。交汇只经桥接协议：goal-tree 核心命令不感知桥接（对 run 目录内的 `bridge.json` / `manager-lease.json` 零读写），两侧语义互不渗透；非桥接 run 的行为与交汇引入前完全一致。
+> **与 rdd-flow 的受控交汇（交付编排）**：`delivery-bridge.cmd`（见 `planner-guide.md`）作为第三组件黑盒编排两侧公开 CLI，将归档任务集颁布为 run 节点并同步 task.json 生命周期。交汇只经桥接协议：goal-tree 核心命令不感知桥接（对 run 目录内的 `bridge.json` / `planner-lease.json` 零读写），两侧语义互不渗透；非桥接 run 的行为与交汇引入前完全一致。
 
 ---
 
@@ -34,7 +34,7 @@
 [{"title":"面板A","task":"...","ref":"arch#2","depends_on":["n3"]}]
 & "$rdd\scripts\goal-tree.cmd" -Command graft -RunId <id> -Parent n1 -TasksFile <path> [-DependsOn "n3,n4"] [-Ref "<=128"]
 
-# 运行中维护（Manager）
+# 运行中维护（规划者）
 & "$rdd\scripts\goal-tree.cmd" -Command deps -DepAction add    -RunId <id> -NodeId n5 -On n3
 & "$rdd\scripts\goal-tree.cmd" -Command deps -DepAction remove -RunId <id> -NodeId n5 -On n3
 & "$rdd\scripts\goal-tree.cmd" -Command deps -DepAction list   -RunId <id>
@@ -50,7 +50,7 @@
 
 | 面 | CLI | 使用者 | 能做什么 | 不能做什么 |
 |----|-----|--------|---------|-----------|
-| **管理面** | `goal-tree.cmd` | Manager 会话（发起长程任务的角色） | start / graft / prune / settle / conclude / round-start / round-end / status / resume | 不产生证据回调（不采证） |
+| **管理面** | `goal-tree.cmd` | 规划者 会话（发起长程任务的角色） | start / graft / prune / settle / conclude / round-start / round-end / status / resume | 不产生证据回调（不采证） |
 | **消费面** | `goal-tree-leaf.cmd` | 子代理 worker | next / claim / report / status（本节点） | 物理上无法改动树结构（CLI 硬编码字段白名单，只更新本节点 claim/status 字段） |
 
 > 调用约定与 rdd-flow 相同：`$rdd` 指向 rdd-engine 目录（见 `task-routing.md`），输出 UTF-8 JSON。
@@ -92,7 +92,7 @@
 
 ---
 
-## Manager 循环协议
+## 规划者 循环协议
 
 一次标准 goal-tree 的完整循环：
 
@@ -120,7 +120,7 @@
 - `max_rounds`：轮数上限，超出时 `round-start` 报 `ROUNDS_EXCEEDED`
 - `node_width`：单父节点子节点数上限，超出时 graft 报 `WIDTH_EXCEEDED`
 - `max_nodes`：全树节点数上限，超出时 graft 报 `NODES_EXCEEDED`
-- "达标即停"类智能判定**留给 Manager**——引擎只管机械终局前置
+- "达标即停"类智能判定**留给 规划者**——引擎只管机械终局前置
 
 **终局**（三种均为正常终结，均产出 final-report.md）：
 
@@ -149,7 +149,7 @@ worker 的 `report` 必须提交固定核心 schema（引擎机械校验，领�
 | `next_suggestion` | string | 必填（允许空串） |
 | `extras` | object | 可选，领域字段透传 |
 
-**上下文预算（B2 通道分离，硬约束）**：`summary` 只装判定层——verdict、confidence、关键时间戳、≤3 条核心发现、`full_report` 指针。完整调查过程/数据表/逐行证据**必须**写进 run 目录下的文件（约定 `report/workers/<node-id>.md`），经 `full_report` 引用。worker 的最终消息同样 ≤10 行摘要——它会被完成通知全文推送给 Manager，长文本走消息 = 上下文压力直传。Manager 侧读取纪律：settle/嫁接默认只读 summary 层；verdict 冲突或某细节是判定支柱时才按指针打开 full_report（pull 模型）；**node.task 禁止复述上游发现**，只引用账本条目（如"依据 L1/L3"）。
+**上下文预算（B2 通道分离，硬约束）**：`summary` 只装判定层——verdict、confidence、关键时间戳、≤3 条核心发现、`full_report` 指针。完整调查过程/数据表/逐行证据**必须**写进 run 目录下的文件（约定 `report/workers/<node-id>.md`），经 `full_report` 引用。worker 的最终消息同样 ≤10 行摘要——它会被完成通知全文推送给 规划者，长文本走消息 = 上下文压力直传。规划者 侧读取纪律：settle/嫁接默认只读 summary 层；verdict 冲突或某细节是判定支柱时才按指针打开 full_report（pull 模型）；**node.task 禁止复述上游发现**，只引用账本条目（如"依据 L1/L3"）。
 
 **引用范围（RefRoots）**：start 时声明允许引用的 repo 内根路径（`,` 分隔；`.` 表示全仓库）。report 时的机械判定：
 
@@ -173,7 +173,7 @@ worker 的 `report` 必须提交固定核心 schema（引擎机械校验，领�
 
 给每个子代理的派发 prompt 模板（宿主扇出时逐 worker 填充）：
 
-> **角色卡嵌入点**：组装派发 prompt 时，按节点任务的承接性质取对应角色卡（调查类任务见 `rdd-engine/references/investigation-roles.md` 总览表 → `investigation-roles/<role-id>.md`）整卡嵌入本模板第 2 步之前，或按路径引用——worker 按卡中方法预设执行、按卡中交付 schema 回写（extras 结构与附录 A / 角色卡一致）。manager 不即兴改写卡内容；方法变更走权威文件同步（先权威后卡）。
+> **角色卡嵌入点**：组装派发 prompt 时，按节点任务的承接性质取对应角色卡（调查类任务见 `rdd-engine/references/investigation-roles.md` 总览表 → `investigation-roles/<role-id>.md`）整卡嵌入本模板第 2 步之前，或按路径引用——worker 按卡中方法预设执行、按卡中交付 schema 回写（extras 结构与附录 A / 角色卡一致）。规划者不即兴改写卡内容；方法变更走权威文件同步（先权威后卡）。
 
 ```text
 你是 goal-tree「<run-id>」的 worker，标签 <worker-label>。按以下硬顺序工作：
@@ -201,20 +201,20 @@ worker 的 `report` 必须提交固定核心 schema（引擎机械校验，领�
    SUMMARY_TOO_LONG 拒收。你的最终回复消息同样保持 ≤10 行摘要——全文只存在于文件里。
 
 4. 回读输出的 validation 字段：invalid 时按 reasons 修正后重新 report；downgraded 属正常入账。
-   你不能也不需要修改树结构——claim/report 之外的任何树变更都由 Manager 负责。
+   你不能也不需要修改树结构——claim/report 之外的任何树变更都由 规划者 负责。
 ```
 
 ## 宿主 workflow 扇出模板
 
-子代理的拉起是宿主能力（如 DSH `workflow` 的 `agent()` 扇出）。Manager 每轮：
+子代理的拉起是宿主能力（如 DSH `workflow` 的 `agent()` 扇出）。规划者 每轮：
 
 1. `goal-tree-leaf.cmd -Command next -RunId <id>` 拿 pending 节点清单
 2. 对每个节点组装上述派发模板（`workflow` 的 `pipeline`/`parallel` 钩子逐节点扇出 worker）
 3. 全部 worker 返回后，`goal-tree.cmd -Command status -RunId <id>` 查看本轮回写与校验状态
-4. 按「Manager 循环协议」第 5 步整合
+4. 按「规划者 循环协议」第 5 步整合
 
 ```javascript
-// workflow 扇出示意（每轮调用一次；结果汇入 Manager 整合）
+// workflow 扇出示意（每轮调用一次；结果汇入 规划者 整合）
 await pipeline(pendingNodes, [
   async (node) => agent(renderDispatchPrompt(runId, node), { label: `w-${node.id}` }),
 ]);
@@ -224,7 +224,7 @@ await pipeline(pendingNodes, [
 
 ## 恢复流程（任意一轮中断后）
 
-新 Manager 会话凭状态文件恢复，三步：
+新 规划者 会话凭状态文件恢复，三步：
 
 1. **定位断点**：`goal-tree.cmd -Command resume -RunId <id>`
    - 报告悬挂轮（round-start 未配 round-end）→ 继续派发剩余 pending，或直接 round-end 收轮
@@ -234,7 +234,7 @@ await pipeline(pendingNodes, [
    - read-back / tree.json 损坏自动从 .bak 回退（丢失窗口 ≤ 最近一个写原语）
    - ledger 坏行自动隔离到 `.corrupt`（原行保留）
    - 悬挂轮、未 settle 节点、死 claim 全部显式列出
-3. **继续循环**：从 Manager 循环协议的对应步骤续跑。已回写节点不会重复消费（claim 只接受 pending；reported/done 永不可再 claim）。
+3. **继续循环**：从 规划者 循环协议的对应步骤续跑。已回写节点不会重复消费（claim 只接受 pending；reported/done 永不可再 claim）。
 
 **锁**：所有写原语互斥（每 run 一把 `.lock`）。争用时引擎独占重试 10s 后报 `LOCK_TIMEOUT`——调用方退避重试即可；持有者崩溃遗留的锁 60s 后被自动接管。
 
@@ -292,6 +292,6 @@ await pipeline(pendingNodes, [
 ## 审计与保留
 
 - **审计三件**：轮快照（round-NN.md）+ 结案报告（final-report.md）+ 账本（ledger.jsonl，含全部 invalid/downgraded 原始回调与越界引用记录）全部落在运行目录
-- **版本库留痕**：`.rdd/goal-trees/` 整体 gitignore（与 `.rdd/changes/` 惯例一致）。需要入库的结论由 Manager 将结案摘要记入发起会话产物（如归档文档或探索缓存）
+- **版本库留痕**：`.rdd/goal-trees/` 整体 gitignore（与 `.rdd/changes/` 惯例一致）。需要入库的结论由 规划者 将结案摘要记入发起会话产物（如归档文档或探索缓存）
 - **保留策略**：引擎不强制清理。建议：结案运行保留 final-report.md + rounds/ 供追溯，空间紧张时可删 state/*.bak 与 .corrupt（账本本体建议永久保留）
 - **并发规模**：锁为每 run 粒度，worker 数量不受引擎限制；写原语均为秒级，10s 锁超时足以应对常规扇出
