@@ -281,8 +281,64 @@ export async function aggregateGoalTrees(rootDir: string): Promise<{ runs: GoalT
 }
 
 /**
+ * Read one run's ledger text; null when the ledger is absent (a missing
+ * ledger yields no entries — the run is skipped, never an error).
+ */
+async function readLedgerText(rootDir: string, runId: string): Promise<string | null> {
+  try {
+    return await readFile(join(rootDir, runId, 'state', 'ledger.jsonl'), 'utf8')
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Project one ledger line into a report entry; null on blank, corrupt, or
+ * id-less lines (corruption is the engine's quarantine domain — tolerated
+ * here exactly like the round-log fold).
+ */
+function parseLedgerEntry(line: string, runId: string): GoalTreeReportEntry | null {
+  const trimmed = line.trim()
+  if (trimmed === '') return null
+  let entry: Record<string, unknown>
+  try {
+    entry = JSON.parse(trimmed) as Record<string, unknown>
+  } catch {
+    return null
+  }
+  const entryId = str(entry.entry_id)
+  const nodeId = str(entry.node_id)
+  if (entryId === null || nodeId === null) return null
+  const callback = (entry.callback ?? {}) as Record<string, unknown>
+  const citations = Array.isArray(callback.citations)
+    ? (callback.citations as Record<string, unknown>[])
+    : []
+  const citationRefs = citations
+    .map(c => (typeof c?.ref === 'string' && c.ref !== '' ? c.ref : null))
+    .filter((r): r is string => r !== null)
+    .slice(0, 3)
+  const extras = (callback.extras ?? {}) as Record<string, unknown>
+  const verificationRaw = typeof extras.verification === 'string' ? extras.verification.replace(/\s+/g, ' ').trim() : ''
+  return {
+    runId,
+    entryId,
+    nodeId,
+    worker: str(entry.worker),
+    verdict: str(callback.verdict),
+    confidence: typeof callback.confidence === 'number' && Number.isFinite(callback.confidence) ? callback.confidence : null,
+    summary: str(callback.summary),
+    reportedAt: str(entry.reported_at),
+    citationCount: citations.length,
+    citationRefs,
+    fullReport: str(callback.full_report),
+    verification: verificationRaw === '' ? null : verificationRaw.slice(0, MESSAGE_LINE_CAP),
+  }
+}
+
+/**
  * Collect every ledger report entry across the runs of one goal-trees root —
- * the watcher's input for Planner callbacks. Corrupt lines are skipped (the
+ * the watcher's input for Planner callbacks. Per-run reads and per-line
+ * projection live in the helpers above; corrupt lines are skipped (the
  * engine quarantines them); a missing ledger yields no entries.
  * @param rootDir - absolute path of `<repoRoot>/.rdd/goal-trees`.
  */
@@ -290,48 +346,11 @@ export async function collectReportEntries(rootDir: string): Promise<GoalTreeRep
   const { runs } = await aggregateGoalTrees(rootDir)
   const entries: GoalTreeReportEntry[] = []
   for (const run of runs) {
-    let ledger = ''
-    try {
-      ledger = await readFile(join(rootDir, run.runId, 'state', 'ledger.jsonl'), 'utf8')
-    } catch {
-      continue
-    }
+    const ledger = await readLedgerText(rootDir, run.runId)
+    if (ledger === null) continue
     for (const line of ledger.split('\n')) {
-      const trimmed = line.trim()
-      if (trimmed === '') continue
-      let entry: Record<string, unknown>
-      try {
-        entry = JSON.parse(trimmed) as Record<string, unknown>
-      } catch {
-        continue
-      }
-      const entryId = str(entry.entry_id)
-      const nodeId = str(entry.node_id)
-      if (entryId === null || nodeId === null) continue
-      const callback = (entry.callback ?? {}) as Record<string, unknown>
-      const citations = Array.isArray(callback.citations)
-        ? (callback.citations as Record<string, unknown>[])
-        : []
-      const citationRefs = citations
-        .map(c => (typeof c?.ref === 'string' && c.ref !== '' ? c.ref : null))
-        .filter((r): r is string => r !== null)
-        .slice(0, 3)
-      const extras = (callback.extras ?? {}) as Record<string, unknown>
-      const verificationRaw = typeof extras.verification === 'string' ? extras.verification.replace(/\s+/g, ' ').trim() : ''
-      entries.push({
-        runId: run.runId,
-        entryId,
-        nodeId,
-        worker: str(entry.worker),
-        verdict: str(callback.verdict),
-        confidence: typeof callback.confidence === 'number' && Number.isFinite(callback.confidence) ? callback.confidence : null,
-        summary: str(callback.summary),
-        reportedAt: str(entry.reported_at),
-        citationCount: citations.length,
-        citationRefs,
-        fullReport: str(callback.full_report),
-        verification: verificationRaw === '' ? null : verificationRaw.slice(0, MESSAGE_LINE_CAP),
-      })
+      const entry = parseLedgerEntry(line, run.runId)
+      if (entry !== null) entries.push(entry)
     }
   }
   return entries
