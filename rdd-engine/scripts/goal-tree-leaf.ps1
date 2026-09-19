@@ -842,6 +842,7 @@ function Invoke-Next {
     $pending = @()
     $blocked = @()
     foreach ($n in $tree.nodes) {
+        if ([string]$n.type -eq 'goal') { continue }   # goal root: conclude anchor, not claimable work (goal-tree-goal-root)
         if ($n.status -eq "pending") {
             $entry = [ordered]@{ id = $n.id; parent = $n.parent; title = $n.title; task = $n.task; type = $n.type; role = $n.role; grafted_round = $n.created_round; depends_on = @(ConvertTo-NodeIdList $n.depends_on); ref = $n.ref }
             $blockedBy = @(Get-NodeBlockedDeps $tree $n).blocked
@@ -871,7 +872,7 @@ function Invoke-Next {
             ref_roots   = @($manifest.ref_roots)
             pending     = $pending
             blocked     = $blocked
-            pending_all = (@($tree.nodes | Where-Object { $_.status -eq "pending" })).Count
+            pending_all = @($tree.nodes | Where-Object { $_.status -eq "pending" -and [string]$_.type -ne 'goal' }).Count
             hint        = $(if ($openRound -eq 0) { "no open round — claim will be rejected until the Planner runs round-start" } elseif ($blocked.Count -gt 0 -and $pending.Count -eq 0) { "all pending nodes are blocked by unsatisfied dependencies (NODE_BLOCKED_BY_DEPS); wait for the Planner or dependency completion" } else { "claim one node with: goal-tree-leaf.cmd -Command claim -RunId $RunId -NodeId <id> -Worker <label>" })
         }
     }
@@ -898,6 +899,11 @@ function Invoke-Claim {
         $tree = $readBack.tree
         $node = Find-Node $tree $NodeId
         if ($null -eq $node) { Write-ErrorResult "NODE_NOT_FOUND" "Node not found: $NodeId" 2 }
+        if ([string]$node.type -eq 'goal') {
+            # goal root (goal-tree-goal-root): the original requirement's final objective —
+            # an unclaimable conclude anchor, never a work unit, on both claim paths (-Steal included).
+            Write-ErrorResult "GOAL_NODE_NOT_CLAIMABLE" "Node $NodeId is the goal root (type=goal — the original requirement's final objective and conclude anchor): it is never claimable. Pick a sub-requirement node from next instead." 1
+        }
 
         if ($Steal) {
             if ($node.status -ne "claimed") {

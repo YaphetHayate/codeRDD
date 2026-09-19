@@ -3,30 +3,38 @@
 # 被测对象:rdd-engine/scripts/delivery-bridge.cmd(桥接编排黑盒)
 #   黑盒集成测试:仅通过 CLI 接口驱动——delivery-bridge.cmd 组合 goal-tree / goal-tree-leaf /
 #   rdd-flow / start-role 公开 CLI;fixture 归档建在 .rdd/tmp 下(绝不触碰真实归档)。
-#   断言锚定规划者交付编排需求验收标准 1~7 与 planner-guide.md 协议。
+#   断言锚定规划者交付编排需求验收标准 1~7 与 planner-guide.md 协议;
+#   2026-09-18 goal-tree-goal-root:目标根树形/依赖驱动自动推送/存活门禁/v2 账目。
 #
-# 用例规约:TC-B01 ~ TC-B12(映射 BR-AC-1 ~ BR-AC-7)
+# 用例规约:TC-B01 ~ TC-B20(映射 BR-AC-1 ~ BR-AC-7 + GR-AC-2~6)
 #
 # 用法:
-#   pwsh -File .rdd/tests/delivery-bridge/delivery-bridge-verify.ps1 [-Suite all|promulgate|claim|settle|recover|conclude|regression] [-KeepRuns] [-Json]
+#   pwsh -File .rdd/tests/delivery-bridge/delivery-bridge-verify.ps1 [-Suite all|promulgate|claim|settle|recover|conclude|regression|compat|autopush] [-KeepRuns] [-Json]
 #   (Windows PowerShell 5.1 亦可运行;建议 pwsh 7+)
 #
 # 套件说明:
 #   promulgate 颁布:run 建立/映射落盘/依赖推导/重复颁布防护 —— TC-B01~B02
 #   claim      复合认领:双上下文/重复唤起冲突反馈/依赖阻塞/泊位接管 —— TC-B03~B05
 #   settle     流转门禁:三查拒绝/通过/链式 graft/complete/advance 拒绝路径 —— TC-B06~B08
-#   recover    恢复:rejected-delivery 回收/死 claim 回收/status 修复/resume —— TC-B09~B10
-#   conclude   结案:全终态校验/annex/check 结果/租约释放 —— TC-B11
+#   recover    恢复:rejected-delivery 回收/死 claim 回收(存活门禁)/status 修复/resume —— TC-B09~B10
+#   conclude   结案:全终态校验/annex(根目标达成状态)/check 结果/租约释放 —— TC-B11
 #   regression 回归:非桥接 run 零桥接文件;五角色默认流不变(rdd-flow 无桥接感知) —— TC-B12
+#   compat     更名零兼容(旧命名 sidecar 不被识别,显式 reclaim 是迁移路径) —— TC-B13
+#   autopush   目标根/依赖驱动自动推送/存活判定两极/失败分档(含真实分类)/v2 格式门禁 —— TC-B14~B20
 #   all        全部
 #
 # 严重度语义:P0 失败=阻塞(退出码 1);P1 失败=严重不阻塞;P2 失败=备忘警告(WARN)。
 # 退出码:0=无 P0 失败;1=存在 P0 失败;2=验证器自身错误。
 #
 # 测试产生的运行目录与 fixture 归档默认结束后清理,-KeepRuns 保留供排查。
+#
+# 环境隔离(hard):套件级 mock dsh 载波(进程内 runspace + TcpListener)接管
+# DSH_WEB_URL——所有自动推送的 start-role 走 dsh 分支打到 mock(零真实会话、零开窗、
+# 与本机是否装 opencode/wt 无关);liveness 存活查证经 mock 应答可配置
+# (alive/dead/unknown,TC-B17 切规则覆盖);原环境变量在退出时恢复。
 
 param(
-    [ValidateSet("all", "promulgate", "claim", "settle", "recover", "conclude", "regression", "compat")]
+    [ValidateSet("all", "promulgate", "claim", "settle", "recover", "conclude", "regression", "compat", "autopush")]
     [string]$Suite = "all",
     [switch]$KeepRuns,
     [switch]$Json
@@ -34,6 +42,11 @@ param(
 
 $ErrorActionPreference = "Stop"
 try { [Console]::OutputEncoding = [System.Text.Encoding]::UTF8 } catch {}
+$script:EnvSaved = @{
+    DSH_WEB_URL    = $env:DSH_WEB_URL
+    RDD_RUNTIME    = $env:RDD_RUNTIME
+    DSH_SESSION_ID = $env:DSH_SESSION_ID
+}
 
 # ---------- 全局定位 ----------
 
@@ -92,6 +105,8 @@ function New-FixtureArchive {
     $archName = "2099-12-31-qa-fixture-$Tag-$($script:RunStamp)"
     $archDir = Join-Path $script:WorkDir $archName
     New-Item -ItemType Directory -Path (Join-Path $archDir "requirements") -Force | Out-Null
+    # 原始需求(overview):goal 根的目标文本来源(H1=标题,全文=描述)
+    [System.IO.File]::WriteAllText((Join-Path $archDir "requirements\overview.md"), "# 原始需求：QA 夹具总纲`r`n`r`n三件套夹具:底座/依赖方/独立项——供桥接验证器断言目标根语义。", $Utf8NoBom)
     $reqs = @{
         "t1" = "# T1`r`n`r`n- **描述**：底座`r`n- **依赖关系**：无（本需求为底座）"
         "t2" = "# T2`r`n`r`n- **描述**：依赖方`r`n- **依赖关系**：依赖需求 1（t1 底座）"
@@ -164,6 +179,171 @@ function Complete-Stage {
     return (TB @("-Command", "settle", "-RunId", $RunId, "-NodeId", $NodeId))
 }
 
+function Set-ClaimAge {
+    # age one node's claim beyond every threshold (dead-claim reclaim precheck:
+    # unknown liveness falls back to the 60-min time rule)
+    param([string]$RunId, [string]$NodeId, [int]$Hours = 2)
+    $tp = Join-Path (Get-RunDirPath $RunId) "state\tree.json"
+    $t = [System.IO.File]::ReadAllText($tp, [System.Text.Encoding]::UTF8) | ConvertFrom-Json
+    $n = $t.nodes | Where-Object id -eq $NodeId
+    $n.claimed_at = (Get-Date).ToUniversalTime().AddHours(-1 * $Hours).ToString("yyyy-MM-dd'T'HH:mm:ss'Z'")
+    [System.IO.File]::WriteAllText($tp, ($t | ConvertTo-Json -Depth 10), $Utf8NoBom)
+}
+
+# mock dsh 载波(进程内 runspace + TcpListener,字节级读写环取自 role-handoff 已验证实现):
+#   POST /api/<method>            → 请求信封 {rpcId,method,payload},按规则文件应答:
+#                                   默认 ok(result.value={});kind=error → 业务错误(ok:false)
+#   GET  /rdd-goal-tree/liveness* → 回规则 liveness 正文(默认 unknown)
+# 规则文件按连接重读(场景切换免重启,Set-DshMockRule);请求逐条追加日志文件供断言/排查。
+$script:DshMock = $null
+function Set-DshMockRule {
+    param([hashtable]$Methods, [string]$Liveness)
+    $rulesPath = if ($script:DshMock) { $script:DshMock.rulesPath } else { Join-Path $script:WorkDir "dshmock-rules.json" }
+    $livenessText = if ([string]::IsNullOrEmpty($Liveness)) { '{"run":"x","node":"n","session_id":"qa-bridge-mock","liveness":"unknown","reason":"mock default"}' } else { $Liveness }
+    # default rule: agentPreset.list answers the full role preset set (start-role's
+    # preset pre-check fails on an empty list); scenario -Methods MERGE over the
+    # defaults so injected failures never accidentally clobber unrelated methods.
+    $presets = @("rdd-pm", "rdd-cto", "rdd-ux", "rdd-dev", "rdd-qa", "default") | ForEach-Object { @{ id = $_ } }
+    $rules = @{
+        methods  = @{ "agentPreset.list" = @{ kind = "ok"; value = @{ presets = $presets } } }
+        liveness = $livenessText
+    }
+    if ($null -ne $Methods) { foreach ($k in @($Methods.Keys)) { $rules.methods[$k] = $Methods[$k] } }
+    [System.IO.File]::WriteAllText($rulesPath, ($rules | ConvertTo-Json -Depth 8), $Utf8NoBom)
+}
+# runspace 载波脚本必须以【字符串】喂给 AddScript(PS5.1 下脚本块直传在 /api 分支
+# 半途死连接且无异常痕迹;字符串形态为 role-handoff 已验证模式),并带全包 catch——
+# 单请求失败绝不拖垮载波。
+$script:DshMockScript = @'
+param($ConfigPath)
+$cfg = [System.IO.File]::ReadAllText($ConfigPath, [System.Text.Encoding]::UTF8) | ConvertFrom-Json
+$utf8 = New-Object System.Text.UTF8Encoding($false)
+$latin1 = [System.Text.Encoding]::GetEncoding(28591)
+$server = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Loopback, 0)
+$server.Start()
+$port = ([System.Net.IPEndPoint]$server.LocalEndpoint).Port
+[System.IO.File]::WriteAllText($cfg.readyFile, "$port")
+try {
+    while (-not (Test-Path -LiteralPath $cfg.stopFile)) {
+        if (-not $server.Pending()) { Start-Sleep -Milliseconds 25; continue }
+        $client = $server.AcceptTcpClient()
+        try {
+            $stream = $client.GetStream()
+            $stream.ReadTimeout = 15000
+            $ms = New-Object System.IO.MemoryStream
+            $buf = New-Object byte[] 8192
+            $headerLen = -1
+            $contentLen = 0
+            while ($true) {
+                if ($headerLen -lt 0) {
+                    $n = $stream.Read($buf, 0, $buf.Length)
+                    if ($n -le 0) { break }
+                    $ms.Write($buf, 0, $n)
+                    $raw = $latin1.GetString($ms.ToArray())
+                    $idx = $raw.IndexOf("`r`n`r`n")
+                    if ($idx -ge 0) {
+                        $headerLen = $idx + 4
+                        if ($raw -match "(?im)^Content-Length:\s*(\d+)") { $contentLen = [int]$Matches[1] }
+                        # .NET HttpWebRequest defaults to Expect: 100-continue —
+                        # answer the interim probe so the client flushes the body
+                        # immediately instead of after its 350ms fallback timer.
+                        if ($raw -match "(?im)^Expect:\s*100-continue") {
+                            $cont = [System.Text.Encoding]::ASCII.GetBytes("HTTP/1.1 100 Continue`r`n`r`n")
+                            $stream.Write($cont, 0, $cont.Length)
+                        }
+                    }
+                }
+                else {
+                    $need = $headerLen + $contentLen - $ms.Length
+                    if ($need -le 0) { break }
+                    $n = $stream.Read($buf, 0, [Math]::Min($need, $buf.Length))
+                    if ($n -le 0) { break }
+                    $ms.Write($buf, 0, $n)
+                }
+            }
+            if ($headerLen -lt 0) { continue }
+            $reqLine = ($latin1.GetString($ms.ToArray(), 0, $headerLen) -split "`r`n")[0]
+            $path = ($reqLine -split " ")[1]
+            $respText = $null
+            if ($path -like "/rdd-goal-tree/liveness*") {
+                $rules = [System.IO.File]::ReadAllText($cfg.rulesPath, [System.Text.Encoding]::UTF8) | ConvertFrom-Json
+                $respText = [string]$rules.liveness
+            }
+            elseif ($path -like "/api/*") {
+                $bodyText = [System.Text.Encoding]::UTF8.GetString($ms.ToArray(), $headerLen, $ms.Length - $headerLen)
+                $envelope = $null
+                try { $envelope = $bodyText | ConvertFrom-Json } catch {}
+                $method = ($path -replace "^/api/", "") -replace "\?.*$", ""
+                $payloadJson = "{}"
+                if ($null -ne $envelope -and $null -ne $envelope.payload) {
+                    $pj = $envelope.payload | ConvertTo-Json -Depth 10 -Compress
+                    if (-not [string]::IsNullOrWhiteSpace($pj)) { $payloadJson = $pj }
+                }
+                [System.IO.File]::AppendAllText($cfg.logFile, ('{"method":"' + $method + '","payload":' + $payloadJson + '}'), $utf8)
+                $rules = [System.IO.File]::ReadAllText($cfg.rulesPath, [System.Text.Encoding]::UTF8) | ConvertFrom-Json
+                $rule = $null
+                $mprop = $rules.methods.PSObject.Properties[$method]
+                if ($null -ne $mprop) { $rule = $mprop.Value }
+                $result = @{ ok = $true; value = @{} }
+                if ($null -ne $rule -and [string]$rule.kind -eq "error") {
+                    $result = @{ ok = $false; error = @{ code = [string]$rule.code; message = [string]$rule.message; details = @{} } }
+                }
+                elseif ($null -ne $rule -and $null -ne $rule.value) {
+                    $result = @{ ok = $true; value = $rule.value }
+                }
+                $rpcId = ""
+                if ($null -ne $envelope -and $envelope.PSObject.Properties["rpcId"]) { $rpcId = [string]$envelope.rpcId }
+                $respText = (@{ rpcId = $rpcId; result = $result } | ConvertTo-Json -Depth 10 -Compress)
+            }
+            if ($null -eq $respText) { $respText = '{"ok":false,"error":{"code":"MOCK_NO_ROUTE","message":"no route"}}' }
+            $body = [System.Text.Encoding]::UTF8.GetBytes($respText)
+            $head = [System.Text.Encoding]::ASCII.GetBytes("HTTP/1.1 200 OK`r`nContent-Type: application/json`r`nContent-Length: " + $body.Length + "`r`nConnection: close`r`n`r`n")
+            $stream.Write($head, 0, $head.Length)
+            $stream.Write($body, 0, $body.Length)
+        }
+        catch {
+            try { [System.IO.File]::AppendAllText($cfg.logFile, "CONN-ERR: " + $_.Exception.Message, $utf8) } catch {}
+        }
+        finally { $client.Close() }
+    }
+}
+finally { $server.Stop() }
+'@
+function Start-DshMock {
+    $rulesPath = Join-Path $script:WorkDir "dshmock-rules.json"
+    $logPath = Join-Path $script:WorkDir "dshmock-log.jsonl"
+    Set-DshMockRule
+    if (Test-Path $logPath) { Remove-Item $logPath -Force }
+    $readyFile = Join-Path $script:WorkDir "dshmock.ready"
+    $stopFile = Join-Path $script:WorkDir "dshmock.stop"
+    foreach ($f in @($readyFile, $stopFile)) { if (Test-Path $f) { Remove-Item $f -Force } }
+    $cfg = @{ rulesPath = $rulesPath; logFile = $logPath; readyFile = $readyFile; stopFile = $stopFile }
+    $cfgPath = Join-Path $script:WorkDir "dshmock.cfg.json"
+    [System.IO.File]::WriteAllText($cfgPath, ($cfg | ConvertTo-Json -Depth 6), $Utf8NoBom)
+    $ps = [powershell]::Create()
+    $null = $ps.AddScript($script:DshMockScript).AddArgument($cfgPath)
+    $handle = $ps.BeginInvoke()
+    $deadline = (Get-Date).AddSeconds(10)
+    while (-not (Test-Path -LiteralPath $readyFile) -and (Get-Date) -lt $deadline) { Start-Sleep -Milliseconds 50 }
+    if (-not (Test-Path -LiteralPath $readyFile)) { throw "mock dsh 载波未就绪" }
+    $port = [int]([System.IO.File]::ReadAllText($readyFile)).Trim()
+    $script:DshMock = @{ ps = $ps; handle = $handle; rulesPath = $rulesPath; logPath = $logPath; stopFile = $stopFile; port = $port }
+    return "http://127.0.0.1:$port"
+}
+function Stop-DshMock {
+    if ($null -ne $script:DshMock) {
+        try { [System.IO.File]::WriteAllText($script:DshMock.stopFile, "stop") } catch {}
+        try { $script:DshMock.ps.Stop() } catch {}
+        $script:DshMock.ps.Dispose()
+        $script:DshMock = $null
+    }
+}
+function Read-DshMockLog {
+    if ($null -eq $script:DshMock -or -not (Test-Path $script:DshMock.logPath)) { return @() }
+    $lines = @([System.IO.File]::ReadAllLines($script:DshMock.logPath, [System.Text.Encoding]::UTF8) | Where-Object { $_ -ne "" })
+    return @($lines | ForEach-Object { $_ | ConvertFrom-Json })
+}
+
 # ============================================================
 # 套件:promulgate — TC-B01 / TC-B02(BR-AC-2, BR-AC-1)
 # ============================================================
@@ -171,7 +351,7 @@ function Complete-Stage {
 function Suite-Promulgate {
     Write-Host "`n== suite: promulgate (BR-AC-1/2 颁布与映射) =="
 
-    Run-Tc "TC-B01" "promulgate:run 建立 + 任务×阶段节点 + bridge.json 1:N 映射落盘 + ref 指针 + 依赖自动推导" "P0" "BR-AC-2" {
+    Run-Tc "TC-B01" "promulgate:run 建立 + 目标根树形(需求节点 ref↔需求文档) + bridge.json v2 1:N 映射落盘 + 依赖自动推导" "P0" "BR-AC-2" {
         param($c)
         $fx = New-FixtureArchive "pm01"
         $r = TB @("-Command", "promulgate", "-TaskJson", (Join-Path $fx.dir "task.json"), "-CreatedBy", "QA")
@@ -179,17 +359,24 @@ function Suite-Promulgate {
         $d = $r.json.data
         Assert $c ($d.run_id -eq $fx.run_id) "run_id=$($d.run_id),期望 $($fx.run_id)"
         Assert $c (@($d.tasks).Count -eq 3) "颁布任务数 $(@($d.tasks).Count),期望 3"
-        # 映射落盘可查:bridge.json 双向
+        # 映射落盘可查:bridge.json 双向(v2:goal_root 锚 + goal 标题 + pushes 账目容器)
         $b = Read-BridgeJson $fx.run_id
         Assert $c ($null -ne $b) "bridge.json 不可读"
+        Assert $c ([int]$b.format_version -eq 2) "format_version=$($b.format_version),期望 2"
+        Assert $c ($b.goal_root -eq "n1" -and $b.goal.title -eq "原始需求：QA 夹具总纲") "goal_root/goal.title 异常: $($b.goal_root)/$($b.goal.title)"
+        Assert $c ($null -ne $b.pushes) "pushes 账目容器缺失"
         Assert $c ($b.nodes.n2.task_id -eq 1 -and $b.nodes.n2.stage -eq "DEV") "n2 映射异常"
         Assert $c ($b.nodes.n3.task_id -eq 2 -and $b.nodes.n4.task_id -eq 3 -and $b.nodes.n4.stage -eq "CTO") "n3/n4 映射异常"
         Assert $c ($b.tasks.'1'.stages.DEV -eq "n2") "任务1 反向映射异常"
-        # ref 指针 + 依赖推导(T2 → T1)
+        # 目标根树形:n1 type=goal 且为一二级父;需求节点 ref ↔ 需求文档;依赖推导(T2 → T1)
         $t = Read-RunTree $fx.run_id
+        $n1 = $t.nodes | Where-Object id -eq "n1"
         $n3 = $t.nodes | Where-Object id -eq "n3"
         $n2 = $t.nodes | Where-Object id -eq "n2"
-        Assert $c ([string]$n2.ref -eq "$($fx.name)#1") "n2.ref=$($n2.ref)"
+        Assert $c ([string]$n1.type -eq "goal") "根节点 type 应为 goal: $($n1.type)"
+        Assert $c ($n1.title -eq "原始需求：QA 夹具总纲" -and $n1.task -like "*三件套夹具*") "目标根 title/task 应承载原始需求(overview)"
+        Assert $c (@($n1.children) -contains "n2" -and @($n1.children) -contains "n4") "需求链头应挂 goal 根下: $($n1.children -join ',')"
+        Assert $c ([string]$n2.ref -eq "$($fx.name)/requirements/t1.md") "n2.ref=$($n2.ref),期望需求文档绑定"
         Assert $c (@($n3.depends_on) -contains "n2") "T2→T1 依赖未推导: $($n3.depends_on -join ',')"
         # 预算自动下限:width ≥ 任务数
         $st = TRun @("-Command", "status", "-RunId", $fx.run_id)
@@ -233,7 +420,7 @@ function Suite-Claim {
         $r = TB @("-Command", "claim", "-RunId", $fx.run_id, "-NodeId", "n2", "-Role", "DEV")
         Assert $c ($r.exit -eq 0 -and $r.json.success) "claim 失败: $($r.text)"
         $d = $r.json.data
-        Assert $c ($d.tree_claim.node.status -eq "claimed" -and $d.tree_claim.node.ref -eq "$($fx.name)#1") "树侧上下文异常"
+        Assert $c ($d.tree_claim.node.status -eq "claimed" -and $d.tree_claim.node.ref -eq "$($fx.name)/requirements/t1.md") "树侧上下文异常"
         Assert $c ($d.flow_claim.claimed -eq $true) "流侧未认领"
         Assert $c ($null -ne $d.task -and [string]$d.task.id -eq "1") "流侧任务上下文异常"
         Assert $c ([string]$d.report_hint -ne "") "缺 report 指引"
@@ -348,7 +535,7 @@ function Suite-Settle {
         $t = Read-RunTree $fx.run_id
         $qa = $t.nodes | Where-Object id -eq $qaNode
         Assert $c ([string]$qa.parent -eq "n2") "链式 parent 异常: $($qa.parent)"
-        Assert $c ([string]$qa.role -eq "qa" -and [string]$qa.ref -eq "$($fx.name)#1") "QA 节点 role/ref 异常"
+        Assert $c ([string]$qa.role -eq "qa" -and [string]$qa.ref -eq "$($fx.name)/requirements/t1.md") "QA 节点 role/ref 异常"
         # 流侧:owners=QA,worker 清空
         $flow = TFlow @("-Command", "show", "-Archive", $fx.dir)
         $t1 = @($flow.json.data.tasks | Where-Object { $_.id -eq 1 })[0]
@@ -390,12 +577,16 @@ function Suite-Settle {
 function Suite-Recover {
     Write-Host "`n== suite: recover (BR-AC-5 回收/恢复/状态视图) =="
 
-    Run-Tc "TC-B09" "reclaim 双模式:dead-claim(泊位+重派接管)与 rejected-delivery(剪枝+替换节点);reported 永不重复消费" "P0" "BR-AC-5" {
+    Run-Tc "TC-B09" "reclaim 双模式:dead-claim(存活门禁+泊位+重派接管)与 rejected-delivery(剪枝+替换节点);reported 永不重复消费" "P0" "BR-AC-5" {
         param($c)
         $fx = New-FixtureArchive "rc09"
         $null = TB @("-Command", "promulgate", "-TaskJson", (Join-Path $fx.dir "task.json"))
-        # dead-claim:认领后模拟会话死亡 → reclaim → 泊位
+        # dead-claim 门禁:新认领(存活 unknown 且未达时间阈值)→ RECLAIM_UNPROVEN_DEAD(宁等多收)
         $null = TB @("-Command", "claim", "-RunId", $fx.run_id, "-NodeId", "n2", "-Role", "DEV")
+        $rc0 = TB @("-Command", "reclaim", "-RunId", $fx.run_id, "-NodeId", "n2")
+        Assert $c ($rc0.exit -eq 1 -and $rc0.json.error.code -eq "RECLAIM_UNPROVEN_DEAD") "新认领未被存活门禁拦: $($rc0.text)"
+        # 认领超过时间阈值(60min)后 → dead-claim 回收 → 泊位
+        Set-ClaimAge $fx.run_id "n2"
         $rc = TB @("-Command", "reclaim", "-RunId", $fx.run_id, "-NodeId", "n2")
         Assert $c ($rc.exit -eq 0 -and $rc.json.data.mode -eq "dead-claim") "dead-claim 回收失败: $($rc.text)"
         # 泊位后新会话 claim 接管(steal + force)
@@ -485,10 +676,14 @@ function Suite-Conclude {
         Assert $c ($r.exit -eq 0 -and $r.json.success) "conclude 失败: $($r.text)"
         $d = $r.json.data
         Assert $c ($d.outcome -eq "achieved" -and $d.flow_check.ok -eq $true) "conclude 结果异常: $($r.text)"
+        Assert $c ([string]$d.anchor_node -eq "n1" -and [string]$d.anchor_type -eq "goal") "结案锚应为 goal 根 n1: $($d.anchor_node)/$($d.anchor_type)"
         Assert $c (Test-Path (Join-Path (Get-RunDirPath $fx.run_id) "report\final-report.md")) "final-report.md 缺失"
+        $fr = [System.IO.File]::ReadAllText((Join-Path (Get-RunDirPath $fx.run_id) "report\final-report.md"), [System.Text.Encoding]::UTF8)
+        Assert $c ($fr.Contains("根目标达成状态")) "final-report 缺「根目标达成状态」区"
         $annexPath = Join-Path (Get-RunDirPath $fx.run_id) "report\delivery-annex.md"
         Assert $c (Test-Path $annexPath) "delivery-annex.md 缺失"
         $annex = [System.IO.File]::ReadAllText($annexPath, [System.Text.Encoding]::UTF8)
+        Assert $c ($annex.Contains("根目标: **达成**")) "annex 未体现根目标达成(goal 根=原始需求)"
         Assert $c ($annex.Contains("T1 bottom") -and $annex.Contains("T3 independent")) "annex 任务终态表不完整"
         Assert $c ($annex.Contains("completed")) "annex 未体现 completed 终态"
         Assert $c ($annex.Contains("QA-CONCLUDE-SUMMARY-XYZ")) "annex 未含结案摘要"
@@ -528,6 +723,10 @@ function Suite-Regression {
         foreach ($f in @("bridge.json", "planner-lease.json", "report\delivery-annex.md")) {
             Assert $c (-not (Test-Path (Join-Path $runDir $f))) "纯 run 出现桥接文件: $f"
         }
+        # 纯 run 根节点无 type(目标根树形只由桥接颁布引入;goal-tree 默认路径零变化)
+        $t = Read-RunTree $rid
+        $n1 = $t.nodes | Where-Object id -eq "n1"
+        Assert $c ($null -eq $n1.type) "纯 run 根节点不应有 type: $($n1.type)"
         # 2) 纯 rdd-flow 流程:fixture 归档 init→claim→advance→complete 照常(桥接零影响)
         $fx = New-FixtureArchive "rg12"
         $null = TFlow @("-Command", "show", "-Archive", $fx.dir)
@@ -601,10 +800,181 @@ function Suite-Compat {
         Assert $c ($cl.exit -ne 0 -and $cl.text -match "NODE_NOT_CLAIMABLE") "manager-reclaim 停泊节点被当成新版泊位认领(零兼容裁定:旧值不识别,应报 NODE_NOT_CLAIMABLE): $($cl.text)"
         # 迁移路径(决策 #7 风险表:存量泊位需人工重新 reclaim):对新停泊节点跑新版
         # reclaim(dead-claim 模式),回收为 planner-reclaim 泊位后即可再认领
+        # (泊位无 claims sidecar → 存活 unknown;时效化认领以通过 60min 兜底阈值)
+        Set-ClaimAge $fx.run_id "n2"
         $rc = TB @("-Command", "reclaim", "-RunId", $fx.run_id, "-NodeId", "n2")
         Assert $c ($rc.exit -eq 0 -and $rc.json.success) "新版 reclaim 回收旧停泊节点失败: $($rc.text)"
         $cl2 = TB @("-Command", "claim", "-RunId", $fx.run_id, "-NodeId", "n2", "-Role", "DEV")
         Assert $c ($cl2.exit -eq 0 -and $cl2.json.success) "reclaim 回收为 planner-reclaim 泊位后仍不可认领: $($cl2.text)"
+    }
+}
+
+# ============================================================
+# 套件:autopush — TC-B14 ~ TC-B19(2026-09-18 goal-tree-goal-root)
+# ============================================================
+
+function Suite-AutoPush {
+    Write-Host "`n== suite: autopush (目标根树形/依赖驱动自动推送/存活门禁/失败分档/v2 门禁) =="
+
+    Run-Tc "TC-B14" "初始自动推送:无依赖节点全部被推(T1-DEV/T3-CTO),依赖节点不推且 status 可见阻塞源;推送账目落盘" "P0" "GR-AC-3" {
+        param($c)
+        $fx = New-FixtureArchive "ap14"
+        $r = TB @("-Command", "promulgate", "-TaskJson", (Join-Path $fx.dir "task.json"))
+        Assert $c ($r.exit -eq 0 -and $r.json.success) "promulgate 失败: $($r.text)"
+        $ap = $r.json.data.auto_push
+        $pushed = @($ap.pushed)
+        Assert $c (($pushed -contains "n2") -and ($pushed -contains "n4")) "无依赖节点未全部推送: $($pushed -join ',')"
+        Assert $c ($pushed -notcontains "n3") "依赖节点 T2 不应在初始推送: $($pushed -join ',')"
+        Assert $c (@($ap.blocked) -contains "n3") "依赖节点未进阻塞视图: $($ap.blocked -join ',')"
+        $t = Read-RunTree $fx.run_id
+        $n3 = $t.nodes | Where-Object id -eq "n3"
+        Assert $c (@($n3.depends_on) -contains "n2") "阻塞源依赖边缺失: $($n3.depends_on -join ',')"
+        # 推送账目:被推节点 last_ok_at 落盘;goal 根不推
+        $b = Read-BridgeJson $fx.run_id
+        Assert $c ($null -ne $b.pushes.n2.last_ok_at -and $null -ne $b.pushes.n4.last_ok_at) "推送账目未落盘 last_ok_at"
+        Assert $c ($null -eq $b.pushes.n1) "goal 根不应有推送账目"
+    }
+
+    Run-Tc "TC-B15" "解锁推送:settle 后依赖满足节点 + 新阶段链节点被自动推送;全链闭环零手工 dispatch" "P0" "GR-AC-3" {
+        param($c)
+        $fx = New-FixtureArchive "ap15"
+        $null = TB @("-Command", "promulgate", "-TaskJson", (Join-Path $fx.dir "task.json"))
+        $r = Complete-Stage $fx.run_id "n2" "DEV"
+        Assert $c ($r.exit -eq 0 -and $r.json.success) "settle 失败: $($r.text)"
+        $ap = $r.json.data.auto_push
+        $pushed = @($ap.pushed)
+        $qaNode = [string]$r.json.data.next_stage_node
+        Assert $c ($pushed -contains $qaNode) "新 QA 阶段节点未被推送: $($pushed -join ',')"
+        Assert $c ($pushed -contains "n3") "依赖解锁的 T2-DEV 未被推送: $($pushed -join ',')"
+        # 全链闭环至 conclude:全程不手工 dispatch(推送即调度)
+        $b = Read-BridgeJson $fx.run_id
+        $null = Complete-Stage $fx.run_id ([string]$b.tasks.'1'.stages.QA) "QA"
+        $b = Read-BridgeJson $fx.run_id
+        $null = Complete-Stage $fx.run_id ([string]$b.tasks.'2'.stages.DEV) "DEV"
+        $b = Read-BridgeJson $fx.run_id
+        $null = Complete-Stage $fx.run_id ([string]$b.tasks.'2'.stages.QA) "QA"
+        $null = Complete-Stage $fx.run_id ([string]$b.tasks.'3'.stages.CTO) "CTO"
+        $b = Read-BridgeJson $fx.run_id
+        $null = Complete-Stage $fx.run_id ([string]$b.tasks.'3'.stages.DEV) "DEV"
+        $b = Read-BridgeJson $fx.run_id
+        $fin = Complete-Stage $fx.run_id ([string]$b.tasks.'3'.stages.QA) "QA"
+        Assert $c ($fin.exit -eq 0) "末段 settle 失败: $($fin.text)"
+        $con = TB @("-Command", "conclude", "-RunId", $fx.run_id, "-Summary", "autopush e2e")
+        Assert $c ($con.exit -eq 0 -and [string]$con.json.data.anchor_node -eq "n1") "根锚结案失败: $($con.text)"
+    }
+
+    Run-Tc "TC-B16" "回收重推:dead-claim 回收入泊位后自动重推该节点;账目 needs_repush 清零" "P0" "GR-AC-3" {
+        param($c)
+        $fx = New-FixtureArchive "ap16"
+        $null = TB @("-Command", "promulgate", "-TaskJson", (Join-Path $fx.dir "task.json"))
+        $null = TB @("-Command", "claim", "-RunId", $fx.run_id, "-NodeId", "n2", "-Role", "DEV")
+        Set-ClaimAge $fx.run_id "n2"
+        $rc = TB @("-Command", "reclaim", "-RunId", $fx.run_id, "-NodeId", "n2")
+        Assert $c ($rc.exit -eq 0 -and $rc.json.data.mode -eq "dead-claim") "dead-claim 回收失败: $($rc.text)"
+        $ap = $rc.json.data.auto_push
+        Assert $c (@($ap.pushed) -contains "n2") "泊位节点未被重推: $($ap.pushed -join ',')"
+        $b = Read-BridgeJson $fx.run_id
+        Assert $c ($null -ne $b.pushes.n2.last_ok_at -and [bool]$b.pushes.n2.needs_repush -eq $false) "重推后账目未复位: $($b.pushes.n2 | ConvertTo-Json -Compress)"
+        # 泊位节点重推后仍可被新会话接管认领
+        $cl = TB @("-Command", "claim", "-RunId", $fx.run_id, "-NodeId", "n2", "-Role", "DEV")
+        Assert $c ($cl.exit -eq 0) "重推节点不可认领: $($cl.text)"
+    }
+
+    Run-Tc "TC-B17" "存活判定两极:alive 经注册表证实拒绝回收;dead 证实后无需时间阈值即可回收;unknown 走时间兜底" "P0" "GR-AC-4" {
+        param($c)
+        $fx = New-FixtureArchive "ap17"
+        $null = TB @("-Command", "promulgate", "-TaskJson", (Join-Path $fx.dir "task.json"))
+        # sidecar 绑定 dsh 会话 id → 存活查证走 liveness 端点(套件 mock 载波)
+        $env:DSH_SESSION_ID = "qa-liveness-probe"
+        $null = TB @("-Command", "claim", "-RunId", $fx.run_id, "-NodeId", "n2", "-Role", "DEV")
+        $env:DSH_SESSION_ID = "qa-bridge-mock"
+        # alive:长任务误杀物理不可能(新认领也拒)
+        Set-DshMockRule -Liveness '{"run":"x","node":"n2","session_id":"qa-liveness-probe","liveness":"alive","reason":"mock alive"}'
+        $rcA = TB @("-Command", "reclaim", "-RunId", $fx.run_id, "-NodeId", "n2")
+        Assert $c ($rcA.exit -eq 1 -and $rcA.json.error.code -eq "RECLAIM_TARGET_ALIVE") "alive 会话未被保护: $($rcA.text)"
+        # dead:注册表证实死亡 → 无需时间阈值即可回收(泊位后自动重推亦走 mock /api)
+        Set-DshMockRule -Liveness '{"run":"x","node":"n2","session_id":"qa-liveness-probe","liveness":"dead","reason":"mock dead"}'
+        $rcD = TB @("-Command", "reclaim", "-RunId", $fx.run_id, "-NodeId", "n2")
+        Assert $c ($rcD.exit -eq 0 -and $rcD.json.data.mode -eq "dead-claim") "证实死亡回收失败: $($rcD.text)"
+        # 复位默认规则(unknown;时间兜底分支由 TC-B09 覆盖)
+        Set-DshMockRule
+    }
+
+    Run-Tc "TC-B18" "失败分档与补推:session-create 类 status 触碰自动重推;pointer 类只人工重推(不自动)" "P1" "GR-AC-5" {
+        param($c)
+        $fx = New-FixtureArchive "ap18"
+        $null = TB @("-Command", "promulgate", "-TaskJson", (Join-Path $fx.dir "task.json"), "-Session", "ap18-planner")
+        $null = TB @("-Command", "lease", "-RunId", $fx.run_id, "-Release", "-Session", "ap18-planner")
+        # 伪造推送账目:把初始推送的成功账目改写为失败待重推(n2 session-create / n4 pointer)
+        $bp = Join-Path (Get-RunDirPath $fx.run_id) "bridge.json"
+        $b = [System.IO.File]::ReadAllText($bp, [System.Text.Encoding]::UTF8) | ConvertFrom-Json
+        $stamp = (Get-Date).ToUniversalTime().ToString("yyyy-MM-dd'T'HH:mm:ss'Z'")
+        $b.pushes.n2.last_ok_at = $null
+        $b.pushes.n2.needs_repush = $true
+        $b.pushes.n2.attempts = @(@{ at = $stamp; ok = $false; error = "start-role failed (forged session-create)"; retry_class = "session-create" })
+        $b.pushes.n4.last_ok_at = $null
+        $b.pushes.n4.needs_repush = $true
+        $b.pushes.n4.attempts = @(@{ at = $stamp; ok = $false; error = "会话已创建，但指针投递失败 (forged pointer)"; retry_class = "pointer" })
+        [System.IO.File]::WriteAllText($bp, ($b | ConvertTo-Json -Depth 12), $Utf8NoBom)
+        # status 触碰:n2 被补推(ok 落账),n4 被跳过(人工)
+        $st = TB @("-Command", "status", "-RunId", $fx.run_id)
+        Assert $c ($st.exit -eq 0) "status 失败: $($st.text)"
+        $touch = $st.json.data.auto_push_touch
+        $tPushed = @($touch.pushed)
+        Assert $c ($tPushed -contains "n2") "session-create 类未被触碰补推: $($tPushed -join ',')"
+        $tSkipped = @($touch.skipped | Where-Object { $_.node -eq "n4" })
+        Assert $c ($tSkipped.Count -eq 1 -and [string]$tSkipped[0].reason -eq "pointer_manual_repush") "pointer 类未被跳过人工重推: $($touch.skipped | ConvertTo-Json -Compress)"
+        # 账目复位:n2 ok + needs_repush 清零;n4 仍待人工
+        $b2 = Read-BridgeJson $fx.run_id
+        Assert $c ($null -ne $b2.pushes.n2.last_ok_at -and [bool]$b2.pushes.n2.needs_repush -eq $false) "n2 补推后账目未复位"
+        Assert $c ([bool]$b2.pushes.n4.needs_repush -eq $true) "n4 待人工状态被意外清除"
+    }
+
+    Run-Tc "TC-B19" "v2 格式门禁:v1 桥账(无 format_version)拒读并给出确定性指引;v2 正常" "P1" "GR-AC-6" {
+        param($c)
+        $fx = New-FixtureArchive "ap19"
+        $null = TB @("-Command", "promulgate", "-TaskJson", (Join-Path $fx.dir "task.json"))
+        # 降格为 v1:剥除 format_version / goal_root / pushes
+        $bp = Join-Path (Get-RunDirPath $fx.run_id) "bridge.json"
+        $b = [System.IO.File]::ReadAllText($bp, [System.Text.Encoding]::UTF8) | ConvertFrom-Json
+        $b.PSObject.Properties.Remove("format_version")
+        $b.PSObject.Properties.Remove("goal_root")
+        $b.PSObject.Properties.Remove("pushes")
+        [System.IO.File]::WriteAllText($bp, ($b | ConvertTo-Json -Depth 12), $Utf8NoBom)
+        $st = TB @("-Command", "status", "-RunId", $fx.run_id)
+        Assert $c ($st.exit -eq 3 -and $st.json.error.code -eq "BRIDGE_FORMAT_UNSUPPORTED") "v1 桥未被拒读: $($st.text)"
+        Assert $c ($st.json.error.message.Contains("promulgate")) "拒读未附处置指引: $($st.json.error.message)"
+        # v2 正常路径由 TC-B01/B14 覆盖(format_version=2 可读写)
+    }
+
+    Run-Tc "TC-B20" "真实失败分档与手动重推:create 阶段失败→session-create;prompt 失败(会话已建)→pointer;规则复位后 create 类自动补推、pointer 类只人工(dispatch 落账复位)" "P1" "GR-AC-5" {
+        param($c)
+        $fx = New-FixtureArchive "ap20"
+        # 1) create 阶段即失败 → session-create 类(可自动重试)
+        Set-DshMockRule -Methods @{ "session.create" = @{ kind = "error"; code = "MOCK_CREATE_FAIL"; message = "mock create failure" } }
+        $r = TB @("-Command", "promulgate", "-TaskJson", (Join-Path $fx.dir "task.json"))
+        Assert $c ($r.exit -eq 0 -and $r.json.success) "promulgate 失败: $($r.text)"
+        $ap = $r.json.data.auto_push
+        Assert $c (@($ap.failed).Count -ge 1) "create 失败未入 failed 账: $($ap | ConvertTo-Json -Compress)"
+        $fc = @($ap.failed | Where-Object { $_.node -eq "n2" })[0]
+        Assert $c ($null -ne $fc -and [string]$fc.retry_class -eq "session-create") "create 失败分类错误: $($fc | ConvertTo-Json -Compress)"
+        # 2) 切规则 create 成功、prompt 失败 → pointer 类(会话已建,只人工重推)
+        Set-DshMockRule -Methods @{ "session.prompt" = @{ kind = "error"; code = "MOCK_PROMPT_FAIL"; message = "mock prompt failure" } }
+        $st = TB @("-Command", "status", "-RunId", $fx.run_id)
+        Assert $c ($st.exit -eq 0 -and $st.json.success) "status 失败: $($st.text)"
+        $b = Read-BridgeJson $fx.run_id
+        $a2 = @($b.pushes.n2.attempts)
+        Assert $c ($a2.Count -ge 2 -and [string]$a2[-1].retry_class -eq "pointer") "prompt 失败应分类 pointer: $($a2[-1] | ConvertTo-Json -Compress)"
+        # 3) 规则复位:pointer 类触碰跳过(不自动重推);手动 dispatch 落账并复位
+        Set-DshMockRule
+        $st2 = TB @("-Command", "status", "-RunId", $fx.run_id)
+        Assert $c ($st2.exit -eq 0 -and $st2.json.success) "status2 失败: $($st2.text)"
+        $touch2 = $st2.json.data.auto_push_touch
+        Assert $c (@(@($touch2.skipped) | Where-Object { $_.node -eq "n2" -and [string]$_.reason -eq "pointer_manual_repush" }).Count -eq 1) "pointer 类未被跳过: $($touch2 | ConvertTo-Json -Compress)"
+        $dp = TB @("-Command", "dispatch", "-RunId", $fx.run_id, "-NodeId", "n2")
+        Assert $c ($dp.exit -eq 0 -and $dp.json.success) "手动重推失败: $($dp.text)"
+        $b3 = Read-BridgeJson $fx.run_id
+        Assert $c ($null -ne $b3.pushes.n2.last_ok_at -and [bool]$b3.pushes.n2.needs_repush -eq $false) "手动重推后账目未复位"
     }
 }
 
@@ -615,7 +985,14 @@ function Suite-Compat {
 Write-Host "delivery-bridge-verify — repo: $RepoRoot"
 Write-Host "suite: $Suite  (runs under .rdd/goal-trees/ + fixture archives in .rdd/tmp, stamp: $script:RunStamp)"
 
-$selected = if ($Suite -eq "all") { @("promulgate", "claim", "settle", "recover", "conclude", "regression", "compat") } else { @($Suite) }
+# 套件级 mock dsh 载波:接管 DSH_WEB_URL,自动推送/liveness 查证全部打到 mock(见文件头)
+$script:DshMockUrl = Start-DshMock
+$env:DSH_WEB_URL = $script:DshMockUrl
+$env:RDD_RUNTIME = $null
+$env:DSH_SESSION_ID = "qa-bridge-mock"
+Write-Host "dsh-mock carrier: $script:DshMockUrl"
+
+$selected = if ($Suite -eq "all") { @("promulgate", "claim", "settle", "recover", "conclude", "regression", "compat", "autopush") } else { @($Suite) }
 foreach ($s in $selected) {
     switch ($s) {
         "promulgate" { Suite-Promulgate }
@@ -625,8 +1002,14 @@ foreach ($s in $selected) {
         "conclude"   { Suite-Conclude }
         "regression" { $script:ChangesAfterRun = Get-ChangesSnapshot; Suite-Regression }
         "compat"     { Suite-Compat }
+        "autopush"   { Suite-AutoPush }
     }
 }
+
+Stop-DshMock
+$env:DSH_WEB_URL = $script:EnvSaved.DSH_WEB_URL
+$env:RDD_RUNTIME = $script:EnvSaved.RDD_RUNTIME
+$env:DSH_SESSION_ID = $script:EnvSaved.DSH_SESSION_ID
 
 # ---------- 结果汇总 ----------
 

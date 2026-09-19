@@ -17,6 +17,7 @@
 #   ending   三终局与前置校验/预算强制/结案产物 —— TC-041~046
 #   e2e      根因调查式全流程 + 中断恢复 —— TC-051~052
 #   deps      节点依赖管理:声明/门禁/字段存活/审计/渲染/兼容/并行 —— TC-067~073
+#   goalroot  目标根节点:type=goal/不可认领/禁入依赖/根语义终局/白名单存活 —— TC-074~081
 #   all      全部
 #
 # 严重度语义:P0 失败=阻塞(退出码 1);P1 失败=严重不阻塞;P2 失败=备忘警告(WARN)。
@@ -26,7 +27,7 @@
 # 测试产生的运行目录(.rdd/goal-trees/qa-verify-*)默认结束后清理,-KeepRuns 保留供排查。
 
 param(
-    [ValidateSet("all", "basic", "consume", "callback", "recovery", "ending", "e2e", "deps")]
+    [ValidateSet("all", "basic", "consume", "callback", "recovery", "ending", "e2e", "deps", "goalroot")]
     [string]$Suite = "all",
     [switch]$KeepRuns,
     [switch]$Json
@@ -1167,6 +1168,167 @@ function Suite-Deps {
 }
 
 # ============================================================
+# 套件:goalroot — TC-074 ~ TC-081（2026-09-18 goal-tree-goal-root：目标根节点语义）
+# ============================================================
+
+function Suite-GoalRoot {
+    Write-Host "`n== suite: goalroot (目标根:type=goal/不可认领/不参与依赖/根语义终局) =="
+
+    Run-Tc "TC-074" "start goal 根模式:根 type=goal,title/task 承载原始需求;无开关回归 type=null" "P0" "GR-AC-1" {
+        param($c)
+        $goalPath = Write-TempFile "goal-desc.md" "# 原始需求标题 ABC`n`n这是原始需求描述文本。"
+        $rid = New-RunId "goalroot-start"
+        $r = TRun @("-Command", "start", "-RunId", $rid, "-Goal", "g", "-Title", "原始需求标题 ABC", "-GoalRoot", "-GoalFile", $goalPath, "-RefRoots", ".")
+        Assert $c ($r.exit -eq 0 -and $r.json.success) "goal 根模式 start 失败: $($r.text)"
+        Assert $c ($r.json.data.root_type -eq "goal") "root_type 应为 goal: $($r.json.data.root_type)"
+        $t = Read-RunTree $rid
+        $n1 = @($t.nodes | Where-Object id -eq "n1")[0]
+        Assert $c ([string]$n1.type -eq "goal") "根节点 type 应落盘 goal"
+        Assert $c ($n1.title -eq "原始需求标题 ABC") "根节点 title 应承载原始需求标题: $($n1.title)"
+        Assert $c ($n1.task -like "*这是原始需求描述文本*") "根节点 task 应承载原始需求描述"
+        # 回归锚:无开关时与现状逐字段一致
+        $rid2 = New-RunId "goalroot-plain"
+        $r2 = TRun @("-Command", "start", "-RunId", $rid2, "-Goal", "plain goal", "-RefRoots", ".")
+        Assert $c ($r2.exit -eq 0 -and $null -eq $r2.json.data.root_type) "普通模式不应出现 root_type"
+        $t2 = Read-RunTree $rid2
+        $n1b = @($t2.nodes | Where-Object id -eq "n1")[0]
+        Assert $c ($null -eq $n1b.type -and $n1b.title -eq "root") "普通模式根节点应保持旧语义(type=null,title=root)"
+    }
+
+    Run-Tc "TC-075" "入参配对门禁:GOAL_FILE_REQUIRES_GOAL_ROOT/MISSING_GOAL_FILE/GOAL_FILE_NOT_FOUND/GOAL_FILE_EMPTY" "P1" "GR-AC-1" {
+        param($c)
+        $goalPath = Write-TempFile "goal-desc2.md" "# 标题`n`n描述"
+        $rid = New-RunId "goalroot-args"
+        $r1 = TRun @("-Command", "start", "-RunId", $rid, "-Goal", "g", "-GoalFile", $goalPath, "-RefRoots", ".")
+        Assert $c ($r1.exit -eq 1 -and $r1.json.error.code -eq "GOAL_FILE_REQUIRES_GOAL_ROOT") "GoalFile 无 GoalRoot 未拒: $($r1.text)"
+        $r2 = TRun @("-Command", "start", "-RunId", $rid, "-Goal", "g", "-GoalRoot", "-RefRoots", ".")
+        Assert $c ($r2.exit -eq 1 -and $r2.json.error.code -eq "MISSING_GOAL_FILE") "GoalRoot 无 GoalFile 未拒: $($r2.text)"
+        $r3 = TRun @("-Command", "start", "-RunId", $rid, "-Goal", "g", "-GoalRoot", "-GoalFile", "no/such/file.md", "-RefRoots", ".")
+        Assert $c ($r3.exit -eq 1 -and $r3.json.error.code -eq "GOAL_FILE_NOT_FOUND") "不存在文件未拒: $($r3.text)"
+        $empty = Write-TempFile "goal-empty.md" "   "
+        $r4 = TRun @("-Command", "start", "-RunId", $rid, "-Goal", "g", "-GoalRoot", "-GoalFile", $empty, "-RefRoots", ".")
+        Assert $c ($r4.exit -eq 1 -and $r4.json.error.code -eq "GOAL_FILE_EMPTY") "空文件未拒: $($r4.text)"
+        Assert $c (-not (Test-RunFile $rid "manifest.json")) "入参拒绝不应留 run 目录"
+    }
+
+    Run-Tc "TC-076" "GOAL_GRAFT_FORBIDDEN:graft 载荷声明 type=goal 被拒" "P0" "GR-AC-1" {
+        param($c)
+        $goalPath = Write-TempFile "goal-desc3.md" "# 标题`n`n描述"
+        $rid = New-RunId "goalroot-graft"
+        $null = TRun @("-Command", "start", "-RunId", $rid, "-Goal", "g", "-GoalRoot", "-GoalFile", $goalPath, "-RefRoots", ".")
+        $null = TRun @("-Command", "round-start", "-RunId", $rid)
+        $tf = Write-TasksFile @( @{ title = "fake goal"; task = "x"; type = "goal" } )
+        $r = TRun @("-Command", "graft", "-RunId", $rid, "-Parent", "n1", "-TasksFile", $tf)
+        Assert $c ($r.exit -eq 1 -and $r.json.error.code -eq "GOAL_GRAFT_FORBIDDEN") "graft type=goal 未拒: $($r.text)"
+        $t = Read-RunTree $rid
+        Assert $c (@($t.nodes).Count -eq 1) "拒绝后树不应新增节点(原子拒绝)"
+    }
+
+    Run-Tc "TC-077" "DEP_GOAL_FORBIDDEN:goal 禁入 depends_on 两侧(graft 声明 + deps add 双向)" "P0" "GR-AC-1" {
+        param($c)
+        $goalPath = Write-TempFile "goal-desc4.md" "# 标题`n`n描述"
+        $rid = New-RunId "goalroot-dep"
+        $null = TRun @("-Command", "start", "-RunId", $rid, "-Goal", "g", "-GoalRoot", "-GoalFile", $goalPath, "-RefRoots", ".")
+        $null = TRun @("-Command", "round-start", "-RunId", $rid)
+        $tf = Write-TasksFile @( @{ title = "a"; task = "x" } )
+        $null = TRun @("-Command", "graft", "-RunId", $rid, "-Parent", "n1", "-TasksFile", $tf)
+        # graft 侧:载荷 depends_on 指向 goal 根
+        $tf2 = Write-TasksFile @( @{ title = "b"; task = "y"; depends_on = @("n1") } )
+        $r1 = TRun @("-Command", "graft", "-RunId", $rid, "-Parent", "n1", "-TasksFile", $tf2)
+        Assert $c ($r1.exit -eq 1 -and $r1.json.error.code -eq "DEP_GOAL_FORBIDDEN") "graft 依赖 goal 未拒: $($r1.text)"
+        # deps add 侧:普通节点 → goal
+        $r2 = TRun @("-Command", "deps", "-DepAction", "add", "-RunId", $rid, "-NodeId", "n2", "-On", "n1")
+        Assert $c ($r2.exit -eq 1 -and $r2.json.error.code -eq "DEP_GOAL_FORBIDDEN") "deps add 目标为 goal 未拒: $($r2.text)"
+        # deps add 侧:goal 依赖普通节点
+        $r3 = TRun @("-Command", "deps", "-DepAction", "add", "-RunId", $rid, "-NodeId", "n1", "-On", "n2")
+        Assert $c ($r3.exit -eq 1 -and $r3.json.error.code -eq "DEP_GOAL_FORBIDDEN") "deps add goal 为源未拒: $($r3.text)"
+    }
+
+    Run-Tc "TC-078" "GOAL_NODE_NOT_CLAIMABLE:goal 根 claim 与 -Steal 均确定性拒绝" "P0" "GR-AC-1" {
+        param($c)
+        $goalPath = Write-TempFile "goal-desc5.md" "# 标题`n`n描述"
+        $rid = New-RunId "goalroot-claim"
+        $null = TRun @("-Command", "start", "-RunId", $rid, "-Goal", "g", "-GoalRoot", "-GoalFile", $goalPath, "-RefRoots", ".")
+        $null = TRun @("-Command", "round-start", "-RunId", $rid)
+        $r1 = TLeaf @("-Command", "claim", "-RunId", $rid, "-NodeId", "n1", "-Worker", "w1")
+        Assert $c ($r1.exit -eq 1 -and $r1.json.error.code -eq "GOAL_NODE_NOT_CLAIMABLE" -and $r1.text.Contains("sub-requirement")) "claim goal 未拒或未附指引: $($r1.text)"
+        $r2 = TLeaf @("-Command", "claim", "-RunId", $rid, "-NodeId", "n1", "-Worker", "w1", "-Steal")
+        Assert $c ($r2.exit -eq 1 -and $r2.json.error.code -eq "GOAL_NODE_NOT_CLAIMABLE") "-Steal claim goal 未拒: $($r2.text)"
+        $t = Read-RunTree $rid
+        $n1 = @($t.nodes | Where-Object id -eq "n1")[0]
+        Assert $c ($n1.status -eq "pending" -and $null -eq $n1.claimed_by) "拒绝后 goal 根应保持 pending 未认领"
+    }
+
+    Run-Tc "TC-079" "next/pending_all 排除 goal 根;普通 run 根 n1 行为不变(回归)" "P1" "GR-AC-1" {
+        param($c)
+        $goalPath = Write-TempFile "goal-desc6.md" "# 标题`n`n描述"
+        $rid = New-RunId "goalroot-next"
+        $null = TRun @("-Command", "start", "-RunId", $rid, "-Goal", "g", "-Title", "需求标题", "-GoalRoot", "-GoalFile", $goalPath, "-RefRoots", ".")
+        $null = TRun @("-Command", "round-start", "-RunId", $rid)
+        $tf = Write-TasksFile @( @{ title = "a"; task = "x" }, @{ title = "b"; task = "y"; depends_on = @("n2") } )
+        $null = TRun @("-Command", "graft", "-RunId", $rid, "-Parent", "n1", "-TasksFile", $tf)
+        $nx = TLeaf @("-Command", "next", "-RunId", $rid)
+        $pend = @($nx.json.data.pending | ForEach-Object { $_.id })
+        Assert $c (($pend -contains "n2") -and ($pend -notcontains "n1")) "next 应含解锁节点且排除 goal 根 n1: $($pend -join ',')"
+        Assert $c ([int]$nx.json.data.pending_all -eq 2) "pending_all 应=2(n2 解锁+n3 阻塞)且排除 goal 根: $($nx.json.data.pending_all)"
+        $blk = @($nx.json.data.blocked | ForEach-Object { $_.id })
+        Assert $c ($blk -contains "n3") "blocked 应含依赖节点 n3"
+        # 回归:普通 run 根 n1 仍进 pending(旧行为)
+        $rid2 = New-RunId "goalroot-next2"
+        $null = TRun @("-Command", "start", "-RunId", $rid2, "-Goal", "g2", "-RefRoots", ".")
+        $null = TRun @("-Command", "round-start", "-RunId", $rid2)
+        $nx2 = TLeaf @("-Command", "next", "-RunId", $rid2)
+        Assert $c ((@($nx2.json.data.pending | ForEach-Object { $_.id }) -contains "n1") -and [int]$nx2.json.data.pending_all -ge 1) "普通 run 的 n1 行为不应变化"
+    }
+
+    Run-Tc "TC-080" "type 白名单存活:子节点 claim/report 周期后根 type=goal 与子节点 type 保留" "P1" "GR-AC-1" {
+        param($c)
+        $goalPath = Write-TempFile "goal-desc7.md" "# 标题`n`n描述"
+        $rid = New-RunId "goalroot-surv"
+        $null = TRun @("-Command", "start", "-RunId", $rid, "-Goal", "g", "-GoalRoot", "-GoalFile", $goalPath, "-RefRoots", ".")
+        $null = TRun @("-Command", "round-start", "-RunId", $rid)
+        $tf = Write-TasksFile @( @{ title = "w"; task = "x" } )
+        $null = TRun @("-Command", "graft", "-RunId", $rid, "-Parent", "n1", "-TasksFile", $tf)
+        $null = TLeaf @("-Command", "claim", "-RunId", $rid, "-NodeId", "n2", "-Worker", "w")
+        $cb = New-ValidCb -NodeId "n2" -Verdict "done" -Confidence 0.9 -Summary "s" -Citations @() -Next "" -Extras @{}
+        Submit-Report $rid "w" $cb
+        $t = Read-RunTree $rid
+        $n1 = @($t.nodes | Where-Object id -eq "n1")[0]
+        $n2 = @($t.nodes | Where-Object id -eq "n2")[0]
+        Assert $c ([string]$n1.type -eq "goal") "claim/report 周期后根 type=goal 应存活(双面白名单)"
+        Assert $c ($n2.status -eq "reported") "子节点应已 reported"
+    }
+
+    Run-Tc "TC-081" "根语义终局:子节点未终态拒 ANCHOR_NOT_DONE;全终态后 conclude 通过且 final-report 含根目标达成状态" "P0" "GR-AC-2" {
+        param($c)
+        $goalPath = Write-TempFile "goal-desc8.md" "# 原始需求 XYZ`n`n描述"
+        $rid = New-RunId "goalroot-end"
+        $null = TRun @("-Command", "start", "-RunId", $rid, "-Goal", "g", "-Title", "原始需求 XYZ", "-GoalRoot", "-GoalFile", $goalPath, "-RefRoots", ".")
+        $null = TRun @("-Command", "round-start", "-RunId", $rid)
+        $tf = Write-TasksFile @( @{ title = "w1"; task = "x" } )
+        $null = TRun @("-Command", "graft", "-RunId", $rid, "-Parent", "n1", "-TasksFile", $tf)
+        $r1 = TRun @("-Command", "conclude", "-RunId", $rid, "-Outcome", "achieved", "-AnchorNodeId", "n1", "-Summary", "s")
+        Assert $c ($r1.exit -eq 1 -and $r1.json.error.code -eq "ANCHOR_NOT_DONE" -and $r1.text.Contains("n2")) "子节点 pending 时根锚 conclude 未拒: $($r1.text)"
+        $null = TLeaf @("-Command", "claim", "-RunId", $rid, "-NodeId", "n2", "-Worker", "w")
+        $cb = New-ValidCb -NodeId "n2" -Verdict "done" -Confidence 0.9 -Summary "s" -Citations @() -Next "" -Extras @{}
+        Submit-Report $rid "w" $cb
+        $null = TRun @("-Command", "settle", "-RunId", $rid, "-NodeId", "n2")
+        $r2 = TRun @("-Command", "conclude", "-RunId", $rid, "-Outcome", "achieved", "-AnchorNodeId", "n1", "-Summary", "s")
+        Assert $c ($r2.exit -eq 0 -and $r2.json.success) "全子节点终态后根锚 conclude 应通过: $($r2.text)"
+        $fr = Read-RunFileText $rid "report/final-report.md"
+        Assert $c ($fr.Contains("根目标达成状态") -and $fr.Contains("原始需求 XYZ")) "final-report 应含根目标达成状态区"
+        # 普通锚回归:非 goal 锚未 done 仍拒
+        $rid2 = New-RunId "goalroot-end2"
+        $null = TRun @("-Command", "start", "-RunId", $rid2, "-Goal", "g2", "-RefRoots", ".")
+        $null = TRun @("-Command", "round-start", "-RunId", $rid2)
+        $tf2 = Write-TasksFile @( @{ title = "w"; task = "x" } )
+        $null = TRun @("-Command", "graft", "-RunId", $rid2, "-Parent", "n1", "-TasksFile", $tf2)
+        $r3 = TRun @("-Command", "conclude", "-RunId", $rid2, "-Outcome", "achieved", "-AnchorNodeId", "n2", "-Summary", "s")
+        Assert $c ($r3.exit -eq 1 -and $r3.json.error.code -eq "ANCHOR_NOT_DONE") "普通锚未 done 的旧行为不应变化"
+    }
+}
+
+# ============================================================
 # 正交性终检(TC-003,任何套件执行后对比)
 # ============================================================
 
@@ -1185,7 +1347,7 @@ function Invoke-OrthogonalityCheck {
 Write-Host "goal-tree-verify — repo: $RepoRoot"
 Write-Host "suite: $Suite  (runs under .rdd/goal-trees/, stamp: $script:RunStamp)"
 
-$selected = if ($Suite -eq "all") { @("basic", "consume", "callback", "recovery", "ending", "e2e", "deps") } else { @($Suite) }
+$selected = if ($Suite -eq "all") { @("basic", "consume", "callback", "recovery", "ending", "e2e", "deps", "goalroot") } else { @($Suite) }
 foreach ($s in $selected) {
     switch ($s) {
         "basic"    { Suite-Basic }
@@ -1195,6 +1357,7 @@ foreach ($s in $selected) {
         "ending"   { Suite-Ending }
         "e2e"      { Suite-E2E }
         "deps"     { Suite-Deps }
+        "goalroot" { Suite-GoalRoot }
     }
 }
 if ($Suite -in @("all", "basic")) { Invoke-OrthogonalityCheck }

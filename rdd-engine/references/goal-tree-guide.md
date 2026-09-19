@@ -44,6 +44,22 @@
 
 ---
 
+## 目标根节点（type=goal）
+
+`start -GoalRoot -GoalFile <路径>` 以**目标根模式**建 run：根 n1 变为 `type=goal` 的目标节点——承载原始需求（title=标题、task=描述，经文件通道防编码损伤），是整棵树的**终局锚点**而非工作单元。不带开关时 start 与旧版逐字节一致（回归锚）。
+
+| 维度 | 语义 |
+|------|------|
+| 创建入口 | **仅** `start -GoalRoot -GoalFile`（成对出现；graft 载荷声明 `type=goal` 报 `GOAL_GRAFT_FORBIDDEN`） |
+| 认领 | 永不可认领——leaf claim 报 `GOAL_NODE_NOT_CLAIMABLE`（-Steal 同拒）；`next` 清单与 `pending_all` 排除 goal 节点 |
+| 依赖 | 不参与 depends_on 两侧：依赖 goal 或 goal 依赖他者均报 `DEP_GOAL_FORBIDDEN`（graft 全图校验 + deps add 双侧预检） |
+| 终局 | conclude achieved 以 goal 为锚时，"锚点须 done"替换为"**全部直接子节点终态**（done/pruned）"，未达报 `ANCHOR_NOT_DONE` 附非终态清单；R4 沿用 |
+| 结案呈现 | final-report 含「根目标达成状态」区（原始需求标题 + 各子需求节点终态） |
+
+> 桥接 run（delivery-bridge promulgate）固定以目标根模式建树：goal 根=归档原始需求，一级子节点=PM 拆分的子需求链头（ref 绑 `<归档名>/<需求文档路径>`）。非桥接 run 的根 n1 无 type，行为不变。
+
+---
+
 ## 双接口分权
 
 引擎提供两个物理隔离的 CLI：
@@ -97,7 +113,7 @@
 一次标准 goal-tree 的完整循环：
 
 ```
-1. start          创建运行（根目标节点 n1 + 预算 + 引用范围）
+1. start          创建运行（根目标节点 n1 + 预算 + 引用范围；`-GoalRoot -GoalFile` 时 n1 为 type=goal 目标根，见上方「目标根节点」）
 2. round-start    开第 1 轮
 3. graft          在选定父节点下颁布子任务节点（首批通常挂在 n1 下）
 4. 派发 worker    按下方「worker 派发模板」扇出子代理，每个 worker：
@@ -107,7 +123,7 @@
    - 证伪/无关        → prune（附理由，级联子树）
    - 需要下探         → graft 新子节点
 6. round-end       收轮（落 round-NN.md 快照，记录 summary/decision）
-7. 判定            达标 → conclude achieved（锚点节点须 done）
+7. 判定            达标 → conclude achieved（锚点节点须 done；type=goal 锚=全部直接子节点终态）
                    预算尽 → conclude budget_exhausted（引擎校验预算确实耗尽）
                    空间尽 → conclude space_exhausted（树无 pending+claimed）
    否则 → 回到 2
@@ -126,7 +142,7 @@
 
 | 终局 | 机械前置 | 语义 |
 |------|---------|------|
-| `achieved` | `-AnchorNodeId` 指向的节点 status=done | 最终目标达成 |
+| `achieved` | `-AnchorNodeId` 指向的节点 status=done（type=goal 锚：全部直接子节点终态） | 最终目标达成 |
 | `budget_exhausted` | 轮数或节点数预算确实耗尽 | 诚实报告当前最佳进展，**不伪造完成** |
 | `space_exhausted` | 树无 pending 且无 claimed 节点 | 任务空间耗尽 |
 

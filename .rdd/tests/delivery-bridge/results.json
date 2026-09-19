@@ -1,15 +1,15 @@
 {
     "verifier":  "delivery-bridge-verify.ps1",
     "suite":  "all",
-    "ranAt":  "2026-09-18T07:56:00Z",
-    "total":  13,
-    "passed":  13,
+    "ranAt":  "2026-09-18T16:27:33Z",
+    "total":  20,
+    "passed":  20,
     "failed":  0,
     "warned":  0,
     "results":  [
                     {
                         "id":  "TC-B01",
-                        "title":  "promulgate:run 建立 + 任务×阶段节点 + bridge.json 1:N 映射落盘 + ref 指针 + 依赖自动推导",
+                        "title":  "promulgate:run 建立 + 目标根树形(需求节点 ref↔需求文档) + bridge.json v2 1:N 映射落盘 + 依赖自动推导",
                         "priority":  "P0",
                         "acceptance":  "BR-AC-2",
                         "status":  "PASS",
@@ -89,7 +89,7 @@
                     },
                     {
                         "id":  "TC-B09",
-                        "title":  "reclaim 双模式:dead-claim(泊位+重派接管)与 rejected-delivery(剪枝+替换节点);reported 永不重复消费",
+                        "title":  "reclaim 双模式:dead-claim(存活门禁+泊位+重派接管)与 rejected-delivery(剪枝+替换节点);reported 永不重复消费",
                         "priority":  "P0",
                         "acceptance":  "BR-AC-5",
                         "status":  "PASS",
@@ -132,6 +132,76 @@
                         "title":  "存量 run 旧命名 sidecar 零兼容:manager-lease 活跃租约不被尊重(acquire 照常成功) + manager-reclaim 停泊节点不被识别(经新 reclaim 回收后可认领)",
                         "priority":  "P0",
                         "acceptance":  "PR-AC-2",
+                        "status":  "PASS",
+                        "fails":  [
+
+                                  ]
+                    },
+                    {
+                        "id":  "TC-B14",
+                        "title":  "初始自动推送:无依赖节点全部被推(T1-DEV/T3-CTO),依赖节点不推且 status 可见阻塞源;推送账目落盘",
+                        "priority":  "P0",
+                        "acceptance":  "GR-AC-3",
+                        "status":  "PASS",
+                        "fails":  [
+
+                                  ]
+                    },
+                    {
+                        "id":  "TC-B15",
+                        "title":  "解锁推送:settle 后依赖满足节点 + 新阶段链节点被自动推送;全链闭环零手工 dispatch",
+                        "priority":  "P0",
+                        "acceptance":  "GR-AC-3",
+                        "status":  "PASS",
+                        "fails":  [
+
+                                  ]
+                    },
+                    {
+                        "id":  "TC-B16",
+                        "title":  "回收重推:dead-claim 回收入泊位后自动重推该节点;账目 needs_repush 清零",
+                        "priority":  "P0",
+                        "acceptance":  "GR-AC-3",
+                        "status":  "PASS",
+                        "fails":  [
+
+                                  ]
+                    },
+                    {
+                        "id":  "TC-B17",
+                        "title":  "存活判定两极:alive 经注册表证实拒绝回收;dead 证实后无需时间阈值即可回收;unknown 走时间兜底",
+                        "priority":  "P0",
+                        "acceptance":  "GR-AC-4",
+                        "status":  "PASS",
+                        "fails":  [
+
+                                  ]
+                    },
+                    {
+                        "id":  "TC-B18",
+                        "title":  "失败分档与补推:session-create 类 status 触碰自动重推;pointer 类只人工重推(不自动)",
+                        "priority":  "P1",
+                        "acceptance":  "GR-AC-5",
+                        "status":  "PASS",
+                        "fails":  [
+
+                                  ]
+                    },
+                    {
+                        "id":  "TC-B19",
+                        "title":  "v2 格式门禁:v1 桥账(无 format_version)拒读并给出确定性指引;v2 正常",
+                        "priority":  "P1",
+                        "acceptance":  "GR-AC-6",
+                        "status":  "PASS",
+                        "fails":  [
+
+                                  ]
+                    },
+                    {
+                        "id":  "TC-B20",
+                        "title":  "真实失败分档与手动重推:create 阶段失败→session-create;prompt 失败(会话已建)→pointer;规则复位后 create 类自动补推、pointer 类只人工(dispatch 落账复位)",
+                        "priority":  "P1",
+                        "acceptance":  "GR-AC-5",
                         "status":  "PASS",
                         "fails":  [
 

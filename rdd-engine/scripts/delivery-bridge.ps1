@@ -7,22 +7,33 @@
 # the generic depends_on/ref schema).
 #
 # Commands:
-#   promulgate  publish an archive's task set as a goal-tree run (nodes per task x stage)
-#   dispatch    start a role session for a node (start-role delivery chain)
+#   promulgate  publish an archive's task set as a goal-tree run: goal root
+#               (type=goal, the original requirement as the unclaimable conclude
+#               anchor) -> requirement chain-head nodes (ref-bound to their
+#               requirement docs) -> stage chains; then AUTO-PUSH every node
+#               with no unsatisfied dependency (no manual dispatch, no gate)
+#   dispatch    manual single-node start-role push (exception handling /
+#               pointer-class re-push; the normal flow is auto-push)
 #   claim       composite claim: read-only prechecks -> tree leaf claim -> rdd-flow claim
-#   reclaim     composite dead-claim recovery (leaf -Steal + rdd-flow claim -Force)
+#   reclaim     composite recovery (dead-claim / rejected-delivery); alive sessions
+#               are mechanically unreclaimable (RECLAIM_TARGET_ALIVE) — liveness via
+#               the dsh agents registry, time-threshold fallback for unknown
 #   settle      the ONLY task.json transition channel: three evidence checks ->
-#               tree settle -> flow advance/complete -> auto-graft next stage node
+#               tree settle -> flow advance/complete -> auto-graft next stage ->
+#               dependency-driven auto-push of newly unlocked nodes
 #   status      joined view: tree census + task stages + dep blocking + dead claims +
-#               pending_sync divergence detection and repair
+#               pending_sync repair + push ledger + session liveness + catch-up push
 #   resume      breakpoint view for a fresh Planner session
-#   conclude    final report after all tasks reach terminal state (+ delivery-annex.md)
+#   conclude    final report after all tasks reach terminal state (+ delivery-annex.md),
+#               anchored on the goal root (root semantics: all direct children terminal)
 #   lease       advisory Planner session lease (planner-lease.json, stale 30 min)
 #
 # Run artifacts (inside the goal-tree run dir, gitignored):
-#   bridge.json           authoritative node<->TaskId mapping (1 task : N stage nodes)
+#   bridge.json           authoritative node<->TaskId mapping (v2: + goal_root anchor
+#                         + per-node pushes ledger; v1 rejected BRIDGE_FORMAT_UNSUPPORTED)
 #   planner-lease.json    advisory session lease
 #   report/delivery-annex.md  per-task terminal states + rdd-flow check result
+#                         + root-goal achievement state
 #
 # Hard constraint: "不合格交付不得流转" — settle enforces the three evidence checks
 # (verdict=done / citations non-empty and real paths / extras.verification non-empty)
@@ -186,6 +197,9 @@ function Read-Bridge {
     # numeric strings ("1"), which PS 5.1's Add-Member -NotePropertyName cannot
     # carry (integer-looking strings convert to PSMemberTypes) — hashtables take
     # arbitrary keys and ConvertTo-Json still serializes them as JSON objects.
+    # Format gate (goal-tree-goal-root, decision 7 zero-compat): only v2 (goal
+    # root anchor + pushes ledger) is readable; v1 is rejected with an explicit
+    # disposition (bridge runs are gitignored and short-lived — re-promulgate).
     param([string]$RunDir)
     $p = Get-BridgePath $RunDir
     if (-not (Test-Path -LiteralPath $p -PathType Leaf)) { return $null }
@@ -196,9 +210,15 @@ function Read-Bridge {
         Write-ErrorResult "BRIDGE_CORRUPT" "bridge.json failed to parse: $($_.Exception.Message)" 3
     }
     $h = Convert-PSObjectToHashtable $obj
+    $v = 1
+    if ($h.Contains('format_version') -and $null -ne $h['format_version']) { $v = [int]$h['format_version'] }
+    if ($v -ne 2) {
+        Write-ErrorResult "BRIDGE_FORMAT_UNSUPPORTED" "bridge.json format_version=$v is not supported (this bridge expects v2: goal_root anchor + pushes ledger). Disposition: re-promulgate the archive into a fresh run (-Command promulgate -TaskJson ...), or settle the legacy run's remaining work manually per planner-guide; run dirs are gitignored and short-lived." 3
+    }
     if (-not $h.Contains('tasks') -or $null -eq $h['tasks']) { $h['tasks'] = @{} }
     if (-not $h.Contains('nodes') -or $null -eq $h['nodes']) { $h['nodes'] = @{} }
     if (-not $h.Contains('pending_sync') -or $null -eq $h['pending_sync']) { $h['pending_sync'] = @() }
+    if (-not $h.Contains('pushes') -or $null -eq $h['pushes']) { $h['pushes'] = @{} }
     return $h
 }
 
@@ -259,6 +279,273 @@ function Set-NodeTaskStage {
     $tEntry['stages'][$Stage] = $NodeId
 }
 
+# === Auto-push machinery (goal-tree-goal-root: dependency-driven dispatch) ===
+#
+# Dispatch stopped being a per-node manual planner command: every trigger point
+# (promulgate tail / settle tail / reclaim tail / status touch) recomputes the
+# unlocked set and pushes EVERY node that is unlocked ∧ non-terminal ∧ free of an
+# active claim ∧ not yet successfully pushed since its last reclaim. Accounting
+# lives inside bridge.json v2 (pushes ledger, per-node .bak+read-back persistence)
+# so a crash mid-batch leaves an idempotent recompute-and-continue state.
+
+function Read-ArchiveGoal {
+    # The goal root carries the ORIGINAL requirement (the final objective):
+    # the archive's requirements/overview.md when present (H1 = title, full body =
+    # description); a machine-synthesized summary from the plan otherwise.
+    param([string]$ArchivePath, $Plan)
+    $overview = Join-Path $ArchivePath "requirements/overview.md"
+    if (Test-Path -LiteralPath $overview -PathType Leaf) {
+        $content = ([System.IO.File]::ReadAllText($overview, [System.Text.Encoding]::UTF8)).Trim()
+        $title = $null
+        $m = [regex]::Match($content, '(?m)^\s*#\s+(.+?)\s*$')
+        if ($m.Success) { $title = $m.Groups[1].Value.Trim() }
+        if ([string]::IsNullOrWhiteSpace($title)) { $title = "archive goal" }
+        return @{ title = $title; description = $content; source = "requirements/overview.md" }
+    }
+    $titles = @($Plan | ForEach-Object { [string]$_.task.title })
+    return @{
+        title       = "archive goal ($($Plan.Count) sub-requirements)"
+        description = "Archive goal — deliver $($Plan.Count) sub-requirement(s): $($titles -join '; ')"
+        source      = "synthesized"
+    }
+}
+
+function Invoke-HttpGetJson {
+    # minimal GET + JSON with a hard timeout, PS 5.1-safe (WebClient has no timeout;
+    # HttpWebRequest does). Returns @{ ok; json; text } — never throws.
+    param([string]$Url, [int]$TimeoutMs = 3000)
+    try {
+        $req = [System.Net.HttpWebRequest]::Create($Url)
+        $req.Method = "GET"
+        $req.Timeout = $TimeoutMs
+        $req.ReadWriteTimeout = $TimeoutMs
+        $req.Proxy = $null
+        $resp = $req.GetResponse()
+        try {
+            $stream = $resp.GetResponseStream()
+            $reader = New-Object System.IO.StreamReader($stream, [System.Text.Encoding]::UTF8)
+            $text = $reader.ReadToEnd()
+        }
+        finally { $resp.Close() }
+        $json = $null
+        try { $json = $text | ConvertFrom-Json } catch { $json = $null }
+        return @{ ok = $true; json = $json; text = $text }
+    }
+    catch {
+        return @{ ok = $false; json = $null; text = [string]$_.Exception.Message }
+    }
+}
+
+function Get-ClaimLiveness {
+    # Two-level session liveness for a claimed node (goal-tree-goal-root decision 6):
+    # level 1 — the dsh agents registry via the goal-tree plugin's read-only
+    # liveness endpoint (same source the worker-report callback delivery uses);
+    # level 2 — time threshold (claimed_at older than $DeadClaimMinutes) ONLY as
+    # the unknown fallback. Probe failures degrade to unknown and never block.
+    # Outside dsh shells (no DSH_WEB_URL) liveness is unknown by construction.
+    param([string]$RunId, [string]$NodeId)
+    $claimsPath = Join-Path (Join-Path (Get-BridgeRunDir $RunId) "state") ("claims\$NodeId.json")
+    $sessionId = $null
+    if (Test-Path -LiteralPath $claimsPath -PathType Leaf) {
+        try {
+            $claim = [System.IO.File]::ReadAllText($claimsPath, [System.Text.Encoding]::UTF8) | ConvertFrom-Json
+            if ($claim.dsh_session_id) { $sessionId = [string]$claim.dsh_session_id }
+        } catch {}
+    }
+    if ([string]::IsNullOrWhiteSpace($sessionId)) {
+        return @{ liveness = "unknown"; session_id = $null; reason = "no dsh session binding on the claim sidecar (CLI claim or legacy run)" }
+    }
+    if ([string]::IsNullOrWhiteSpace($env:DSH_WEB_URL)) {
+        return @{ liveness = "unknown"; session_id = $sessionId; reason = "not a dsh shell (DSH_WEB_URL absent) — registry unverifiable here" }
+    }
+    $url = "$($env:DSH_WEB_URL.TrimEnd('/'))/rdd-goal-tree/liveness?cwd=$([uri]::EscapeDataString($repoRoot))&run=$RunId&node=$NodeId"
+    $r = Invoke-HttpGetJson $url
+    if (-not $r.ok -or $null -eq $r.json) {
+        return @{ liveness = "unknown"; session_id = $sessionId; reason = "liveness endpoint unreachable: $($r.text)" }
+    }
+    $live = "unknown"
+    if ($r.json.PSObject.Properties['liveness']) { $live = [string]$r.json.liveness }
+    return @{ liveness = $live; session_id = $sessionId; reason = "agents registry (plugin liveness endpoint)" }
+}
+
+function Get-NodePushState {
+    # per-node push ledger entry (deep hashtable), $null when never pushed
+    param($Bridge, [string]$NodeId)
+    if (-not (Test-PropPresent $Bridge 'pushes') -or $null -eq $Bridge.pushes) { return $null }
+    $entry = $null
+    if ($Bridge.pushes -is [System.Collections.IDictionary]) {
+        if ($Bridge.pushes.Contains($NodeId)) { $entry = $Bridge.pushes[$NodeId] }
+    }
+    else {
+        $prop = $Bridge.pushes.PSObject.Properties[$NodeId]
+        if ($null -ne $prop) { $entry = $prop.Value }
+    }
+    if ($null -ne $entry -and $entry -isnot [System.Collections.IDictionary]) { $entry = Convert-PSObjectToHashtable $entry }
+    return $entry
+}
+
+function Set-NodePushRecord {
+    # record ONE push attempt (ok or failed) for a node; persist bridge.json per
+    # node (.bak + read-back contract) so a crash mid-batch loses at most the
+    # in-flight entry and the next trigger recomputes idempotently.
+    # retry_class: $null on success; 'session-create' (start-role failed before a
+    # session existed — auto-retried by the next trigger) or 'pointer' (session
+    # created but the pointer message failed — MANUAL re-push only, an auto retry
+    # would stack duplicate sessions).
+    param([string]$RunDir, $Bridge, [string]$NodeId, [bool]$Ok, [string]$Error, [string]$RetryClass)
+    if (-not (Test-PropPresent $Bridge 'pushes') -or $null -eq $Bridge.pushes) { $Bridge['pushes'] = @{} }
+    if (-not $Bridge.pushes.Contains($NodeId)) { $Bridge.pushes[$NodeId] = @{ last_ok_at = $null; needs_repush = $false; attempts = @() } }
+    $st = $Bridge.pushes[$NodeId]
+    if ($Ok) {
+        $st['last_ok_at'] = Get-UtcNowIso
+        $st['needs_repush'] = $false
+    }
+    else {
+        $st['needs_repush'] = $true
+    }
+    $attempt = @{ at = Get-UtcNowIso; ok = $Ok }
+    if (-not [string]::IsNullOrWhiteSpace($Error)) { $attempt['error'] = $Error }
+    if (-not [string]::IsNullOrWhiteSpace($RetryClass)) { $attempt['retry_class'] = $RetryClass }
+    $attempts = @(Convert-ToSafeArray $st['attempts'])
+    $attempts += ,$attempt
+    if ($attempts.Count -gt 10) { $attempts = @($attempts | Select-Object -Last 10) }   # bounded ledger
+    $st['attempts'] = $attempts
+    Write-BridgeFile $RunDir $Bridge
+    return $Bridge
+}
+
+function Set-NodeRepushFlag {
+    # mark a node for re-push WITHOUT recording an attempt (reclaim parking is an
+    # orchestration mark, not a delivery attempt — the push ledger stays honest).
+    param([string]$RunDir, $Bridge, [string]$NodeId)
+    if (-not (Test-PropPresent $Bridge 'pushes') -or $null -eq $Bridge.pushes) { $Bridge['pushes'] = @{} }
+    if (-not $Bridge.pushes.Contains($NodeId)) { $Bridge.pushes[$NodeId] = @{ last_ok_at = $null; needs_repush = $false; attempts = @() } }
+    $Bridge.pushes[$NodeId]['needs_repush'] = $true
+    Write-BridgeFile $RunDir $Bridge
+    return $Bridge
+}
+
+function Get-PushFailureClass {
+    # one classifier, two callers (auto-dispatch + manual dispatch): a failure
+    # whose text proves the session already existed ("会话已创建") is pointer
+    # class — manual re-push only (an auto retry would stack a duplicate
+    # session); everything else failed before the session existed and is safe
+    # to auto-retry (session-create).
+    param([string]$FailureText)
+    if ($FailureText -match '会话已创建') { return "pointer" }
+    return "session-create"
+}
+
+function Invoke-AutoDispatch {
+    # THE auto-push function (goal-tree-goal-root). Push = the same start-role
+    # delivery chain the manual dispatch command uses. No concurrency cap
+    # (decision 3: idempotent pushes, PM splits are small); per-node try/catch so
+    # one failure never blocks the rest; per-node accounting in bridge.json v2.
+    # Returns @{ trigger; considered; pushed; skipped; failed; bridge } — failures
+    # are data, never exceptions (callers embed them in their own output).
+    param([string]$RunDir, $Bridge, [string]$Trigger)
+    $result = @{ trigger = $Trigger; considered = 0; pushed = @(); skipped = @(); failed = @() }
+    $treeData = Get-TreeStatusView $Bridge.run_id
+    # whole-tree status/depends maps: unlock is computed HERE, not via the leaf next
+    # view alone — parked (reclaim) nodes are status=claimed and never appear in
+    # next's pending list, yet they are exactly the recycle-then-repush targets.
+    $statusOf = @{}
+    $dependsOf = @{}
+    foreach ($bucket in @("pending", "done", "pruned")) {
+        foreach ($nid in @(Convert-ToSafeArray $treeData.nodes.$bucket)) { $statusOf[[string]$nid] = $bucket }
+    }
+    foreach ($n in @(Convert-ToSafeArray $treeData.nodes.claimed)) {
+        $cid = if ($n -is [string]) { $n } else { [string]$n.id }
+        $statusOf[$cid] = "claimed"
+        if ($n -isnot [string]) { $dependsOf[$cid] = @(Convert-ToSafeArray $n.depends_on) }
+    }
+    foreach ($n in @(Convert-ToSafeArray $treeData.nodes.reported)) {
+        $rid = if ($n -is [string]) { $n } else { [string]$n.id }
+        $statusOf[$rid] = "reported"
+        if ($n -isnot [string]) { $dependsOf[$rid] = @(Convert-ToSafeArray $n.depends_on) }
+    }
+    $nx = Get-LeafNextView $Bridge.run_id
+    if ($null -ne $nx) {
+        foreach ($p in @(Convert-ToSafeArray $nx.pending)) {
+            $pnid = if ($p -is [string]) { $p } else { [string]$p.id }
+            $statusOf[$pnid] = "pending"
+            if ($p -isnot [string]) { $dependsOf[$pnid] = @(Convert-ToSafeArray $p.depends_on) }
+        }
+        foreach ($b in @(Convert-ToSafeArray $nx.blocked)) {
+            $bnid = if ($b -is [string]) { $b } else { [string]$b.id }
+            $statusOf[$bnid] = "pending"
+            if ($b -isnot [string]) { $dependsOf[$bnid] = @(Convert-ToSafeArray $b.depends_on) }
+        }
+    }
+    foreach ($nodeId in @($Bridge.nodes.Keys)) {
+        $mapping = Get-NodeTaskStage $Bridge $nodeId
+        if ($null -eq $mapping) { continue }
+        $result.considered++
+        $node = Get-NodeFromTree $treeData $nodeId
+        $status = if ($node) { [string]$node.status } else { "missing" }
+        # parked = recycled by reclaim, waiting for the next claimant: it is a PUSH
+        # target (the "recycle then re-push" loop), unlike a live worker claim.
+        $parked = ($status -eq "claimed" -and [string]$node.claimed_by -eq "planner-reclaim")
+        if ($status -in @("done", "pruned", "reported", "missing") -or ($status -eq "claimed" -and -not $parked)) {
+            $result.skipped += @{ node = $nodeId; reason = $status }
+            continue
+        }
+        # unlock gate: every depends_on target must be terminal (done; pruned also
+        # satisfies — prune discharges the obligation, same as the leaf claim gate).
+        $deps = @()
+        if ($null -ne $node -and $node.PSObject.Properties['depends_on'] -and $node.depends_on) { $deps = @($node.depends_on) }
+        elseif ($dependsOf.ContainsKey($nodeId)) { $deps = $dependsOf[$nodeId] }
+        $blockedHere = @()
+        foreach ($d in $deps) {
+            $ds = if ($statusOf.ContainsKey([string]$d)) { $statusOf[[string]$d] } else { "missing" }
+            if (@('done', 'pruned') -notcontains $ds) { $blockedHere += [string]$d }
+        }
+        if ($blockedHere.Count -gt 0) {
+            $result.skipped += @{ node = $nodeId; reason = "blocked_by_deps"; blocked_by = @($blockedHere) }
+            continue
+        }
+        $pushState = Get-NodePushState $Bridge $nodeId
+        $pushedOk = ($null -ne $pushState -and $pushState.Contains('last_ok_at') -and $null -ne $pushState['last_ok_at'])
+        $needsRepush = ($null -ne $pushState -and $pushState.Contains('needs_repush') -and [bool]$pushState['needs_repush'])
+        if ($pushedOk -and -not $needsRepush) {
+            $result.skipped += @{ node = $nodeId; reason = "already_pushed" }
+            continue
+        }
+        # pointer-class failures (session created, pointer message failed) are MANUAL
+        # re-push only — an auto retry would stack a duplicate session (decision 5).
+        # (Get-NodePushState normalizes to deep hashtables — single access path.)
+        if ($needsRepush) {
+            $attempts = @()
+            if ($pushState.Contains('attempts') -and $null -ne $pushState['attempts']) { $attempts = @(Convert-ToSafeArray $pushState['attempts']) }
+            $lastAttempt = if ($attempts.Count -gt 0) { $attempts[-1] } else { $null }
+            $lastClass = $null
+            if ($null -ne $lastAttempt -and $lastAttempt -is [System.Collections.IDictionary] -and $lastAttempt.Contains('retry_class')) { $lastClass = [string]$lastAttempt['retry_class'] }
+            if ($lastClass -eq 'pointer') {
+                $result.skipped += @{ node = $nodeId; reason = "pointer_manual_repush"; retry_class = $lastClass }
+                continue
+            }
+        }
+        try {
+            $r = Invoke-StartRole @("-Role", $mapping.stage, "-TaskId", "$($mapping.task_id)", "-TaskJson", (Join-Path $Bridge.archive "task.json"))
+        }
+        catch {
+            $r = @{ exit = 1; text = "start-role invocation threw: $($_.Exception.Message)" }
+        }
+        $ok = ($r.exit -eq 0)
+        $retryClass = $null
+        $errText = $null
+        if (-not $ok) {
+            $errText = $r.text
+            $retryClass = Get-PushFailureClass $r.text
+        }
+        $Bridge = Set-NodePushRecord $RunDir $Bridge $nodeId $ok $errText $retryClass
+        if ($ok) { $result.pushed += $nodeId }
+        else { $result.failed += @{ node = $nodeId; error = $errText; retry_class = $retryClass } }
+    }
+    $result.bridge = $Bridge
+    return $result
+}
+
 # === Planner lease (advisory, session-scale) ===
 #
 # Distinct from the per-run .lock (command-scale, 60s stale): a Planner conversation
@@ -274,12 +561,24 @@ function Get-LeaseState {
     }
     catch { return @{ exists = $true; corrupt = $true; age_seconds = 999999999; raw_holder = "<corrupt>" } }
     $age = ((Get-Date) - (Get-Item -LiteralPath $p).LastWriteTime).TotalSeconds
+    $holder = [string]$obj.holder
+    $stale = ($age -gt ($LeaseStaleMinutes * 60))
+    # CLI one-shot holders are provably dead when their pid is gone: a fresh lease
+    # left by an exited process must not wedge the run for the full stale window
+    # (each bridge invocation in CLI land is its own pid label). dsh-session and
+    # custom labels keep the pure time rule — their holder id is not a pid.
+    if (-not $stale -and $holder -match '^planner-pid(\d+)$') {
+        $holderPid = [int]$Matches[1]
+        $procAlive = $false
+        try { if (Get-Process -Id $holderPid -ErrorAction SilentlyContinue) { $procAlive = $true } } catch {}
+        if (-not $procAlive) { $stale = $true }
+    }
     return @{
         exists       = $true
-        holder       = [string]$obj.holder
+        holder       = $holder
         acquired_at  = [string]$obj.acquired_at
         age_seconds  = [int]$age
-        stale        = ($age -gt ($LeaseStaleMinutes * 60))
+        stale        = $stale
         takeover_of  = if ($obj.taken_over_from) { [string]$obj.taken_over_from } else { $null }
     }
 }
@@ -321,6 +620,22 @@ function Enter-PlannerLease {
     # gate for Planner-orchestration mutations (claim by a dispatched worker is exempt)
     param([string]$RunDir)
     return Invoke-LeaseAcquire $RunDir
+}
+
+function Try-PlannerLeaseForTouch {
+    # non-failing lease acquire for the status touch-up push (goal-tree-goal-root):
+    # when another live planner holds the lease, THEIR orchestration owns pushing —
+    # return $null and status reports the skip instead of failing. Returns
+    # @{ held_before = $bool } when acquired (caller releases unless it was ours).
+    param([string]$RunDir)
+    $state = Get-LeaseState $RunDir
+    $me = Get-SessionLabel
+    $wasMine = ($state.exists -and -not $state.corrupt -and $state.holder -eq $me)
+    if ($state.exists -and -not $state.corrupt -and -not $state.stale -and $state.holder -ne $me) {
+        return @{ acquired = $false; holder = $state.holder }
+    }
+    $null = Invoke-LeaseAcquire $RunDir
+    return @{ acquired = $true; was_mine = $wasMine }
 }
 
 # === task.json side (via rdd-flow public CLI) ===
@@ -494,14 +809,28 @@ function Invoke-Promulgate {
     $effWidth = if ($NodeWidth -gt 0) { $NodeWidth } else { [Math]::Max(4, $plan.Count) }
     $effMaxNodes = if ($MaxNodes -gt 0) { $MaxNodes } else { ($plan.Count * 5 + 6) }
 
-    # 1) goal-tree start (RefRoots = whole repo: delivery citations are change lists anywhere).
-    #    start itself is atomic (manifest CreateNew), so a concurrent double-promulgate
-    #    loses here before any bridge state exists.
-    $r = Invoke-GoalTree @("-Command", "start", "-RunId", $runId,
-        "-Goal", "deliver archive $archiveName ($($plan.Count) task(s)) via bridge",
-        "-RefRoots", ".", "-CreatedBy", $CreatedBy,
-        "-MaxRounds", "$MaxRounds", "-NodeWidth", "$effWidth", "-MaxNodes", "$effMaxNodes",
-        "-Notes", "delivery-bridge run for $archiveRel")
+    # goal root payload (goal-tree-goal-root): the original requirement as the
+    # final objective — title + description travel via the file channel (same
+    # encoding-safety convention as graft's -TasksFile).
+    $goal = Read-ArchiveGoal $archivePath $plan
+    $goalFile = Join-Path ([System.IO.Path]::GetTempPath()) ("bridge-goal-{0}.md" -f ([guid]::NewGuid().ToString("N").Substring(0, 10)))
+    [System.IO.File]::WriteAllText($goalFile, $goal.description, $script:Utf8NoBom)
+
+    # 1) goal-tree start in goal-root mode (RefRoots = whole repo: delivery citations
+    #    are change lists anywhere). start itself is atomic (manifest CreateNew), so
+    #    a concurrent double-promulgate loses here before any bridge state exists.
+    try {
+        $r = Invoke-GoalTree @("-Command", "start", "-RunId", $runId,
+            "-Goal", "$($goal.title) — deliver $archiveRel",
+            "-Title", $goal.title,
+            "-GoalRoot", "-GoalFile", $goalFile,
+            "-RefRoots", ".", "-CreatedBy", $CreatedBy,
+            "-MaxRounds", "$MaxRounds", "-NodeWidth", "$effWidth", "-MaxNodes", "$effMaxNodes",
+            "-Notes", "delivery-bridge run for $archiveRel")
+    }
+    finally {
+        Remove-Item -LiteralPath $goalFile -Force -ErrorAction SilentlyContinue
+    }
     if ($r.exit -ne 0 -or -not $r.json.success) { Write-ErrorResult "PROMULGATE_START_FAILED" "goal-tree start failed: $($r.text)" 3 }
     $runDir = Join-Path $script:GoalTreesRoot $runId
 
@@ -511,17 +840,23 @@ function Invoke-Promulgate {
     $r = Invoke-GoalTree @("-Command", "round-start", "-RunId", $runId)
     if ($r.exit -ne 0 -or -not $r.json.success) { Write-ErrorResult "PROMULGATE_ROUND_FAILED" "round-start failed: $($r.text)" 3 }
 
-    # 3) graft one node per (task, initial stage); deps point at dep tasks' initial nodes
+    # 3) graft one node per (task, initial stage) under the goal root; deps point at
+    #    dep tasks' initial nodes. The requirement chain heads (first-stage work
+    #    nodes, ref-bound to their requirement docs) ARE the goal root's children —
+    #    the "requirement node" layer and the first work node are one (decision 4).
     $bridge = @{
-        format_version  = 1
+        format_version  = 2
         run_id          = $runId
         archive         = $archivePath
         archive_rel     = $archiveRel
         promulgated_at  = Get-UtcNowIso
         created_by      = $CreatedBy
+        goal_root       = "n1"
+        goal            = @{ title = $goal.title; source = $goal.source }
         tasks           = @{}
         nodes           = @{}
         pending_sync    = @()
+        pushes          = @{}
     }
     $initialNodeOfTask = @{}
     foreach ($p in $plan) {
@@ -542,7 +877,7 @@ function Invoke-Promulgate {
             title      = [string]$t.title
             task       = $taskText
             role       = $stage.ToLower()
-            ref        = "$archiveName#$taskId"
+            ref        = "$archiveName/$reqRel"   # requirement-node ref ↔ the requirement doc (goal-tree-goal-root AC-1)
         }
         if ($depNodes.Count -gt 0) { $graftItem['depends_on'] = @($depNodes) }
         $g = Invoke-GraftOne $runId "n1" $graftItem
@@ -561,6 +896,11 @@ function Invoke-Promulgate {
 
     Write-BridgeFile $runDir $bridge
 
+    # 4) initial dependency-driven push (goal-tree-goal-root): every node with no
+    #    unsatisfied dependency gets its role session started right here — no
+    #    manual per-node dispatch, no confirmation gate (decision 1-A/3).
+    $push = Invoke-AutoDispatch $runDir $bridge "promulgate"
+
     return @{
         success = $true
         data    = @{
@@ -568,11 +908,13 @@ function Invoke-Promulgate {
             run_id       = $runId
             archive      = $archiveRel
             directory    = ".rdd/goal-trees/$runId"
+            goal_root    = @{ node = "n1"; title = $goal.title; source = $goal.source }
             tasks        = @($plan | ForEach-Object { @{ task_id = [int]$_.task.id; stage = $_.stage; node = $initialNodeOfTask[[int]$_.task.id]; dep_task_ids = @($_.dep_ids) } })
             skipped_deprecated = @($tasks | Where-Object { ([string]$_.lifecycle) -eq 'deprecated' } | ForEach-Object { [int]$_.id })
             budget       = @{ max_rounds = $MaxRounds; node_width = $effWidth; max_nodes = $effMaxNodes }
             lease        = @{ holder = (Get-LeaseState $runDir).holder }
-            next_step    = "dispatch sessions per node: delivery-bridge.cmd -Command dispatch -RunId $runId -NodeId <id> [-DryRun]"
+            auto_push    = @{ trigger = $push.trigger; pushed = @($push.pushed); blocked = @($push.skipped | Where-Object { $_.reason -eq 'blocked_by_deps' } | ForEach-Object { $_.node }); failed = @($push.failed) }
+            next_step    = "initial pushes are automatic (pushed: [$(@($push.pushed) -join ', ')]; dep-blocked nodes push when their dependencies settle). Workers start with: delivery-bridge.cmd -Command claim -RunId $runId -NodeId <id> -Role <stage>."
         }
     }
 }
@@ -598,6 +940,16 @@ function Invoke-Dispatch {
     }
 
     $r = Invoke-StartRole (@("-Role", $mapping.stage, "-TaskId", "$($mapping.task_id)", "-TaskJson", (Join-Path $bridge.archive "task.json")) + $(if ($DryRun) { @("-DryRun") } else { @() }))
+    # a real (non-dry-run) dispatch IS a push: record it in the ledger — the
+    # manual path is the designated resolution for pointer-class failures, and
+    # an unrecorded success would leave needs_repush stuck forever (status
+    # would keep advertising manual work that is already done).
+    if (-not $DryRun) {
+        $okPush = ($r.exit -eq 0)
+        $pushClass = $null
+        if (-not $okPush) { $pushClass = Get-PushFailureClass $r.text }
+        $bridge = Set-NodePushRecord $runDir $bridge $NodeId $okPush $(if ($okPush) { $null } else { $r.text }) $pushClass
+    }
     if (-not $DryRun -and $r.exit -ne 0) {
         Write-ErrorResult "DISPATCH_FAILED" "start-role exited $($r.exit): $($r.text)" 1
     }
@@ -781,8 +1133,13 @@ function Invoke-BridgeReclaim {
         if ($null -eq $task) { Write-ErrorResult "TASK_NOT_FOUND" "TaskId $taskId not found in $($bridge.archive)" 2 }
         $g = Invoke-GraftNextStage $runDir $bridge $task ([string]$node.parent) $stage
         if (-not $g.success) { Write-ErrorResult "RECLAIM_GRAFT_FAILED" "replacement node graft failed after prune (task $taskId stays routed at $stage): $($g.error)" 1 }
+        $bridge = $g.bridge
         $newNodeId = $g.node_id
         $null = Invoke-RddFlow @("-Command", "claim", "-TaskId", "$taskId", "-Role", $stage, "-Archive", $bridge.archive, "-Force")
+        # the fresh replacement node is never-pushed by construction — push it now
+        # (goal-tree-goal-root: recycle-then-repush, no manual dispatch step).
+        $push = Invoke-AutoDispatch $runDir $bridge "reclaim"
+        $bridge = $push.bridge
         return @{
             success = $true
             data    = @{
@@ -793,7 +1150,8 @@ function Invoke-BridgeReclaim {
                 stage        = $stage
                 reclaimed    = $true
                 mode         = "rejected-delivery"
-                next_step    = "failed delivery pruned (ledger keeps the audit); replacement node $newNodeId grafted — dispatch it (dispatch -NodeId $newNodeId)"
+                auto_push    = @{ trigger = $push.trigger; pushed = @($push.pushed); failed = @($push.failed) }
+                next_step    = "failed delivery pruned (ledger keeps the audit); replacement node $newNodeId grafted" + $(if (@($push.pushed) -contains $newNodeId) { " and auto-pushed" } else { " — re-push via status touch or dispatch -NodeId $newNodeId" })
             }
         }
     }
@@ -805,7 +1163,26 @@ function Invoke-BridgeReclaim {
         Write-ErrorResult "RECLAIM_NOT_POSSIBLE" "Node $NodeId is '$nodeStatus' — terminal; nothing to reclaim." 1
     }
 
-    # claimed: the dead-claim recovery path
+    # claimed: the dead-claim recovery path — but first prove the session is not
+    # alive (goal-tree-goal-root decision 6): alive sessions are mechanically
+    # unreclaimable (RECLAIM_TARGET_ALIVE — long-task miskill becomes physically
+    # impossible); unknown liveness (CLI claims / endpoint unreachable) falls back
+    # to the DeadClaimMinutes threshold — younger claims are not provably dead.
+    $live = Get-ClaimLiveness $RunId $NodeId
+    if ($live.liveness -eq "alive") {
+        Write-ErrorResult "RECLAIM_TARGET_ALIVE" "Node $NodeId is claimed by a LIVE session (session_id=$($live.session_id), verified via $($live.reason)). Long-running work is not reclaimable — wait for its report, or have the session itself release/steal. If you are certain this is wrong, verify the session in dsh first." 1
+    }
+    if ($live.liveness -eq "unknown") {
+        $ageMin = $null
+        if ($node.claimed_at) {
+            try { $ageMin = [int]((Get-Date).ToUniversalTime() - [datetime]::Parse($node.claimed_at, $null, [System.Globalization.DateTimeStyles]::RoundtripKind)).TotalMinutes } catch {}
+        }
+        if ($null -eq $ageMin -or $ageMin -lt $DeadClaimMinutes) {
+            $shownAge = if ($null -ne $ageMin) { $ageMin } else { "?" }
+            Write-ErrorResult "RECLAIM_UNPROVEN_DEAD" "Node $NodeId claim liveness is unknown ($($live.reason)) and the claim is only $shownAge min old (< $DeadClaimMinutes min threshold) — not provably dead, refusing to reclaim (better to wait than to miskill; timeout marks ≠ dead). Retry after the threshold, or reclaim from a dsh shell where the agents registry can verify the session." 1
+        }
+    }
+
     # tree side: -Steal only recovers nodes stuck in claimed
     $r1 = Invoke-GoalTreeLeaf @("-Command", "claim", "-RunId", $RunId, "-NodeId", $NodeId, "-Worker", $worker, "-Steal")
     if ($r1.exit -ne 0 -or -not $r1.json.success) {
@@ -818,6 +1195,12 @@ function Invoke-BridgeReclaim {
         Write-ErrorResult "RECLAIM_FLOW_FAILED" "rdd-flow claim -Force failed: $($r2.text)" 1
     }
 
+    # recycle-then-repush loop closure (goal-tree-goal-root): the parked node needs
+    # a fresh session — mark it for re-push and auto-dispatch immediately.
+    $bridge = Set-NodeRepushFlag $runDir $bridge $NodeId
+    $push = Invoke-AutoDispatch $runDir $bridge "reclaim"
+    $bridge = $push.bridge
+
     return @{
         success = $true
         data    = @{
@@ -828,7 +1211,9 @@ function Invoke-BridgeReclaim {
             reclaimed  = $true
             mode       = "dead-claim"
             steal_count = $r1.json.data.node.steal_count
-            next_step  = "node is now claimed by '$worker' — dispatch a fresh session (dispatch -NodeId $NodeId), whose first action re-claims with -Role $stage"
+            liveness   = $live
+            auto_push  = @{ trigger = $push.trigger; pushed = @($push.pushed); failed = @($push.failed) }
+            next_step  = $(if (@($push.pushed) -contains $NodeId) { "fresh session auto-pushed for the parked node; its first action re-claims with -Role $stage" } else { "node is parked as '$worker' — re-push it via status touch or dispatch -NodeId $NodeId (its first action re-claims with -Role $stage)" })
         }
     }
 }
@@ -958,6 +1343,15 @@ function Invoke-BridgeSettle {
         }
     }
 
+    # --- dependency-driven unlock push (goal-tree-goal-root): settling this node may
+    #     unlock other tasks' nodes (and grafted this task's own next stage) — push
+    #     every newly unlocked node automatically; push failures are isolated data.
+    $push = Invoke-AutoDispatch $runDir $bridge "settle"
+    $bridge = $push.bridge
+    foreach ($f in @($push.failed)) {
+        $warnings += "auto-push failed for node $($f.node) (retry_class=$($f.retry_class)): session-create class auto-retries on the next trigger; pointer class needs manual dispatch. $($f.error)"
+    }
+
     return @{
         success = $true
         data    = @{
@@ -968,8 +1362,9 @@ function Invoke-BridgeSettle {
             flow_operation = $(if ($null -eq $nextStage) { "complete" } else { "advance ${stage}->${nextStage}" })
             next_stage_node = $graftedNext
             task_lifecycle = $(if ($null -eq $nextStage) { "completed" } else { "active @ $nextStage" })
+            auto_push      = @{ trigger = $push.trigger; pushed = @($push.pushed); failed = @($push.failed); skipped = @($push.skipped | ForEach-Object { "$($_.node):$($_.reason)" }) }
             warnings       = $warnings
-            next_step      = $(if ($graftedNext) { "dispatch the next stage: delivery-bridge.cmd -Command dispatch -RunId $RunId -NodeId $graftedNext" } elseif ($null -eq $nextStage) { "task $taskId reached terminal state" } else { "repair pending_sync via: delivery-bridge.cmd -Command status -RunId $RunId" })
+            next_step      = $(if ($push.failed.Count -gt 0) { "repair failed pushes: session-create class auto-retries via status; pointer class → dispatch -NodeId <id> manually" } elseif ($null -eq $nextStage) { "task $taskId reached terminal state" } else { "unlocked nodes pushed automatically (see auto_push); failures retry via status touch" })
         }
     }
 }
@@ -1005,7 +1400,7 @@ function Invoke-GraftNextStage {
         title = "$title"
         task  = $taskText
         role  = $NextStage.ToLower()
-        ref   = "$((Split-Path $Bridge.archive -Leaf))#$taskId"
+        ref   = "$((Split-Path $Bridge.archive -Leaf))/$reqRel"   # stage nodes of a requirement keep its doc ref (goal-tree-goal-root)
     }
     $g = Invoke-GraftOne $Bridge.run_id $ParentNodeId $graftItem
     if (-not $g.ok) {
@@ -1154,18 +1549,66 @@ function Invoke-BridgeStatus {
     $runDir = Get-BridgeRunDir $RunId
     $bridge = Require-Bridge $runDir
     $view = Get-BridgeOverview $runDir $bridge
+    $bridge = $view.bridge
+
+    # --- status touch catch-up push (goal-tree-goal-root trigger point 4): retry
+    #     session-create-class failures and any push missed by a crash mid-batch.
+    #     Best-effort and lease-aware: another live planner's lease owns pushing.
+    $touch = @{ ran = $false; note = $null }
+    if ($view.tree.state -ne "concluded") {
+        $leaseTry = Try-PlannerLeaseForTouch $runDir
+        if ($leaseTry.acquired) {
+            $push = Invoke-AutoDispatch $runDir $bridge "status"
+            $bridge = $push.bridge
+            if (-not $leaseTry.was_mine) { $null = Invoke-LeaseRelease $runDir }
+            $touch = @{ ran = $true; pushed = @($push.pushed); skipped = @($push.skipped); failed = @($push.failed) }
+        }
+        else {
+            $touch = @{ ran = $false; note = "auto-push skipped: planner lease held by '$($leaseTry.holder)' (their orchestration owns pushing)" }
+        }
+    }
+
+    # per-node push ledger view (failures with retry classes stay visible here)
+    $pushRows = @()
+    foreach ($nodeId in @($bridge.pushes.Keys)) {
+        $st = $bridge.pushes[$nodeId]
+        $last = @()
+        foreach ($a in @(Convert-ToSafeArray $st['attempts'])) { $last += $a }
+        $lastAttempt = if ($last.Count -gt 0) { $last[-1] } else { $null }
+        $pushRows += @{
+            node         = $nodeId
+            last_ok_at   = $st['last_ok_at']
+            needs_repush = [bool]$st['needs_repush']
+            attempts     = @($last | Select-Object -Last 3)
+            last_error   = $(if ($lastAttempt -and -not $lastAttempt.ok) { $lastAttempt.error } else { $null })
+            retry_class  = $(if ($lastAttempt -and -not $lastAttempt.ok) { $lastAttempt.retry_class } else { $null })
+        }
+    }
+
+    # claimed-node session liveness (read-only; unknown is normal outside dsh)
+    $livenessRows = @()
+    foreach ($n in @(Convert-ToSafeArray $view.tree.nodes.claimed)) {
+        $cid = if ($n -is [string]) { $n } else { [string]$n.id }
+        $live = Get-ClaimLiveness $RunId $cid
+        $livenessRows += @{ node = $cid; claimed_by = $(if ($n -is [string]) { $null } else { $n.claimed_by }); liveness = $live.liveness; session_id = $live.session_id }
+    }
 
     $warnings = @()
     foreach ($w in @($view.tree.integrity.warnings)) { $warnings += "tree: $w" }
     if ($view.repair.remaining.Count -gt 0) { $warnings += "pending_sync unresolved: $(@($view.repair.remaining | ForEach-Object { "$($_.node):$($_.op)" }) -join ', ')" }
     if ($view.dead_claims.tree.Count -gt 0) { $warnings += "dead tree claim(s) (>= ${DeadClaimMinutes} min): $(@($view.dead_claims.tree | ForEach-Object { $_.node }) -join ', ') — reclaim them" }
     if ($view.dead_claims.flow.Count -gt 0) { $warnings += "dead flow claim(s): $(@($view.dead_claims.flow | ForEach-Object { "task#$($_.task_id):$($_.role)" }) -join ', ')" }
+    $failedPushes = @($pushRows | Where-Object { $_.retry_class })
+    if ($failedPushes.Count -gt 0) {
+        $warnings += "push failures: $(@($failedPushes | ForEach-Object { "$($_.node)($($_.retry_class))" }) -join ', ') — session-create class auto-retries on every status touch; pointer class needs manual dispatch"
+    }
 
     return @{
         success = $true
         data    = [ordered]@{
             run_id         = $RunId
             archive        = $bridge.archive_rel
+            goal_root      = $(if ((Test-PropPresent $bridge 'goal_root') -and $bridge.goal_root) { $bridge.goal_root } else { $null })
             state          = $view.tree.state
             round          = $view.tree.round
             budget         = $view.tree.budget
@@ -1174,12 +1617,15 @@ function Invoke-BridgeStatus {
             dependencies   = $view.dependencies
             claimable      = $view.claimable
             dead_claims    = $view.dead_claims
+            session_liveness = $livenessRows
+            pushes         = $pushRows
+            auto_push_touch = $touch
             pending_sync   = $view.repair.remaining
             repaired_now   = $view.repair.repaired
             lease          = $view.lease
             terminal       = "$($view.terminalCount)/$($view.flow_taskCount)"
             warnings       = $warnings
-            next_step      = $(if ($view.terminalCount -eq $view.flow_taskCount -and $view.flow_taskCount -gt 0) { "all tasks terminal — conclude: delivery-bridge.cmd -Command conclude -RunId $RunId -Summary <...>" } else { "dispatch/settle per node; claimable now: [$($view.claimable -join ', ')]" })
+            next_step      = $(if ($view.terminalCount -eq $view.flow_taskCount -and $view.flow_taskCount -gt 0) { "all tasks terminal — conclude: delivery-bridge.cmd -Command conclude -RunId $RunId -Summary <...>" } else { "settle reported nodes; pushes are automatic (initial/unlock/reclaim + status touch); claimable now: [$($view.claimable -join ', ')]" })
         }
     }
 }
@@ -1265,13 +1711,34 @@ function Invoke-BridgeConclude {
         Write-ErrorResult "TREE_NOT_SETTLED" "Tree still has pending/claimed delivery nodes: pending=[$($mappedPending -join ',')] claimed=[$($mappedClaimed -join ',')]. Settle or prune them first." 1
     }
 
-    # anchor: the last done QA node recorded in the bridge mapping (fallback: any done node)
+    # anchor (goal-tree-goal-root): the goal root is the conclude anchor — goal-tree
+    # validates it by root semantics (all direct children terminal). The root anchor
+    # applies only when the tree node actually carries type=goal (v2-promulgated runs);
+    # a legacy-shaped run (v1 bridge.json migrated to v2 over a plain structural root)
+    # falls through to the legacy anchor resolution below.
+    # NOTE: Get-NodeFromTree serves the status view, where pending/done/pruned nodes
+    # are reduced to bare {id,status} — and the goal root stays pending forever — so
+    # its type=goal must be read from the full state/tree.json instead.
     $anchor = $null
-    foreach ($t in $flow.tasks) {
-        $taskId = [int]$t.id
-        if ($Bridge.tasks.Contains("$taskId")) {
-            $bStages = $Bridge.tasks["$taskId"]['stages']
-            if ($null -ne $bStages -and $bStages.Contains('QA')) { $anchor = [string]$bStages['QA'] }
+    $rootNode = $null
+    $anchorType = $null
+    if ((Test-PropPresent $Bridge 'goal_root') -and $Bridge.goal_root) {
+        $treeFilePath = Join-Path (Join-Path $runDir "state") "tree.json"
+        if (Test-Path -LiteralPath $treeFilePath -PathType Leaf) {
+            try {
+                $fullTree = [System.IO.File]::ReadAllText($treeFilePath, [System.Text.Encoding]::UTF8) | ConvertFrom-Json
+                $rootNode = @($fullTree.nodes | Where-Object { [string]$_.id -eq [string]$Bridge.goal_root })[0]
+            } catch { $rootNode = $null }
+        }
+        if ($null -ne $rootNode -and [string]$rootNode.type -eq 'goal') { $anchor = [string]$Bridge.goal_root; $anchorType = 'goal' }
+    }
+    if ($null -eq $anchor) {
+        foreach ($t in $flow.tasks) {
+            $taskId = [int]$t.id
+            if ($Bridge.tasks.Contains("$taskId")) {
+                $bStages = $Bridge.tasks["$taskId"]['stages']
+                if ($null -ne $bStages -and $bStages.Contains('QA')) { $anchor = [string]$bStages['QA'] }
+            }
         }
     }
     if ($null -eq $anchor) {
@@ -1301,6 +1768,13 @@ function Invoke-BridgeConclude {
     $lines += "- 归档: $($Bridge.archive_rel)"
     $lines += "- 结案时间: $(Get-UtcNowIso) · 发起: $($Bridge.created_by)"
     $lines += "- rdd-flow check: $(if ($checkOk) { '通过（0 issues）' } else { "发现问题 $($checkIssues.Count) 条" })"
+    if ((Test-PropPresent $Bridge 'goal_root') -and $Bridge.goal_root -and (Test-PropPresent $Bridge 'goal') -and $null -ne $rootNode -and [string]$rootNode.type -eq 'goal') {
+        # root-goal achievement state (goal-tree-goal-root AC-2): the original
+        # requirement reached its final objective — every sub-requirement terminal
+        # (goal-tree concluded the run anchored on the type=goal root).
+        $goalTitle = if ($Bridge.goal.Contains('title')) { [string]$Bridge.goal['title'] } else { "-" }
+        $lines += "- 根目标: **达成** — goal 根 $($Bridge.goal_root)「$goalTitle」全部直接子需求节点终态（原始需求=最终目标）"
+    }
     $lines += ""
     $lines += "## 任务终态"
     $lines += ""
@@ -1347,6 +1821,7 @@ function Invoke-BridgeConclude {
             concluded      = $true
             outcome        = "achieved"
             anchor_node    = $anchor
+            anchor_type    = $anchorType
             flow_check     = @{ ok = $checkOk; issues = $checkIssues }
             final_report   = ".rdd/goal-trees/$RunId/report/final-report.md"
             delivery_annex = ".rdd/goal-trees/$RunId/report/delivery-annex.md"

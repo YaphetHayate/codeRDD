@@ -1,9 +1,9 @@
 {
     "verifier":  "goal-tree-verify.ps1",
     "suite":  "all",
-    "ranAt":  "2026-09-18T07:57:42Z",
-    "total":  34,
-    "passed":  34,
+    "ranAt":  "2026-09-19T09:59:56Z",
+    "total":  42,
+    "passed":  42,
     "failed":  0,
     "warned":  0,
     "p0Failures":  [
@@ -339,6 +339,86 @@
                         "title":  "互不依赖节点并行认领:同轮内 a/b 被不同 worker 同时领走,依赖节点 c 同时被阻(对照)",
                         "priority":  "P0",
                         "acceptance":  "DEP-AC-3",
+                        "status":  "PASS",
+                        "fails":  [
+
+                                  ]
+                    },
+                    {
+                        "id":  "TC-074",
+                        "title":  "start goal 根模式:根 type=goal,title/task 承载原始需求;无开关回归 type=null",
+                        "priority":  "P0",
+                        "acceptance":  "GR-AC-1",
+                        "status":  "PASS",
+                        "fails":  [
+
+                                  ]
+                    },
+                    {
+                        "id":  "TC-075",
+                        "title":  "入参配对门禁:GOAL_FILE_REQUIRES_GOAL_ROOT/MISSING_GOAL_FILE/GOAL_FILE_NOT_FOUND/GOAL_FILE_EMPTY",
+                        "priority":  "P1",
+                        "acceptance":  "GR-AC-1",
+                        "status":  "PASS",
+                        "fails":  [
+
+                                  ]
+                    },
+                    {
+                        "id":  "TC-076",
+                        "title":  "GOAL_GRAFT_FORBIDDEN:graft 载荷声明 type=goal 被拒",
+                        "priority":  "P0",
+                        "acceptance":  "GR-AC-1",
+                        "status":  "PASS",
+                        "fails":  [
+
+                                  ]
+                    },
+                    {
+                        "id":  "TC-077",
+                        "title":  "DEP_GOAL_FORBIDDEN:goal 禁入 depends_on 两侧(graft 声明 + deps add 双向)",
+                        "priority":  "P0",
+                        "acceptance":  "GR-AC-1",
+                        "status":  "PASS",
+                        "fails":  [
+
+                                  ]
+                    },
+                    {
+                        "id":  "TC-078",
+                        "title":  "GOAL_NODE_NOT_CLAIMABLE:goal 根 claim 与 -Steal 均确定性拒绝",
+                        "priority":  "P0",
+                        "acceptance":  "GR-AC-1",
+                        "status":  "PASS",
+                        "fails":  [
+
+                                  ]
+                    },
+                    {
+                        "id":  "TC-079",
+                        "title":  "next/pending_all 排除 goal 根;普通 run 根 n1 行为不变(回归)",
+                        "priority":  "P1",
+                        "acceptance":  "GR-AC-1",
+                        "status":  "PASS",
+                        "fails":  [
+
+                                  ]
+                    },
+                    {
+                        "id":  "TC-080",
+                        "title":  "type 白名单存活:子节点 claim/report 周期后根 type=goal 与子节点 type 保留",
+                        "priority":  "P1",
+                        "acceptance":  "GR-AC-1",
+                        "status":  "PASS",
+                        "fails":  [
+
+                                  ]
+                    },
+                    {
+                        "id":  "TC-081",
+                        "title":  "根语义终局:子节点未终态拒 ANCHOR_NOT_DONE;全终态后 conclude 通过且 final-report 含根目标达成状态",
+                        "priority":  "P0",
+                        "acceptance":  "GR-AC-2",
                         "status":  "PASS",
                         "fails":  [
 

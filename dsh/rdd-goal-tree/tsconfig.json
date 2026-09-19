@@ -1,0 +1,25 @@
+{
+  "compilerOptions": {
+    "target": "es2022",
+    "module": "nodenext",
+    "moduleResolution": "nodenext",
+    "lib": ["es2022"],
+    "strict": true,
+    "noEmitOnError": true,
+    "declaration": true,
+    "skipLibCheck": true,
+    "esModuleInterop": true,
+    "isolatedModules": true,
+    "outDir": "lib",
+    "rootDir": "src",
+    "baseUrl": ".",
+    "paths": {
+      "@deepseek-ai/cordis": ["../../../dsh/deepseek-harness/vendor/cordis/lib/types/index.d.ts"],
+      "@deepseek-ai/dsh-host-webserver": ["../../../dsh/deepseek-harness/packages/host/webserver/lib/types/index.d.ts"],
+      "@deepseek-ai/dsh-agent": ["../../../dsh/deepseek-harness/packages/core/agent/lib/types/index.d.ts"],
+      "@deepseek-ai/dsh-session": ["../../../dsh/deepseek-harness/packages/core/session/lib/types/index.d.ts"],
+      "@deepseek-ai/dsh-llm": ["../../../dsh/deepseek-harness/packages/llm/llm/lib/types/index.d.ts"]
+    }
+  },
+  "include": ["src/index.ts", "src/goaltrees.ts"]
+}

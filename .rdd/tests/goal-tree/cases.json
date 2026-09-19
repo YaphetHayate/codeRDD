@@ -245,6 +245,54 @@
       "precondition": "同轮颁布 a/b(互不依赖)与 c(依赖 a)",
       "steps": ["ux1 claim a", "ux2 claim b(并行)", "ux3 claim c(对照)", "next 查看分区"],
       "expected": "a/b 被不同 worker 并行认领成功(多角色/多窗口场景);c 同时报 NODE_BLOCKED_BY_DEPS 附阻塞源;next 中 a/b 出离 pending、c 单列 blocked"
+    },
+    {
+      "id": "TC-074", "title": "start goal 根模式:根 type=goal,title/task 承载原始需求;无开关回归 type=null", "type": "positive", "priority": "P0",
+      "acceptance": "GR-AC-1", "codeRef": ".rdd/tests/goal-tree/goal-tree-verify.ps1:1177", "sourceChange": "2026-09-18-planner-goal-tree-upgrade", "status": "active", "crossFeature": ["delivery-bridge"],
+      "steps": ["start -GoalRoot -GoalFile <原始需求文档> -Title <H1 标题>", "读 tree.json 根节点与输出 root_type", "无开关普通 start 对照"],
+      "expected": "goal 根模式 n1.type=goal、title/task 承载原始需求标题与描述,输出含 root_type=goal;普通模式 root_type 缺席、n1.type=null 且 title=root(旧行为逐字段一致)"
+    },
+    {
+      "id": "TC-075", "title": "入参配对门禁:GOAL_FILE_REQUIRES_GOAL_ROOT/MISSING_GOAL_FILE/GOAL_FILE_NOT_FOUND/GOAL_FILE_EMPTY", "type": "negative", "priority": "P1",
+      "acceptance": "GR-AC-1", "codeRef": ".rdd/tests/goal-tree/goal-tree-verify.ps1:1198", "sourceChange": "2026-09-18-planner-goal-tree-upgrade", "status": "active", "crossFeature": [],
+      "steps": ["-GoalFile 不带 -GoalRoot", "-GoalRoot 不带 -GoalFile", "-GoalFile 指向不存在文件", "-GoalFile 指向空白文件"],
+      "expected": "四种入参误用分别以对应错误码拒绝退出 1,且不留下 run 目录"
+    },
+    {
+      "id": "TC-076", "title": "GOAL_GRAFT_FORBIDDEN:graft 载荷声明 type=goal 被拒", "type": "negative", "priority": "P0",
+      "acceptance": "GR-AC-1", "codeRef": ".rdd/tests/goal-tree/goal-tree-verify.ps1:1214", "sourceChange": "2026-09-18-planner-goal-tree-upgrade", "status": "active", "crossFeature": [],
+      "steps": ["goal 根模式 start 后 graft 携带 type=goal 的载荷项"],
+      "expected": "GOAL_GRAFT_FORBIDDEN 拒绝,树中不出现第二个 type=goal 节点(goal 根唯一)"
+    },
+    {
+      "id": "TC-077", "title": "DEP_GOAL_FORBIDDEN:goal 禁入 depends_on 两侧(graft 声明 + deps add 双向)", "type": "negative", "priority": "P0",
+      "acceptance": "GR-AC-1", "codeRef": ".rdd/tests/goal-tree/goal-tree-verify.ps1:1227", "sourceChange": "2026-09-18-planner-goal-tree-upgrade", "status": "active", "crossFeature": [],
+      "steps": ["graft 载荷 depends_on 指向 goal 根", "deps add 让普通节点依赖 goal 根", "deps add 让 goal 根依赖普通节点"],
+      "expected": "三个方向全部 DEP_GOAL_FORBIDDEN 机械拒绝,deps-log 无非法边落账——goal 根不参与依赖语义"
+    },
+    {
+      "id": "TC-078", "title": "GOAL_NODE_NOT_CLAIMABLE:goal 根 claim 与 -Steal 均确定性拒绝", "type": "negative", "priority": "P0",
+      "acceptance": "GR-AC-1", "codeRef": ".rdd/tests/goal-tree/goal-tree-verify.ps1:1247", "sourceChange": "2026-09-18-planner-goal-tree-upgrade", "status": "active", "crossFeature": [],
+      "steps": ["leaf claim 指向 goal 根", "带 -Steal 再试"],
+      "expected": "两次均 GOAL_NODE_NOT_CLAIMABLE 且先于 -Steal 分支判定;goal 根状态不变"
+    },
+    {
+      "id": "TC-079", "title": "next/pending_all 排除 goal 根;普通 run 根 n1 行为不变(回归)", "type": "boundary", "priority": "P1",
+      "acceptance": "GR-AC-1", "codeRef": ".rdd/tests/goal-tree/goal-tree-verify.ps1:1262", "sourceChange": "2026-09-18-planner-goal-tree-upgrade", "status": "active", "crossFeature": [],
+      "steps": ["goal 根 run 的 next 视图", "普通 run(无类型根)的 next 视图对照"],
+      "expected": "goal 根不出现在 pending/pending_all 计数(它不是工作节点);普通 run 的结构根仍按旧行为参与分区——两形态互不干扰"
+    },
+    {
+      "id": "TC-080", "title": "type 白名单存活:子节点 claim/report 周期后根 type=goal 与子节点 type 保留", "type": "boundary", "priority": "P1",
+      "acceptance": "GR-AC-1", "codeRef": ".rdd/tests/goal-tree/goal-tree-verify.ps1:1284", "sourceChange": "2026-09-18-planner-goal-tree-upgrade", "status": "active", "crossFeature": [],
+      "steps": ["goal 根 run 上执行 claim/report/settle 全周期", "读回 tree.json 检查各节点 type 字段"],
+      "expected": "写路径(type 白名单)不剥离合法 type;根保持 goal,无类型节点保持 null——类型信息跨周期存活"
+    },
+    {
+      "id": "TC-081", "title": "根语义终局:子节点未终态拒 ANCHOR_NOT_DONE;全终态后 conclude 通过且 final-report 含根目标达成状态", "type": "positive", "priority": "P0",
+      "acceptance": "GR-AC-2", "codeRef": ".rdd/tests/goal-tree/goal-tree-verify.ps1:1302", "sourceChange": "2026-09-18-planner-goal-tree-upgrade", "status": "active", "crossFeature": ["delivery-bridge"],
+      "steps": ["存在未终态直接子节点时 conclude 指定 goal 根为锚", "全部直接子节点终态后再 conclude", "读 final-report.md 根目标区", "普通 run 以 n1 为锚对照结案"],
+      "expected": "未终态时 ANCHOR_NOT_DONE 列明欠账节点;全终态后结案成功,final-report 含「根目标达成状态」区与原始需求标题;普通 run 的 n1 锚结案行为不变"
     }
   ]
 }

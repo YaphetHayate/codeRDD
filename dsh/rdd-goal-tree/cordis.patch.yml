@@ -1,0 +1,6 @@
+# The rdd-goal-tree bundle patch: one insert row mounting the host half (the
+# read-only status route). The client half is discovered separately through the
+# package's dsh.client declaration (platform web) and needs no row here.
+- insert:
+    - id: rdd-goal-tree
+      name: '@coderrdd/dsh-rdd-goal-tree'

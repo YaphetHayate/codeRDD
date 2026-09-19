@@ -39,6 +39,12 @@ param(
     [string]$CreatedBy,
     [string]$Notes,
 
+    # start (goal root mode — goal-tree-goal-root): root becomes the unclaimable
+    # type=goal conclude anchor carrying the original requirement; without the
+    # switch the start path is byte-identical (regression anchor)
+    [switch]$GoalRoot,
+    [string]$GoalFile,
+
     # graft / prune / settle
     [string]$Parent,
     [string]$NodeId,
@@ -829,6 +835,24 @@ function Get-TreeEdgeMap {
     return $map
 }
 
+function Test-GoalDepExclusivity {
+    # goal nodes never appear on EITHER side of a depends_on edge (goal-tree-goal-root:
+    # the goal root is the unclaimable conclude anchor, not a work unit). Shared by
+    # graft (post-build whole-tree check) and deps add (both sides checked pre-write).
+    param($Tree)
+    $goalIds = @{}
+    foreach ($n in @($Tree.nodes)) { if ([string]$n.type -eq 'goal') { $goalIds[[string]$n.id] = $true } }
+    $problems = @()
+    foreach ($n in @($Tree.nodes)) {
+        foreach ($t in @(ConvertTo-NodeIdList $n.depends_on)) {
+            if ($goalIds.ContainsKey($t)) {
+                $problems += "DEP_GOAL_FORBIDDEN: node $($n.id) depends on goal node $t (goal nodes never participate in depends_on)"
+            }
+        }
+    }
+    return $problems
+}
+
 function Get-NodeBlockedDeps {
     # returns @{ blocked = @(unsatisfied target ids); via_prune = @(satisfied-by-prune target ids) }
     param($Tree, $Node)
@@ -1067,6 +1091,9 @@ function Write-RoundSnapshot {
 }
 
 function Write-FinalReport {
+    # $AnchorNode is the anchor NODE object (or $null): a type=goal anchor renders the
+    # root-goal achievement section (goal-tree-goal-root), a work anchor keeps the
+    # classic "anchor done" line.
     param([string]$RunDir, $Manifest, $Tree, [string]$Outcome, [string]$SummaryText, $AnchorNode)
 
     $dir = Get-ReportDir $RunDir
@@ -1093,8 +1120,23 @@ function Write-FinalReport {
     $lines += "- 终局: **$Outcome**（$outcomeText）"
     $lines += "- 结案时间: $(Get-UtcNowIso) · 创建时间: $($Manifest.created_at) · 发起: $($Manifest.created_by)"
     $lines += "- 目标: $($Manifest.goal)"
-    if ($AnchorNode) { $lines += "- 锚点节点: $AnchorNode（status=done）" }
+    if ($AnchorNode -and [string]$AnchorNode.type -eq 'goal') {
+        $lines += "- 锚点节点: $($AnchorNode.id)（type=goal 目标根，全部直接子节点终态 ⇒ 根目标达成）"
+    }
+    elseif ($AnchorNode) { $lines += "- 锚点节点: $($AnchorNode.id)（status=done）" }
     $lines += ""
+    if ($AnchorNode -and [string]$AnchorNode.type -eq 'goal' -and $Outcome -eq 'achieved') {
+        $lines += "## 根目标达成状态"
+        $lines += ""
+        $lines += "- 原始需求: $($AnchorNode.title)"
+        foreach ($cid in @($AnchorNode.children)) {
+            $cnode = $null
+            foreach ($n in @($Tree.nodes)) { if ([string]$n.id -eq [string]$cid) { $cnode = $n; break } }
+            if ($null -eq $cnode) { continue }
+            $lines += "- 子需求节点 $($cnode.id): $($cnode.title) — $($cnode.status)"
+        }
+        $lines += ""
+    }
     $lines += "## 规划者结案摘要"
     $lines += ""
     $lines += $SummaryText
@@ -1187,7 +1229,28 @@ function Invoke-Start {
     }
 
     $now = Get-UtcNowIso
-    $rootTitle = if ([string]::IsNullOrWhiteSpace($Title)) { "root" } else { $Title }
+    # goal root mode (goal-tree-goal-root): -GoalRoot and -GoalFile are a pair —
+    # the file carries the original requirement description (file channel keeps
+    # non-ASCII/long text safe through the cmd -> powershell hop); -Title carries
+    # the original requirement title. Root node then gets type=goal (unclaimable
+    # conclude anchor). Without the pair, root semantics stay exactly as before.
+    $goalRootType = $null
+    $goalRootTask = $null
+    if ($GoalRoot -or -not [string]::IsNullOrWhiteSpace($GoalFile)) {
+        if (-not $GoalRoot) { Write-ErrorResult "GOAL_FILE_REQUIRES_GOAL_ROOT" "-GoalFile is only valid together with -GoalRoot (goal root mode: root = unclaimable type=goal conclude anchor)" 1 }
+        if ([string]::IsNullOrWhiteSpace($GoalFile)) { Write-ErrorResult "MISSING_GOAL_FILE" "-GoalFile (file carrying the original requirement description) is required with -GoalRoot" 1 }
+        $gf = $GoalFile
+        if (-not [System.IO.Path]::IsPathRooted($gf)) { $gf = Join-Path $repoRoot $gf }
+        if (-not (Test-Path -LiteralPath $gf -PathType Leaf)) { Write-ErrorResult "GOAL_FILE_NOT_FOUND" "Goal file not found: $gf" 1 }
+        $goalRootTask = ([System.IO.File]::ReadAllText($gf, [System.Text.Encoding]::UTF8)).Trim()
+        if ([string]::IsNullOrWhiteSpace($goalRootTask)) { Write-ErrorResult "GOAL_FILE_EMPTY" "Goal file is empty: $gf" 1 }
+        $goalRootType = "goal"
+    }
+    $rootTitle = if ($GoalRoot) {
+        if ([string]::IsNullOrWhiteSpace($Title)) { "goal" } else { $Title }
+    }
+    elseif ([string]::IsNullOrWhiteSpace($Title)) { "root" } else { $Title }
+    $rootTask = if ($null -ne $goalRootTask) { $goalRootTask } else { $Goal }
 
     # --- coverage gates (task-dispatch-guide): optional query domain + gate defaults ---
     if (-not [string]::IsNullOrWhiteSpace($GateMode) -and @('warn', 'enforce') -notcontains $GateMode) {
@@ -1260,8 +1323,8 @@ function Invoke-Start {
                 id              = "n1"
                 parent          = $null
                 title           = $rootTitle
-                task            = $Goal
-                type            = $null
+                task            = $rootTask
+                type            = $goalRootType
                 role            = $null
                 falsification_duty = $null
                 depends_on      = @()
@@ -1323,6 +1386,7 @@ function Invoke-Start {
             run_id    = $RunId
             directory = ".rdd/goal-trees/$RunId"
             root_node = "n1"
+            root_type = $goalRootType
             budget    = $manifest.budget
             ref_roots = $roots
             state     = "running"
@@ -1382,6 +1446,9 @@ function Invoke-Graft {
         }
         # --- probe falsification duty (task-dispatch-guide R5): structural contract missing at dispatch time ---
         $tType = if ($null -ne $t.PSObject.Properties['type']) { [string]$t.type } else { '' }
+        if ($tType -eq 'goal') {
+            Write-ErrorResult "GOAL_GRAFT_FORBIDDEN" "task '$($t.title)' declares type=goal; the goal root is created only by 'start -GoalRoot' (unclaimable conclude anchor) and can never be a graft payload" 1
+        }
         if ($tType -eq 'probe') {
             $tDuty = ''
             if ($null -ne $t.PSObject.Properties['falsification_duty'] -and $null -ne $t.falsification_duty) { $tDuty = [string]$t.falsification_duty }
@@ -1517,6 +1584,12 @@ function Invoke-Graft {
         $depProblems = @(Test-DependencyGraph $edgeMap)
         if ($depProblems.Count -gt 0) {
             Write-ErrorResult "DEP_GRAPH_INVALID" "graft rejected (nothing written): $($depProblems -join '; ')" 1
+        }
+        # goal nodes never participate in depends_on (goal-tree-goal-root; catches both
+        # per-task payloads and the CLI -DependsOn default, existing targets included)
+        $goalDepProblems = @(Test-GoalDepExclusivity $tree)
+        if ($goalDepProblems.Count -gt 0) {
+            Write-ErrorResult "DEP_GOAL_FORBIDDEN" "graft rejected (nothing written): $($goalDepProblems -join '; ')" 1
         }
 
         Write-TreeFile $RunDir $tree
@@ -1742,7 +1815,22 @@ function Invoke-Conclude {
                 }
                 $anchor = Find-Node $tree $AnchorNodeId
                 if ($null -eq $anchor) { Write-ErrorResult "ANCHOR_NOT_FOUND" "Anchor node not found: $AnchorNodeId" 2 }
-                if ($anchor.status -ne "done") {
+                if ([string]$anchor.type -eq 'goal') {
+                    # goal-root terminal semantics (goal-tree-goal-root): the anchor is the
+                    # original-requirement root — never a work node, so "achieved" replaces
+                    # "anchor done" with "every direct child (sub-requirement chain head)
+                    # reached a terminal state". R4 gate below applies unchanged.
+                    $nonTerminal = @()
+                    foreach ($cid in @($anchor.children)) {
+                        $cnode = Find-Node $tree ([string]$cid)
+                        if ($null -eq $cnode) { continue }
+                        if (@('done', 'pruned') -notcontains [string]$cnode.status) { $nonTerminal += "$($cnode.id)($($cnode.status))" }
+                    }
+                    if ($nonTerminal.Count -gt 0) {
+                        Write-ErrorResult "ANCHOR_NOT_DONE" "Goal anchor $AnchorNodeId requires every direct child in a terminal state (done/pruned); non-terminal: $($nonTerminal -join ', ')." 1
+                    }
+                }
+                elseif ($anchor.status -ne "done") {
                     Write-ErrorResult "ANCHOR_NOT_DONE" "Anchor $AnchorNodeId is '$($anchor.status)'; achieved requires a settled (done) anchor. settle it first." 1
                 }
 
@@ -1802,7 +1890,7 @@ function Invoke-Conclude {
         # render the final report BEFORE flipping the manifest on disk: a render
         # failure leaves the run retry-able instead of concluded-without-report
         $finalTree = (Read-TreeEditable $RunDir).tree
-        $reportPath = Write-FinalReport $RunDir $manifest $finalTree $Outcome $Summary $(if ($anchor) { $anchor.id } else { $null })
+        $reportPath = Write-FinalReport $RunDir $manifest $finalTree $Outcome $Summary $anchor
         Write-ManifestFile $RunDir $manifest
 
         return @{
@@ -1912,7 +2000,7 @@ function Invoke-Status {
             if ($n.claimed_at) {
                 try { $ageSec = [int]((Get-Date).ToUniversalTime() - [datetime]::Parse($n.claimed_at, $null, [System.Globalization.DateTimeStyles]::RoundtripKind)).TotalSeconds } catch {}
             }
-            $inFlight += @{ id = $n.id; title = $n.title; type = $n.type; role = $n.role; claimed_by = $n.claimed_by; claimed_at = $n.claimed_at; steal_count = $n.steal_count; age_seconds = $ageSec }
+            $inFlight += @{ id = $n.id; title = $n.title; type = $n.type; role = $n.role; claimed_by = $n.claimed_by; claimed_at = $n.claimed_at; steal_count = $n.steal_count; age_seconds = $ageSec; depends_on = @(ConvertTo-NodeIdList $n.depends_on) }
         }
         if ($unsettled.Count -gt 0) { $warnings += "$($unsettled.Count) reported node(s) awaiting settle: $(($unsettled | ForEach-Object { $_.id }) -join ', ')" }
         if ($hangingRound) { $warnings += "round $hangingRound open since $($roundState.open_started_at) (round-start without round-end)" }
@@ -2127,6 +2215,14 @@ function Invoke-Deps {
         if ($DepAction -eq "add") {
             if ($current -contains $On) {
                 Write-ErrorResult "DEP_EXISTS" "Node $NodeId already depends on $On" 1
+            }
+            # goal nodes never take part in depends_on — either side (goal-tree-goal-root)
+            $goalSides = @()
+            if ([string]$node.type -eq 'goal') { $goalSides += "node $NodeId is the goal root" }
+            $depTarget = Find-Node $tree $On
+            if ($null -ne $depTarget -and [string]$depTarget.type -eq 'goal') { $goalSides += "target $On is a goal node" }
+            if ($goalSides.Count -gt 0) {
+                Write-ErrorResult "DEP_GOAL_FORBIDDEN" "deps add rejected (nothing written): $($goalSides -join '; and ') — goal nodes never participate in depends_on" 1
             }
             $newDeps = @($current) + $On
         }

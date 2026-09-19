@@ -31,7 +31,7 @@
         ".rdd/tests/goal-tree/goal-tree-verify.ps1",
         "rdd-engine/tests/test-goal-tree-gates.ps1"
       ],
-      "activeCount": 40,
+      "activeCount": 48,
       "deprecatedCount": 0,
       "lastUpdated": "2026-09-18",
       "lastChange": "2026-09-18-planner-goal-tree-upgrade"
@@ -50,7 +50,7 @@
       "testCode": [
         ".rdd/tests/delivery-bridge/delivery-bridge-verify.ps1"
       ],
-      "activeCount": 13,
+      "activeCount": 20,
       "deprecatedCount": 0,
       "lastUpdated": "2026-09-18",
       "lastChange": "2026-09-18-planner-goal-tree-upgrade"

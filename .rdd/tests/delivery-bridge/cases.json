@@ -97,6 +97,52 @@
       "precondition": "fixture 归档 promulgate 后,将 planner-lease.json 改名为 manager-lease.json(模拟 2026-09-15 版存量 run);再手工把 n2 置为 claimed/claimed_by=manager-reclaim(旧版 reclaim 泊位值)",
       "steps": ["manager-lease.json 在场(他方持有、未超时)时 status/resume/lease -Acquire(无 -Takeover)", "n2 置为 claimed_by=manager-reclaim 后 delivery-bridge claim -NodeId n2 -Role DEV", "对 n2 跑新版 reclaim(dead-claim 模式)后再 claim"],
       "expected": "status/resume exit 0(读面不失效);无 -Takeover 的 acquire 照常成功并落盘 planner-lease.json(旧命名租约不被读取);旧泊位值 claim 报 NODE_NOT_CLAIMABLE(不识别为新版泊位);经新版 reclaim 回收为 planner-reclaim 后 claim exit 0——用户 2026-09-18 裁定零兼容,存量处置走显式迁移路径(决策 #4/#7)"
+    },
+    {
+      "id": "TC-B14", "title": "初始自动推送:无依赖节点全部被推(T1-DEV/T3-CTO),依赖节点不推且 status 可见阻塞源;推送账目落盘", "type": "positive", "priority": "P0",
+      "acceptance": "GR-AC-3", "codeRef": ".rdd/tests/delivery-bridge/delivery-bridge-verify.ps1:795", "sourceChange": "2026-09-18-planner-goal-tree-upgrade", "status": "active", "crossFeature": ["role-handoff"],
+      "precondition": "套件级 mock dsh 载波接管 DSH_WEB_URL(自动推送的 start-role 全部打到 mock,零真实会话)",
+      "steps": ["promulgate 颁布(T1 无依赖/T2 依赖 T1/T3 独立)", "读输出 auto_push 分区与 bridge.json pushes 账目", "读 tree.json 依赖边"],
+      "expected": "n2/n4(T1-DEV/T3-CTO)进入 pushed 且账目 last_ok_at 落盘;n3(依赖未满足)不推、进 blocked 视图且 depends_on 含 n2;goal 根 n1 无推送账目(不是工作节点)"
+    },
+    {
+      "id": "TC-B15", "title": "解锁推送:settle 后依赖满足节点 + 新阶段链节点被自动推送;全链闭环零手工 dispatch", "type": "positive", "priority": "P0",
+      "acceptance": "GR-AC-3", "codeRef": ".rdd/tests/delivery-bridge/delivery-bridge-verify.ps1:814", "sourceChange": "2026-09-18-planner-goal-tree-upgrade", "status": "active", "crossFeature": ["role-handoff"],
+      "steps": ["promulgate 后 settle T1-DEV", "检查 settle 尾 auto_push(新 QA 节点+解锁的 T2-DEV)", "继续全链推进至 3 任务全终态(全程不 dispatch)", "conclude"],
+      "expected": "每次 settle 尾自动推送新解锁节点(阶段链 graft 节点 + 依赖解锁节点);全链闭环至 conclude 成功且锚=goal 根 n1——推送即调度,规划者零手动 dispatch"
+    },
+    {
+      "id": "TC-B16", "title": "回收重推:dead-claim 回收入泊位后自动重推该节点;账目 needs_repush 清零", "type": "positive", "priority": "P0",
+      "acceptance": "GR-AC-3", "codeRef": ".rdd/tests/delivery-bridge/delivery-bridge-verify.ps1:842", "sourceChange": "2026-09-18-planner-goal-tree-upgrade", "status": "active", "crossFeature": [],
+      "steps": ["认领后超时(时间阈值过)", "reclaim(dead-claim)入泊位", "读 reclaim 尾 auto_push 与账目", "新会话 claim 泊位节点"],
+      "expected": "回收即重推:泊位节点进 pushed、last_ok_at 更新且 needs_repush=false;新会话可无缝接管认领——回收-重推闭环成立"
+    },
+    {
+      "id": "TC-B17", "title": "存活判定两极:alive 经注册表证实拒绝回收;dead 证实后无需时间阈值即可回收;unknown 走时间兜底", "type": "negative", "priority": "P0",
+      "acceptance": "GR-AC-4", "codeRef": ".rdd/tests/delivery-bridge/delivery-bridge-verify.ps1:859", "sourceChange": "2026-09-18-planner-goal-tree-upgrade", "status": "active", "crossFeature": [],
+      "precondition": "认领 sidecar 绑定 dsh 会话 id;mock liveness 规则可切换 alive/dead",
+      "steps": ["liveness=alive 时 reclaim(新认领也拒)", "liveness=dead 时 reclaim(未达时间阈值)"],
+      "expected": "alive → RECLAIM_TARGET_ALIVE(长任务误杀物理不可能);dead → 无需时间阈值即回收成功——注册表证实优先于时间规则;unknown 时间兜底由 TC-B09 覆盖"
+    },
+    {
+      "id": "TC-B18", "title": "失败分档与补推:session-create 类 status 触碰自动重推;pointer 类只人工重推(不自动)", "type": "boundary", "priority": "P1",
+      "acceptance": "GR-AC-5", "codeRef": ".rdd/tests/delivery-bridge/delivery-bridge-verify.ps1:879", "sourceChange": "2026-09-18-planner-goal-tree-upgrade", "status": "active", "crossFeature": [],
+      "precondition": "伪造推送账目:一节点 session-create 类失败待重推,一节点 pointer 类失败待重推",
+      "steps": ["status 触碰(租约空闲)", "读 auto_push_touch 分区与账目"],
+      "expected": "session-create 类被自动补推(ok 落账、needs_repush 清零);pointer 类被跳过(reason=pointer_manual_repush)且待人工状态不被清除——防会话堆积"
+    },
+    {
+      "id": "TC-B19", "title": "v2 格式门禁:v1 桥账(无 format_version)拒读并给出确定性指引;v2 正常", "type": "negative", "priority": "P1",
+      "acceptance": "GR-AC-6", "codeRef": ".rdd/tests/delivery-bridge/delivery-bridge-verify.ps1:909", "sourceChange": "2026-09-18-planner-goal-tree-upgrade", "status": "active", "crossFeature": [],
+      "steps": ["把 bridge.json 降格为 v1(剥除 format_version/goal_root/pushes)", "status 读该 run"],
+      "expected": "BRIDGE_FORMAT_UNSUPPORTED(退出码 3)且错误消息附重新 promulgate 处置指引;v2 正常读写由 TC-B01/B14 覆盖——零兼容裁定"
+    },
+    {
+      "id": "TC-B20", "title": "真实失败分档与手动重推:create 阶段失败→session-create;prompt 失败(会话已建)→pointer;规则复位后 create 类自动补推、pointer 类只人工(dispatch 落账复位)", "type": "boundary", "priority": "P1",
+      "acceptance": "GR-AC-5", "codeRef": ".rdd/tests/delivery-bridge/delivery-bridge-verify.ps1:926", "sourceChange": "2026-09-18-planner-goal-tree-upgrade", "status": "active", "crossFeature": ["role-handoff"],
+      "precondition": "mock 载波按方法注入失败(session.create 业务错误 / session.prompt 业务错误)",
+      "steps": ["create 失败规则下 promulgate,读 auto_push.failed 分类", "切 prompt 失败规则后 status 触碰重推,读账目末次 retry_class", "规则复位后 status 触碰(应跳过 pointer)→ 手动 dispatch 该节点"],
+      "expected": "真实分类正确:create 失败= session-create;prompt 失败(文本含会话已创建)= pointer;复位后 pointer 类不被自动重推;手动 dispatch 成功落账并复位 needs_repush——分类检测/自动重试边界/手动路径记账全链成立"
     }
   ]
 }
