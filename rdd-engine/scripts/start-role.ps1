@@ -12,6 +12,14 @@ param(
     [string]$EmployeeId = "",
     [string]$PlusUrl = "http://127.0.0.1:8000",
     [string]$DshUrl = "",
+
+    # goal-tree bridge-run marker (planner-callback-handoff): optional; the
+    # delivery bridge's dispatch/auto-push injects the run/node ids so the
+    # worker session can recognize the callback-to-Planner mode from its very
+    # first turn. Absent (empty) → every backend's message stays byte-for-byte
+    # identical to the pre-marker output (regression anchor).
+    [string]$GoalTreeRun = "",
+    [string]$GoalTreeNode = "",
     [switch]$DryRun
 )
 
@@ -68,6 +76,20 @@ function Find-LatestTaskJson {
     return $candidates | Sort-Object -Descending | Select-Object -First 1
 }
 
+function Get-GoalTreeMarker {
+    # goal-tree bridge-run marker segment (planner-callback-handoff): appended to
+    # the message tail in ALL three backends (CLI prefill / Plus request body /
+    # dsh prompt) whenever the caller passed -GoalTreeRun. The worker role's A0
+    # pointer recognition tolerates the extra suffix; the skills' dual-channel
+    # mode check (marker OR bridge-claim context) then routes completion to the
+    # report-back-to-Planner branch instead of the 4-step direct handoff. Empty
+    # input returns "" so unmarked invocations stay byte-for-byte unchanged.
+    if ([string]::IsNullOrWhiteSpace($GoalTreeRun)) { return "" }
+    $nodePart = ""
+    if (-not [string]::IsNullOrWhiteSpace($GoalTreeNode)) { $nodePart = " node=$GoalTreeNode" }
+    return " goal-tree-run=$GoalTreeRun$nodePart"
+}
+
 function Build-PromptMessage {
     # 优先级：Handoff 模式 > TaskId 模式 > 纯角色激活
     # 路径不套内层引号（避免 wt 参数解析中断）；LLM 按文本读取路径
@@ -94,7 +116,7 @@ function Build-PromptMessage {
     if (-not [string]::IsNullOrWhiteSpace($Handoff)) {
         $abs = Resolve-AbsolutePath -Path $Handoff -Root $root
         if (-not $abs) { Write-Err "Handoff 文件不存在: $Handoff" }
-        return "$base handoff=$abs"
+        return "$base handoff=$abs$(Get-GoalTreeMarker)"
     }
 
     if ($TaskId -ge 1) {
@@ -106,10 +128,10 @@ function Build-PromptMessage {
         if (-not $taskJsonAbs) {
             Write-Err "未找到 task.json。请用 -TaskJson 显式指定，或确保 .rdd/changes/archive/ 下有归档。"
         }
-        return "$base TaskId=$TaskId task=$taskJsonAbs"
+        return "$base TaskId=$TaskId task=$taskJsonAbs$(Get-GoalTreeMarker)"
     }
 
-    return $base
+    return "$base$(Get-GoalTreeMarker)"
 }
 
 function Test-WindowsTerminal { return [bool](Get-Command wt.exe -ErrorAction SilentlyContinue) }
@@ -206,6 +228,9 @@ function Build-PointerMessage {
             $msg += "（交接包: $handoffRel）"
         }
     }
+    # goal-tree marker (PLANNER branches above return early unmarked — the
+    # planner is the callback target, not a bridge leaf)
+    $msg += Get-GoalTreeMarker
     return $msg
 }
 

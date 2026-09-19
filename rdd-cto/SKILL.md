@@ -85,6 +85,8 @@ description: >
 
 ## 完成前置硬检查
 
+**goal-tree 模式分支（桥接 run）**：指针消息尾部带 `goal-tree-run=<RunId> node=<NodeId>` 标记段，或本会话经 `delivery-bridge -Command claim` 认领了任务节点——命中任一即桥接 run：完成即 `goal-tree-leaf report` 回调规划者（回调含产物位置：citations=改动清单、full_report=主产物文档指针、extras.verification=验证结果），除用户显式直交指令（回调仍先行不可省）外**不执行下方 4 步直交**。协议真源：`rdd-engine/references/transition-guide.md`「goal-tree 模式分支（桥接 run）」；双否定时自然回落 4 步硬流程。
+
 设计归档完成 → **必须**按 `rdd-engine/references/transition-guide.md` 上游协议 4 步硬流程执行交接（advance 路由 → next → 推荐 → start/handoff）。
 第 3 步仍须用户确认目标角色；第 4 步调用 `start-role.cmd -Role <下游角色> -TaskId <n>`——脚本按 `RDD_RUNTIME` → `DSH_WEB_URL` → CLI 判据链自选后端（agent 不判断模式），dsh 下自动创建 preset 已绑定的会话并投递 B2 指针消息，不可达时报错并回退人工指引。
 

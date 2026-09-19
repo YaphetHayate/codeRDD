@@ -21,7 +21,9 @@ PM 归档（longTask 信号触发）→ start-role -Role PLANNER -TaskJson ...�
   1. promulgate   颁布：归档任务集 → goal-tree run（目标根 + 需求链头节点 + 阶段链 + 依赖推导
                   + bridge.json v2）→ 尾部【自动推送】全部无前置依赖节点
   2. （推送即调度）角色会话被自动拉起，第一动作 bridge claim
-  3. （worker）claim → 干活 → leaf report（citations=改动清单，extras.verification=验证结果）
+  3. （worker）claim → 干活 → 完成即 leaf report 回调规划者（不 start-role 直交下游；
+                  回调携带产物位置：citations=改动清单，full_report=主产物文档指针，
+                  extras.verification=验证结果）
   4. settle       流转：三查 → 树 settle → rdd-flow advance/complete → 自动 graft 下阶段节点
                   → 尾部【自动推送】新解锁节点（依赖满足者）
   5. 循环 3-4；中断后任意新规划者会话 resume 续跑（status 触碰兜底补推漏推节点）
@@ -84,6 +86,7 @@ worker 沿用 goal-tree 证据导向回调结构承载交付语义，核心零�
 |----------|----------|
 | `verdict=done` | 交付自评完成（未 done 不得 settle） |
 | `citations[]`（`ref`=真实路径） | 改动清单（settle 逐条校验路径存在） |
+| `full_report` | 主产物文档指针（设计文档 / 实现说明；桥接 run 内规范必填——回调消息据此呈现 Doc 行，规划者凭单条消息即可裁定。引擎结构校验不强制：漏带降级可接受，citations 仍含文档路径，三查不卡） |
 | `extras.verification` | 验证结果（lint/test/build 摘要；缺失即拒） |
 
 真实性判断由 **QA 阶段节点**承担：QA 会话的 citations = 验收证据（功能+质量双通过），QA 节点 settle 即任务 complete。QA 判不合格 → 不 report done / 规划者收到 settle 拒绝 → reopen 语义经 rdd-flow（或重新 dispatch DEV 节点）处理。
@@ -92,6 +95,7 @@ worker 沿用 goal-tree 证据导向回调结构承载交付语义，核心零�
 
 | 症状 | 处置 |
 |------|------|
+| 回调收到完成、但用户已手动直交下游角色 | 属正常优先级裁决：用户显式直交指令优先执行，但 worker 的 leaf report 回调先行不可省（next_suggestion 注明直交指令）——照常三查裁定 settle（ledger 留痕可对账）；直交会话与树推送会话撞车由 `FLOW_CLAIM_CONFLICT` / `NODE_NOT_CLAIMABLE` 确定性反馈兜底 |
 | 同一节点第二个会话被唤起 | bridge claim 返回 `NODE_NOT_CLAIMABLE` + 认领者信息 + 可领清单，按清单改领即可 |
 | 节点被依赖阻塞 | `NODE_BLOCKED_BY_DEPS` 附阻塞源；等上游 settle（解锁后**自动推送**，无需手动 dispatch），或规划者调整依赖（deps remove） |
 | settle 报 `SETTLE_EVIDENCE_REJECTED` | `reclaim -NodeId`（rejected-delivery 模式：剪枝失败交付并建+**自动推送**替换节点） |

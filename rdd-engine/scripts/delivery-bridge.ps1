@@ -526,7 +526,11 @@ function Invoke-AutoDispatch {
             }
         }
         try {
-            $r = Invoke-StartRole @("-Role", $mapping.stage, "-TaskId", "$($mapping.task_id)", "-TaskJson", (Join-Path $Bridge.archive "task.json"))
+            # -GoalTreeRun/-GoalTreeNode stamp the pointer message with the bridge
+            # marker so the pushed worker session knows (first turn) that completion
+            # goes back to the Planner via leaf report, not a 4-step direct handoff
+            # (planner-callback-handoff dual-channel check, channel 1).
+            $r = Invoke-StartRole @("-Role", $mapping.stage, "-TaskId", "$($mapping.task_id)", "-TaskJson", (Join-Path $Bridge.archive "task.json"), "-GoalTreeRun", $Bridge.run_id, "-GoalTreeNode", $nodeId)
         }
         catch {
             $r = @{ exit = 1; text = "start-role invocation threw: $($_.Exception.Message)" }
@@ -939,7 +943,7 @@ function Invoke-Dispatch {
         Write-ErrorResult "NODE_NOT_DISPATCHABLE" "Node $NodeId is '$nodeStatus'; dispatch targets open work only." 1
     }
 
-    $r = Invoke-StartRole (@("-Role", $mapping.stage, "-TaskId", "$($mapping.task_id)", "-TaskJson", (Join-Path $bridge.archive "task.json")) + $(if ($DryRun) { @("-DryRun") } else { @() }))
+    $r = Invoke-StartRole (@("-Role", $mapping.stage, "-TaskId", "$($mapping.task_id)", "-TaskJson", (Join-Path $bridge.archive "task.json"), "-GoalTreeRun", $RunId, "-GoalTreeNode", $NodeId) + $(if ($DryRun) { @("-DryRun") } else { @() }))
     # a real (non-dry-run) dispatch IS a push: record it in the ledger — the
     # manual path is the designated resolution for pointer-class failures, and
     # an unrecorded success would leave needs_repush stuck forever (status
@@ -1085,7 +1089,7 @@ function Invoke-BridgeClaim {
             flow_claim  = @{ claimed = $r2.json.data.claimed; currentWorker = $r2.json.data.currentWorker }
             task        = $r2.json.data.task
             start_context = "requirement: $($bridge.archive_rel)/$($bridge.tasks["$taskId"].requirement) — full pointers in task.summary fields above"
-            report_hint = "deliver via goal-tree-leaf.cmd -Command report -RunId $RunId -Worker $stage -CallbackFile <cb.json>; the callback's citations = change list (real paths), extras.verification = verification result (both required for settle)"
+            report_hint = "goal-tree bridge run: on completion report back to the Planner instead of start-role-ing a downstream role — goal-tree-leaf.cmd -Command report -RunId $RunId -Worker $stage -CallbackFile <cb.json>. Artifact locations ride the callback: citations = change list (real paths; settle checks every ref exists), full_report = main deliverable doc pointer (design doc / implementation notes; expected in bridge runs), extras.verification = verification result (settle requires citations + verification non-empty)"
         }
     }
 }

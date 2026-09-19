@@ -21,6 +21,7 @@
 #   regression 回归:非桥接 run 零桥接文件;五角色默认流不变(rdd-flow 无桥接感知) —— TC-B12
 #   compat     更名零兼容(旧命名 sidecar 不被识别,显式 reclaim 是迁移路径) —— TC-B13
 #   autopush   目标根/依赖驱动自动推送/存活判定两极/失败分档(含真实分类)/v2 格式门禁 —— TC-B14~B20
+#   callback   回调契约呈现层:指针 goal-tree 标记段(autopush+dispatch) + claim report_hint 三件套 + 非桥零标记回归 —— TC-B21~B22
 #   all        全部
 #
 # 严重度语义:P0 失败=阻塞(退出码 1);P1 失败=严重不阻塞;P2 失败=备忘警告(WARN)。
@@ -34,7 +35,7 @@
 # (alive/dead/unknown,TC-B17 切规则覆盖);原环境变量在退出时恢复。
 
 param(
-    [ValidateSet("all", "promulgate", "claim", "settle", "recover", "conclude", "regression", "compat", "autopush")]
+    [ValidateSet("all", "promulgate", "claim", "settle", "recover", "conclude", "regression", "compat", "autopush", "callback")]
     [string]$Suite = "all",
     [switch]$KeepRuns,
     [switch]$Json
@@ -279,7 +280,7 @@ try {
                     $pj = $envelope.payload | ConvertTo-Json -Depth 10 -Compress
                     if (-not [string]::IsNullOrWhiteSpace($pj)) { $payloadJson = $pj }
                 }
-                [System.IO.File]::AppendAllText($cfg.logFile, ('{"method":"' + $method + '","payload":' + $payloadJson + '}'), $utf8)
+                [System.IO.File]::AppendAllText($cfg.logFile, ('{"method":"' + $method + '","payload":' + $payloadJson + "}`n"), $utf8)
                 $rules = [System.IO.File]::ReadAllText($cfg.rulesPath, [System.Text.Encoding]::UTF8) | ConvertFrom-Json
                 $rule = $null
                 $mprop = $rules.methods.PSObject.Properties[$method]
@@ -979,6 +980,60 @@ function Suite-AutoPush {
 }
 
 # ============================================================
+# 套件:callback — TC-B21 / TC-B22(2026-09-18 planner-callback-handoff)
+# ============================================================
+
+function Suite-Callback {
+    Write-Host "`n== suite: callback (CB-AC 指针标记段 + claim report_hint 产物位置三件套) =="
+
+    Run-Tc "TC-B21" "推送指针携带 goal-tree 标记段(autopush + 手动 dispatch 两路径);claim report_hint 携带回调契约三件套与不直交指引" "P0" "CB-AC-2" {
+        param($c)
+        $fx = New-FixtureArchive "cb21"
+        $r = TB @("-Command", "promulgate", "-TaskJson", (Join-Path $fx.dir "task.json"))
+        Assert $c ($r.exit -eq 0 -and $r.json.success) "promulgate 失败: $($r.text)"
+        # autopush 注入标记段:该 run 的全部 session.prompt 指针尾部带 goal-tree-run=<RunId> node=<NodeId>
+        $log = Read-DshMockLog
+        $runPrompts = @($log | Where-Object { $_.method -eq "session.prompt" -and [string]$_.payload.content[0].text -like "*goal-tree-run=$($fx.run_id)*" })
+        Assert $c ($runPrompts.Count -ge 2) "autopush 指针未携带 run 标记段(期望 n2+n4 至少 2 条): count=$($runPrompts.Count)"
+        $n2Marked = @($runPrompts | Where-Object { [string]$_.payload.content[0].text -like "* node=n2" })
+        Assert $c ($n2Marked.Count -ge 1) "autopush 指针未携带 node=n2 标记"
+        # 手动 dispatch 同构注入(pointer 类人工重推 / 异常处置路径)
+        $dp = TB @("-Command", "dispatch", "-RunId", $fx.run_id, "-NodeId", "n2")
+        Assert $c ($dp.exit -eq 0 -and $dp.json.success) "手动 dispatch 失败: $($dp.text)"
+        $ns = [string]$dp.json.data.next_step
+        Assert $c ($ns.Contains("claim")) "dispatch next_step 语义被改: $ns"
+        $log2 = Read-DshMockLog
+        $n2After = @($log2 | Where-Object { $_.method -eq "session.prompt" -and [string]$_.payload.content[0].text -like "*goal-tree-run=$($fx.run_id)* node=n2" })
+        Assert $c ($n2After.Count -ge 2) "手动 dispatch 未追加标记段指针(期望 autopush+dispatch 共 2 条): count=$($n2After.Count)"
+        # claim report_hint:完成即回调规划者(不 start-role 直交)+ 产物位置三件套语义
+        $cl = TB @("-Command", "claim", "-RunId", $fx.run_id, "-NodeId", "n4", "-Role", "CTO")
+        Assert $c ($cl.exit -eq 0 -and $cl.json.success) "claim 失败: $($cl.text)"
+        $hint = [string]$cl.json.data.report_hint
+        Assert $c ($hint -ne "") "缺 report_hint"
+        Assert $c ($hint.Contains("report back to the Planner")) "report_hint 未指引回调规划者"
+        Assert $c ($hint.Contains("instead of start-role-ing a downstream role")) "report_hint 未禁直交"
+        Assert $c ($hint.Contains("citations") -and $hint.Contains("full_report") -and $hint.Contains("extras.verification")) "report_hint 缺产物位置三件套语义"
+        Assert $c ($hint.Contains("goal-tree-leaf.cmd -Command report")) "report_hint 缺 leaf report 命令"
+    }
+
+    Run-Tc "TC-B22" "非桥回归:start-role 未传 -GoalTreeRun 直调时 B2 指针零标记段(以句号收尾,前缀形态不变)" "P1" "CB-AC-1" {
+        param($c)
+        $fx = New-FixtureArchive "cb22"
+        $sr = Join-Path $RepoRoot "rdd-engine\scripts\start-role.cmd"
+        $prevEap = $ErrorActionPreference
+        $ErrorActionPreference = "Continue"
+        try { $null = & $sr @("-Role", "QA", "-TaskId", "1", "-TaskJson", (Join-Path $fx.dir "task.json")) 2>$null; $code = $LASTEXITCODE }
+        finally { $ErrorActionPreference = $prevEap }
+        Assert $c ($code -eq 0) "start-role 直调失败(exit=$code)"
+        $log = Read-DshMockLog
+        $last = @($log | Where-Object { $_.method -eq "session.prompt" }) | Select-Object -Last 1
+        $txt = [string]$last.payload.content[0].text
+        Assert $c ($txt -match "^请处理 .+ 下的需求。$") "B2 指针形态异常: $txt"
+        Assert $c (-not $txt.Contains("goal-tree-run")) "非桥指针意外携带标记段: $txt"
+    }
+}
+
+# ============================================================
 # 主流程
 # ============================================================
 
@@ -992,7 +1047,7 @@ $env:RDD_RUNTIME = $null
 $env:DSH_SESSION_ID = "qa-bridge-mock"
 Write-Host "dsh-mock carrier: $script:DshMockUrl"
 
-$selected = if ($Suite -eq "all") { @("promulgate", "claim", "settle", "recover", "conclude", "regression", "compat", "autopush") } else { @($Suite) }
+$selected = if ($Suite -eq "all") { @("promulgate", "claim", "settle", "recover", "conclude", "regression", "compat", "autopush", "callback") } else { @($Suite) }
 foreach ($s in $selected) {
     switch ($s) {
         "promulgate" { Suite-Promulgate }
@@ -1003,6 +1058,7 @@ foreach ($s in $selected) {
         "regression" { $script:ChangesAfterRun = Get-ChangesSnapshot; Suite-Regression }
         "compat"     { Suite-Compat }
         "autopush"   { Suite-AutoPush }
+        "callback"   { Suite-Callback }
     }
 }
 

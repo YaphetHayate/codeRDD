@@ -1,9 +1,9 @@
 {
     "verifier":  "delivery-bridge-verify.ps1",
     "suite":  "all",
-    "ranAt":  "2026-09-18T16:27:33Z",
-    "total":  20,
-    "passed":  20,
+    "ranAt":  "2026-09-19T11:08:42Z",
+    "total":  22,
+    "passed":  22,
     "failed":  0,
     "warned":  0,
     "results":  [
@@ -202,6 +202,26 @@
                         "title":  "真实失败分档与手动重推:create 阶段失败→session-create;prompt 失败(会话已建)→pointer;规则复位后 create 类自动补推、pointer 类只人工(dispatch 落账复位)",
                         "priority":  "P1",
                         "acceptance":  "GR-AC-5",
+                        "status":  "PASS",
+                        "fails":  [
+
+                                  ]
+                    },
+                    {
+                        "id":  "TC-B21",
+                        "title":  "推送指针携带 goal-tree 标记段(autopush + 手动 dispatch 两路径);claim report_hint 携带回调契约三件套与不直交指引",
+                        "priority":  "P0",
+                        "acceptance":  "CB-AC-2",
+                        "status":  "PASS",
+                        "fails":  [
+
+                                  ]
+                    },
+                    {
+                        "id":  "TC-B22",
+                        "title":  "非桥回归:start-role 未传 -GoalTreeRun 直调时 B2 指针零标记段(以句号收尾,前缀形态不变)",
+                        "priority":  "P1",
+                        "acceptance":  "CB-AC-1",
                         "status":  "PASS",
                         "fails":  [
 

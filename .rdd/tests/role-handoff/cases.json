@@ -410,6 +410,34 @@
       "precondition": "源仓检出状态；dsh/presets 生成物存在",
       "steps": ["断言 rdd-pm/SKILL.md 引用 longTask.triggered 并含统一接管话术与命令", "断言 transition-guide 触发条件同口径（longTask.triggered=true + 接管整批交付）", "断言 planner-guide 适用场景引用 longTask.triggered", "断言三处文档均无旧判据「任务集较重」", "断言生成器加固闸②扩充（retiredTakeover + PM 新话术）与 preset 生成物同步"],
       "expected": "所有断言成立：接管分支触发条件已由模糊表述替换为 next 输出的 longTask 显式信号，推荐话术与 rdd-flow.ps1 的 reason 逐字同源，加固闸②拒绝旧判据 persona，preset 生成物与源仓零漂移"
+    },
+    {
+      "id": "TC-117",
+      "title": "goal-tree 分支文本四技能+真源+闸②+生成物同步，4 步文本零变化",
+      "type": "positive",
+      "priority": "P0",
+      "acceptance": "CB-AC-1",
+      "codeRef": ".rdd/tests/role-handoff/run-tests.ps1",
+      "sourceChange": "2026-09-18-planner-goal-tree-upgrade",
+      "status": "active",
+      "crossFeature": ["delivery-bridge"],
+      "precondition": "源仓检出状态；dsh/presets 生成物存在",
+      "steps": ["断言 rdd-cto/ux/dev/qa 四 SKILL「完成前置硬检查」含 goal-tree 分支摘要且位于 4 步文本之前、4 步第 2 行原文零变化", "断言 rdd-pm SKILL 无分支摘要（PM 非桥接 worker）", "断言 transition-guide 新增「goal-tree 模式分支（桥接 run）」小节（双通道判据/标记段格式/手动直交优先级）且 4 步章结构原样", "断言 planner-guide 第 3 步回调语义 + 契约表 full_report 行 + 异常速查手动直交对账行", "断言加固闸②扩充（BRIDGE_WORKER_ROLES + GOAL_TREE_BRANCH_PHRASE）与 preset 生成物同步"],
+      "expected": "四 worker 技能携带分支摘要（完成即 leaf report 回调规划者、除用户显式直交外不走 4 步）；非 goal-tree 模式 4 步文本与 PM 侧零变化；协议真源单点在 transition-guide；三份镜像零漂移"
+    },
+    {
+      "id": "TC-118",
+      "title": "指针标记段三后端同构：不传逐字节一致 / 传参尾部追加 goal-tree-run/node",
+      "type": "positive",
+      "priority": "P0",
+      "acceptance": "CB-AC-1",
+      "codeRef": ".rdd/tests/role-handoff/run-tests.ps1",
+      "sourceChange": "2026-09-18-planner-goal-tree-upgrade",
+      "status": "active",
+      "crossFeature": ["delivery-bridge"],
+      "precondition": "夹具项目根 + mock dsh /api 载波；CLI 分支依赖宿主 opencode（缺失时该组检查记 SKIP 同 TC-020 口径）",
+      "steps": ["CLI DryRun 不传/传 -GoalTreeRun gt-run-1 -GoalTreeNode n2，逐字节比对预填消息", "dsh 后端经 mock 载波读取 session.prompt 文本，不传/传参各一次", "Plus DryRun 比对请求体消息（不传无 goal-tree-run / 传参含标记段）"],
+      "expected": "三后端同构：不传新参时消息与旧格式逐字节一致（回归锚）；传参时尾部追加「 goal-tree-run=gt-run-1 node=n2」"
     }
   ]
 }

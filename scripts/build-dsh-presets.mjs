@@ -135,10 +135,18 @@ function adaptEngineSection(body) {
  * planner-takeover 同口径守护：触发条件已由模糊表述「任务集较重」替换为 next 输出
  * 的 longTask 显式信号（pm-longtask-routing 需求），rdd-pm persona 必须携带新接管
  * 话术，任何 persona 不得残留旧判据。
+ * goal-tree 分支同口径守护（planner-callback-handoff）：四个桥接 worker 角色
+ * （CTO/UX/DEV/QA）的「完成前置硬检查」必须携带 goal-tree 分支摘要（完成即回调
+ * 规划者，不走 4 步直交）——漏改会让桥接 run 内的 worker 会话惯性直交下游。
+ * rdd-pm / rdd-eval / rdd-pse / rdd-planner 非桥接 worker 角色，不受此正向断言
+ * 约束（确认无误伤：四角色正文不含分支话术，闸不拒绝）。
  * @param {string} persona - 组装完成的 persona 全文。
  * @param {string} role - 角色目录名（失败信息用）。
  * @returns {void}
  */
+const BRIDGE_WORKER_ROLES = new Set(['rdd-cto', 'rdd-ux', 'rdd-dev', 'rdd-qa'])
+const GOAL_TREE_BRANCH_PHRASE = 'goal-tree 模式分支（桥接 run）'
+
 function assertHandoffGuidance(persona, role) {
   if (!persona.includes('start-role.cmd')) {
     throw new Error(`${role} persona 未携带 start-role.cmd 交接指引——检查 scripts/build-dsh-presets.mjs 的 persona 头部常量与 SKILL.md`)
@@ -153,6 +161,9 @@ function assertHandoffGuidance(persona, role) {
   }
   if (role === 'rdd-pm' && !persona.includes('接管整批交付')) {
     throw new Error(`${role} persona 未携带 planner-takeover 接管话术——检查 rdd-pm/SKILL.md 可选分支（longTask 显式信号触发）`)
+  }
+  if (BRIDGE_WORKER_ROLES.has(role) && !persona.includes(GOAL_TREE_BRANCH_PHRASE)) {
+    throw new Error(`${role} persona 未携带 goal-tree 分支摘要「${GOAL_TREE_BRANCH_PHRASE}」——桥接 run 内完成即回调规划者（leaf report 含产物位置），除用户显式直交外不走 4 步；请同步 SKILL.md「完成前置硬检查」`)
   }
 }
 

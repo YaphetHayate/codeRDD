@@ -1007,6 +1007,113 @@ function Test-LongTaskDocsAndArtifactsSynced {
     )
 }
 
+# --- TC-117 正向 CB-AC-1：goal-tree 分支文本与 4 步零变化回归（2026-09-18 planner-callback-handoff） ---
+#
+# 验收 1：四 worker 技能（CTO/UX/DEV/QA）「完成前置硬检查」携带 goal-tree 分支摘要，
+# 原 4 步文本零变化（分支插在 4 步之前）；rdd-pm（非桥接 worker）零变化；
+# transition-guide 新增「goal-tree 模式分支（桥接 run）」小节且 4 步章原样；
+# planner-guide 第 3 步改回调语义 + 契约表 full_report 行 + 异常速查对账行；
+# 加固闸②扩充落源仓；preset 生成物同步。
+
+function Test-GoalTreeBranchDocs {
+    $guide = Get-FileText $TransitionGuide
+    $plannerGuide = Get-FileText (Join-Path $RepoRoot 'rdd-engine\references\planner-guide.md')
+    $generator = Get-FileText $GeneratorPath
+    $branchPhrase = 'goal-tree 模式分支（桥接 run）'
+    $stepTwoLine = '第 3 步仍须用户确认目标角色；第 4 步调用 `start-role.cmd -Role <下游角色> -TaskId <n>`'
+    $checks = @(
+        @{ name = "transition-guide 含 goal-tree 分支小节"; ok = ($guide -match [regex]::Escape("### $branchPhrase")); actual = "缺分支小节" }
+        @{ name = "transition-guide 分支含双通道判据与标记段格式"; ok = ($guide -match [regex]::Escape("goal-tree-run=<RunId> node=<NodeId>") -and $guide -match "delivery-bridge -Command claim"); actual = "判据/标记段缺失" }
+        @{ name = "transition-guide 4 步章原样（Step 1~4 标题在）"; ok = ($guide -match "## 上游协议（4 步硬流程）" -and $guide -match "### Step 1 — 推进 task.json 路由" -and $guide -match "### Step 4 — 用户确认后"); actual = "4 步结构被改动" }
+        @{ name = "transition-guide 分支含手动直交优先级（回调先行不可省）"; ok = ($guide -match "指令优先执行" -and $guide -match "先行不可省"); actual = "手动直交优先级未明确" }
+        @{ name = "planner-guide 第 3 步改回调语义（不直交）"; ok = ($plannerGuide -match [regex]::Escape("完成即 leaf report 回调规划者（不 start-role 直交下游")); actual = "第 3 步未更新" }
+        @{ name = "planner-guide 契约表补 full_report 行"; ok = ($plannerGuide -match "\| ``full_report`` \| 主产物文档指针"); actual = "契约表缺 full_report 行" }
+        @{ name = "planner-guide 异常速查补手动直交对账行"; ok = ($plannerGuide -match "用户已手动直交下游角色"); actual = "异常速查缺对账行" }
+        @{ name = "加固闸② 扩充落源仓（分支正向断言常量）"; ok = ($generator -match [regex]::Escape("GOAL_TREE_BRANCH_PHRASE") -and $generator -match [regex]::Escape("BRIDGE_WORKER_ROLES")); actual = "生成器断言未扩充" }
+    )
+    foreach ($r in @("cto", "ux", "dev", "qa")) {
+        $text = Get-FileText (Join-Path $RepoRoot "rdd-$r\SKILL.md")
+        $idxBranch = $text.IndexOf($branchPhrase)
+        $idxSteps = $text.IndexOf("（advance 路由 → next → 推荐 → start/handoff）")
+        $checks += @{ name = "rdd-$r SKILL 含分支摘要"; ok = ($idxBranch -ge 0); actual = "缺分支摘要" }
+        $checks += @{ name = "rdd-$r SKILL 4 步文本零变化（第 2 行原样）"; ok = ($text.Contains($stepTwoLine)); actual = "4 步文本被改动" }
+        $checks += @{ name = "rdd-$r SKILL 分支在 4 步之前"; ok = ($idxBranch -ge 0 -and $idxSteps -gt $idxBranch); actual = "idxBranch=$idxBranch idxSteps=$idxSteps" }
+    }
+    $pmText = Get-FileText (Join-Path $RepoRoot 'rdd-pm\SKILL.md')
+    $checks += @{ name = "rdd-pm SKILL 零变化（无分支摘要——PM 非桥接 worker）"; ok = (-not $pmText.Contains($branchPhrase)); actual = "PM 被误改" }
+    foreach ($r in @("cto", "ux", "dev", "qa")) {
+        $preset = Join-Path $RepoRoot "dsh\presets\rdd-$r\agent.cordis.yml"
+        $presetOk = (Test-Path -LiteralPath $preset -PathType Leaf) -and ((Get-FileText $preset).Contains($branchPhrase))
+        $checks += @{ name = "preset 生成物 rdd-$r 同步分支摘要"; ok = $presetOk; actual = "生成物漂移——重跑 build-dsh-presets.mjs" }
+    }
+    Assert-All "TC-117" "goal-tree 分支文本四技能+真源+闸②+生成物同步，4 步文本零变化" $checks
+}
+
+# --- TC-118 正向 CB-AC-1：指针标记段三后端（不传逐字节一致 / 传参追加） ----------
+
+function Test-GoalTreePointerMarker {
+    $cliExpected = "/rdd-qa TaskId=1 task=$TaskJson"
+    $markedSuffix = " goal-tree-run=gt-run-1 node=n2"
+    $checks = @()
+
+    # --- CLI 后端（DryRun 预填消息逐字节比对） ---
+    $opencode = Get-Command opencode.cmd, opencode.exe, opencode.bat -ErrorAction SilentlyContinue | Select-Object -First 1
+    if (-not $opencode) {
+        $oc = Get-Command opencode -ErrorAction SilentlyContinue | Where-Object { $_.Extension -ne ".ps1" } | Select-Object -First 1
+        $opencode = $oc
+    }
+    if (-not $opencode) {
+        $checks += @{ name = "CLI 后端（DryRun）"; ok = $true; actual = "SKIP：环境缺 opencode（与 TC-020 同口径）" }
+    }
+    else {
+        $bare = Invoke-StartRole -Tag "t118a" -RoleArgs @("-Role", "QA", "-TaskId", "1", "-TaskJson", $TaskJson, "-Project", $FixtureRoot, "-DryRun") -EnvOverrides @{ DSH_WEB_URL = $null; RDD_RUNTIME = $null }
+        $marked = Invoke-StartRole -Tag "t118b" -RoleArgs @("-Role", "QA", "-TaskId", "1", "-TaskJson", $TaskJson, "-Project", $FixtureRoot, "-GoalTreeRun", "gt-run-1", "-GoalTreeNode", "n2", "-DryRun") -EnvOverrides @{ DSH_WEB_URL = $null; RDD_RUNTIME = $null }
+        $bareMsg = $null; $markedMsg = $null
+        if ($bare.stdout -match "(?m)^\[DRYRUN\] 预填消息:\s+(.+?)\r?$") { $bareMsg = $Matches[1] }
+        if ($marked.stdout -match "(?m)^\[DRYRUN\] 预填消息:\s+(.+?)\r?$") { $markedMsg = $Matches[1] }
+        $checks += @{ name = "CLI 不传新参：预填消息逐字节一致（无标记段）"; ok = ($bare.exit -eq 0 -and $bareMsg -eq $cliExpected); actual = "exit=$($bare.exit); msg=$bareMsg" }
+        $checks += @{ name = "CLI 传参：标记段追加在尾部"; ok = ($marked.exit -eq 0 -and $markedMsg -eq "$cliExpected$markedSuffix"); actual = "exit=$($marked.exit); msg=$markedMsg" }
+    }
+
+    # --- dsh 后端（mock 载波 session.prompt 文本逐字节比对） ---
+    $mock = New-MockServer -Tag "t118c" -Responses @{
+        "agentPreset.list" = @{ kind = "ok"; value = @{ presets = @(@{ id = "rdd-qa" }) } }
+        "workspace.create" = @{ kind = "ok"; value = @{ workspace = @{ workspaceId = "ws-gt-1" } } }
+        "session.create"   = @{ kind = "ok"; value = @{ sessionId = "sess-gt" } }
+        "session.prompt"   = @{ kind = "ok"; value = @{} }
+    }
+    try {
+        $bareD = Invoke-StartRole -Tag "t118c" -RoleArgs @("-Role", "QA", "-TaskJson", $TaskJson, "-Project", $FixtureRoot, "-DshUrl", "http://127.0.0.1:$($Mock.Port)") -EnvOverrides @{ DSH_WEB_URL = "http://127.0.0.1:3080"; RDD_RUNTIME = $null }
+        $logBare = Read-MockLog $mock
+        $txtBare = @($logBare | Where-Object { $_.method -eq "session.prompt" })[0].payload.content[0].text
+        $checks += @{ name = "dsh 不传新参：B2 指针逐字节一致"; ok = ($bareD.exit -eq 0 -and $txtBare -eq $ArchivePointer); actual = "exit=$($bareD.exit); text=$txtBare" }
+    }
+    finally { & $mock.Stop }
+    $mock2 = New-MockServer -Tag "t118d" -Responses @{
+        "agentPreset.list" = @{ kind = "ok"; value = @{ presets = @(@{ id = "rdd-qa" }) } }
+        "workspace.create" = @{ kind = "ok"; value = @{ workspace = @{ workspaceId = "ws-gt-2" } } }
+        "session.create"   = @{ kind = "ok"; value = @{ sessionId = "sess-gt2" } }
+        "session.prompt"   = @{ kind = "ok"; value = @{} }
+    }
+    try {
+        $markedD = Invoke-StartRole -Tag "t118d" -RoleArgs @("-Role", "QA", "-TaskJson", $TaskJson, "-Project", $FixtureRoot, "-GoalTreeRun", "gt-run-1", "-GoalTreeNode", "n2", "-DshUrl", "http://127.0.0.1:$($Mock2.Port)") -EnvOverrides @{ DSH_WEB_URL = "http://127.0.0.1:3080"; RDD_RUNTIME = $null }
+        $logMarked = Read-MockLog $mock2
+        $txtMarked = @($logMarked | Where-Object { $_.method -eq "session.prompt" })[0].payload.content[0].text
+        $checks += @{ name = "dsh 传参：标记段追加在尾部"; ok = ($markedD.exit -eq 0 -and $txtMarked -eq "$ArchivePointer$markedSuffix"); actual = "exit=$($markedD.exit); text=$txtMarked" }
+    }
+    finally { & $mock2.Stop }
+
+    # --- Plus 后端（DryRun 请求体消息比对） ---
+    $envPlus = @{ DSH_WEB_URL = $null; RDD_RUNTIME = "app" }
+    $plusBare = Invoke-StartRole -Tag "t118e" -RoleArgs @("-Role", "QA", "-TaskJson", $TaskJson, "-Project", $FixtureRoot, "-EmployeeId", "uuid-gt", "-DryRun") -EnvOverrides $envPlus
+    $plusMarked = Invoke-StartRole -Tag "t118f" -RoleArgs @("-Role", "QA", "-TaskJson", $TaskJson, "-Project", $FixtureRoot, "-EmployeeId", "uuid-gt", "-GoalTreeRun", "gt-run-1", "-GoalTreeNode", "n2", "-DryRun") -EnvOverrides $envPlus
+    $checks += @{ name = "Plus 不传新参：DryRun body 含 B2 指针且无标记段"; ok = ($plusBare.exit -eq 0 -and $plusBare.stdout.Contains($ArchivePointer) -and -not $plusBare.stdout.Contains("goal-tree-run")); actual = "exit=$($plusBare.exit)" }
+    $checks += @{ name = "Plus 传参：DryRun body 消息携带标记段"; ok = ($plusMarked.exit -eq 0 -and $plusMarked.stdout -match [regex]::Escape("goal-tree-run=gt-run-1 node=n2")); actual = "exit=$($plusMarked.exit)" }
+
+    Assert-All "TC-118" "指针标记段三后端同构：不传逐字节一致 / 传参尾部追加 goal-tree-run/node" $checks
+}
+
+
 # --- 执行 ---------------------------------------------------------------------
 
 try {
@@ -1038,6 +1145,8 @@ try {
     Test-LongTaskLegacyTaskMd
     Test-LongTaskMarkdownRendering
     Test-LongTaskDocsAndArtifactsSynced
+    Test-GoalTreeBranchDocs
+    Test-GoalTreePointerMarker
 }
 finally {
     Remove-Item -LiteralPath $WorkDir -Recurse -Force -ErrorAction SilentlyContinue

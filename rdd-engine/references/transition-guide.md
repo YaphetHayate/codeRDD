@@ -93,6 +93,26 @@ $rdd = $null; $t = $null; try { $t = git rev-parse --show-toplevel } catch { }; 
 >
 > **重要**：app-driven 模式下，agent 的职责到"调用脚本"为止。不越权直接加载目标 SKILL、不宣布上下文边界——这些由脚本 + Plus 接管。dsh-driven 同理，由脚本 + 目标角色 preset 接管。
 
+### goal-tree 模式分支（桥接 run）
+
+> 本小节是 4 步硬流程的**模式变体**，不是新协议；上方 4 步原文对其零改动。仅桥接 run（规划者经 `delivery-bridge promulgate` 颁布的交付 run）内的 worker 会话命中。
+
+**判据（双通道，命中任一即桥接 run）**：
+
+1. **指针消息标记**：入口指针（A0 CLI 预填 / B2 应用层指针）尾部带 `goal-tree-run=<RunId> node=<NodeId>` 标记段——`start-role` 的可选参数 `-GoalTreeRun/-GoalTreeNode` 由桥接 dispatch/自动推送注入，三后端同构；不传时消息逐字节与旧格式一致。A0/B2 的指针模式识别按前缀语义匹配，容忍该可选后缀。
+2. **claim 上下文**：本会话经 `delivery-bridge -Command claim` 认领了当前任务节点（含手工开窗认领场景）。
+
+双否定（无标记段、也非 bridge claim）时自然回落上方 4 步硬流程——普通 rdd-flow 流程与非桥 goal-tree run 的行为零变化。
+
+**动作**：完成节点任务后**不执行 4 步硬流程直交**，而是立即回调规划者：
+
+1. `goal-tree-leaf.cmd -Command report -RunId <RunId> -Worker <角色> -CallbackFile <cb.json>`——回调在既有字段之上携带产物位置：`citations` = 改动清单（真实路径）、`full_report` = 主产物文档指针（设计文档 / 实现说明，桥接 run 内规范必填）、`extras.verification` = 验证结果。
+2. 告知用户："已回调规划者（ledger 留痕），等待裁定——三查通过经 bridge settle 流转并自动推送后继节点；不通过则回收重派。"
+
+**禁止直交**：不经 `start-role` 拉起下游角色；task.json 流转由规划者经 `bridge settle` 唯一通道执行（`rdd-engine/references/planner-guide.md` 硬约束 2）。
+
+**用户显式直交的优先级**：用户在桥接 run 内明确要求直交某角色时，指令优先执行，但 leaf report 回调**先行不可省**（回调的 `next_suggestion`/`summary` 注明"用户指令直交 <角色>"），规划者照常对账裁定；直交会话与树推送会话撞车由 `FLOW_CLAIM_CONFLICT` / `NODE_NOT_CLAIMABLE` 确定性反馈 + 可领清单兜底（现状机制）。
+
 ---
 
 ## 下游协议（入口识别）
