@@ -1,5 +1,6 @@
-﻿# role-handoff 集成测试 — 关联需求：2026-08-30-rdd-dsh-auto-handoff
+﻿# role-handoff 集成测试 — 关联需求：2026-08-30-rdd-dsh-auto-handoff / 2026-09-18-planner-goal-tree-upgrade
 # 被测对象：rdd-engine/scripts/start-role.ps1（dsh 后端 + CLI/Plus 回归）、
+#           rdd-engine/scripts/rdd-flow.ps1（next 长程任务信号 + PLANNER 候选块，TC-110~115）、
 #           rdd-engine/references/transition-guide.md、各角色 SKILL.md、
 #           scripts/build-dsh-presets.mjs（persona 生成与加固闸②）、
 #           scripts/install-rdd-skills.ps1（加固闸①③）
@@ -788,6 +789,224 @@ function Test-PlannerOldValueRemoved {
     )
 }
 
+# --- TC-110~116 长程任务信号与规划者下一跳建议（2026-09-18 pm-longtask-routing） ------
+#
+# 信号语义（task-routing 单源 = rdd-flow next 输出）：
+#   longTask.triggered = count(lifecycle≠deprecated) ≥ 2 且 count(lifecycle=active) ≥ 1
+#   ——整体交付口径：completed 计入 total（信号不因子需求完成而消退），全完成不触发；
+#     deprecated 排除属信号口径，不改变 deprecated 任务入常规角色块的既有行为。
+
+$FlowScriptPath = Join-Path $RepoRoot 'rdd-engine\scripts\rdd-flow.ps1'
+
+# 夹具项目根：rdd-flow.ps1 的 repoRoot 经 git rev-parse（cwd）解析，git init 后夹具即自身仓库根
+$FlowProjectRoot = Join-Path $WorkDir 'flowproject'
+New-Item -ItemType Directory -Path (Join-Path $FlowProjectRoot '.rdd\changes\archive') -Force | Out-Null
+$prevEap = $ErrorActionPreference
+$ErrorActionPreference = "Continue"
+try { git init $FlowProjectRoot 2>$null | Out-Null } catch { }
+$ErrorActionPreference = $prevEap
+
+function New-FlowTaskJson {
+    param([array]$Tasks)
+    return (@{ version = 1; archive = "flow-fixture"; tasks = $Tasks } | ConvertTo-Json -Depth 6)
+}
+
+function New-FlowArchive {
+    param([string]$Name, [string]$Json)
+    $dir = Join-Path $FlowProjectRoot ".rdd\changes\archive\$Name"
+    New-Item -ItemType Directory -Path $dir -Force | Out-Null
+    [System.IO.File]::WriteAllText((Join-Path $dir 'task.json'), $Json, (New-Object System.Text.UTF8Encoding($false)))
+    return $Name
+}
+
+function New-FlowLegacyArchive {
+    # legacy 回退路径夹具：仅 task.md（无 task.json），行内无 lifecycle 字段
+    param([string]$Name, [string]$Md)
+    $dir = Join-Path $FlowProjectRoot ".rdd\changes\archive\$Name"
+    New-Item -ItemType Directory -Path $dir -Force | Out-Null
+    [System.IO.File]::WriteAllText((Join-Path $dir 'task.md'), $Md, (New-Object System.Text.UTF8Encoding($false)))
+    return $Name
+}
+
+function Invoke-FlowNext {
+    # 在夹具项目根内以 powershell 5.1 运行 rdd-flow next（与 rdd-flow.cmd 同启动方式）
+    param([string]$ArchiveName, [string]$Format = "json", [string]$Tag = "flow")
+    $out = Join-Path $WorkDir "$Tag.out.txt"
+    $err = Join-Path $WorkDir "$Tag.err.txt"
+    $prevEap = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    Push-Location -LiteralPath $FlowProjectRoot
+    try {
+        & powershell -NoProfile -ExecutionPolicy Bypass -File $FlowScriptPath -Command next -Format $Format -Archive ".rdd/changes/archive/$ArchiveName" 1> $out 2> $err
+        $code = $LASTEXITCODE
+    }
+    finally {
+        Pop-Location
+        $ErrorActionPreference = $prevEap
+    }
+    $text = [System.IO.File]::ReadAllText($out, [System.Text.Encoding]::UTF8)
+    return @{
+        exit   = $code
+        stdout = $text
+        stderr = [System.IO.File]::ReadAllText($err, [System.Text.Encoding]::UTF8)
+        json   = $(if ($code -eq 0 -and $Format -eq "json") { $text | ConvertFrom-Json } else { $null })
+    }
+}
+
+function New-LongTaskFixture {
+    # 共享夹具：2 条 active（CTO/DEV 各一）——信号正例基准归档
+    New-FlowArchive 'lt-multi' (New-FlowTaskJson @(
+        @{ id = 1; title = "子需求A"; requirement = "requirements/a.md"; currentOwners = @("CTO"); designDocs = @(); currentWorker = @(); remark = ""; lifecycle = "active" },
+        @{ id = 2; title = "子需求B"; requirement = "requirements/b.md"; currentOwners = @("DEV"); designDocs = @(); currentWorker = @(); remark = ""; lifecycle = "active" }))
+    New-FlowArchive 'lt-single' (New-FlowTaskJson @(
+        @{ id = 1; title = "单需求"; requirement = "requirements/only.md"; currentOwners = @("CTO"); designDocs = @(); currentWorker = @(); remark = ""; lifecycle = "active" }))
+    New-FlowArchive 'lt-mixed' (New-FlowTaskJson @(
+        @{ id = 1; title = "已完成子需求"; requirement = "requirements/done.md"; currentOwners = @("QA"); designDocs = @(); currentWorker = @(); remark = ""; lifecycle = "completed" },
+        @{ id = 2; title = "进行中子需求"; requirement = "requirements/active.md"; currentOwners = @("DEV"); designDocs = @(); currentWorker = @(); remark = ""; lifecycle = "active" }))
+    New-FlowArchive 'lt-alldone' (New-FlowTaskJson @(
+        @{ id = 1; title = "已完成一"; requirement = "requirements/d1.md"; currentOwners = @("CTO"); designDocs = @(); currentWorker = @(); remark = ""; lifecycle = "completed" },
+        @{ id = 2; title = "已完成二"; requirement = "requirements/d2.md"; currentOwners = @("QA"); designDocs = @(); currentWorker = @(); remark = ""; lifecycle = "completed" }))
+    New-FlowArchive 'lt-dep' (New-FlowTaskJson @(
+        @{ id = 1; title = "活跃A"; requirement = "requirements/a1.md"; currentOwners = @("CTO"); designDocs = @(); currentWorker = @(); remark = ""; lifecycle = "active" },
+        @{ id = 2; title = "废弃B"; requirement = "requirements/b2.md"; currentOwners = @("DEV"); designDocs = @(); currentWorker = @(); remark = ""; lifecycle = "deprecated" }))
+    New-FlowArchive 'lt-dep3' (New-FlowTaskJson @(
+        @{ id = 1; title = "活跃A"; requirement = "requirements/a1.md"; currentOwners = @("CTO"); designDocs = @(); currentWorker = @(); remark = ""; lifecycle = "active" },
+        @{ id = 2; title = "活跃B"; requirement = "requirements/b2.md"; currentOwners = @("DEV"); designDocs = @(); currentWorker = @(); remark = ""; lifecycle = "active" },
+        @{ id = 3; title = "废弃C"; requirement = "requirements/c3.md"; currentOwners = @("QA"); designDocs = @(); currentWorker = @(); remark = ""; lifecycle = "deprecated" }))
+    New-FlowLegacyArchive 'lt-legacy' @'
+# 任务路由总览
+
+| TaskId | 需求 | 需求文件 | 当前责任人 | 关联设计文档 | 备注 |
+|--------|------|----------|-----------|--------------|------|
+| 1 | 遗留需求甲 | requirements/legacy-a.md | 已完成 | - | - |
+| 2 | 遗留需求乙 | requirements/legacy-b.md | CTO | - | - |
+| 3 | 遗留需求丙 | requirements/legacy-c.md | DEV | - | - |
+'@
+    New-FlowLegacyArchive 'lt-legacy-single' @'
+# 任务路由总览
+
+| TaskId | 需求 | 需求文件 | 当前责任人 | 关联设计文档 | 备注 |
+|--------|------|----------|-----------|--------------|------|
+| 1 | 遗留单需求 | requirements/legacy-only.md | CTO | - | - |
+'@
+}
+
+function Test-LongTaskSignalTriggered {
+    New-LongTaskFixture
+    $r = Invoke-FlowNext -ArchiveName 'lt-multi' -Tag "t110"
+    $d = $r.json.data
+    $planner = @($d.roles | Where-Object { $_.role -eq "PLANNER" })
+    $plannerIds = @()
+    if ($planner.Count -gt 0) { $plannerIds = @($planner[0].tasks | ForEach-Object { [int]$_.id }) }
+    $regularRoles = @($d.roles | Where-Object { $_.role -ne "PLANNER" } | ForEach-Object { $_.role })
+    Assert-All "TC-110" "信号正例:2 条 active 归档 next 输出 PLANNER 候选块(longTask 字段+首位)" @(
+        @{ name = "next exit 0"; ok = ($r.exit -eq 0); actual = "exit=$($r.exit); $($r.stderr)" }
+        @{ name = "longTask.triggered=true"; ok = ($d.longTask.triggered -eq $true); actual = "triggered=$($d.longTask.triggered)" }
+        @{ name = "totalTaskCount=2 / activeTaskCount=2 / threshold=2"; ok = ($d.longTask.totalTaskCount -eq 2 -and $d.longTask.activeTaskCount -eq 2 -and $d.longTask.threshold -eq 2); actual = "total=$($d.longTask.totalTaskCount) active=$($d.longTask.activeTaskCount) threshold=$($d.longTask.threshold)" }
+        @{ name = "reason 含话术模板(N/M 与命令)"; ok = ($d.longTask.reason -match "拆分为 2 条子需求（2 条进行中）" -and $d.longTask.reason -match [regex]::Escape("start-role.cmd -Role PLANNER -TaskJson")); actual = $d.longTask.reason }
+        @{ name = "PLANNER 块存在且居 roles 首位"; ok = ($planner.Count -eq 1 -and $d.roles[0].role -eq "PLANNER"); actual = "首位=$($d.roles[0].role) PLANNER块数=$($planner.Count)" }
+        @{ name = "PLANNER command/skill 专用构造(不走 /rdd- 模板)"; ok = ($planner[0].command -eq "start-role.cmd -Role PLANNER -TaskJson <task.json>" -and $planner[0].skill -eq "rdd-engine/references/planner-guide.md"); actual = "command=$($planner[0].command); skill=$($planner[0].skill)" }
+        @{ name = "PLANNER taskCount=2 且 tasks=active 子需求(1,2)"; ok = ($planner[0].taskCount -eq 2 -and $plannerIds.Count -eq 2 -and $plannerIds -contains 1 -and $plannerIds -contains 2); actual = "taskCount=$($planner[0].taskCount) ids=$($plannerIds -join ',')" }
+        @{ name = "PLANNER note 说明整批接管与回退"; ok = ($planner[0].note -match "整批接管" -and $planner[0].note -match "4 步硬流程"); actual = $planner[0].note }
+        @{ name = "常规角色块不受影响(CTO/DEV 原样)"; ok = ($regularRoles -contains "CTO" -and $regularRoles -contains "DEV"); actual = "roles=$($regularRoles -join ',')" }
+    )
+}
+
+function Test-LongTaskSignalSingleNotTriggered {
+    $r = Invoke-FlowNext -ArchiveName 'lt-single' -Tag "t111"
+    $d = $r.json.data
+    $planner = @($d.roles | Where-Object { $_.role -eq "PLANNER" })
+    $roleNames = @($d.roles | ForEach-Object { $_.role })
+    Assert-All "TC-111" "信号负例:单需求归档不出现 PLANNER,仅追加 longTask{triggered:false}" @(
+        @{ name = "next exit 0"; ok = ($r.exit -eq 0); actual = "exit=$($r.exit); $($r.stderr)" }
+        @{ name = "longTask.triggered=false"; ok = ($d.longTask.triggered -eq $false); actual = "triggered=$($d.longTask.triggered)" }
+        @{ name = "totalTaskCount=1 / activeTaskCount=1"; ok = ($d.longTask.totalTaskCount -eq 1 -and $d.longTask.activeTaskCount -eq 1); actual = "total=$($d.longTask.totalTaskCount) active=$($d.longTask.activeTaskCount)" }
+        @{ name = "roles 无 PLANNER 成员"; ok = ($planner.Count -eq 0); actual = "roles=$($roleNames -join ',')" }
+        @{ name = "常规块输出不变(CTO 在列,命令 /rdd-cto)"; ok = ($d.roles[0].role -eq "CTO" -and $d.roles[0].command -eq "/rdd-cto"); actual = "首位=$($d.roles[0].role) command=$($d.roles[0].command)" }
+        @{ name = "既有顶层字段保留(type/usage/completedCount/warnings)"; ok = ($d.type -eq "rdd-flow-next" -and $d.usage -and $null -ne $d.completedCount -and $null -ne $d.warnings); actual = "type=$($d.type)" }
+    )
+}
+
+function Test-LongTaskWholeDeliveryCounting {
+    $r = Invoke-FlowNext -ArchiveName 'lt-mixed' -Tag "t112"
+    $d = $r.json.data
+    $planner = @($d.roles | Where-Object { $_.role -eq "PLANNER" })
+    $plannerIds = @()
+    if ($planner.Count -gt 0) { $plannerIds = @($planner[0].tasks | ForEach-Object { [int]$_.id }) }
+    Assert-All "TC-112" "整体口径:completed 计入 total 不消退,PLANNER tasks 仅含 active" @(
+        @{ name = "next exit 0"; ok = ($r.exit -eq 0); actual = "exit=$($r.exit); $($r.stderr)" }
+        @{ name = "1 completed + 1 active 仍触发"; ok = ($d.longTask.triggered -eq $true); actual = "triggered=$($d.longTask.triggered)" }
+        @{ name = "totalTaskCount=2(含已完成) / activeTaskCount=1"; ok = ($d.longTask.totalTaskCount -eq 2 -and $d.longTask.activeTaskCount -eq 1); actual = "total=$($d.longTask.totalTaskCount) active=$($d.longTask.activeTaskCount)" }
+        @{ name = "PLANNER tasks 仅 active 子需求(id=2)"; ok = ($plannerIds.Count -eq 1 -and $plannerIds[0] -eq 2); actual = "ids=$($plannerIds -join ',')" }
+        @{ name = "completedCount=1(既有字段不受影响)"; ok = ($d.completedCount -eq 1); actual = "completedCount=$($d.completedCount)" }
+    )
+}
+
+function Test-LongTaskDeprecatedAndAllDone {
+    $allDone = Invoke-FlowNext -ArchiveName 'lt-alldone' -Tag "t113a"
+    $dep1 = Invoke-FlowNext -ArchiveName 'lt-dep' -Tag "t113b"
+    $dep3 = Invoke-FlowNext -ArchiveName 'lt-dep3' -Tag "t113c"
+    $d3 = $dep3.json.data
+    $devBlock = @($d3.roles | Where-Object { $_.role -eq "DEV" })
+    $devIds = @()
+    if ($devBlock.Count -gt 0) { $devIds = @($devBlock[0].tasks | ForEach-Object { [int]$_.id }) }
+    Assert-All "TC-113" "全完成不触发;deprecated 不计信号但保留入常规角色块(既有行为)" @(
+        @{ name = "全完成(2 completed)不触发"; ok = ($allDone.json.data.longTask.triggered -eq $false); actual = "triggered=$($allDone.json.data.longTask.triggered)" }
+        @{ name = "1 active + 1 deprecated 不触发(total=1)"; ok = ($dep1.json.data.longTask.triggered -eq $false -and $dep1.json.data.longTask.totalTaskCount -eq 1); actual = "triggered=$($dep1.json.data.longTask.triggered) total=$($dep1.json.data.longTask.totalTaskCount)" }
+        @{ name = "2 active + 1 deprecated 触发且 total=2(deprecated 排除)"; ok = ($d3.longTask.triggered -eq $true -and $d3.longTask.totalTaskCount -eq 2 -and $d3.longTask.activeTaskCount -eq 2); actual = "triggered=$($d3.longTask.triggered) total=$($d3.longTask.totalTaskCount) active=$($d3.longTask.activeTaskCount)" }
+        @{ name = "deprecated 任务仍入常规角色块(DEV 块含 id=2)"; ok = ($devIds -contains 2); actual = "DEV ids=$($devIds -join ',')" }
+    )
+}
+
+function Test-LongTaskLegacyTaskMd {
+    $legacy = Invoke-FlowNext -ArchiveName 'lt-legacy' -Tag "t114a"
+    $legacySingle = Invoke-FlowNext -ArchiveName 'lt-legacy-single' -Tag "t114b"
+    $lt = $legacy.json.data.longTask
+    Assert-All "TC-114" "legacy task.md 回退:行无 lifecycle 缺省 active,已完成行视为 completed" @(
+        @{ name = "legacy 多需求归档触发(缺省 active)"; ok = ($legacy.json.data.longTask.triggered -eq $true); actual = "triggered=$($lt.triggered)" }
+        @{ name = "已完成行不计 active(total=3 / active=2)"; ok = ($lt.totalTaskCount -eq 3 -and $lt.activeTaskCount -eq 2); actual = "total=$($lt.totalTaskCount) active=$($lt.activeTaskCount)" }
+        @{ name = "legacy 单需求归档不触发"; ok = ($legacySingle.json.data.longTask.triggered -eq $false); actual = "triggered=$($legacySingle.json.data.longTask.triggered)" }
+    )
+}
+
+function Test-LongTaskMarkdownRendering {
+    $md = Invoke-FlowNext -ArchiveName 'lt-multi' -Format markdown -Tag "t115a"
+    $mdSingle = Invoke-FlowNext -ArchiveName 'lt-single' -Format markdown -Tag "t115b"
+    $text = $md.stdout
+    $singleText = $mdSingle.stdout
+    $idxRoles = $text.IndexOf("## Available Roles")
+    $idxHint = $text.IndexOf("该原始需求被拆分为 2 条子需求（2 条进行中）")
+    $idxPlanner = $text.IndexOf("### PLANNER")
+    $idxCto = $text.IndexOf("### CTO")
+    Assert-All "TC-115" "markdown 渲染:触发时提示行+PLANNER 块居首位;未触发时输出无信号痕迹" @(
+        @{ name = "触发:提示行在 Available Roles 之后、PLANNER 块之前"; ok = ($idxRoles -ge 0 -and $idxHint -gt $idxRoles -and $idxPlanner -gt $idxHint); actual = "idxRoles=$idxRoles idxHint=$idxHint idxPlanner=$idxPlanner" }
+        @{ name = "触发:PLANNER 块先于常规角色块(CTO)"; ok = ($idxPlanner -ge 0 -and $idxCto -gt $idxPlanner); actual = "idxPlanner=$idxPlanner idxCto=$idxCto" }
+        @{ name = "触发:PLANNER 块含 Note 行与接管命令"; ok = ($text -match [regex]::Escape("- Note: 整批接管建议") -and $text -match [regex]::Escape("start-role.cmd -Role PLANNER -TaskJson")); actual = "Note/命令行缺失" }
+        @{ name = "未触发:无 PLANNER 块、无长程任务提示"; ok = (-not $singleText.Contains("PLANNER") -and -not $singleText.Contains("长程任务")); actual = "单需求 markdown 出现信号痕迹" }
+        @{ name = "未触发:章节结构与现状一致(Available Roles+常规角色)"; ok = ($singleText -match "## Available Roles" -and $singleText -match "### CTO" -and $singleText -match [regex]::Escape("- Command: ``/rdd-cto``")); actual = "结构断言失败" }
+    )
+}
+
+function Test-LongTaskDocsAndArtifactsSynced {
+    $pmSkill = Get-FileText (Join-Path $RepoRoot 'rdd-pm\SKILL.md')
+    $guide = Get-FileText $TransitionGuide
+    $plannerGuide = Get-FileText (Join-Path $RepoRoot 'rdd-engine\references\planner-guide.md')
+    $generator = Get-FileText $GeneratorPath
+    $presetPm = Join-Path $RepoRoot 'dsh\presets\rdd-pm\agent.cordis.yml'
+    $presetText = ""
+    if (Test-Path -LiteralPath $presetPm -PathType Leaf) { $presetText = Get-FileText $presetPm }
+    $oldPhrase = '任务集较重'
+    Assert-All "TC-116" "三处话术同口径:显式信号引用+统一话术,无旧判据残留(含生成物)" @(
+        @{ name = "rdd-pm SKILL 引用 longTask 显式信号"; ok = ($pmSkill -match "longTask\.triggered"); actual = "SKILL 未引用信号" }
+        @{ name = "rdd-pm SKILL 含统一接管话术"; ok = ($pmSkill -match [regex]::Escape("接管整批交付") -and $pmSkill -match [regex]::Escape("start-role.cmd -Role PLANNER -TaskJson <task.json>")); actual = "话术缺失" }
+        @{ name = "transition-guide 触发条件同口径"; ok = ($guide -match "longTask\.triggered=true" -and $guide -match [regex]::Escape("接管整批交付")); actual = "transition-guide 未同步" }
+        @{ name = "planner-guide 适用场景同口径"; ok = ($plannerGuide -match "longTask\.triggered"); actual = "planner-guide 未同步" }
+        @{ name = "三处文档均无旧判据「任务集较重」"; ok = (-not $pmSkill.Contains($oldPhrase) -and -not $guide.Contains($oldPhrase) -and -not $plannerGuide.Contains($oldPhrase)); actual = "旧判据残留" }
+        @{ name = "加固闸② 扩充落源仓(旧判据负向+PM 新话术正向)"; ok = ($generator -match [regex]::Escape("retiredTakeover = '任务集较重'") -and $generator -match [regex]::Escape("接管整批交付")); actual = "生成器断言未扩充" }
+        @{ name = "preset 生成物同步(rdd-pm 含新话术无旧判据)"; ok = ($presetText -match [regex]::Escape("接管整批交付") -and -not $presetText.Contains($oldPhrase)); actual = "生成物漂移——先重跑 build-dsh-presets.mjs" }
+    )
+}
+
 # --- 执行 ---------------------------------------------------------------------
 
 try {
@@ -812,6 +1031,13 @@ try {
     Test-GeneratorGate
     Test-InstallerPackageGate
     Test-ReparseProtection
+    Test-LongTaskSignalTriggered
+    Test-LongTaskSignalSingleNotTriggered
+    Test-LongTaskWholeDeliveryCounting
+    Test-LongTaskDeprecatedAndAllDone
+    Test-LongTaskLegacyTaskMd
+    Test-LongTaskMarkdownRendering
+    Test-LongTaskDocsAndArtifactsSynced
 }
 finally {
     Remove-Item -LiteralPath $WorkDir -Recurse -Force -ErrorAction SilentlyContinue

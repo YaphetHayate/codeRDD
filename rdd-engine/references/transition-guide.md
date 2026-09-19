@@ -125,7 +125,9 @@ $rdd = $null; $t = $null; try { $t = git rev-parse --show-toplevel } catch { }; 
 
 ### 交接类型：planner-takeover（PM 可选分支）
 
-PM 归档完成后判断任务集较重（多需求、多角色、需并行/依赖编排）时，可不逐条交接下游，而是把整批交付交给规划者（PLANNER，引擎编排形态，非第六角色）：
+PM 归档完成后 `rdd-flow next` 输出 `longTask.triggered=true`（归档含 ≥2 条非 deprecated 子需求且 ≥1 条进行中——原始需求被拆分为多条子需求的长程任务显式信号，机械可判、每次 next 现算）时，可不逐条交接下游，而是把整批交付交给规划者（PLANNER，引擎编排形态，非第六角色）。推荐话术（N/M 取 next 输出 `longTask.totalTaskCount`/`activeTaskCount`）：
+
+> 该原始需求被拆分为 N 条子需求（M 条进行中），属长程任务，建议交规划者（PLANNER）接管整批交付。确认后执行 `start-role.cmd -Role PLANNER -TaskJson <task.json>`；不采纳则按 4 步硬流程逐条交接，行为不变。
 
 ```powershell
 $rdd = $null; $t = $null; try { $t = git rev-parse --show-toplevel } catch { }; foreach ($c in @($env:RDD_ENGINE_HOME; if ($t) { (Get-ChildItem $t -Recurse -Directory -Depth 3 -Filter 'rdd-engine').FullName }; "$HOME\.rdd\engine\current")) { if ($c -and (Test-Path "$c\scripts\rdd-flow.cmd")) { $rdd = $c; break } }; if (-not $rdd) { throw "rdd-engine 未定位" }; & "$rdd\scripts\start-role.cmd" -Role PLANNER -TaskJson <归档 task.json>

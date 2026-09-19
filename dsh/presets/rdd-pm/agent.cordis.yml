@@ -116,7 +116,7 @@
 
       归档完成 → **必须**按 `rdd-engine/references/transition-guide.md` 上游协议 4 步硬流程执行交接（advance 路由 → next → 推荐 → start/handoff）。未完成交接不得响应模式切换。
 
-      > **可选分支（planner-takeover）**：归档任务集较重（多需求、多角色、需并行/依赖编排）时，完成 Step 1 路由推进后建议改走规划者（PLANNER）接管——`start-role.cmd -Role PLANNER -TaskJson <归档 task.json>`，见 transition-guide「planner-takeover」。
+      > **可选分支（planner-takeover）**：`rdd-flow next` 输出 `longTask.triggered=true`（归档含 ≥2 条非 deprecated 子需求且 ≥1 条进行中——原始需求被拆分为多条子需求的长程任务显式信号，机械可判）时，完成 Step 1 路由推进后建议改走规划者（PLANNER）接管。推荐话术（N/M 取 next 输出 `longTask.totalTaskCount`/`activeTaskCount`）：「该原始需求被拆分为 N 条子需求（M 条进行中），属长程任务，建议交规划者（PLANNER）接管整批交付。确认后执行 `start-role.cmd -Role PLANNER -TaskJson <task.json>`；不采纳则按 4 步硬流程逐条交接，行为不变。」见 transition-guide「planner-takeover」。
 
       ## 执行（委托）
 

@@ -41,7 +41,7 @@ const ROLES = ['rdd-pm', 'rdd-cto', 'rdd-ux', 'rdd-dev', 'rdd-qa', 'rdd-eval', '
 const PLANNER_PRESET = {
   role: 'rdd-planner',
   name: 'RDD-PLANNER',
-  description: '规划者（PLANNER）交付编排模式（引擎编排形态，非角色卡）。归档较重时接管整批交付：颁布节点、调动角色会话、统一流转与结案报告。',
+  description: '规划者（PLANNER）交付编排模式（引擎编排形态，非角色卡）。长程任务信号触发（next 输出 longTask.triggered=true）时接管整批交付：颁布节点、调动角色会话、统一流转与结案报告。',
 }
 
 /** 规划者自举 persona（与角色 persona 同头部的环境适配 + 指向 planner-guide 的引导载荷）。 */
@@ -132,6 +132,9 @@ function adaptEngineSection(body) {
  * 加固闸②：persona 必须携带 start-role.cmd 交接指引，且不得残留旧式人工指引。
  * 生成器常量与各角色 SKILL.md 是两处独立的措辞来源，任一处漏改都会让下游会话
  * 收到错误指引（dsh 后端落副本未回灌源仓即由此产生），故在生成阶段 fail loud。
+ * planner-takeover 同口径守护：触发条件已由模糊表述「任务集较重」替换为 next 输出
+ * 的 longTask 显式信号（pm-longtask-routing 需求），rdd-pm persona 必须携带新接管
+ * 话术，任何 persona 不得残留旧判据。
  * @param {string} persona - 组装完成的 persona 全文。
  * @param {string} role - 角色目录名（失败信息用）。
  * @returns {void}
@@ -143,6 +146,13 @@ function assertHandoffGuidance(persona, role) {
   const retired = '新建目标角色会话'
   if (persona.includes(retired)) {
     throw new Error(`${role} persona 残留旧式人工指引「${retired}」——dsh 交接已改为脚本自动建会话，请更新措辞`)
+  }
+  const retiredTakeover = '任务集较重'
+  if (persona.includes(retiredTakeover)) {
+    throw new Error(`${role} persona 残留旧式长程任务判据「${retiredTakeover}」——planner-takeover 触发条件已改为 next 输出的 longTask 显式信号，请同步 SKILL.md 措辞`)
+  }
+  if (role === 'rdd-pm' && !persona.includes('接管整批交付')) {
+    throw new Error(`${role} persona 未携带 planner-takeover 接管话术——检查 rdd-pm/SKILL.md 可选分支（longTask 显式信号触发）`)
   }
 }
 

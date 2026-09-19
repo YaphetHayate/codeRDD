@@ -93,7 +93,7 @@
         "scripts/install-rdd-skills.ps1"
       ],
       "testCode": [".rdd/tests/role-handoff/run-tests.ps1"],
-      "activeCount": 21,
+      "activeCount": 28,
       "deprecatedCount": 0,
       "lastUpdated": "2026-09-18",
       "lastChange": "2026-09-18-planner-goal-tree-upgrade"

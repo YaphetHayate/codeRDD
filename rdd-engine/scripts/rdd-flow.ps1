@@ -460,6 +460,7 @@ function Convert-TasksToRows {
             "当前责任人"   = $owners
             "关联设计文档" = (Convert-DesignDocsToString $t.designDocs)
             "备注"         = if ($t.remark) { $t.remark } else { "-" }
+            lifecycle     = $lifecycle
             currentWorker = $worker
             running       = ($worker.Count -gt 0)
         }
@@ -750,6 +751,35 @@ function Get-RouteRows {
     }
 }
 
+# Long-task signal counting basis for one route row (planner-takeover).
+# task.json rows carry an explicit lifecycle (Convert-TasksToRows passthrough);
+# legacy task.md rows have none — default to active, with closed rows
+# (当前责任人 = 已完成) mapped to completed so legacy archives keep task.json
+# counting semantics (done rows count toward the whole-delivery total, never active).
+function Get-RowLifecycle {
+    param($Row)
+
+    if ($Row.PSObject.Properties["lifecycle"] -and -not [string]::IsNullOrWhiteSpace([string]$Row.lifecycle)) {
+        return ([string]$Row.lifecycle).Trim()
+    }
+    if ((Clean-Cell $Row."当前责任人") -ieq "已完成") { return "completed" }
+    return "active"
+}
+
+# Task-block projection shared by the long-task signal list and the per-role
+# candidate blocks (single mapping source — docs/code-quality.md §1: extract, never duplicate).
+function Build-TaskBlock {
+    param($Row)
+
+    return [pscustomobject]@{
+        id          = if ($null -ne $Row.TaskId) { [int]$Row.TaskId } else { 0 }
+        title       = Clean-Cell $Row."需求"
+        requirement = Clean-Cell $Row."需求文件"
+        design      = Clean-Cell $Row."关联设计文档"
+        remark      = Clean-Cell $Row."备注"
+    }
+}
+
 function Build-NextFlow {
     param([string]$ArchivePath)
 
@@ -759,6 +789,32 @@ function Build-NextFlow {
 
     $validRoles = @("PM", "CTO", "UX", "DEV", "QA")
     $completedCount = 0
+
+    # Long-task signal (planner-takeover, optional suggestion): one original requirement
+    # split into >=2 non-deprecated sub-requirements with at least one still active.
+    # Whole-delivery semantics: completed sub-requirements keep counting (the delivery
+    # bar is the final goal), so the signal never fades as parts finish; fully closed
+    # archives have no takeover target and do not trigger. Computed fresh per call — no state.
+    $longTaskThreshold = 2
+    $longTaskTotal = 0
+    $longTaskActive = 0
+    $activeTaskBlocks = New-Object System.Collections.Generic.List[object]
+    foreach ($row in $route.rows) {
+        $lifecycle = Get-RowLifecycle $row
+        if ($lifecycle -eq "deprecated") { continue }
+        $longTaskTotal++
+        if ($lifecycle -eq "active") {
+            $longTaskActive++
+            $activeTaskBlocks.Add((Build-TaskBlock $row))
+        }
+    }
+    $longTaskTriggered = ($longTaskTotal -ge $longTaskThreshold -and $longTaskActive -ge 1)
+    $longTaskReason = if ($longTaskTriggered) {
+        "该原始需求被拆分为 $longTaskTotal 条子需求（$longTaskActive 条进行中），属长程任务，建议交规划者（PLANNER）接管整批交付。确认后执行 ``start-role.cmd -Role PLANNER -TaskJson <task.json>``；不采纳则按 4 步硬流程逐条交接，行为不变。"
+    }
+    else {
+        "非 deprecated 子需求 $longTaskTotal 条 / 进行中 $longTaskActive 条，未达长程任务阈值 $longTaskThreshold 或无进行中子需求，不触发规划者接管建议"
+    }
 
     foreach ($row in $route.rows) {
         $owner = Clean-Cell $row."当前责任人"
@@ -781,13 +837,7 @@ function Build-NextFlow {
             $roleMap[$owner] = New-Object System.Collections.Generic.List[object]
         }
 
-        $roleMap[$owner].Add([pscustomobject]@{
-            id = if ($null -ne $row.TaskId) { [int]$row.TaskId } else { 0 }
-            title = Clean-Cell $row."需求"
-            requirement = Clean-Cell $row."需求文件"
-            design = Clean-Cell $row."关联设计文档"
-            remark = Clean-Cell $row."备注"
-        })
+        $roleMap[$owner].Add((Build-TaskBlock $row))
     }
 
     $roles = @()
@@ -803,6 +853,23 @@ function Build-NextFlow {
 
     $roles = @($roles | Sort-Object role)
 
+    if ($longTaskTriggered) {
+        # Dedicated PLANNER candidate block — deliberately NOT built via
+        # Get-RoleCommand/Get-RoleSkillPath: those generic maps serve per-task
+        # handoff semantics (start/handoff), while planner takeover is a whole-archive
+        # suggestion with no role card; mixing them would route `start -Role PLANNER`
+        # down the wrong path. Rendered first: adopting it replaces per-task handoff.
+        $plannerBlock = [pscustomobject]@{
+            role = "PLANNER"
+            command = "start-role.cmd -Role PLANNER -TaskJson <task.json>"
+            skill = "rdd-engine/references/planner-guide.md"
+            taskCount = $longTaskActive
+            tasks = @($activeTaskBlocks.ToArray())
+            note = "整批接管建议（可选，用户确认后才接管）：PLANNER 以归档为整体接管交付，promulgate 仍按 currentOwners 建阶段节点；TaskJson 指针即本输出 taskTracker 字段。不采纳则按 4 步硬流程逐条交接，行为不变。"
+        }
+        $roles = @($plannerBlock) + @($roles)
+    }
+
     return @{
         success = $true
         data = @{
@@ -812,6 +879,13 @@ function Build-NextFlow {
             generatedAt = (Get-Date).ToString("s")
             roles = $roles
             completedCount = $completedCount
+            longTask = @{
+                triggered = $longTaskTriggered
+                totalTaskCount = $longTaskTotal
+                activeTaskCount = $longTaskActive
+                threshold = $longTaskThreshold
+                reason = $longTaskReason
+            }
             warnings = $warnings
             usage = "Choose a role, then /new to open a new session and run /rdd-<role> (auto-loads skill + handoff). Preview packet here: rdd-engine/scripts/rdd-flow.cmd -Command start -Role <ROLE> -Archive `"$((Get-RelativePath $ArchivePath))`""
         }
@@ -892,6 +966,14 @@ function Convert-NextToMarkdown {
     $lines += ""
     $lines += "## Available Roles"
 
+    if ($data.longTask -and $data.longTask.triggered) {
+        # Long-task hint line + PLANNER block lead the Available Roles section
+        # (whole-archive takeover should enter view before per-task candidates).
+        # Untagged archives render byte-identically to the pre-signal output.
+        $lines += ""
+        $lines += "> $($data.longTask.reason)"
+    }
+
     foreach ($role in $data.roles) {
         $lines += ""
         $lines += "### $($role.role)"
@@ -899,6 +981,9 @@ function Convert-NextToMarkdown {
         $lines += "- Command: ``$($role.command)``"
         $lines += "- Skill: ``$($role.skill)``"
         $lines += "- Task count: $($role.taskCount)"
+        if ($role.PSObject.Properties["note"] -and $role.note) {
+            $lines += "- Note: $($role.note)"
+        }
         foreach ($task in $role.tasks) {
             $lines += "- $($task.title): ``$($task.requirement)``"
         }
