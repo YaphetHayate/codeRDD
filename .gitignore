@@ -25,6 +25,8 @@ node_modules/
 
 # dsh plugin build output (produced inside the DSH workspace via the reverse junction)
 dsh/dsh-rdd-explore/lib/
+# goal-tree plugin build output (tsc/bundle emissions — same rule as dsh-rdd-explore)
+dsh/rdd-goal-tree/lib/
 
 # node build output (installer dist/) and engine release tarballs (dist/engine/*.tgz, npm pack artifacts)
 dist/

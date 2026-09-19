@@ -25,15 +25,19 @@
         "rdd-engine/scripts/goal-tree-leaf.ps1",
         "rdd-engine/scripts/goal-tree-leaf.cmd",
         "rdd-engine/references/goal-tree-guide.md",
-        "rdd-engine/references/task-dispatch-guide.md"
+        "rdd-engine/references/task-dispatch-guide.md",
+        "dsh/rdd-goal-tree/src/client/view-picker.ts",
+        "dsh/rdd-goal-tree/src/client/index.tsx",
+        "scripts/build-dsh-goal-tree.mjs"
       ],
       "testCode": [
         ".rdd/tests/goal-tree/goal-tree-verify.ps1",
-        "rdd-engine/tests/test-goal-tree-gates.ps1"
+        "rdd-engine/tests/test-goal-tree-gates.ps1",
+        "dsh/rdd-goal-tree/tests/smoke.mjs"
       ],
-      "activeCount": 48,
+      "activeCount": 54,
       "deprecatedCount": 0,
-      "lastUpdated": "2026-09-18",
+      "lastUpdated": "2026-09-19",
       "lastChange": "2026-09-18-planner-goal-tree-upgrade"
     },
     {
@@ -50,9 +54,9 @@
       "testCode": [
         ".rdd/tests/delivery-bridge/delivery-bridge-verify.ps1"
       ],
-      "activeCount": 20,
+      "activeCount": 22,
       "deprecatedCount": 0,
-      "lastUpdated": "2026-09-18",
+      "lastUpdated": "2026-09-19",
       "lastChange": "2026-09-18-planner-goal-tree-upgrade"
     },
     {
@@ -93,9 +97,9 @@
         "scripts/install-rdd-skills.ps1"
       ],
       "testCode": [".rdd/tests/role-handoff/run-tests.ps1"],
-      "activeCount": 28,
+      "activeCount": 30,
       "deprecatedCount": 0,
-      "lastUpdated": "2026-09-18",
+      "lastUpdated": "2026-09-19",
       "lastChange": "2026-09-18-planner-goal-tree-upgrade"
     }
   ]

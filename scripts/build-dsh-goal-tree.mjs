@@ -71,10 +71,29 @@ function runTsc(project) {
 function wrapClientBundle() {
   const compiledPath = join(PKG_DIR, 'lib', '_client', 'index.js')
   const compiled = readFileSync(compiledPath, 'utf8')
+  // Dependency-free sibling module(s) compiled alongside the entry get spliced
+  // into the same factory scope: the loader's require only resolves baseline
+  // packages, so a relative require would break the bundle — a shadowing
+  // require intercepts the relative spec and serves the inlined module
+  // (view-picker.ts is the picker the smoke suite also imports from
+  // lib/client/view-picker.js via the host compile).
+  const depPath = join(PKG_DIR, 'lib', '_client', 'view-picker.js')
+  const depSplice = existsSync(depPath)
+    ? [
+        '\t\tvar __viewPicker = (function () {',
+        '\t\t\tvar module = { exports: {} };',
+        '\t\t\tvar exports = module.exports;',
+        readFileSync(depPath, 'utf8'),
+        '\t\t\treturn module.exports;',
+        '\t\t})();',
+      ].join('\n')
+    : ''
   const bundled = [
     'window.__ModuleLoader__.load({',
     `\tid: "${PKG_ID}",`,
-    '\tfactory: (require) => {',
+    '\tfactory: (requireBaseline) => {',
+    depSplice,
+    '\t\tvar require = (spec) => (spec === "./view-picker.js" ? __viewPicker : requireBaseline(spec));',
     '\t\tvar module = { exports: {} };',
     '\t\tvar exports = module.exports;',
     compiled,
