@@ -62,10 +62,11 @@ PM 归档（longTask 信号触发）→ start-role -Role PLANNER -TaskJson ...�
 | 认领 | `delivery-bridge.cmd -Command claim -RunId <id> -NodeId <n> -Role <CTO/UX/DEV/QA>` | **被推送会话的第一动作**。双侧只读预检 → leaf claim → rdd-flow claim；冲突给确定性反馈 + 当前可领节点清单；goal 根报 `GOAL_NODE_NOT_CLAIMABLE` |
 | 回收 | `delivery-bridge.cmd -Command reclaim -RunId <id> -NodeId <n>` | 复合回收，两种模式：**dead-claim**（卡死 claimed：存活预检——alive 拒 `RECLAIM_TARGET_ALIVE`、unknown 未达 60min 阈值拒 `RECLAIM_UNPROVEN_DEAD`——通过后 leaf `-Steal` + rdd-flow `claim -Force` 入泊位 → **自动重推**）与 **rejected-delivery**（reported 但证据不合格：剪枝失败交付 + graft 替换节点（ref 重绑需求文档）+ 重映射 → **自动推送替换节点**，账本保留审计痕） |
 | 流转 | `delivery-bridge.cmd -Command settle -RunId <id> -NodeId <n> [-Note ...]` | **task.json 流转的唯一通道**（见下方三查门禁）；settle 尾自动推送新解锁节点 |
-| 全景 | `delivery-bridge.cmd -Command status -RunId <id>` | join 视图：树 census + 任务阶段 + 依赖阻塞 + 双侧死 claim + pending_sync 分歧（自动重试修复）+ pushes 推送账目 + 会话存活 + **触碰兜底补推**（租约空闲时）+ 租约 |
-| 续跑 | `delivery-bridge.cmd -Command resume -RunId <id>` | 断点视图 + 恢复步骤清单（新规划者会话入口） |
+| 全景 | `delivery-bridge.cmd -Command status -RunId <id>` | join 视图：树 census + 任务阶段 + 依赖阻塞 + 双侧死 claim + pending_sync 分歧（自动重试修复）+ pushes 推送账目 + 会话存活 + **会话花名册**（sessions：本体/派发/直交全量清单）+ **触碰兜底补推**（租约空闲时）+ 租约 |
+| 续跑 | `delivery-bridge.cmd -Command resume -RunId <id>` | 断点视图 + 恢复步骤清单（新规划者会话入口；本体会话自动入花名册） |
 | 结案 | `delivery-bridge.cmd -Command conclude -RunId <id> -Summary <结案摘要>` | 全任务终态校验 → goal-tree conclude（achieved，**锚=目标根**，根语义终局校验）→ 写 delivery-annex.md（根目标达成状态 + 每任务终态 + rdd-flow check 结果）→ 释放租约 |
 | 租约 | `delivery-bridge.cmd -Command lease -RunId <id> [-Acquire] [-Release] [-Takeover]` | 规划者会话级 advisory 租约（`planner-lease.json`；stale 阈值 30 分钟，区别于 run `.lock` 的命令级 60s） |
+| 登记 | `delivery-bridge.cmd -Command register-session -RunId <id> -SessionId <sid> -Role <角色> -Label <标签>` | **树外直交登记**：直调 start-role 派发后，把打印的 sessionId 登入花名册（sessions.json），直交会话事后可溯源 |
 
 依赖维护（直达 goal-tree 管理面）：
 
@@ -125,6 +126,7 @@ worker 沿用 goal-tree 证据导向回调结构承载交付语义，核心零�
 
 | 症状 | 处置 |
 |------|------|
+| 需树外直交某角色（用户裁决 / 事故修复） | 三步规程 + 登记：写 brief 文件 → `start-role -DryRun` 验证指针全文（含 `[直交] <标签>·<角色>` 标题行）→ 实发（`-Handoff <brief>` [+ `-SessionLabel <标签>`]，dsh 下会话标题自动钉住）→ `register-session -RunId <id> -SessionId <打印的sid> -Role <角色> -Label <标签>` 登入花名册 |
 | 回调收到完成、但用户已手动直交下游角色 | 属正常优先级裁决：用户显式直交指令优先执行，但 worker 的 leaf report 回调先行不可省（next_suggestion 注明直交指令）——照常三查裁定 settle（ledger 留痕可对账）；直交会话与树推送会话撞车由 `FLOW_CLAIM_CONFLICT` / `NODE_NOT_CLAIMABLE` 确定性反馈兜底 |
 | 同一节点第二个会话被唤起 | bridge claim 返回 `NODE_NOT_CLAIMABLE` + 认领者信息 + 可领清单，按清单改领即可 |
 | 节点被依赖阻塞 | `NODE_BLOCKED_BY_DEPS` 附阻塞源；等上游 settle（解锁后**自动推送**，无需手动 dispatch），或规划者调整依赖（deps remove） |
@@ -148,6 +150,7 @@ worker 沿用 goal-tree 证据导向回调结构承载交付语义，核心零�
 |------|------|
 | `bridge.json` | **v2**：节点↔TaskId 权威映射（1:N）+ `goal_root` 锚 + `goal`（原始需求标题/来源）+ `pushes` 推送账目（node/at/ok/error/retry_class）+ pending_sync 分歧账 + `review` 段（`-ReviewFile` 颁布时：reviewed_at/reviewer/verdicts/applied_at，机器可读审计）（v1 拒读 `BRIDGE_FORMAT_UNSUPPORTED`，零兼容裁定） |
 | `planner-lease.json` | 会话租约（holder / acquired_at / taken_over_from 留痕） |
+| `sessions.json` | 会话花名册（planner-session-roster）：本 run 派生的全部 dsh 会话——本体（promulgate/resume 自动登记）/ 桥接派发（推送回写）/ 直交（register-session 登记）；字段 session_id/role/node/label/source/title/created_at/updated_at，status 经 sessions 字段透出 |
 | `report/review.md` | 需求审查结论（仅 `-ReviewFile` 颁布的 run）：逐条 verdict 表（结论/理由/处置/时间），呈现用户的人读持久化载体 |
 | `report/delivery-annex.md` | 结案附录（根目标达成状态——有未决驳回时如实呈现「部分达成」+ 每任务终态（含树内合并/驳回注记）+ 阶段链 + rdd-flow check 结果） |
 | （goal-tree 既有）tree.json / ledger.jsonl / round-*.md / final-report.md | 树状态 / 回调账本 / 轮快照 / 结案报告（目标根锚时含「根目标达成状态」区） |

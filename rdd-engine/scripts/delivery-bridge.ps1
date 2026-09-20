@@ -35,11 +35,20 @@
 #               Review reject_return tasks pending at PM are exempt from the gate —
 #               the annex renders them as partial achievement, never as complete
 #   lease       advisory Planner session lease (planner-lease.json, stale 30 min)
+#   register-session  record an off-tree direct-handoff dsh session into the
+#               run's sessions.json roster (planner-session-roster): after a
+#               direct start-role dispatch the planner registers the printed
+#               sessionId + label so the session stays traceable
 #
 # Run artifacts (inside the goal-tree run dir, gitignored):
 #   bridge.json           authoritative node<->TaskId mapping (v2: + goal_root anchor
 #                         + per-node pushes ledger; v1 rejected BRIDGE_FORMAT_UNSUPPORTED)
 #   planner-lease.json    advisory session lease
+#   sessions.json         run session roster (planner-session-roster): every dsh
+#                         session this run derived — planner body (promulgate/
+#                         resume self-registration), bridge dispatches (push
+#                         write-back), registered direct handoffs; exposed via
+#                         the status command's sessions field
 #   report/review.md      requirement review conclusions (only for -ReviewFile
 #                         promulgations): per-task verdict table, the persistent
 #                         human-readable carrier presented to the user; the
@@ -54,7 +63,7 @@
 
 [CmdletBinding()]
 param(
-    [ValidateSet("promulgate", "dispatch", "claim", "reclaim", "settle", "status", "resume", "conclude", "lease")]
+    [ValidateSet("promulgate", "dispatch", "claim", "reclaim", "settle", "status", "resume", "conclude", "lease", "register-session")]
     [string]$Command = "status",
 
     [string]$RunId,
@@ -72,6 +81,12 @@ param(
     [string]$NodeId,
     [string]$Role,                # stage role (CTO/UX/DEV/QA) for claim; inferred from node for others
     [string]$Session,             # Planner lease holder label
+
+    # register-session (planner-session-roster): off-tree direct-handoff
+    # registration into the run's sessions.json roster — the planner records
+    # the dsh session start-role just created ([直交] <标签>·<角色>)
+    [string]$SessionId,
+    [string]$Label,
 
     # settle
     [string]$Note,
@@ -105,6 +120,11 @@ $script:ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 # when the task starts at UX (ux -> dev -> qa).
 $script:StageOrder = @("CTO", "UX", "DEV", "QA")
 $script:StageNext = @{ "CTO" = "DEV"; "UX" = "DEV"; "DEV" = "QA"; "QA" = $null }
+
+# Worker roles a direct handoff can target (planner-session-roster
+# register-session validation): everything start-role accepts except PLANNER —
+# the planner body self-registers via promulgate/resume, never manually.
+$script:WorkerRoles = @("PM", "CTO", "UX", "DEV", "QA", "EVAL", "PSE")
 
 # === Generic helpers ===
 
@@ -262,6 +282,131 @@ function Write-BridgeFile {
         }
         Write-ErrorResult "BRIDGE_WRITE_READBACK_FAILED" "bridge.json read-back failed after write; previous snapshot restored" 3
     }
+}
+
+# === Session roster (planner-session-roster) ===
+#
+# run 级会话花名册：sessions.json 落 run 状态目录，登记本 run 派生过的全部 dsh 会话
+# （planner 本体 / 桥接派发 / 树外直交登记），status 命令经 sessions 字段透出——
+# 「建会话未认领」窗口期与直交会话不再失追踪。字段：session_id/role/node/label/
+# source/title/created_at/updated_at。全部写入路径均为 advisory：登记失败降级不阻断
+# 派发本身（标题与花名册是展示性信息，与使命参数的 fail-loud 策略刻意相反）。
+# 标题格式与 start-role.ps1 Get-SessionTitle 同构（本桥只经公共 CLI 编排、不
+# dot-source 引擎内部函数——两处小段重复以本注释交叉锚定，改动须双侧同步）。
+
+function ConvertTo-RunShort {
+    # "deliver-2026-09-20-planner-session-roster" -> "planner-session-roster"
+    # (mirror of start-role.ps1 ConvertTo-RunShortName)
+    param([string]$RunIdText)
+    if ([string]::IsNullOrWhiteSpace($RunIdText)) { return "" }
+    $archiveName = $RunIdText -replace '^deliver-', ''
+    return ($archiveName -replace '^\d{4}-\d{2}-\d{2}-', '')
+}
+
+function Get-RosterPath { param([string]$RunDir); Join-Path $RunDir "sessions.json" }
+
+function Read-Roster {
+    # returns @{ exists; corrupt; sessions = @(deep hashtables) }. Missing file
+    # -> exists=$false (the roster is optional state: pre-feature runs and CLI
+    # pushes simply have none). Unparseable file -> corrupt=$true + empty list;
+    # status surfaces the warning and the next registration self-heals it.
+    param([string]$RunDir)
+    $p = Get-RosterPath $RunDir
+    if (-not (Test-Path -LiteralPath $p -PathType Leaf)) { return @{ exists = $false; corrupt = $false; sessions = @() } }
+    try {
+        $obj = [System.IO.File]::ReadAllText($p, [System.Text.Encoding]::UTF8) | ConvertFrom-Json
+        $sessions = @()
+        if ($null -ne $obj -and $null -ne $obj.sessions) { $sessions = @(Convert-ToSafeArray (Convert-PSObjectToHashtable $obj.sessions)) }
+        return @{ exists = $true; corrupt = $false; sessions = $sessions }
+    }
+    catch {
+        return @{ exists = $true; corrupt = $true; sessions = @() }
+    }
+}
+
+function Write-RosterFile {
+    # direct write + read-back parse (no .bak: advisory display data — a torn
+    # write at worst drops one cosmetic row; bridge.json keeps the hard state).
+    # Returns @{ ok; error } and never throws.
+    param([string]$RunDir, [string]$RunIdText, $Sessions)
+    $p = Get-RosterPath $RunDir
+    $payload = @{ format_version = 1; run_id = $RunIdText; sessions = @($Sessions) }
+    try {
+        [System.IO.File]::WriteAllText($p, (ConvertTo-Json $payload -Depth 8), $script:Utf8NoBom)
+        $null = [System.IO.File]::ReadAllText($p, [System.Text.Encoding]::UTF8) | ConvertFrom-Json
+        return @{ ok = $true; error = $null }
+    }
+    catch {
+        return @{ ok = $false; error = [string]$_.Exception.Message }
+    }
+}
+
+function Add-RosterEntry {
+    # idempotent upsert keyed by session_id: re-registration (planner resume,
+    # same-session re-push) refreshes role/node/label/source/title and stamps
+    # updated_at while preserving the first created_at. Returns
+    # @{ ok; entry; error } — advisory, never throws.
+    param([string]$RunDir, [string]$RunIdText, [string]$SessionId, [string]$Role, [string]$Node, [string]$Label, [string]$Source, [string]$Title)
+    if ([string]::IsNullOrWhiteSpace($SessionId)) { return @{ ok = $false; entry = $null; error = "empty session id" } }
+    $roster = Read-Roster $RunDir
+    $now = Get-UtcNowIso
+    $entry = $null
+    foreach ($s in @($roster.sessions)) {
+        if ($null -ne $s -and $s -is [System.Collections.IDictionary] -and [string]$s['session_id'] -eq $SessionId) { $entry = $s; break }
+    }
+    if ($null -eq $entry) {
+        $entry = @{ session_id = $SessionId; created_at = $now }
+        $roster.sessions += ,$entry
+    }
+    $entry['role'] = $Role
+    $entry['node'] = $(if ([string]::IsNullOrWhiteSpace($Node)) { $null } else { $Node })
+    $entry['label'] = $(if ([string]::IsNullOrWhiteSpace($Label)) { $null } else { $Label })
+    $entry['source'] = $Source
+    $entry['title'] = $Title
+    $entry['updated_at'] = $now
+    $w = Write-RosterFile -RunDir $RunDir -RunIdText $RunIdText -Sessions $roster.sessions
+    return @{ ok = $w.ok; entry = $entry; error = $w.error }
+}
+
+function Register-PushedSession {
+    # 桥接派发回写：parse the created dsh sessionId out of start-role's success
+    # output ("sessionId: <id>") and upsert the roster row (source=bridge-dispatch,
+    # title mirrors start-role's pinned "[<run短名>] T<#>·<角色>·<节点>"). No
+    # sessionId in the output (CLI/Plus backend) or any write failure -> silent
+    # skip: the push ledger in bridge.json remains the authoritative record.
+    param([string]$RunDir, [string]$RunIdText, [string]$Stage, [int]$TaskIdNum, [string]$NodeId, [string]$StartRoleText)
+    if ([string]::IsNullOrWhiteSpace($StartRoleText)) { return $null }
+    $m = [regex]::Match($StartRoleText, 'sessionId[：:]\s*([A-Za-z0-9][A-Za-z0-9_-]*)')
+    if (-not $m.Success) { return $null }
+    $sid = $m.Groups[1].Value
+    $title = ""
+    $short = ConvertTo-RunShort $RunIdText
+    if ($short) {
+        $parts = @()
+        if ($TaskIdNum -ge 1) { $parts += "T$TaskIdNum" }
+        $parts += $Stage
+        if (-not [string]::IsNullOrWhiteSpace($NodeId)) { $parts += $NodeId }
+        $title = "[{0}] {1}" -f $short, ($parts -join '·')
+    }
+    $r = Add-RosterEntry -RunDir $RunDir -RunIdText $RunIdText -SessionId $sid -Role $Stage -Node $NodeId -Label $null -Source "bridge-dispatch" -Title $title
+    if ($r.ok) { return $r.entry }
+    return $null
+}
+
+function Register-PlannerBody {
+    # planner 本体登记：register the CURRENT dsh session (the planner itself)
+    # into the roster. DSH_SESSION_ID is injected by the harness into every
+    # shell subprocess of a dsh session (same source Get-SessionLabel reads);
+    # absent (CLI/Plus planner) -> silent skip. Called by promulgate (right
+    # after the run dir exists) and resume (a fresh planner session joins the
+    # roster; idempotent by session_id). Advisory.
+    param([string]$RunDir, [string]$RunIdText)
+    if ([string]::IsNullOrWhiteSpace($env:DSH_SESSION_ID)) { return $null }
+    $short = ConvertTo-RunShort $RunIdText
+    $title = $(if ($short) { "[PLANNER] $short" } else { "[PLANNER]" })
+    $r = Add-RosterEntry -RunDir $RunDir -RunIdText $RunIdText -SessionId $env:DSH_SESSION_ID -Role "PLANNER" -Node $null -Label $null -Source "planner" -Title $title
+    if ($r.ok) { return $r.entry }
+    return $null
 }
 
 function Get-NodeTaskStage {
@@ -573,7 +718,11 @@ function Invoke-AutoDispatch {
             $retryClass = Get-PushFailureClass $r.text
         }
         $Bridge = Set-NodePushRecord $RunDir $Bridge $nodeId $ok $errText $retryClass
-        if ($ok) { $result.pushed += $nodeId }
+        if ($ok) {
+            $result.pushed += $nodeId
+            # roster write-back (planner-session-roster): advisory, silent skip
+            $null = Register-PushedSession -RunDir $RunDir -RunIdText ([string]$Bridge.run_id) -Stage $mapping.stage -TaskIdNum $mapping.task_id -NodeId $nodeId -StartRoleText $r.text
+        }
         else { $result.failed += @{ node = $nodeId; error = $errText; retry_class = $retryClass } }
     }
     $result.bridge = $Bridge
@@ -1061,6 +1210,11 @@ function Invoke-Promulgate {
 
     $null = Enter-PlannerLease $runDir
 
+    # planner body roster row (planner-session-roster): the promulgating dsh
+    # session IS this run's planner — register it right after the run dir
+    # exists (advisory; CLI planners carry no DSH_SESSION_ID and skip silently).
+    $null = Register-PlannerBody -RunDir $runDir -RunIdText $runId
+
     # 2) open round 1 (kept open for the whole delivery; conclude auto-closes it)
     $r = Invoke-GoalTree @("-Command", "round-start", "-RunId", $runId)
     if ($r.exit -ne 0 -or -not $r.json.success) { Write-ErrorResult "PROMULGATE_ROUND_FAILED" "round-start failed: $($r.text)" 3 }
@@ -1280,6 +1434,10 @@ function Invoke-Dispatch {
         $pushClass = $null
         if (-not $okPush) { $pushClass = Get-PushFailureClass $r.text }
         $bridge = Set-NodePushRecord $runDir $bridge $NodeId $okPush $(if ($okPush) { $null } else { $r.text }) $pushClass
+        if ($okPush) {
+            # roster write-back (planner-session-roster): advisory, silent skip
+            $null = Register-PushedSession -RunDir $runDir -RunIdText $RunId -Stage $mapping.stage -TaskIdNum $mapping.task_id -NodeId $NodeId -StartRoleText $r.text
+        }
     }
     if (-not $DryRun -and $r.exit -ne 0) {
         Write-ErrorResult "DISPATCH_FAILED" "start-role exited $($r.exit): $($r.text)" 1
@@ -2013,8 +2171,29 @@ function Invoke-BridgeStatus {
         $livenessRows += @{ node = $cid; claimed_by = $(if ($n -is [string]) { $null } else { $n.claimed_by }); liveness = $live.liveness; session_id = $live.session_id }
     }
 
+    # session roster (planner-session-roster): every dsh session this run
+    # derived — planner body, bridge dispatches, registered direct handoffs.
+    # Rows stay listed for the run's whole life: the create-before-claim window
+    # and off-tree direct sessions are exactly what this list keeps traceable.
+    $roster = Read-Roster $runDir
+    $sessionRows = @()
+    foreach ($s in @($roster.sessions)) {
+        if ($null -eq $s) { continue }
+        $sessionRows += @{
+            session_id = [string]$s['session_id']
+            role       = [string]$s['role']
+            node       = $(if ($s.Contains('node') -and $null -ne $s['node']) { [string]$s['node'] } else { $null })
+            label      = $(if ($s.Contains('label') -and $null -ne $s['label']) { [string]$s['label'] } else { $null })
+            source     = [string]$s['source']
+            title      = [string]$s['title']
+            created_at = [string]$s['created_at']
+            updated_at = [string]$s['updated_at']
+        }
+    }
+
     $warnings = @()
     foreach ($w in @($view.tree.integrity.warnings)) { $warnings += "tree: $w" }
+    if ($roster.corrupt) { $warnings += "sessions.json roster unparseable — read as empty (the next registration self-heals the file)" }
     if ($view.repair.remaining.Count -gt 0) { $warnings += "pending_sync unresolved: $(@($view.repair.remaining | ForEach-Object { "$($_.node):$($_.op)" }) -join ', ')" }
     if ($view.dead_claims.tree.Count -gt 0) { $warnings += "dead tree claim(s) (>= ${DeadClaimMinutes} min): $(@($view.dead_claims.tree | ForEach-Object { $_.node }) -join ', ') — reclaim them" }
     if ($view.dead_claims.flow.Count -gt 0) { $warnings += "dead flow claim(s): $(@($view.dead_claims.flow | ForEach-Object { "task#$($_.task_id):$($_.role)" }) -join ', ')" }
@@ -2038,6 +2217,7 @@ function Invoke-BridgeStatus {
             claimable      = $view.claimable
             dead_claims    = $view.dead_claims
             session_liveness = $livenessRows
+            sessions       = $sessionRows
             pushes         = $pushRows
             auto_push_touch = $touch
             pending_sync   = $view.repair.remaining
@@ -2054,6 +2234,11 @@ function Invoke-BridgeResume {
     $runDir = Get-BridgeRunDir $RunId
     $bridge = Require-Bridge $runDir
     $view = Get-BridgeOverview $runDir $bridge
+
+    # planner body roster row (planner-session-roster): a resuming planner
+    # session joins the roster (advisory, idempotent by session_id; the roster
+    # then shows every session that ever orchestrated this run).
+    $null = Register-PlannerBody -RunDir $runDir -RunIdText $RunId
 
     $steps = @()
     if ($view.tree.state -eq "concluded") {
@@ -2307,18 +2492,52 @@ function Invoke-BridgeLease {
     return @{ success = $true; data = @{ run_id = $RunId; action = "show"; lease = $state } }
 }
 
+# === Command: register-session (planner-session-roster) ===
+
+function Invoke-BridgeRegisterSession {
+    # 直交登记入口：after a direct (off-tree) start-role dispatch the planner
+    # registers the created dsh session here so the roster keeps it traceable
+    # (the 2026-09-20 stray-dispatch incident: off-tree sessions had ZERO
+    # registration — the roster closes that gap). Explicit command shape: the
+    # sessionId arrives from start-role's printed output, the label from the
+    # dispatch's -SessionLabel (or handoff file basename).
+    $runDir = Get-BridgeRunDir $RunId
+    $bridge = Require-Bridge $runDir
+    if ([string]::IsNullOrWhiteSpace($SessionId)) { Write-ErrorResult "MISSING_SESSION_ID" "-SessionId (the dsh session id start-role printed) is required" 1 }
+    if ($SessionId -notmatch '^[A-Za-z0-9][A-Za-z0-9._-]*$') { Write-ErrorResult "SESSION_ID_INVALID" "-SessionId must match ^[A-Za-z0-9][A-Za-z0-9._-]*$ : $SessionId" 1 }
+    if ([string]::IsNullOrWhiteSpace($Role) -or $script:WorkerRoles -notcontains $Role) { Write-ErrorResult "ROLE_INVALID" "-Role must be one of $($script:WorkerRoles -join '/') for a direct-handoff registration (the PLANNER body self-registers via promulgate/resume)" 1 }
+    if ([string]::IsNullOrWhiteSpace($Label)) { Write-ErrorResult "LABEL_REQUIRED" "-Label (the direct-handoff tag shown in the [直交] title) is required" 1 }
+
+    $null = Enter-PlannerLease $runDir
+
+    $title = "[直交] $Label·$Role"
+    $r = Add-RosterEntry -RunDir $runDir -RunIdText $RunId -SessionId $SessionId -Role $Role -Node $null -Label $Label -Source "direct" -Title $title
+    if (-not $r.ok) { Write-ErrorResult "ROSTER_WRITE_FAILED" "sessions.json write failed: $($r.error)" 3 }
+    return @{
+        success = $true
+        data    = @{
+            run_id      = $RunId
+            registered  = $true
+            session     = $r.entry
+            roster_size = @((Read-Roster $runDir).sessions).Count
+            next_step   = "roster visible via: delivery-bridge.cmd -Command status -RunId $RunId (sessions field)"
+        }
+    }
+}
+
 # === Dispatch ===
 
 switch ($Command) {
-    "promulgate" { $result = Invoke-Promulgate }
-    "dispatch"   { $result = Invoke-Dispatch }
-    "claim"      { $result = Invoke-BridgeClaim }
-    "reclaim"    { $result = Invoke-BridgeReclaim }
-    "settle"     { $result = Invoke-BridgeSettle }
-    "status"     { $result = Invoke-BridgeStatus }
-    "resume"     { $result = Invoke-BridgeResume }
-    "conclude"   { $result = Invoke-BridgeConclude }
-    "lease"      { $result = Invoke-BridgeLease }
+    "promulgate"       { $result = Invoke-Promulgate }
+    "dispatch"         { $result = Invoke-Dispatch }
+    "claim"            { $result = Invoke-BridgeClaim }
+    "reclaim"          { $result = Invoke-BridgeReclaim }
+    "settle"           { $result = Invoke-BridgeSettle }
+    "status"           { $result = Invoke-BridgeStatus }
+    "resume"           { $result = Invoke-BridgeResume }
+    "conclude"         { $result = Invoke-BridgeConclude }
+    "lease"            { $result = Invoke-BridgeLease }
+    "register-session" { $result = Invoke-BridgeRegisterSession }
 }
 
 ConvertTo-PortableJson $result -Depth 14

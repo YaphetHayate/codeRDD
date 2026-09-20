@@ -31,7 +31,7 @@
 
 ```powershell
 node scripts\build-dsh-goal-tree.mjs            # tsc ×2 → client bundle 包装 → npm pack → dist/plugin/dsh-rdd-goal-tree.tgz
-node dsh\rdd-goal-tree\tests\smoke.mjs          # 聚合（真实 dsh-demo run）+ 回调产物行 + 视图分档判定表 + bundle 格式断言
+node dsh\rdd-goal-tree\tests\smoke.mjs          # 聚合（自播种 legacy demo run）+ 回调产物行 + 视图分档判定表 + bundle 格式断言
 node scripts\build-dsh-goal-tree.mjs --check    # 产物形状校验
 ```
 

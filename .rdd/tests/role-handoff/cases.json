@@ -17,7 +17,7 @@
     "scripts/install-rdd-skills.ps1"
   ],
   "testCode": [".rdd/tests/role-handoff/run-tests.ps1"],
-  "lastChange": "2026-09-18-planner-goal-tree-upgrade",
+  "lastChange": "2026-09-20-planner-session-roster",
   "cases": [
     {
       "id": "TC-005",
@@ -438,6 +438,62 @@
       "precondition": "夹具项目根 + mock dsh /api 载波；CLI 分支依赖宿主 opencode（缺失时该组检查记 SKIP 同 TC-020 口径）",
       "steps": ["CLI DryRun 不传/传 -GoalTreeRun gt-run-1 -GoalTreeNode n2，逐字节比对预填消息", "dsh 后端经 mock 载波读取 session.prompt 文本，不传/传参各一次", "Plus DryRun 比对请求体消息（不传无 goal-tree-run / 传参含标记段）"],
       "expected": "三后端同构：不传新参时消息与旧格式逐字节一致（回归锚）；传参时尾部追加「 goal-tree-run=gt-run-1 node=n2」"
+    },
+    {
+      "id": "TC-119",
+      "title": "直交标题钉住：-Handoff 缺省标签 basename 推导 + -SessionLabel 覆盖，指针不受影响",
+      "type": "positive",
+      "priority": "P0",
+      "acceptance": "PSR-AC-1",
+      "codeRef": ".rdd/tests/role-handoff/run-tests.ps1:1165",
+      "sourceChange": "2026-09-20-planner-session-roster",
+      "status": "active",
+      "crossFeature": ["delivery-bridge"],
+      "precondition": "mock 载波含目标角色 preset 与 session.rename ok 应答；handoff fixture 文件 handoff-t3fix.json",
+      "steps": ["start-role -Role QA -Handoff <path> 直调（dsh 后端经 mock）", "读 mock 日志 session.rename 载荷", "再以 -Role DEV -SessionLabel T3-fix 直调对照"],
+      "expected": "缺省标签 rename title=[直交] handoff-t3fix·QA 且 sessionId 与创建回包一致、指针照常发送；-SessionLabel 覆盖后 title=[直交] T3-fix·DEV；指针文本含 handoff 路径（正斜杠规范化）不受 -SessionLabel 影响——标题信息全部来自既有参数+可选覆盖（AC-2）"
+    },
+    {
+      "id": "TC-120",
+      "title": "PLANNER 本体标题钉住：-RunId 直推与 -TaskJson 归档名推导（run 短名去 deliver-/日期前缀）",
+      "type": "positive",
+      "priority": "P0",
+      "acceptance": "PSR-AC-1",
+      "codeRef": ".rdd/tests/role-handoff/run-tests.ps1:1204",
+      "sourceChange": "2026-09-20-planner-session-roster",
+      "status": "active",
+      "crossFeature": ["delivery-bridge"],
+      "precondition": "mock 含 rdd-planner preset；fixture 归档无活跃 run（-TaskJson 形态 probe 放行）",
+      "steps": ["start-role -Role PLANNER -RunId deliver-2099-12-31-demo-run 直调", "start-role -Role PLANNER -TaskJson <fixture> 直调", "读两轮 mock 日志 rename 载荷"],
+      "expected": "-RunId 形态 title=[PLANNER] demo-run（deliver- 前缀与日期前缀均剥离）；-TaskJson 形态 title=[PLANNER] role-handoff-fixture（归档名去前缀推导）——规划者本体侧栏可寻（AC-1）"
+    },
+    {
+      "id": "TC-121",
+      "title": "改名失败降级：警告打印、服务端错误码可见、会话照常创建与派发（与使命参数 fail-loud 刻意相反）",
+      "type": "negative",
+      "priority": "P0",
+      "acceptance": "PSR-AC-4",
+      "codeRef": ".rdd/tests/role-handoff/run-tests.ps1:1228",
+      "sourceChange": "2026-09-20-planner-session-roster",
+      "status": "active",
+      "crossFeature": [],
+      "precondition": "mock 注入 session.rename 业务错误（code=MOCK_RENAME_FAIL）",
+      "steps": ["start-role -Role QA -Handoff <path> 直调", "读 exit code、stdout/stderr 与 mock 日志"],
+      "expected": "exit 0（降级不阻断）；输出含「会话标题钉住失败」警告 + MOCK_RENAME_FAIL 错误码 + 降级说明；session.prompt 照常发送——标题是展示性信息，失败不阻塞交接（AC-4）"
+    },
+    {
+      "id": "TC-122",
+      "title": "仅 dsh 后端改名：Plus/CLI 传 -SessionLabel 零 rename 且不报错；dsh DryRun 无标记逐字节锚/直交预览 rename",
+      "type": "boundary",
+      "priority": "P1",
+      "acceptance": "PSR-AC-6",
+      "codeRef": ".rdd/tests/role-handoff/run-tests.ps1:1257",
+      "sourceChange": "2026-09-20-planner-session-roster",
+      "status": "active",
+      "crossFeature": [],
+      "precondition": "Plus DryRun 传 -EmployeeId；CLI 分支依赖宿主 opencode（缺失记 SKIP 同 TC-020 口径）；dsh DryRun 需 DSH_WEB_URL 在场",
+      "steps": ["Plus/CLI 各以 -SessionLabel DryRun", "dsh 后端无标记 -DryRun（TaskId 模式）", "dsh 后端直交形态 -Handoff+-SessionLabel -DryRun"],
+      "expected": "Plus/CLI exit 0 且输出零 session.rename 痕迹（无 dsh 会话概念跳过且不报错）；无标记 DryRun RPC 3 = session.prompt（legacy 逐字节锚）；直交 DryRun RPC 3 = session.rename、RPC 4 = session.prompt 且载荷含 [直交] bb-lbl·QA（AC-5/AC-6）"
     }
   ]
 }

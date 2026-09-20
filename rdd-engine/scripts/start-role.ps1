@@ -28,6 +28,13 @@ param(
     # byte-for-byte identical to the pre-brief output (regression anchor).
     [string]$TaskBrief = "",
 
+    # Session title label override (planner-session-roster): optional label for
+    # the off-tree direct-handoff shape (-Handoff / planner direct dispatch).
+    # Empty → the label derives from the handoff file's basename. Affects ONLY
+    # the structured title pinned onto the freshly created dsh session
+    # (session.rename, user source); the pointer message is never touched.
+    [string]$SessionLabel = "",
+
     # PLANNER uniqueness guard (planner-uniqueness-callback): explicit user
     # override that skips ONLY the startup gate below — the session gets
     # created, but the orchestration right and callback re-pointing still
@@ -196,6 +203,82 @@ function Get-TaskBriefSegment {
     # invocations stay byte-for-byte unchanged.
     if ([string]::IsNullOrWhiteSpace($TaskBrief)) { return "" }
     return " $TaskBrief"
+}
+
+function ConvertTo-RunShortName {
+    # planner-session-roster: sidebar-friendly short name of a delivery run —
+    # "deliver-2026-09-20-planner-session-roster" -> "planner-session-roster"
+    # (run id minus the deliver- prefix, archive name minus its date prefix).
+    param([string]$Raw)
+    if ([string]::IsNullOrWhiteSpace($Raw)) { return "" }
+    $archiveName = $Raw -replace '^deliver-', ''
+    return ($archiveName -replace '^\d{4}-\d{2}-\d{2}-', '')
+}
+
+function Get-RunShortName {
+    # planner-session-roster: resolve the run short name from the invocation's
+    # own params. Priority: -RunId (PLANNER resume shape) -> -TaskJson / latest
+    # archive name (PLANNER takeover shape). Degrades to "" (the caller then
+    # skips the rename entirely) — the title is display-only, never a mission
+    # parameter.
+    if (-not [string]::IsNullOrWhiteSpace($RunId)) {
+        return (ConvertTo-RunShortName $RunId)
+    }
+    $taskJsonAbs = $null
+    if (-not [string]::IsNullOrWhiteSpace($TaskJson)) {
+        $taskJsonAbs = Resolve-AbsolutePath -Path $TaskJson -Root $root
+    }
+    else {
+        $taskJsonAbs = Find-LatestTaskJson -Root $root
+    }
+    if (-not $taskJsonAbs) { return "" }
+    return (ConvertTo-RunShortName (Split-Path -Leaf (Split-Path -Parent $taskJsonAbs)))
+}
+
+function Get-SessionTitle {
+    # planner-session-roster: the structured, distinguishing title pinned onto
+    # the freshly created dsh session (session.rename appends a user-source
+    # title event, which pins the title against first-message auto-regeneration
+    # — the pointer message is the SAME for every dispatch, so auto titles
+    # would collapse the whole run into identical sidebar entries). Shapes, in
+    # priority order:
+    #   PLANNER body     "[PLANNER] <run短名>"
+    #   bridge dispatch  "[<run短名>] T<#>·<角色>·<节点>"   (-GoalTreeRun shape)
+    #   off-tree direct  "[直交] <标签>·<角色>"            (-Handoff / -SessionLabel)
+    # Returns "" for the unmarked plain handoff (no goal-tree marker, no
+    # handoff, no label) — those invocations stay byte-for-byte identical to
+    # the pre-feature behavior (regression anchor: no rename call at all, no
+    # roster side effects). Title info comes ONLY from existing params; length
+    # normalization is the host's business (rename rejects only empty titles).
+    if ($Role -eq "PLANNER") {
+        $short = Get-RunShortName
+        if (-not $short) { return "" }
+        return "[PLANNER] $short"
+    }
+    if (-not [string]::IsNullOrWhiteSpace($GoalTreeRun)) {
+        $short = ConvertTo-RunShortName $GoalTreeRun
+        if (-not $short) { return "" }
+        $parts = @()
+        if ($TaskId -ge 1) { $parts += "T$TaskId" }
+        $parts += $Role
+        if (-not [string]::IsNullOrWhiteSpace($GoalTreeNode)) { $parts += $GoalTreeNode }
+        return "[{0}] {1}" -f $short, ($parts -join '·')
+    }
+    $handoffPresent = -not [string]::IsNullOrWhiteSpace($Handoff)
+    $labelPresent = -not [string]::IsNullOrWhiteSpace($SessionLabel)
+    if ($handoffPresent -or $labelPresent) {
+        $label = ""
+        if ($labelPresent) {
+            $label = $SessionLabel.Trim()
+        }
+        else {
+            $leaf = Split-Path -Leaf ($Handoff.Trim())
+            $label = [System.IO.Path]::GetFileNameWithoutExtension($leaf)
+        }
+        if ([string]::IsNullOrWhiteSpace($label)) { return "" }
+        return "[直交] $label·$Role"
+    }
+    return ""
 }
 
 function Build-PromptMessage {
@@ -504,15 +587,37 @@ function Invoke-DshHandoff {
     if ($create.status -ne "ok") { return $create }
     $sessionId = [string]$create.value.sessionId
 
+    # planner-session-roster: pin the structured title right after create and
+    # BEFORE the pointer prompt — the user-source rename pins the title against
+    # first-message auto-regeneration, so order matters (rename after the prompt
+    # would race the driver's title generation). Display-only: any failure
+    # degrades with a warning and NEVER blocks the handoff (the deliberate
+    # opposite of the mission-param fail-loud policy — the title carries no
+    # mission, see incident-2026-09-20-stray-dispatch). Plus backend has no dsh
+    # session concept at all and never reaches this function.
+    $title = Get-SessionTitle
+    $titleResult = $null
+    if (-not [string]::IsNullOrWhiteSpace($title)) {
+        $rename = Invoke-DshApi -Method "session.rename" -Payload @{ sessionId = $sessionId; title = $title }
+        if ($rename.status -eq "ok") {
+            $titleResult = @{ pinned = $true; title = [string]$rename.value.title }
+        }
+        else {
+            $reason = $rename.message
+            if ($rename.status -eq "business") { $reason = "业务错误 $($rename.code): $($rename.message)" }
+            $titleResult = @{ pinned = $false; title = $title; error = $reason }
+        }
+    }
+
     $prompt = Invoke-DshApi -Method "session.prompt" -Payload @{
         sessionId = $sessionId
         mode      = "queue"
         content   = @(@{ type = "text"; text = $Message })
     }
     if ($prompt.status -ne "ok") {
-        return @{ status = "prompt-failed"; sessionId = $sessionId; failure = $prompt }
+        return @{ status = "prompt-failed"; sessionId = $sessionId; title = $titleResult; failure = $prompt }
     }
-    return @{ status = "done"; sessionId = $sessionId }
+    return @{ status = "done"; sessionId = $sessionId; title = $titleResult }
 }
 
 function Start-WithWindowsTerminal {
@@ -636,7 +741,18 @@ if ($mode -eq "dsh") {
         Write-Host "[DRYRUN] payload: path=$root（resolve-or-create，realpath 规范化）" -ForegroundColor Yellow
         Write-Host "[DRYRUN] RPC 2:   POST $DshUrl/api/session.create" -ForegroundColor Yellow
         Write-Host "[DRYRUN] payload: workspaceId=<RPC 1 返回> agentPreset=$preset（入账 workspace，侧栏进项目文件夹）" -ForegroundColor Yellow
-        Write-Host "[DRYRUN] RPC 3:   POST $DshUrl/api/session.prompt" -ForegroundColor Yellow
+        # planner-session-roster: the rename RPC prints ONLY when a title
+        # applies — an unmarked plain handoff keeps the exact legacy DryRun
+        # lines (byte-for-byte regression anchor).
+        $dryTitle = Get-SessionTitle
+        if ($dryTitle) {
+            Write-Host "[DRYRUN] RPC 3:   POST $DshUrl/api/session.rename" -ForegroundColor Yellow
+            Write-Host "[DRYRUN] payload: sessionId=<RPC 2 返回> title=$dryTitle（user 源钉住标题；失败降级警告不阻断）" -ForegroundColor Yellow
+            Write-Host "[DRYRUN] RPC 4:   POST $DshUrl/api/session.prompt" -ForegroundColor Yellow
+        }
+        else {
+            Write-Host "[DRYRUN] RPC 3:   POST $DshUrl/api/session.prompt" -ForegroundColor Yellow
+        }
         Write-Host "[DRYRUN] payload: sessionId=<RPC 2 返回> mode=queue text=$pointerMessage" -ForegroundColor Yellow
         exit 0
     }
@@ -646,6 +762,14 @@ if ($mode -eq "dsh") {
     switch ($result.status) {
         "done" {
             Write-Ok "已在 dsh 内为 $Role 创建会话（preset: $preset, sessionId: $($result.sessionId)）"
+            if ($result.title) {
+                if ($result.title.pinned) {
+                    Write-Host "[i] 会话标题已钉住（user 源，不再随首消息重生成）: $($result.title.title)" -ForegroundColor Cyan
+                }
+                else {
+                    Write-Host "[!] 会话标题钉住失败（$($result.title.error)），已降级跳过——会话照常创建与派发" -ForegroundColor Yellow
+                }
+            }
             Write-Host "[i] 指针消息: $pointerMessage" -ForegroundColor Cyan
             Write-Host "[i] 新会话已出现在 Web GUI 侧栏，目标角色已自动开工，可点开查看进度" -ForegroundColor Cyan
             exit 0
@@ -667,6 +791,9 @@ if ($mode -eq "dsh") {
                 $reason = $failure.message
             }
             Write-Host "[x] 会话已创建（$($result.sessionId)）但指针消息发送失败: $reason" -ForegroundColor Red
+            if ($result.title -and -not $result.title.pinned) {
+                Write-Host "[!] 会话标题钉住亦失败（$($result.title.error)），已降级跳过" -ForegroundColor Yellow
+            }
             Write-Host "[!] 可在 Web GUI 侧栏点开该会话，手动粘贴发送下面的指针消息：" -ForegroundColor Yellow
             Write-Host "[i] 指针消息: $pointerMessage" -ForegroundColor Cyan
             exit 1

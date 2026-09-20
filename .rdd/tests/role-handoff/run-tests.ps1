@@ -1113,6 +1113,150 @@ function Test-GoalTreePointerMarker {
     Assert-All "TC-118" "指针标记段三后端同构：不传逐字节一致 / 传参尾部追加 goal-tree-run/node" $checks
 }
 
+# --- TC-119 直交标题：-Handoff 缺省标签推导 + -SessionLabel 覆盖（PSR-AC-1/2） -------------
+function Test-DirectSessionTitle {
+    $handoffPath = Join-Path $WorkDir "handoff-t3fix.json"
+    [System.IO.File]::WriteAllText($handoffPath, '{"packet":"fixture"}', (New-Object System.Text.UTF8Encoding($false)))
+    $checks = @()
+
+    # 缺省标签:handoff 文件 basename 去扩展
+    $mock = New-MockServer -Tag "t119a" -Responses @{
+        "agentPreset.list" = @{ kind = "ok"; value = @{ presets = @(@{ id = "rdd-qa" }) } }
+        "workspace.create" = @{ kind = "ok"; value = @{ workspace = @{ workspaceId = "ws-dt1" } } }
+        "session.create"   = @{ kind = "ok"; value = @{ sessionId = "sess-dt1" } }
+        "session.rename"   = @{ kind = "ok"; value = @{ title = "ok" } }
+        "session.prompt"   = @{ kind = "ok"; value = @{} }
+    }
+    try {
+        $r = Invoke-StartRole -Tag "t119a" -RoleArgs @("-Role", "QA", "-Handoff", $handoffPath, "-Project", $FixtureRoot, "-DshUrl", "http://127.0.0.1:$($mock.Port)") -EnvOverrides @{ DSH_WEB_URL = "http://127.0.0.1:3080"; RDD_RUNTIME = $null }
+        $log = Read-MockLog $mock
+        $ren = @($log | Where-Object { $_.method -eq "session.rename" })
+        $renCount = $ren.Count
+        $titleA = if ($renCount -ge 1) { [string]$ren[0].payload.title } else { "<no-rename>" }
+        $sidA = if ($renCount -ge 1) { [string]$ren[0].payload.sessionId } else { "<no-rename>" }
+        $promptCount = @($log | Where-Object { $_.method -eq "session.prompt" }).Count
+        $checks += @{ name = "直交缺省标签：rename title=[直交] handoff-t3fix·QA"; ok = ($r.exit -eq 0 -and $renCount -eq 1 -and $titleA -eq "[直交] handoff-t3fix·QA"); actual = "exit=$($r.exit); ren=$renCount; title=$titleA; out=$($r.all -replace "`r?`n", ' | ')" }
+        $checks += @{ name = "rename sessionId 与创建会话一致"; ok = ($renCount -eq 1 -and $sidA -eq "sess-dt1"); actual = $sidA }
+        $checks += @{ name = "指针照常发送（Handoff 模式 B2）"; ok = ($promptCount -eq 1); actual = "prompts=$promptCount" }
+    }
+    finally { & $mock.Stop }
+
+    # -SessionLabel 覆盖缺省推导(标题信息来自可选参数,不影响指针)
+    $mock2 = New-MockServer -Tag "t119b" -Responses @{
+        "agentPreset.list" = @{ kind = "ok"; value = @{ presets = @(@{ id = "rdd-dev" }) } }
+        "workspace.create" = @{ kind = "ok"; value = @{ workspace = @{ workspaceId = "ws-dt2" } } }
+        "session.create"   = @{ kind = "ok"; value = @{ sessionId = "sess-dt2" } }
+        "session.rename"   = @{ kind = "ok"; value = @{ title = "ok" } }
+        "session.prompt"   = @{ kind = "ok"; value = @{} }
+    }
+    try {
+        $r2 = Invoke-StartRole -Tag "t119b" -RoleArgs @("-Role", "DEV", "-Handoff", $handoffPath, "-SessionLabel", "T3-fix", "-Project", $FixtureRoot, "-DshUrl", "http://127.0.0.1:$($mock2.Port)") -EnvOverrides @{ DSH_WEB_URL = "http://127.0.0.1:3080"; RDD_RUNTIME = $null }
+        $log2 = Read-MockLog $mock2
+        $ren2 = @($log2 | Where-Object { $_.method -eq "session.rename" })
+        $ren2Count = $ren2.Count
+        $titleB = if ($ren2Count -ge 1) { [string]$ren2[0].payload.title } else { "<no-rename>" }
+        $prompts2 = @($log2 | Where-Object { $_.method -eq "session.prompt" })
+        $txt2 = if ($prompts2.Count -ge 1) { [string]$prompts2[0].payload.content[0].text } else { "<no-prompt>" }
+        $checks += @{ name = "-SessionLabel 覆盖：title=[直交] T3-fix·DEV"; ok = ($r2.exit -eq 0 -and $ren2Count -eq 1 -and $titleB -eq "[直交] T3-fix·DEV"); actual = "exit=$($r2.exit); title=$titleB; out=$(($r2.stdout + $r2.stderr) -replace "`r?`n", ' | ')" }
+        $checks += @{ name = "指针不受 -SessionLabel 影响（含 handoff 路径,正斜杠规范化）"; ok = ($txt2.Contains(($handoffPath -replace '\\', '/'))); actual = "text=$txt2" }
+    }
+    finally { & $mock2.Stop }
+
+    Assert-All "TC-119" "直交标题钉住：-Handoff 缺省标签 basename 推导 + -SessionLabel 覆盖，指针不受影响" $checks
+}
+
+# --- TC-120 PLANNER 标题：-RunId 直推与 -TaskJson 归档名推导（PSR-AC-1/2） -------------------
+function Test-PlannerSessionTitle {
+    $checks = @()
+    # (a) -RunId 续跑形态:deliver- 前缀 + 日期前缀均剥离
+    $mock = New-MockServer -Tag "t120a" -Responses @{
+        "agentPreset.list" = @{ kind = "ok"; value = @{ presets = @(@{ id = "rdd-planner" }, @{ id = "default" }) } }
+        "workspace.create" = @{ kind = "ok"; value = @{ workspace = @{ workspaceId = "ws-p1" } } }
+        "session.create"   = @{ kind = "ok"; value = @{ sessionId = "sess-p1" } }
+        "session.rename"   = @{ kind = "ok"; value = @{ title = "ok" } }
+        "session.prompt"   = @{ kind = "ok"; value = @{} }
+    }
+    try {
+        $r = Invoke-StartRole -Tag "t120a" -RoleArgs @("-Role", "PLANNER", "-RunId", "deliver-2099-12-31-demo-run", "-Project", $FixtureRoot, "-DshUrl", "http://127.0.0.1:$($mock.Port)") -EnvOverrides @{ DSH_WEB_URL = "http://127.0.0.1:3080"; RDD_RUNTIME = $null }
+        $log = Read-MockLog $mock
+        $ren = @($log | Where-Object { $_.method -eq "session.rename" })
+        $titleA = if ($ren.Count -ge 1) { [string]$ren[0].payload.title } else { "<no-rename>" }
+        $checks += @{ name = "PLANNER -RunId 形态：title=[PLANNER] demo-run"; ok = ($r.exit -eq 0 -and $ren.Count -eq 1 -and $titleA -eq "[PLANNER] demo-run"); actual = "exit=$($r.exit); title=$titleA; out=$($r.all -replace "`r?`n", ' | ')" }
+    }
+    finally { & $mock.Stop }
+    # (b) -TaskJson 归档名推导形态(归档无活跃 run → probe 放行):fixture 归档名无日期前缀,短名=归档名
+    $mock2 = New-MockServer -Tag "t120b" -Responses @{
+        "agentPreset.list" = @{ kind = "ok"; value = @{ presets = @(@{ id = "rdd-planner" }, @{ id = "default" }) } }
+        "workspace.create" = @{ kind = "ok"; value = @{ workspace = @{ workspaceId = "ws-p2" } } }
+        "session.create"   = @{ kind = "ok"; value = @{ sessionId = "sess-p2" } }
+        "session.rename"   = @{ kind = "ok"; value = @{ title = "ok" } }
+        "session.prompt"   = @{ kind = "ok"; value = @{} }
+    }
+    try {
+        $r2 = Invoke-StartRole -Tag "t120b" -RoleArgs @("-Role", "PLANNER", "-TaskJson", $TaskJson, "-Project", $FixtureRoot, "-DshUrl", "http://127.0.0.1:$($mock2.Port)") -EnvOverrides @{ DSH_WEB_URL = "http://127.0.0.1:3080"; RDD_RUNTIME = $null }
+        $log2 = Read-MockLog $mock2
+        $ren2 = @($log2 | Where-Object { $_.method -eq "session.rename" })
+        $titleB = if ($ren2.Count -ge 1) { [string]$ren2[0].payload.title } else { "<no-rename>" }
+        $checks += @{ name = "PLANNER -TaskJson 形态：title=[PLANNER] $FixtureName（归档名去前缀）"; ok = ($r2.exit -eq 0 -and $ren2.Count -eq 1 -and $titleB -eq "[PLANNER] $FixtureName"); actual = "exit=$($r2.exit); title=$titleB; out=$($r2.all -replace "`r?`n", ' | ')" }
+    }
+    finally { & $mock2.Stop }
+
+    Assert-All "TC-120" "PLANNER 本体标题钉住：-RunId 直推与 -TaskJson 归档名推导（run 短名去日期前缀）" $checks
+}
+
+# --- TC-121 改名失败降级：警告不阻断，会话照常创建与派发（PSR-AC-4） -------------------------
+function Test-RenameFailureDegrades {
+    $handoffPath = Join-Path $WorkDir "handoff-deg.json"
+    [System.IO.File]::WriteAllText($handoffPath, '{"packet":"fixture"}', (New-Object System.Text.UTF8Encoding($false)))
+    $checks = @()
+    $mock = New-MockServer -Tag "t121" -Responses @{
+        "agentPreset.list" = @{ kind = "ok"; value = @{ presets = @(@{ id = "rdd-qa" }) } }
+        "workspace.create" = @{ kind = "ok"; value = @{ workspace = @{ workspaceId = "ws-dg" } } }
+        "session.create"   = @{ kind = "ok"; value = @{ sessionId = "sess-dg" } }
+        "session.rename"   = @{ kind = "error"; code = "MOCK_RENAME_FAIL"; message = "mock rename failure" }
+        "session.prompt"   = @{ kind = "ok"; value = @{} }
+    }
+    try {
+        $r = Invoke-StartRole -Tag "t121" -RoleArgs @("-Role", "QA", "-Handoff", $handoffPath, "-Project", $FixtureRoot, "-DshUrl", "http://127.0.0.1:$($mock.Port)") -EnvOverrides @{ DSH_WEB_URL = "http://127.0.0.1:3080"; RDD_RUNTIME = $null }
+        $log = Read-MockLog $mock
+        $all = $r.stdout + $r.stderr
+        $checks += @{ name = "rename 失败不阻断：exit 0"; ok = ($r.exit -eq 0); actual = "exit=$($r.exit); out=$($all -replace "`r?`n", ' | ')" }
+        $checks += @{ name = "输出含降级警告与服务端错误码"; ok = ($all.Contains("会话标题钉住失败") -and $all.Contains("MOCK_RENAME_FAIL") -and $all.Contains("降级")); actual = "out=$($all -replace "`r?`n", ' | ')" }
+        $checks += @{ name = "指针照常发送"; ok = (@($log | Where-Object { $_.method -eq "session.prompt" }).Count -eq 1); actual = "prompts=$(@($log | Where-Object { $_.method -eq 'session.prompt' }).Count)" }
+    }
+    finally { & $mock.Stop }
+    Assert-All "TC-121" "改名失败降级：警告打印、错误码可见、会话照常创建与派发（与使命参数 fail-loud 刻意相反）" $checks
+}
+
+# --- TC-122 仅 dsh 后端改名：Plus/CLI 零 rename 痕迹 + dsh DryRun 预览形态（PSR-AC-5/6） ----
+function Test-RenameBackendBoundary {
+    $handoffPath = Join-Path $WorkDir "handoff-bb.json"
+    [System.IO.File]::WriteAllText($handoffPath, '{"packet":"fixture"}', (New-Object System.Text.UTF8Encoding($false)))
+    $checks = @()
+    # Plus 后端:带 -SessionLabel DryRun,不出现 rename 痕迹
+    $plus = Invoke-StartRole -Tag "t122a" -RoleArgs @("-Role", "QA", "-TaskJson", $TaskJson, "-Project", $FixtureRoot, "-EmployeeId", "uuid-rl", "-SessionLabel", "lbl", "-DryRun") -EnvOverrides @{ DSH_WEB_URL = $null; RDD_RUNTIME = "app" }
+    $checks += @{ name = "Plus DryRun：零 session.rename 痕迹且不报错"; ok = ($plus.exit -eq 0 -and -not $plus.stdout.Contains("session.rename")); actual = "exit=$($plus.exit)" }
+    # CLI 后端(依赖宿主 opencode,缺失记 SKIP,同 TC-020 口径)
+    $opencode = Get-Command opencode.cmd, opencode.exe, opencode.bat -ErrorAction SilentlyContinue | Select-Object -First 1
+    if (-not $opencode) {
+        $oc = Get-Command opencode -ErrorAction SilentlyContinue | Where-Object { $_.Extension -ne ".ps1" } | Select-Object -First 1
+        $opencode = $oc
+    }
+    if (-not $opencode) {
+        $checks += @{ name = "CLI DryRun（零 rename）"; ok = $true; actual = "SKIP：环境缺 opencode（与 TC-020 同口径）" }
+    }
+    else {
+        $cli = Invoke-StartRole -Tag "t122b" -RoleArgs @("-Role", "QA", "-TaskJson", $TaskJson, "-Project", $FixtureRoot, "-SessionLabel", "lbl", "-DryRun") -EnvOverrides @{ DSH_WEB_URL = $null; RDD_RUNTIME = $null }
+        $checks += @{ name = "CLI DryRun：零 session.rename 痕迹且不报错"; ok = ($cli.exit -eq 0 -and -not $cli.stdout.Contains("session.rename")); actual = "exit=$($cli.exit)" }
+    }
+    # dsh 后端 DryRun:无标记普通形态 RPC 3 仍为 prompt(逐字节锚);直交形态预览 rename(RPC 3)+prompt(RPC 4)
+    $dryPlain = Invoke-StartRole -Tag "t122c" -RoleArgs @("-Role", "QA", "-TaskId", "1", "-TaskJson", $TaskJson, "-Project", $FixtureRoot, "-DryRun") -EnvOverrides @{ DSH_WEB_URL = "http://127.0.0.1:3080"; RDD_RUNTIME = $null }
+    $checks += @{ name = "dsh DryRun 无标记：RPC 3 = session.prompt 且零 rename 行"; ok = ($dryPlain.exit -eq 0 -and $dryPlain.stdout -match "RPC 3:\s+POST \S+/api/session\.prompt" -and -not $dryPlain.stdout.Contains("session.rename")); actual = "exit=$($dryPlain.exit)" }
+    $dryDirect = Invoke-StartRole -Tag "t122d" -RoleArgs @("-Role", "QA", "-Handoff", $handoffPath, "-SessionLabel", "bb-lbl", "-Project", $FixtureRoot, "-DryRun") -EnvOverrides @{ DSH_WEB_URL = "http://127.0.0.1:3080"; RDD_RUNTIME = $null }
+    $checks += @{ name = "dsh DryRun 直交：RPC 3 = rename、RPC 4 = prompt、载荷含标题"; ok = ($dryDirect.exit -eq 0 -and $dryDirect.stdout -match "RPC 3:\s+POST \S+/api/session\.rename" -and $dryDirect.stdout -match "RPC 4:\s+POST \S+/api/session\.prompt" -and $dryDirect.stdout.Contains("[直交] bb-lbl·QA")); actual = "exit=$($dryDirect.exit)" }
+    Assert-All "TC-122" "仅 dsh 后端改名：Plus/CLI 传 -SessionLabel 零 rename 且不报错；dsh DryRun 无标记逐字节锚/直交预览 rename" $checks
+}
+
 
 # --- 执行 ---------------------------------------------------------------------
 
@@ -1147,6 +1291,10 @@ try {
     Test-LongTaskDocsAndArtifactsSynced
     Test-GoalTreeBranchDocs
     Test-GoalTreePointerMarker
+    Test-DirectSessionTitle
+    Test-PlannerSessionTitle
+    Test-RenameFailureDegrades
+    Test-RenameBackendBoundary
 }
 finally {
     Remove-Item -LiteralPath $WorkDir -Recurse -Force -ErrorAction SilentlyContinue

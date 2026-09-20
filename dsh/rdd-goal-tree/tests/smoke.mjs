@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 /**
  * Smoke checks for the built bundle — run AFTER `node scripts/build-dsh-goal-tree.mjs`:
- *   1. aggregateGoalTrees against the real demo run (.rdd/goal-trees/dsh-demo)
- *      and the degenerate cases (missing root, manifest-only run)
+ *   1. aggregateGoalTrees against a seeded legacy demo run (temp fixture,
+ *      pre-sidecar shape) and the degenerate cases (missing root, manifest-only run)
  *   2. session-binding sidecar joins: claims/<node>.json + planner.json
  *      (focused worker view / Planner callback target), plus collectReportEntries
  *   2b. goal-root aggregation: type passthrough on nodes and counts excluding
@@ -23,7 +23,28 @@ import { aggregateGoalTrees, artifactLine, collectReportEntries } from '../lib/g
 // --- 1. aggregation -----------------------------------------------------------
 {
   const repoRoot = process.cwd()
-  const { runs } = await aggregateGoalTrees(join(repoRoot, '.rdd', 'goal-trees'))
+  // legacy demo run seeded as a temp fixture (pre-sidecar shape) — the repo's
+  // .rdd/goal-trees/ keeps only real runs, nothing test-owned
+  const demoRoot = join(tmpdir(), `rdgt-smoke-demo-${Date.now()}`)
+  const demoState = join(demoRoot, 'dsh-demo', 'state')
+  mkdirSync(demoState, { recursive: true })
+  writeFileSync(join(demoRoot, 'dsh-demo', 'manifest.json'), JSON.stringify({
+    run_id: 'dsh-demo', state: 'running', goal: 'demo goal tree for smoke',
+    created_by: 'qa-fixture', created_at: '2026-09-20T06:53:02Z',
+    budget: { node_width: 2, max_rounds: 5, max_nodes: 30 },
+  }))
+  writeFileSync(join(demoState, 'tree.json'), JSON.stringify({
+    format_version: 1, updated_at: '2026-09-20T06:53:02Z', run_id: 'dsh-demo',
+    nodes: [
+      { id: 'n1', parent: null, title: 'root', task: 'root task', status: 'pending', depends_on: [] },
+      { id: 'n2', parent: 'n1', title: 'leaf-claimed', task: 'claimed task', status: 'claimed', claimed_by: 'demo-ui', depends_on: [] },
+      { id: 'n3', parent: 'n1', title: 'leaf-pending-a', task: 'pending task a', status: 'pending', depends_on: [] },
+      { id: 'n4', parent: 'n1', title: 'leaf-pending-b', task: 'pending task b', status: 'pending', depends_on: [] },
+    ],
+  }))
+  writeFileSync(join(demoState, 'round-log.jsonl'), `${JSON.stringify({ event: 'round-start', round: 1, at: '2026-09-20T06:53:02Z' })}\n`)
+
+  const { runs } = await aggregateGoalTrees(demoRoot)
   const demo = runs.find(run => run.runId === 'dsh-demo')
   assert.ok(demo !== undefined, 'dsh-demo run aggregated')
   assert.equal(demo.state, 'running')
@@ -41,7 +62,13 @@ import { aggregateGoalTrees, artifactLine, collectReportEntries } from '../lib/g
   // legacy run (created before the sidecars existed): joins degrade to null
   assert.equal(demo.plannerSessionId, null, 'legacy run: plannerSessionId null')
   assert.equal(claimed.claimSessionId, null, 'legacy claim: claimSessionId null')
-  console.log('[smoke] aggregation against dsh-demo OK')
+  rmSync(demoRoot, { recursive: true, force: true })
+  console.log('[smoke] aggregation against seeded legacy demo run OK')
+
+  // the live repo root (real delivery runs, if any) must aggregate without throwing
+  const live = await aggregateGoalTrees(join(repoRoot, '.rdd', 'goal-trees'))
+  assert.ok(Array.isArray(live.runs), 'live repo root aggregates')
+  console.log('[smoke] live repo root aggregates without throwing OK')
 
   const missing = await aggregateGoalTrees(join(repoRoot, '.rdd', 'definitely-not-here'))
   assert.deepEqual(missing, { runs: [] })

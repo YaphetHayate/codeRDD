@@ -13,7 +13,7 @@
     "testCode":  [
                      ".rdd/tests/delivery-bridge/delivery-bridge-verify.ps1"
                  ],
-    "lastChange":  "2026-09-20-planner-capability-optimization",
+    "lastChange":  "2026-09-20-planner-session-roster",
     "cases":  [
                   {
                       "id":  "TC-B01",
@@ -749,6 +749,142 @@
                                     "status 触碰自动推送后读 mock 日志 QA 指针"
                                 ],
                       "expected":  "QA 节点 task 以「目标：完成「T1 bottom」的 QA 阶段（测试与验收）。」开头(StageDuty 职责映射),含需求文档/归档引用与「开工动作（辅助）」尾段(占位符形态);推送指针含目标段且 claim 命令带真实 QA nodeId,marker 居末——第二构造点(graft)与 promulgate 同构"
-                  }
+                  },
+                   {
+                       "id":  "TC-B38",
+                       "title":  "桥接派发标题钉住:autopush 后 session.rename(user 源)先于同会话 prompt,载荷 title=[run短名] T#·角色·节点,sessionId 各归不同会话",
+                       "type":  "positive",
+                       "priority":  "P0",
+                       "acceptance":  "PSR-AC-1",
+                       "codeRef":  ".rdd/tests/delivery-bridge/delivery-bridge-verify.ps1:1637",
+                       "sourceChange":  "2026-09-20-planner-session-roster",
+                       "status":  "active",
+                       "crossFeature":  [
+                                            "role-handoff"
+                                        ],
+                       "precondition":  "mock 载波 session.create 以 seq 规则逐次返回不同 sessionId(桥接回写 upsert 键)",
+                       "steps":  [
+                                     "fixture promulgate(autopush n2/n4)",
+                                     "读 mock 日志 session.rename 条目",
+                                     "断言 n2/n4 标题形态、sessionId 互异、rename 行序先于同节点 prompt"
+                                 ],
+                       "expected":  "rename 恰 2 次(planner 本体不经 start-role 改名);n2=[短名] T1·DEV·n2、n4=[短名] T3·CTO·n4;两 rename sessionId 互异且来自 seq 回包;rename 先于同节点指针(钉住早于首消息,防自动标题竞态)"
+                   },
+                   {
+                       "id":  "TC-B39",
+                       "title":  "花名册落盘:promulgate 后 sessions.json 含 planner 本体行+桥接派发行,字段 session_id/role/node/source/title/created_at 齐;status 经 sessions 字段透出",
+                       "type":  "positive",
+                       "priority":  "P0",
+                       "acceptance":  "PSR-AC-3",
+                       "codeRef":  ".rdd/tests/delivery-bridge/delivery-bridge-verify.ps1:1666",
+                       "sourceChange":  "2026-09-20-planner-session-roster",
+                       "status":  "active",
+                       "crossFeature":  [
+                                            "role-handoff"
+                                        ],
+                       "precondition":  "套件注入 DSH_SESSION_ID=qa-bridge-mock(planner 本体自登记键);session.create seq 回包",
+                       "steps":  [
+                                     "fixture promulgate",
+                                     "读 run 目录 sessions.json",
+                                     "status 读 sessions 字段"
+                                 ],
+                       "expected":  "3 行:planner(session_id=DSH_SESSION_ID,source=planner,title=[PLANNER] 短名)+n2/n4 桥接行(source=bridge-dispatch,role/node 对应,title 与 rename 同构);全行 created_at/updated_at 齐;status sessions 透出 planner 与桥接行"
+                   },
+                   {
+                       "id":  "TC-B40",
+                       "title":  "register-session 直交登记:合法参数入册(source=direct,title=[直交] 标签·角色),status 可溯源,next_step 指向 status",
+                       "type":  "positive",
+                       "priority":  "P0",
+                       "acceptance":  "PSR-AC-3",
+                       "codeRef":  ".rdd/tests/delivery-bridge/delivery-bridge-verify.ps1:1701",
+                       "sourceChange":  "2026-09-20-planner-session-roster",
+                       "status":  "active",
+                       "crossFeature":  [
+
+                                        ],
+                       "precondition":  "fixture run 已颁布",
+                       "steps":  [
+                                     "register-session -SessionId sess-direct-1 -Label T3-fix -Role DEV",
+                                     "读返回值与 sessions.json",
+                                     "status 复核"
+                                 ],
+                       "expected":  "registered=true;title=[直交] T3-fix·DEV;source=direct;label/node 字段正确(直交无 node);next_step 指向 status;status sessions 含该行——树外直交会话不再零登记"
+                   },
+                   {
+                       "id":  "TC-B41",
+                       "title":  "register-session 确定性校验:缺 SessionId/非法格式/PLANNER 或非法 Role/缺 Label 均拒绝(错误码+exit 1)",
+                       "type":  "negative",
+                       "priority":  "P1",
+                       "acceptance":  "PSR-AC-3",
+                       "codeRef":  ".rdd/tests/delivery-bridge/delivery-bridge-verify.ps1:1719",
+                       "sourceChange":  "2026-09-20-planner-session-roster",
+                       "status":  "active",
+                       "crossFeature":  [
+
+                                        ],
+                       "steps":  [
+                                     "五场景逐一调用:缺 SessionId/坏格式 id/Role=PLANNER/Role=MANAGER/缺 Label"
+                                 ],
+                       "expected":  "MISSING_SESSION_ID/SESSION_ID_INVALID/ROLE_INVALID(PLANNER 只经 promulgate 自登记)/ROLE_INVALID/LABEL_REQUIRED,全部 exit 1 确定性拒绝,无半登记状态"
+                   },
+                   {
+                       "id":  "TC-B42",
+                       "title":  "幂等 upsert:同 sessionId 重复登记不增行,created_at 保留;resume 再登记 planner 行不重复",
+                       "type":  "boundary",
+                       "priority":  "P1",
+                       "acceptance":  "PSR-AC-3",
+                       "codeRef":  ".rdd/tests/delivery-bridge/delivery-bridge-verify.ps1:1736",
+                       "sourceChange":  "2026-09-20-planner-session-roster",
+                       "status":  "active",
+                       "crossFeature":  [
+
+                                        ],
+                       "steps":  [
+                                     "同 SessionId 二次 register-session(改 label/role)",
+                                     "resume 后读花名册"
+                                 ],
+                       "expected":  "行数不变(改行不增行);label/role 刷新;created_at 保留首登时间;resume 后 planner 行仍 1 条——重复派发/规划者换手不膨胀花名册"
+                   },
+                   {
+                       "id":  "TC-B43",
+                       "title":  "改名失败降级不阻断:mock 注入 session.rename 业务错误 → 推送照常成功(pushed 含节点),指针照常发送,花名册照常回写",
+                       "type":  "negative",
+                       "priority":  "P0",
+                       "acceptance":  "PSR-AC-4",
+                       "codeRef":  ".rdd/tests/delivery-bridge/delivery-bridge-verify.ps1:1755",
+                       "sourceChange":  "2026-09-20-planner-session-roster",
+                       "status":  "active",
+                       "crossFeature":  [
+                                            "role-handoff"
+                                        ],
+                       "precondition":  "mock 注入 session.rename error + session.create seq 回包",
+                       "steps":  [
+                                     "注入规则后 promulgate",
+                                     "读 auto_push.pushed 与 mock 日志",
+                                     "读 sessions.json"
+                                 ],
+                       "expected":  "promulgate exit 0(降级不阻断);n2/n4 均 pushed;rename 被真实调用(注入有判别力)且失败后指针照常发送;花名册 n2/n4 行照常落盘(回写从 start-role 输出抓 sessionId,与 rename 无关)——标题是展示性信息,与使命参数 fail-loud 刻意相反"
+                   },
+                   {
+                       "id":  "TC-B44",
+                       "title":  "回归锚:普通 4 步交接(无 goal-tree/无 handoff/无 label)零 rename 调用、指针逐字节保持、无花名册副作用;DryRun 预览无标记保持 legacy RPC 行,带标记预览 rename(RPC 3)+prompt(RPC 4)",
+                       "type":  "boundary",
+                       "priority":  "P0",
+                       "acceptance":  "PSR-AC-5",
+                       "codeRef":  ".rdd/tests/delivery-bridge/delivery-bridge-verify.ps1:1777",
+                       "sourceChange":  "2026-09-20-planner-session-roster",
+                       "status":  "active",
+                       "crossFeature":  [
+                                            "role-handoff"
+                                        ],
+                       "precondition":  "fixture 归档不 promulgate(普通直调形态);mock 载波在场",
+                       "steps":  [
+                                     "start-role.cmd -Role QA -TaskId 1 直调(无新参)",
+                                     "读 mock 日志 rename 计数与最后一条 prompt",
+                                     "检查 run 目录与归档目录无 sessions.json",
+                                     "无标记/带标记 DryRun 各一次,读 RPC 预览行"
+                                 ],
+                       "expected":  "exit 0;零 session.rename;指针=「请处理 <fixture 相对路径>/ 下的需求。」逐字节旧形态;无花名册副作用;无标记 DryRun RPC 3 仍为 session.prompt;带标记 DryRun RPC 3=rename、RPC 4=prompt 且载荷含 [短名] T1·QA·n2——未采用者零影响"
+                   }
               ]
 }

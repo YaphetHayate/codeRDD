@@ -56,10 +56,10 @@
       "testCode": [
         ".rdd/tests/delivery-bridge/delivery-bridge-verify.ps1"
       ],
-      "activeCount": 37,
+      "activeCount": 44,
       "deprecatedCount": 0,
       "lastUpdated": "2026-09-20",
-      "lastChange": "2026-09-20-planner-capability-optimization"
+      "lastChange": "2026-09-20-planner-session-roster"
     },
     {
       "feature": "investigation-role-cards",
@@ -99,10 +99,10 @@
         "scripts/install-rdd-skills.ps1"
       ],
       "testCode": [".rdd/tests/role-handoff/run-tests.ps1"],
-      "activeCount": 30,
+      "activeCount": 34,
       "deprecatedCount": 0,
-      "lastUpdated": "2026-09-19",
-      "lastChange": "2026-09-18-planner-goal-tree-upgrade"
+      "lastUpdated": "2026-09-20",
+      "lastChange": "2026-09-20-planner-session-roster"
     }
   ]
 }

@@ -29,6 +29,9 @@
 #   payload    派发任务锚定与目标透出(dispatch-task-goal-anchoring TGA-AC-1~4):node.task 目标为主单源落盘
 #              (promulgate+graft 双构造点)/指针消息目标段三后端一致/旧格式保守降级零注入/标题与总长截断边界
 #              —— TC-B33~B37(2026-09-20-planner-capability-optimization)
+#   roster     派生会话标题与花名册(planner-session-roster PSR-AC):桥接派发 session.rename 钉住(先于 prompt)/
+#              sessions.json 三来源(planner 本体+桥接回写+直交登记)/register-session 校验与幂等/改名失败降级/
+#              普通 4 步交接零改名零花名册回归锚 —— TC-B38~B44(2026-09-20-planner-session-roster)
 #   all        全部
 #
 # 严重度语义:P0 失败=阻塞(退出码 1);P1 失败=严重不阻塞;P2 失败=备忘警告(WARN)。
@@ -42,7 +45,7 @@
 # (alive/dead/unknown,TC-B17 切规则覆盖);原环境变量在退出时恢复。
 
 param(
-    [ValidateSet("all", "promulgate", "claim", "settle", "recover", "conclude", "regression", "compat", "autopush", "callback", "review", "uniqueness", "payload")]
+    [ValidateSet("all", "promulgate", "claim", "settle", "recover", "conclude", "regression", "compat", "autopush", "callback", "review", "uniqueness", "payload", "roster")]
     [string]$Suite = "all",
     [switch]$KeepRuns,
     [switch]$Json
@@ -231,6 +234,7 @@ $server = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Loopback
 $server.Start()
 $port = ([System.Net.IPEndPoint]$server.LocalEndpoint).Port
 [System.IO.File]::WriteAllText($cfg.readyFile, "$port")
+$seqCounters = @{}
 try {
     while (-not (Test-Path -LiteralPath $cfg.stopFile)) {
         if (-not $server.Pending()) { Start-Sleep -Milliseconds 25; continue }
@@ -295,6 +299,13 @@ try {
                 $result = @{ ok = $true; value = @{} }
                 if ($null -ne $rule -and [string]$rule.kind -eq "error") {
                     $result = @{ ok = $false; error = @{ code = [string]$rule.code; message = [string]$rule.message; details = @{} } }
+                }
+                elseif ($null -ne $rule -and [string]$rule.kind -eq "seq") {
+                    # 逐次返回 values 轮换值(模拟每次 session.create 返回不同 sessionId)
+                    $i = 0
+                    if ($seqCounters.ContainsKey($method)) { $i = $seqCounters[$method] }
+                    $seqCounters[$method] = $i + 1
+                    $result = @{ ok = $true; value = $rule.values[$i % $rule.values.Count] }
                 }
                 elseif ($null -ne $rule -and $null -ne $rule.value) {
                     $result = @{ ok = $true; value = $rule.value }
@@ -1614,6 +1625,194 @@ function Suite-Payload {
 }
 
 # ============================================================
+# 套件:roster — TC-B38 ~ TC-B44(PSR-AC planner-session-roster:
+# 派生会话标题钉住 + run 级会话花名册 + 降级与回归锚)
+# ============================================================
+
+function Read-RosterJson { param([string]$Id) (Read-RunFileText $Id "sessions.json") | ConvertFrom-Json }
+
+function Suite-Roster {
+    Write-Host "`n== suite: roster (PSR-AC 派生会话标题钉住与花名册) =="
+
+    Run-Tc "TC-B38" "桥接派发标题钉住:autopush 后 session.rename(user 源)先于同会话 prompt,载荷 title=[run短名] T#·角色·节点,sessionId 与创建回包一致" "P0" "PSR-AC-1" {
+        param($c)
+        $fx = New-FixtureArchive "rs38"
+        # session.create 逐次返回不同 sessionId(seq 规则):n2/n4 各自成立,n4 不 upsert 覆盖 n2
+        Set-DshMockRule -Methods @{ "session.create" = @{ kind = "seq"; values = @( @{ sessionId = "sess-rs38-n2" }, @{ sessionId = "sess-rs38-n4" } ) } }
+        $r = TB @("-Command", "promulgate", "-TaskJson", (Join-Path $fx.dir "task.json"))
+        Assert $c ($r.exit -eq 0 -and $r.json.success) "promulgate 失败: $($r.text)"
+        Set-DshMockRule
+        $short = $fx.name -replace '^\d{4}-\d{2}-\d{2}-', ''
+        $log = Read-DshMockLog
+        # mock 日志为整套件累积(载波全程单实例;既有用例以内容过滤/前后差量隔离)——
+        # 以 fixture 唯一的标题圈定本用例 rename,不计入其他套件推送的改名
+        $titleN2 = "[$short] T1·DEV·n2"
+        $titleN4 = "[$short] T3·CTO·n4"
+        $renames = @($log | Where-Object { $_.method -eq "session.rename" -and (([string]$_.payload.title -eq $titleN2) -or ([string]$_.payload.title -eq $titleN4)) })
+        Assert $c ($renames.Count -eq 2) "rename 调用数 $($renames.Count),期望 2(n2/n4 各一次,planner 本体不经 start-role 改名)"
+        $renN2 = @($renames | Where-Object { [string]$_.payload.title -eq $titleN2 })
+        $renN4 = @($renames | Where-Object { [string]$_.payload.title -eq $titleN4 })
+        Assert $c ($renN2.Count -eq 1 -and $renN4.Count -eq 1) "标题形态异常: n2=$(ConvertTo-Json $renN2.Count -Compress)/n4=$(ConvertTo-Json $renN4.Count -Compress),期望各 1($titleN2 / $titleN4)"
+        $sidN2 = [string]$renN2[0].payload.sessionId
+        $sidN4 = [string]$renN4[0].payload.sessionId
+        Assert $c ((@("sess-rs38-n2", "sess-rs38-n4") -contains $sidN2) -and (@("sess-rs38-n2", "sess-rs38-n4") -contains $sidN4) -and ($sidN2 -ne $sidN4)) "rename sessionId 应各归不同会话: n2=$sidN2 n4=$sidN4(期望互异且来自 seq 回包,不耦合推送顺序)"
+        # rename 先于同节点 prompt(钉住早于首消息,防自动标题竞态);指针按本用例
+        # seq sessionId 圈定(所有 fixture 的节点都叫 n2,文本匹配会命中其他用例)
+        $idxAll = @($log)
+        $renIdx = [array]::IndexOf($idxAll, $renN2[0])
+        $promptN2 = @($idxAll | Where-Object { $_.method -eq "session.prompt" -and ([string]$_.payload.sessionId -eq $sidN2) })
+        Assert $c ($promptN2.Count -ge 1) "mock 日志缺 n2 指针(无法断言 rename→prompt 次序)"
+        $promptIdx = [array]::IndexOf($idxAll, $promptN2[0])
+        Assert $c ($renIdx -lt $promptIdx) "rename(行 $renIdx) 未先于 n2 prompt(行 $promptIdx)"
+    }
+
+    Run-Tc "TC-B39" "花名册落盘:promulgate 后 sessions.json 含 planner 本体行 + 桥接派发行,字段 session_id/role/node/source/title/created_at 齐;status 经 sessions 字段透出" "P0" "PSR-AC-3" {
+        param($c)
+        $fx = New-FixtureArchive "rs39"
+        Set-DshMockRule -Methods @{ "session.create" = @{ kind = "seq"; values = @( @{ sessionId = "sess-rs39-n2" }, @{ sessionId = "sess-rs39-n4" } ) } }
+        $r = TB @("-Command", "promulgate", "-TaskJson", (Join-Path $fx.dir "task.json"))
+        Assert $c ($r.exit -eq 0 -and $r.json.success) "promulgate 失败: $($r.text)"
+        Set-DshMockRule
+        $short = $fx.name -replace '^\d{4}-\d{2}-\d{2}-', ''
+        $rosterPath = Join-Path (Get-RunDirPath $fx.run_id) "sessions.json"
+        Assert $c (Test-Path -LiteralPath $rosterPath) "run 目录未落 sessions.json"
+        $roster = Read-RosterJson $fx.run_id
+        $rows = @($roster.sessions)
+        Assert $c ($rows.Count -eq 3) "花名册行数 $($rows.Count),期望 3(planner 本体 + n2/n4 桥接)"
+        $plannerRow = @($rows | Where-Object { [string]$_.source -eq "planner" })
+        Assert $c ($plannerRow.Count -eq 1) "planner 本体行缺失(DSH_SESSION_ID 自登记)"
+        Assert $c ([string]$plannerRow[0].session_id -eq "qa-bridge-mock" -and [string]$plannerRow[0].role -eq "PLANNER") "planner 行字段异常: $(ConvertTo-Json $plannerRow[0] -Compress)"
+        Assert $c ([string]$plannerRow[0].title -eq "[PLANNER] $short") "planner 行 title=$($plannerRow[0].title),期望 [PLANNER] $short"
+        $bridgeN2 = @($rows | Where-Object { [string]$_.node -eq "n2" })
+        Assert $c ($bridgeN2.Count -eq 1 -and [string]$bridgeN2[0].source -eq "bridge-dispatch" -and [string]$bridgeN2[0].role -eq "DEV") "n2 桥接行字段异常: $(ConvertTo-Json $bridgeN2[0] -Compress)"
+        Assert $c ([string]$bridgeN2[0].title -eq "[$short] T1·DEV·n2") "n2 桥接行 title 异常"
+        $bridgeN4 = @($rows | Where-Object { [string]$_.node -eq "n4" })
+        $ridN2 = [string]$bridgeN2[0].session_id
+        $ridN4 = [string]$bridgeN4[0].session_id
+        Assert $c ((@("sess-rs39-n2", "sess-rs39-n4") -contains $ridN2) -and (@("sess-rs39-n2", "sess-rs39-n4") -contains $ridN4) -and ($ridN2 -ne $ridN4)) "n2/n4 桥接行 session_id 应互异且来自 seq 回包: n2=$ridN2 n4=$ridN4"
+        foreach ($row in $rows) {
+            Assert $c ([string]$row.created_at -ne "" -and [string]$row.updated_at -ne "") "行缺时间戳: $(ConvertTo-Json $row -Compress)"
+        }
+        # status 透出
+        $st = TB @("-Command", "status", "-RunId", $fx.run_id)
+        Assert $c ($st.exit -eq 0 -and $st.json.success) "status 失败: $($st.text)"
+        $srows = @($st.json.data.sessions)
+        Assert $c (@($srows | Where-Object { [string]$_.session_id -eq "qa-bridge-mock" }).Count -eq 1) "status sessions 未透出 planner 行"
+        Assert $c (@($srows | Where-Object { [string]$_.session_id -in @("sess-rs39-n2", "sess-rs39-n4") }).Count -eq 2) "status sessions 未透出桥接行"
+    }
+
+    Run-Tc "TC-B40" "register-session 直交登记:合法参数入册(source=direct,title=[直交] 标签·角色),status 可溯源,next_step 指向 status" "P0" "PSR-AC-3" {
+        param($c)
+        $fx = New-FixtureArchive "rs40"
+        $null = TB @("-Command", "promulgate", "-TaskJson", (Join-Path $fx.dir "task.json"))
+        $r = TB @("-Command", "register-session", "-RunId", $fx.run_id, "-SessionId", "sess-direct-1", "-Label", "T3-fix", "-Role", "DEV")
+        Assert $c ($r.exit -eq 0 -and $r.json.success) "register-session 失败: $($r.text)"
+        $d = $r.json.data
+        Assert $c ($d.registered -eq $true) "registered 标志异常"
+        Assert $c ([string]$d.session.title -eq "[直交] T3-fix·DEV") "直交 title 异常: $($d.session.title)"
+        Assert $c ([string]$d.session.source -eq "direct" -and [string]$d.session.label -eq "T3-fix") "直交行 source/label 异常"
+        Assert $c ([string]$d.next_step -like "*status*") "next_step 未指向 status 溯源"
+        $rows = @((Read-RosterJson $fx.run_id).sessions)
+        $direct = @($rows | Where-Object { [string]$_.session_id -eq "sess-direct-1" })
+        Assert $c ($direct.Count -eq 1 -and [string]$direct[0].role -eq "DEV" -and $null -eq $direct[0].node) "直交行落盘异常(直交无 node)"
+        $st = TB @("-Command", "status", "-RunId", $fx.run_id)
+        Assert $c (@($st.json.data.sessions | Where-Object { [string]$_.session_id -eq "sess-direct-1" }).Count -eq 1) "status sessions 未透出直交行"
+    }
+
+    Run-Tc "TC-B41" "register-session 确定性校验:缺 SessionId/非法格式/PLANNER 或非法 Role/缺 Label 均拒绝(错误码+exit 1)" "P1" "PSR-AC-3" {
+        param($c)
+        $fx = New-FixtureArchive "rs41"
+        $null = TB @("-Command", "promulgate", "-TaskJson", (Join-Path $fx.dir "task.json"))
+        $cases = @(
+            @{ args = @("-Command", "register-session", "-RunId", $fx.run_id, "-Label", "x", "-Role", "DEV"); code = "MISSING_SESSION_ID" },
+            @{ args = @("-Command", "register-session", "-RunId", $fx.run_id, "-SessionId", "bad id!", "-Label", "x", "-Role", "DEV"); code = "SESSION_ID_INVALID" },
+            @{ args = @("-Command", "register-session", "-RunId", $fx.run_id, "-SessionId", "sess-x", "-Label", "x", "-Role", "PLANNER"); code = "ROLE_INVALID" },
+            @{ args = @("-Command", "register-session", "-RunId", $fx.run_id, "-SessionId", "sess-x", "-Label", "x", "-Role", "MANAGER"); code = "ROLE_INVALID" },
+            @{ args = @("-Command", "register-session", "-RunId", $fx.run_id, "-SessionId", "sess-x", "-Role", "DEV"); code = "LABEL_REQUIRED" }
+        )
+        foreach ($case in $cases) {
+            $r = TB $case.args
+            Assert $c ($r.exit -eq 1 -and $null -ne $r.json.error -and [string]$r.json.error.code -eq $case.code) "场景($($case.code)) 未确定性拒绝: exit=$($r.exit) out=$($r.text)"
+        }
+    }
+
+    Run-Tc "TC-B42" "幂等 upsert:同 sessionId 重复登记不增行,created_at 保留;resume 再登记 planner 行不重复" "P1" "PSR-AC-3" {
+        param($c)
+        $fx = New-FixtureArchive "rs42"
+        $null = TB @("-Command", "promulgate", "-TaskJson", (Join-Path $fx.dir "task.json"))
+        $null = TB @("-Command", "register-session", "-RunId", $fx.run_id, "-SessionId", "sess-idem", "-Label", "first", "-Role", "DEV")
+        $rowsA = @((Read-RosterJson $fx.run_id).sessions)
+        $createdA = [string](@($rowsA | Where-Object { [string]$_.session_id -eq "sess-idem" })[0].created_at)
+        $null = TB @("-Command", "register-session", "-RunId", $fx.run_id, "-SessionId", "sess-idem", "-Label", "second", "-Role", "QA")
+        $rowsB = @((Read-RosterJson $fx.run_id).sessions)
+        Assert $c ($rowsB.Count -eq $rowsA.Count) "重复登记后行数 $($rowsB.Count) != $($rowsA.Count)(upsert 应改行不增行)"
+        $idem = @($rowsB | Where-Object { [string]$_.session_id -eq "sess-idem" })
+        Assert $c ([string]$idem[0].label -eq "second" -and [string]$idem[0].role -eq "QA") "upsert 未刷新 label/role"
+        Assert $c ([string]$idem[0].created_at -eq $createdA) "upsert 重置了 created_at(应保留首登时间)"
+        # resume:planner 本体再登记仍 1 行
+        $null = TB @("-Command", "resume", "-RunId", $fx.run_id)
+        $rowsC = @((Read-RosterJson $fx.run_id).sessions)
+        Assert $c (@($rowsC | Where-Object { [string]$_.session_id -eq "qa-bridge-mock" }).Count -eq 1) "resume 后 planner 行重复"
+    }
+
+    Run-Tc "TC-B43" "改名失败降级不阻断:mock 注入 session.rename 业务错误 → 推送照常成功(pushed 含节点),花名册照常回写" "P0" "PSR-AC-4" {
+        param($c)
+        $fx = New-FixtureArchive "rs43"
+        Set-DshMockRule -Methods @{
+            "session.create"  = @{ kind = "seq"; values = @( @{ sessionId = "sess-rs43-n2" }, @{ sessionId = "sess-rs43-n4" } ) }
+            "session.rename"  = @{ kind = "error"; code = "MOCK_RENAME_FAIL"; message = "mock rename failure" }
+        }
+        $r = TB @("-Command", "promulgate", "-TaskJson", (Join-Path $fx.dir "task.json"))
+        Set-DshMockRule
+        Assert $c ($r.exit -eq 0 -and $r.json.success) "rename 失败阻断了 promulgate(应降级): $($r.text)"
+        $pushed = @($r.json.data.auto_push.pushed)
+        Assert $c ($pushed -contains "n2" -and $pushed -contains "n4") "rename 失败后推送未照常: $($pushed -join ',')"
+        $log = Read-DshMockLog
+        Assert $c (@($log | Where-Object { $_.method -eq "session.rename" }).Count -ge 2) "rename 错误未被真实调用(注入无判别力)"
+        $promptN2 = @($log | Where-Object { $_.method -eq "session.prompt" -and ([string]$_.payload.content[0].text).Contains("node=n2") })
+        Assert $c ($promptN2.Count -ge 1) "rename 失败后 n2 指针未发送"
+        # 花名册回写与 rename 无关(从 start-role 输出抓 sessionId;行按 node 区分,不耦合推送顺序)
+        $rows = @((Read-RosterJson $fx.run_id).sessions)
+        Assert $c (@($rows | Where-Object { [string]$_.node -eq "n2" -and [string]$_.session_id -in @("sess-rs43-n2", "sess-rs43-n4") }).Count -eq 1) "rename 失败后 n2 花名册行缺失"
+        Assert $c (@($rows | Where-Object { [string]$_.node -eq "n4" -and [string]$_.session_id -in @("sess-rs43-n2", "sess-rs43-n4") }).Count -eq 1) "rename 失败后 n4 花名册行缺失"
+    }
+
+    Run-Tc "TC-B44" "回归锚:普通 4 步交接(无 goal-tree/无 handoff/无 label)零 rename 调用、指针逐字节保持、无花名册副作用;DryRun 预览无 rename RPC 行" "P0" "PSR-AC-5" {
+        param($c)
+        $fx = New-FixtureArchive "rs44"   # 不 promulgate:普通直调形态,归档无 run
+        $sr = Join-Path $RepoRoot "rdd-engine\scripts\start-role.cmd"
+        $renamesBefore = @((Read-DshMockLog) | Where-Object { $_.method -eq "session.rename" }).Count
+        $prevEap = $ErrorActionPreference; $ErrorActionPreference = "Continue"
+        try { $txt = (& $sr @("-Role", "QA", "-TaskId", "1", "-TaskJson", (Join-Path $fx.dir "task.json")) 2>$null | Out-String).Trim(); $code = $LASTEXITCODE }
+        finally { $ErrorActionPreference = $prevEap }
+        Assert $c ($code -eq 0) "普通交接失败(exit=$code): $txt"
+        $log = Read-DshMockLog
+        $renamesAfter = @($log | Where-Object { $_.method -eq "session.rename" }).Count
+        Assert $c ($renamesAfter -eq $renamesBefore) "普通交接发起了改名调用(before=$renamesBefore after=$renamesAfter)"
+        $lastPrompt = @($log | Where-Object { $_.method -eq "session.prompt" }) | Select-Object -Last 1
+        $pText = [string]$lastPrompt.payload.content[0].text
+        $fxRel = ($fx.dir.Substring($RepoRoot.Length + 1)) -replace '\\', '/'
+        Assert $c ($pText -eq "请处理 $fxRel/ 下的需求。") "指针非逐字节旧形态: $pText"
+        Assert $c (-not (Test-Path (Join-Path (Get-RunDirPath "deliver-$($fx.name)") "sessions.json") -ErrorAction SilentlyContinue)) "普通交接写了花名册(应零副作用)"
+        Assert $c (-not (Test-Path (Join-Path $fx.dir "sessions.json"))) "普通交接在归档目录写了花名册"
+        # dsh DryRun 无标记:RPC 行保持 legacy 形态(RPC 3 = session.prompt,零 rename 行)
+        $prevEap = $ErrorActionPreference; $ErrorActionPreference = "Continue"
+        try { $dry = (& $sr @("-Role", "QA", "-TaskId", "1", "-TaskJson", (Join-Path $fx.dir "task.json"), "-DryRun") 2>$null | Out-String).Trim(); $dryCode = $LASTEXITCODE }
+        finally { $ErrorActionPreference = $prevEap }
+        Assert $c ($dryCode -eq 0) "无标记 DryRun 失败(exit=$dryCode): $dry"
+        Assert $c ($dry -match "RPC 3:\s+POST \S+/api/session\.prompt") "无标记 DryRun RPC 3 应仍为 session.prompt: $dry"
+        Assert $c (-not $dry.Contains("session.rename")) "无标记 DryRun 预览出现 rename RPC 行(应逐字节保持): $dry"
+        # 带桥接标记 DryRun:RPC 3 = session.rename、RPC 4 = session.prompt
+        $prevEap = $ErrorActionPreference; $ErrorActionPreference = "Continue"
+        try { $dryM = (& $sr @("-Role", "QA", "-TaskId", "1", "-TaskJson", (Join-Path $fx.dir "task.json"), "-GoalTreeRun", "deliver-2099-12-31-gt-probe", "-GoalTreeNode", "n2", "-DryRun") 2>$null | Out-String).Trim(); $dryMCode = $LASTEXITCODE }
+        finally { $ErrorActionPreference = $prevEap }
+        Assert $c ($dryMCode -eq 0) "带标记 DryRun 失败(exit=$dryMCode): $dryM"
+        Assert $c ($dryM -match "RPC 3:\s+POST \S+/api/session\.rename" -and $dryM -match "RPC 4:\s+POST \S+/api/session\.prompt") "带标记 DryRun 应预览 rename(RPC 3)+prompt(RPC 4): $dryM"
+        Assert $c ($dryM.Contains("title=[gt-probe] T1·QA·n2")) "带标记 DryRun 缺标题载荷预览: $dryM"
+    }
+}
+
+# ============================================================
 # 主流程
 # ============================================================
 
@@ -1627,7 +1826,7 @@ $env:RDD_RUNTIME = $null
 $env:DSH_SESSION_ID = "qa-bridge-mock"
 Write-Host "dsh-mock carrier: $script:DshMockUrl"
 
-$selected = if ($Suite -eq "all") { @("promulgate", "claim", "settle", "recover", "conclude", "regression", "compat", "autopush", "callback", "review", "uniqueness", "payload") } else { @($Suite) }
+$selected = if ($Suite -eq "all") { @("promulgate", "claim", "settle", "recover", "conclude", "regression", "compat", "autopush", "callback", "review", "uniqueness", "payload", "roster") } else { @($Suite) }
 foreach ($s in $selected) {
     switch ($s) {
         "promulgate" { Suite-Promulgate }
@@ -1642,6 +1841,7 @@ foreach ($s in $selected) {
         "review"     { Suite-Review }
         "uniqueness" { Suite-Uniqueness }
         "payload"    { Suite-Payload }
+        "roster"     { Suite-Roster }
     }
 }
 
