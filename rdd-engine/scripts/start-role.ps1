@@ -20,6 +20,13 @@ param(
     # identical to the pre-marker output (regression anchor).
     [string]$GoalTreeRun = "",
     [string]$GoalTreeNode = "",
+
+    # pointer-message task brief (dispatch-task-goal-anchoring): optional
+    # goal-first statement of THE one task the target session must execute
+    # (需求标题 + 阶段 + 开工认领命令), passed only by the delivery bridge's
+    # dispatch/auto-push. Empty → zero injection; every backend's message stays
+    # byte-for-byte identical to the pre-brief output (regression anchor).
+    [string]$TaskBrief = "",
     [switch]$DryRun
 )
 
@@ -90,6 +97,18 @@ function Get-GoalTreeMarker {
     return " goal-tree-run=$GoalTreeRun$nodePart"
 }
 
+function Get-TaskBriefSegment {
+    # Pointer-message task-brief segment (dispatch-task-goal-anchoring): the
+    # goal-first statement ("本次唯一任务：…。需求文档：…。开工先领取节点：…。")
+    # injected between the message base and the goal-tree marker — the marker
+    # stays LAST (A0/B2 prefix-semantic recognition depends on the tail order,
+    # and the marker must remain the message's trailing anchor). Same shape
+    # contract as Get-GoalTreeMarker above: empty input returns "" so unbriefed
+    # invocations stay byte-for-byte unchanged.
+    if ([string]::IsNullOrWhiteSpace($TaskBrief)) { return "" }
+    return " $TaskBrief"
+}
+
 function Build-PromptMessage {
     # 优先级：Handoff 模式 > TaskId 模式 > 纯角色激活
     # 路径不套内层引号（避免 wt 参数解析中断）；LLM 按文本读取路径
@@ -128,7 +147,10 @@ function Build-PromptMessage {
         if (-not $taskJsonAbs) {
             Write-Err "未找到 task.json。请用 -TaskJson 显式指定，或确保 .rdd/changes/archive/ 下有归档。"
         }
-        return "$base TaskId=$TaskId task=$taskJsonAbs$(Get-GoalTreeMarker)"
+        # order = base + brief segment + marker segment; marker stays last
+        # (Handoff / PLANNER branches above stay unbriefed — bridge dispatches
+        # use TaskId mode only)
+        return "$base TaskId=$TaskId task=$taskJsonAbs$(Get-TaskBriefSegment)$(Get-GoalTreeMarker)"
     }
 
     return "$base$(Get-GoalTreeMarker)"
@@ -228,6 +250,10 @@ function Build-PointerMessage {
             $msg += "（交接包: $handoffRel）"
         }
     }
+    # task brief (dispatch-task-goal-anchoring): goal-first statement ahead of
+    # the marker; PLANNER branches above return early unbriefed — the planner
+    # is the callback target, not a bridge leaf
+    $msg += Get-TaskBriefSegment
     # goal-tree marker (PLANNER branches above return early unmarked — the
     # planner is the callback target, not a bridge leaf)
     $msg += Get-GoalTreeMarker

@@ -1,12 +1,232 @@
 {
     "verifier":  "delivery-bridge-verify.ps1",
-    "suite":  "review",
-    "ranAt":  "2026-09-20T06:24:54Z",
-    "total":  5,
-    "passed":  5,
+    "suite":  "all",
+    "ranAt":  "2026-09-20T07:09:31Z",
+    "total":  36,
+    "passed":  36,
     "failed":  0,
     "warned":  0,
     "results":  [
+                    {
+                        "id":  "TC-B01",
+                        "title":  "promulgate:run 建立 + 目标根树形(需求节点 ref↔需求文档) + bridge.json v2 1:N 映射落盘 + 依赖自动推导",
+                        "priority":  "P0",
+                        "acceptance":  "BR-AC-2",
+                        "status":  "PASS",
+                        "fails":  [
+
+                                  ]
+                    },
+                    {
+                        "id":  "TC-B02",
+                        "title":  "重复 promulgate 防护(RUN_EXISTS);dispatch -DryRun 预演不误开窗",
+                        "priority":  "P1",
+                        "acceptance":  "BR-AC-1",
+                        "status":  "PASS",
+                        "fails":  [
+
+                                  ]
+                    },
+                    {
+                        "id":  "TC-B03",
+                        "title":  "claim 双上下文:树侧节点(task 指针/ref)+ 流侧任务(requirement/design)+ 开工指引",
+                        "priority":  "P0",
+                        "acceptance":  "BR-AC-2",
+                        "status":  "PASS",
+                        "fails":  [
+
+                                  ]
+                    },
+                    {
+                        "id":  "TC-B04",
+                        "title":  "重复唤起:第二会话得确定性冲突反馈(认领者+可领清单),引导改领;依赖阻塞直达",
+                        "priority":  "P0",
+                        "acceptance":  "BR-AC-3",
+                        "status":  "PASS",
+                        "fails":  [
+
+                                  ]
+                    },
+                    {
+                        "id":  "TC-B05",
+                        "title":  "角色不符/非映射节点/生命周期终态的确定性拒绝",
+                        "priority":  "P1",
+                        "acceptance":  "BR-AC-3",
+                        "status":  "PASS",
+                        "fails":  [
+
+                                  ]
+                    },
+                    {
+                        "id":  "TC-B06",
+                        "title":  "三查门禁:verdict≠done / citations 空 / 虚假路径 / extras.verification 缺失 全部拒绝且不流转",
+                        "priority":  "P0",
+                        "acceptance":  "BR-AC-4",
+                        "status":  "PASS",
+                        "fails":  [
+
+                                  ]
+                    },
+                    {
+                        "id":  "TC-B07",
+                        "title":  "合格 settle:三查通过 → advance + 链式 graft QA 节点(父子关系/ref);QA settle → complete(lifecycle=completed)",
+                        "priority":  "P0",
+                        "acceptance":  "BR-AC-4",
+                        "status":  "PASS",
+                        "fails":  [
+
+                                  ]
+                    },
+                    {
+                        "id":  "TC-B08",
+                        "title":  "CTO 起步链:CTO settle → advance CTO-\u003eDEV;跨任务阶段互不干扰",
+                        "priority":  "P1",
+                        "acceptance":  "BR-AC-4",
+                        "status":  "PASS",
+                        "fails":  [
+
+                                  ]
+                    },
+                    {
+                        "id":  "TC-B09",
+                        "title":  "reclaim 双模式:dead-claim(存活门禁+泊位+重派接管)与 rejected-delivery(剪枝+替换节点);reported 永不重复消费",
+                        "priority":  "P0",
+                        "acceptance":  "BR-AC-5",
+                        "status":  "PASS",
+                        "fails":  [
+
+                                  ]
+                    },
+                    {
+                        "id":  "TC-B10",
+                        "title":  "status/resume:全程视图(阶段/终态计数/死 claim/pending_sync 修复)与断点恢复步骤",
+                        "priority":  "P1",
+                        "acceptance":  "BR-AC-5",
+                        "status":  "PASS",
+                        "fails":  [
+
+                                  ]
+                    },
+                    {
+                        "id":  "TC-B11",
+                        "title":  "conclude:未全终态拒绝;全终态后产出 final-report + delivery-annex(任务终态表+check 结果)+ 租约释放",
+                        "priority":  "P0",
+                        "acceptance":  "BR-AC-6",
+                        "status":  "PASS",
+                        "fails":  [
+
+                                  ]
+                    },
+                    {
+                        "id":  "TC-B12",
+                        "title":  "回归:纯 goal-tree run 零桥接文件;rdd-flow 纯流程照常;桥接命令不触碰真实归档",
+                        "priority":  "P0",
+                        "acceptance":  "BR-AC-7",
+                        "status":  "PASS",
+                        "fails":  [
+
+                                  ]
+                    },
+                    {
+                        "id":  "TC-B13",
+                        "title":  "存量 run 旧命名 sidecar 零兼容:manager-lease 活跃租约不被尊重(acquire 照常成功) + manager-reclaim 停泊节点不被识别(经新 reclaim 回收后可认领)",
+                        "priority":  "P0",
+                        "acceptance":  "PR-AC-2",
+                        "status":  "PASS",
+                        "fails":  [
+
+                                  ]
+                    },
+                    {
+                        "id":  "TC-B14",
+                        "title":  "初始自动推送:无依赖节点全部被推(T1-DEV/T3-CTO),依赖节点不推且 status 可见阻塞源;推送账目落盘",
+                        "priority":  "P0",
+                        "acceptance":  "GR-AC-3",
+                        "status":  "PASS",
+                        "fails":  [
+
+                                  ]
+                    },
+                    {
+                        "id":  "TC-B15",
+                        "title":  "解锁推送:settle 后依赖满足节点 + 新阶段链节点被自动推送;全链闭环零手工 dispatch",
+                        "priority":  "P0",
+                        "acceptance":  "GR-AC-3",
+                        "status":  "PASS",
+                        "fails":  [
+
+                                  ]
+                    },
+                    {
+                        "id":  "TC-B16",
+                        "title":  "回收重推:dead-claim 回收入泊位后自动重推该节点;账目 needs_repush 清零",
+                        "priority":  "P0",
+                        "acceptance":  "GR-AC-3",
+                        "status":  "PASS",
+                        "fails":  [
+
+                                  ]
+                    },
+                    {
+                        "id":  "TC-B17",
+                        "title":  "存活判定两极:alive 经注册表证实拒绝回收;dead 证实后无需时间阈值即可回收;unknown 走时间兜底",
+                        "priority":  "P0",
+                        "acceptance":  "GR-AC-4",
+                        "status":  "PASS",
+                        "fails":  [
+
+                                  ]
+                    },
+                    {
+                        "id":  "TC-B18",
+                        "title":  "失败分档与补推:session-create 类 status 触碰自动重推;pointer 类只人工重推(不自动)",
+                        "priority":  "P1",
+                        "acceptance":  "GR-AC-5",
+                        "status":  "PASS",
+                        "fails":  [
+
+                                  ]
+                    },
+                    {
+                        "id":  "TC-B19",
+                        "title":  "v2 格式门禁:v1 桥账(无 format_version)拒读并给出确定性指引;v2 正常",
+                        "priority":  "P1",
+                        "acceptance":  "GR-AC-6",
+                        "status":  "PASS",
+                        "fails":  [
+
+                                  ]
+                    },
+                    {
+                        "id":  "TC-B20",
+                        "title":  "真实失败分档与手动重推:create 阶段失败→session-create;prompt 失败(会话已建)→pointer;规则复位后 create 类自动补推、pointer 类只人工(dispatch 落账复位)",
+                        "priority":  "P1",
+                        "acceptance":  "GR-AC-5",
+                        "status":  "PASS",
+                        "fails":  [
+
+                                  ]
+                    },
+                    {
+                        "id":  "TC-B21",
+                        "title":  "推送指针携带 goal-tree 标记段(autopush + 手动 dispatch 两路径);claim report_hint 携带回调契约三件套与不直交指引",
+                        "priority":  "P0",
+                        "acceptance":  "CB-AC-2",
+                        "status":  "PASS",
+                        "fails":  [
+
+                                  ]
+                    },
+                    {
+                        "id":  "TC-B22",
+                        "title":  "非桥回归:start-role 未传 -GoalTreeRun 直调时 B2 指针零标记段(以句号收尾,前缀形态不变)",
+                        "priority":  "P1",
+                        "acceptance":  "CB-AC-1",
+                        "status":  "PASS",
+                        "fails":  [
+
+                                  ]
+                    },
                     {
                         "id":  "TC-B23",
                         "title":  "审查门 happy path:pass/override 清空/合并(已 deprecate)/驳回(已 reject)/依赖重定向 + 审计三载体 + 不阻断其余交付",
@@ -52,6 +272,96 @@
                         "title":  "缺省回归:无 -ReviewFile 时 review=null、bridge 无 review 段、无 review.md、既有依赖推导不变(缺省路径与无审查门行为零变化)",
                         "priority":  "P0",
                         "acceptance":  "REG",
+                        "status":  "PASS",
+                        "fails":  [
+
+                                  ]
+                    },
+                    {
+                        "id":  "TC-B28",
+                        "title":  "误启动确定性反馈:活跃 run 归档上 start-role PLANNER → PLANNER_RUN_ACTIVE 拒绝(run 信息+-RunId 续跑指引+Takeover 衔接+-Force 通道),零会话创建",
+                        "priority":  "P0",
+                        "acceptance":  "PU-AC-2",
+                        "status":  "PASS",
+                        "fails":  [
+
+                                  ]
+                    },
+                    {
+                        "id":  "TC-B29",
+                        "title":  "合法入口零误伤:-RunId 续跑不拦截(DryRun+租约持有者提示+接管指引);-Force 跳过门禁后 rdd-planner 会话照常创建",
+                        "priority":  "P0",
+                        "acceptance":  "PU-AC-2",
+                        "status":  "PASS",
+                        "fails":  [
+
+                                  ]
+                    },
+                    {
+                        "id":  "TC-B30",
+                        "title":  "非桥回归:无活跃 run 归档启动 PLANNER 照常放行(RUN_NOT_FOUND→probe 放行),会话创建,指针零 goal-tree 标记段",
+                        "priority":  "P0",
+                        "acceptance":  "PU-AC-4",
+                        "status":  "PASS",
+                        "fails":  [
+
+                                  ]
+                    },
+                    {
+                        "id":  "TC-B31",
+                        "title":  "信息层禁令在位:next PLANNER 块自声明桥接 worker 不适用(longTask 照常触发);四 worker 卡逐字同构禁令+PM 卡适用前提+协议真源同步",
+                        "priority":  "P0",
+                        "acceptance":  "PU-AC-1",
+                        "status":  "PASS",
+                        "fails":  [
+
+                                  ]
+                    },
+                    {
+                        "id":  "TC-B33",
+                        "title":  "node.task 目标为主落盘(promulgate 构造点):目标句开头+需求文档/归档引用+claim 命令退居辅助尾段;claim 输出透传同一文本;goaltrees.ts 纯映射钉;设计文档段合成",
+                        "priority":  "P0",
+                        "acceptance":  "TGA-AC-1/TGA-AC-2",
+                        "status":  "PASS",
+                        "fails":  [
+
+                                  ]
+                    },
+                    {
+                        "id":  "TC-B34",
+                        "title":  "指针消息目标段(autopush+手动 dispatch 双路径):目标句/需求文档/真实 nodeId 认领命令,剔除归档与设计文档段,marker 居最末;三后端(cli 预填/app body/dsh text)注入同构",
+                        "priority":  "P0",
+                        "acceptance":  "TGA-AC-1/TGA-AC-3",
+                        "status":  "PASS",
+                        "fails":  [
+
+                                  ]
+                    },
+                    {
+                        "id":  "TC-B35",
+                        "title":  "存量旧格式节点保守降级:Execute TaskId 签名 → 零注入,指针=base+marker 旧形态(marker 仍居末,不做旧串翻译);空 -TaskBrief 直调零注入",
+                        "priority":  "P0",
+                        "acceptance":  "TGA-AC-4",
+                        "status":  "PASS",
+                        "fails":  [
+
+                                  ]
+                    },
+                    {
+                        "id":  "TC-B36",
+                        "title":  "长度边界:标题\u003e60 截断加…;node.task 全文永不截断;brief 超 240 硬截断(239+…);设计文档段 node.task 保留/brief 剔除",
+                        "priority":  "P1",
+                        "acceptance":  "TGA-AC-1",
+                        "status":  "PASS",
+                        "fails":  [
+
+                                  ]
+                    },
+                    {
+                        "id":  "TC-B37",
+                        "title":  "graft 构造点同新形态:DEV settle 链式 QA 节点目标为主文本(职责映射 测试与验收)+推送目标段含真实 nodeId",
+                        "priority":  "P1",
+                        "acceptance":  "TGA-AC-1",
                         "status":  "PASS",
                         "fails":  [
 

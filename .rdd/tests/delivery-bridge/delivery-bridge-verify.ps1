@@ -6,7 +6,7 @@
 #   断言锚定规划者交付编排需求验收标准 1~7 与 planner-guide.md 协议;
 #   2026-09-18 goal-tree-goal-root:目标根树形/依赖驱动自动推送/存活门禁/v2 账目。
 #
-# 用例规约:TC-B01 ~ TC-B27(映射 BR-AC-1 ~ BR-AC-7 + GR-AC-2~6 + CB-AC + RR-AC-1~4)
+# 用例规约:TC-B01 ~ TC-B37(映射 BR-AC-1 ~ BR-AC-7 + GR-AC-2~6 + CB-AC + RR-AC-1~4 + PU-AC + TGA-AC-1~4)
 #
 # 用法:
 #   pwsh -File .rdd/tests/delivery-bridge/delivery-bridge-verify.ps1 [-Suite all|promulgate|claim|settle|recover|conclude|regression|compat|autopush|callback|review] [-KeepRuns] [-Json]
@@ -26,6 +26,9 @@
 #              三载体/错误码三枚/部分达成结案/缺省回归 —— TC-B23~B27(2026-09-20-planner-capability-optimization)
 #   uniqueness 规划者唯一性(planner-uniqueness-callback PU-AC 引擎侧):start-role 误启拒绝/合法入口
 #              (-RunId 续跑/-Force)/无活跃 run 放行回归/信息层禁令文案 —— TC-B28~B31(2026-09-20-planner-capability-optimization)
+#   payload    派发任务锚定与目标透出(dispatch-task-goal-anchoring TGA-AC-1~4):node.task 目标为主单源落盘
+#              (promulgate+graft 双构造点)/指针消息目标段三后端一致/旧格式保守降级零注入/标题与总长截断边界
+#              —— TC-B33~B37(2026-09-20-planner-capability-optimization)
 #   all        全部
 #
 # 严重度语义:P0 失败=阻塞(退出码 1);P1 失败=严重不阻塞;P2 失败=备忘警告(WARN)。
@@ -39,7 +42,7 @@
 # (alive/dead/unknown,TC-B17 切规则覆盖);原环境变量在退出时恢复。
 
 param(
-    [ValidateSet("all", "promulgate", "claim", "settle", "recover", "conclude", "regression", "compat", "autopush", "callback", "review", "uniqueness")]
+    [ValidateSet("all", "promulgate", "claim", "settle", "recover", "conclude", "regression", "compat", "autopush", "callback", "review", "uniqueness", "payload")]
     [string]$Suite = "all",
     [switch]$KeepRuns,
     [switch]$Json
@@ -1382,6 +1385,235 @@ function Suite-Uniqueness {
 }
 
 # ============================================================
+# 套件:payload — TC-B33 ~ TC-B37(TGA-AC-1~4,派发任务锚定与目标透出)
+# 来源:2026-09-20-planner-capability-optimization / requirements/dispatch-task-goal-anchoring.md
+# (node.task 目标为主单源合成,promulgate+graft 双构造点;指针消息目标段三后端一致;
+#  旧格式保守降级零注入;标题 60/总长 240 截断边界。AC2 树视图为 node.task 纯映射,
+#  断言锚定落盘文本形态 + goaltrees.ts str(node.task) 纯映射钉)
+# ============================================================
+
+function New-PayloadFixture {
+    # 载荷 fixture(长标题/长需求路径/设计文档段需要非默认任务形态)
+    # $Tasks: @( @{ id; title; owners; reqRel; reqBody; designRels=@() } )
+    param([string]$Tag, [object[]]$Tasks)
+    $archName = "2099-12-31-qa-fixture-$Tag-$($script:RunStamp)"
+    $archDir = Join-Path $script:WorkDir $archName
+    New-Item -ItemType Directory -Path (Join-Path $archDir "requirements") -Force | Out-Null
+    [System.IO.File]::WriteAllText((Join-Path $archDir "requirements\overview.md"), "# 载荷夹具总纲`r`n`r`n$Tag`:供派发载荷验证器断言目标为主文本契约。", $Utf8NoBom)
+    $taskJson = @()
+    foreach ($t in $Tasks) {
+        $reqAbs = Join-Path $archDir (($t.reqRel) -replace '/', '\')
+        New-Item -ItemType Directory -Path (Split-Path -Parent $reqAbs) -Force | Out-Null
+        [System.IO.File]::WriteAllText($reqAbs, $t.reqBody, $Utf8NoBom)
+        $taskJson += @{
+            id = $t.id; title = $t.title; requirement = ($t.reqRel -replace '\\', '/')
+            currentOwners = @($t.owners)
+            designDocs = @(@($t.designRels) | ForEach-Object { @{ path = $_; status = "ready" } })
+            currentWorker = @(); remark = ""; lifecycle = "active"
+        }
+    }
+    @{ version = 1; archive = $Tag; tasks = $taskJson } | ConvertTo-Json -Depth 6 | ForEach-Object {
+        [System.IO.File]::WriteAllText((Join-Path $archDir "task.json"), $_, $Utf8NoBom)
+    }
+    $script:CreatedArchives.Add($archDir) | Out-Null
+    return @{ name = $archName; dir = $archDir; run_id = "deliver-$archName" }
+}
+
+function Get-TreeNode {
+    param([string]$RunId, [string]$NodeId)
+    $tree = Read-RunTree $RunId
+    return @($tree.nodes | Where-Object { $_.id -eq $NodeId })[0]
+}
+
+function Read-NodePrompt {
+    # 最后一条发往 <run>/<node> 的指针(按尾部标记段过滤)
+    param([string]$RunId, [string]$NodeId)
+    $log = Read-DshMockLog
+    return @($log | Where-Object { $_.method -eq "session.prompt" -and [string]$_.payload.content[0].text -like "*goal-tree-run=$RunId* node=$NodeId" }) | Select-Object -Last 1
+}
+
+function Suite-Payload {
+    Write-Host "`n== suite: payload (TGA-AC 派发载荷目标化:node.task 单源/指针目标段/三后端/降级与截断) =="
+
+    Run-Tc "TC-B33" "node.task 目标为主落盘(promulgate 构造点):目标句开头+需求文档/归档引用+claim 命令退居辅助尾段;claim 输出透传同一文本;goaltrees.ts 纯映射钉;设计文档段合成" "P0" "TGA-AC-1/TGA-AC-2" {
+        param($c)
+        $fx = New-FixtureArchive "tga33"
+        $r = TB @("-Command", "promulgate", "-TaskJson", (Join-Path $fx.dir "task.json"))
+        Assert $c ($r.exit -eq 0 -and $r.json.success) "promulgate 失败: $($r.text)"
+        $nodeId = [string](@($r.json.data.tasks) | Where-Object { $_.task_id -eq 1 })[0].node
+        $task = [string](Get-TreeNode $fx.run_id $nodeId).task
+        Assert $c ($task.StartsWith("目标：完成「T1 bottom」的 DEV 阶段（编码实现）。")) "node.task 非目标为主开头: $task"
+        Assert $c ($task.Contains("需求文档：requirements/t1.md；归档：$($fx.name)。")) "node.task 缺需求文档/归档引用: $task"
+        Assert $c ($task.Contains("开工动作（辅助）：delivery-bridge.cmd -Command claim -RunId $($fx.run_id) -NodeId <本节点id> -Role DEV。")) "node.task claim 命令非辅助尾段: $task"
+        Assert $c ($task.IndexOf("目标：") -lt $task.IndexOf("delivery-bridge.cmd")) "目标句未先于命令(信息次序硬要求)"
+        # claim 输出透传同一文本——树视图/claim/指针三展示面同源于 node.task
+        $cl = TB @("-Command", "claim", "-RunId", $fx.run_id, "-NodeId", $nodeId, "-Role", "DEV")
+        Assert $c ($cl.exit -eq 0 -and $cl.json.success) "claim 失败: $($cl.text)"
+        Assert $c ([string]$cl.json.data.tree_claim.node.task -eq $task) "claim 输出未透传 node.task 单源文本"
+        # AC2 锚:树视图对 node.task 纯映射(零转换)——数据目标化后展示自动跟上
+        $gts = [System.IO.File]::ReadAllText((Join-Path $RepoRoot "dsh\rdd-goal-tree\src\goaltrees.ts"), [System.Text.Encoding]::UTF8)
+        Assert $c ($gts.Contains("task: str(node.task)")) "goaltrees.ts 视图映射不再是纯透传(单源假设被破坏)"
+        # 设计文档段:有 designDocs 时合成进 node.task
+        $fx2 = New-PayloadFixture "tga33b" @(
+            @{ id = 1; title = "D1 带设计文档"; owners = "CTO"; reqRel = "requirements/d1.md"; reqBody = "# D1`r`n`r`n- **依赖关系**：无"; designRels = @("design/d1-cto.md") }
+        )
+        $r2 = TB @("-Command", "promulgate", "-TaskJson", (Join-Path $fx2.dir "task.json"))
+        Assert $c ($r2.exit -eq 0 -and $r2.json.success) "promulgate(设计文档形态) 失败: $($r2.text)"
+        $node2 = [string](@($r2.json.data.tasks) | Where-Object { $_.task_id -eq 1 })[0].node
+        $task2 = [string](Get-TreeNode $fx2.run_id $node2).task
+        Assert $c ($task2.StartsWith("目标：完成「D1 带设计文档」的 CTO 阶段（技术方向设计）。")) "CTO 阶段职责映射异常: $task2"
+        Assert $c ($task2.Contains("；设计文档：design/d1-cto.md；归档：")) "设计文档段未合成进 node.task: $task2"
+    }
+
+    Run-Tc "TC-B34" "指针消息目标段(autopush+手动 dispatch 双路径):目标句/需求文档/真实 nodeId 认领命令,剔除归档与设计文档段,marker 居最末;三后端(cli 预填/app body/dsh text)注入同构" "P0" "TGA-AC-1/TGA-AC-3" {
+        param($c)
+        $fx = New-FixtureArchive "tga34"
+        $r = TB @("-Command", "promulgate", "-TaskJson", (Join-Path $fx.dir "task.json"))
+        Assert $c ($r.exit -eq 0 -and $r.json.success) "promulgate 失败: $($r.text)"
+        $nodeId = [string](@($r.json.data.tasks) | Where-Object { $_.task_id -eq 1 })[0].node
+        $goalHead = "本次唯一任务：完成「T1 bottom」的 DEV 阶段（编码实现）。"
+        $claimCmd = "开工先领取节点：delivery-bridge.cmd -Command claim -RunId $($fx.run_id) -NodeId $nodeId -Role DEV。"
+        # (a) autopush 注入
+        $ent = Read-NodePrompt $fx.run_id $nodeId
+        Assert $c ($null -ne $ent) "autopush 未推送 t1 节点指针"
+        $txt = [string]$ent.payload.content[0].text
+        Assert $c ($txt.Contains($goalHead)) "autopush 指针缺目标段: $txt"
+        Assert $c ($txt.Contains("需求文档：requirements/t1.md。")) "目标段缺需求文档引用: $txt"
+        Assert $c ($txt.Contains($claimCmd)) "目标段缺真实 nodeId 认领命令: $txt"
+        Assert $c (-not $txt.Contains("<本节点id>")) "目标段占位符未填真实 nodeId: $txt"
+        Assert $c (-not $txt.Contains("归档：")) "目标段未剔除归档段: $txt"
+        Assert $c (-not $txt.Contains("设计文档：")) "目标段未剔除设计文档段: $txt"
+        Assert $c ($txt.EndsWith("goal-tree-run=$($fx.run_id) node=$nodeId")) "marker 未居最末: $txt"
+        Assert $c ($txt.IndexOf($goalHead) -lt $txt.IndexOf("goal-tree-run=")) "目标段未先于 marker"
+        # (b) 手动 dispatch 同构(pointer 类人工重推路径)
+        $dp = TB @("-Command", "dispatch", "-RunId", $fx.run_id, "-NodeId", $nodeId)
+        Assert $c ($dp.exit -eq 0 -and $dp.json.success) "手动 dispatch 失败: $($dp.text)"
+        $log2 = Read-DshMockLog
+        $all = @($log2 | Where-Object { $_.method -eq "session.prompt" -and [string]$_.payload.content[0].text -like "*goal-tree-run=$($fx.run_id)* node=$nodeId" })
+        Assert $c ($all.Count -ge 2) "手动 dispatch 未追加指针(期望 autopush+dispatch 共 ≥2 条): count=$($all.Count)"
+        $txt2 = [string]($all | Select-Object -Last 1).payload.content[0].text
+        Assert $c ($txt2.Contains($goalHead) -and $txt2.Contains($claimCmd) -and $txt2.EndsWith("goal-tree-run=$($fx.run_id) node=$nodeId")) "手动 dispatch 指针目标段形态异常: $txt2"
+        # (c) 三后端注入同构:同一 -TaskBrief 直调 start-role(DryRun 逐后端取消息)
+        $sr = Join-Path $RepoRoot "rdd-engine\scripts\start-role.cmd"
+        $briefArg = "$goalHead 需求文档：requirements/t1.md。$claimCmd"
+        $srArgs = @("-Role", "DEV", "-TaskId", "1", "-TaskJson", (Join-Path $fx.dir "task.json"), "-TaskBrief", $briefArg, "-GoalTreeRun", $fx.run_id, "-GoalTreeNode", $nodeId, "-DryRun")
+        $prevEap = $ErrorActionPreference; $ErrorActionPreference = "Continue"
+        try {
+            # dsh 后端(载波环境即默认)
+            $outDsh = (& $sr $srArgs 2>$null | Out-String).Trim(); $codeDsh = $LASTEXITCODE
+            # cli 后端:清 DSH_WEB_URL + stub opencode 上 PATH(仅被发现,DryRun 不执行)
+            $savedUrl = $env:DSH_WEB_URL; $env:DSH_WEB_URL = $null
+            $stubDir = Join-Path $script:WorkDir "opencode-stub"
+            New-Item -ItemType Directory -Path $stubDir -Force | Out-Null
+            [System.IO.File]::WriteAllText((Join-Path $stubDir "opencode.cmd"), "@echo off`r`nexit 0", $Utf8NoBom)
+            $savedPath = $env:PATH; $env:PATH = "$stubDir;$env:PATH"
+            $outCli = (& $sr $srArgs 2>$null | Out-String).Trim(); $codeCli = $LASTEXITCODE
+            $env:PATH = $savedPath; $env:DSH_WEB_URL = $savedUrl
+            # app 后端:RDD_RUNTIME=app + -EmployeeId(Plus 语义)
+            $savedRt = $env:RDD_RUNTIME; $env:RDD_RUNTIME = "app"
+            $outApp = (& $sr ($srArgs + @("-EmployeeId", "11111111-2222-3333-4444-555555555555")) 2>$null | Out-String).Trim(); $codeApp = $LASTEXITCODE
+            $env:RDD_RUNTIME = $savedRt
+        }
+        finally { $ErrorActionPreference = $prevEap }
+        Assert $c ($codeDsh -eq 0 -and $codeCli -eq 0 -and $codeApp -eq 0) "三后端 DryRun 退出码异常: dsh=$codeDsh cli=$codeCli app=$codeApp"
+        $msgDsh = [regex]::Match($outDsh, "text=(?<m>.+)$", [System.Text.RegularExpressions.RegexOptions]::Multiline).Groups['m'].Value.Trim()
+        $msgCli = [regex]::Match($outCli, "预填消息:\s*(?<m>.+)$", [System.Text.RegularExpressions.RegexOptions]::Multiline).Groups['m'].Value.Trim()
+        $bodyLine = [regex]::Match($outApp, "\[DRYRUN\] body: (?<m>.+)$", [System.Text.RegularExpressions.RegexOptions]::Multiline).Groups['m'].Value.Trim()
+        $msgApp = ""
+        try { $msgApp = [string]($bodyLine | ConvertFrom-Json).message } catch {}
+        foreach ($pair in @(@("dsh", $msgDsh), @("cli", $msgCli), @("app", $msgApp))) {
+            $backend = $pair[0]; $m = $pair[1]
+            Assert $c ($m.Contains($briefArg)) "$backend 后端消息缺目标段: $m"
+            Assert $c ($m.EndsWith("goal-tree-run=$($fx.run_id) node=$nodeId")) "$backend 后端 marker 未居最末: $m"
+            Assert $c ($m.IndexOf("本次唯一任务：") -lt $m.IndexOf("goal-tree-run=")) "$backend 后端目标段未先于 marker"
+        }
+    }
+
+    Run-Tc "TC-B35" "存量旧格式节点保守降级:Execute TaskId 签名 → 零注入,指针=base+marker 旧形态(marker 仍居末,不做旧串翻译);空 -TaskBrief 直调零注入" "P0" "TGA-AC-4" {
+        param($c)
+        $fx = New-FixtureArchive "tga35"
+        $r = TB @("-Command", "promulgate", "-TaskJson", (Join-Path $fx.dir "task.json"))
+        Assert $c ($r.exit -eq 0 -and $r.json.success) "promulgate 失败: $($r.text)"
+        $nodeId = [string](@($r.json.data.tasks) | Where-Object { $_.task_id -eq 1 })[0].node
+        # (a) 落盘 node.task 改写为存量旧格式英文命令串(改造前 run 的落盘形态)
+        $tp = Join-Path (Get-RunDirPath $fx.run_id) "state\tree.json"
+        $treeObj = [System.IO.File]::ReadAllText($tp, [System.Text.Encoding]::UTF8) | ConvertFrom-Json
+        $tn = @($treeObj.nodes | Where-Object { $_.id -eq $nodeId })[0]
+        $tn.task = "Execute TaskId 1 stage DEV of $($fx.name). Requirement: requirements/t1.md. First action: delivery-bridge.cmd -Command claim -RunId $($fx.run_id) -NodeId $nodeId -Role DEV."
+        [System.IO.File]::WriteAllText($tp, ($treeObj | ConvertTo-Json -Depth 10), $Utf8NoBom)
+        $dp = TB @("-Command", "dispatch", "-RunId", $fx.run_id, "-NodeId", $nodeId)
+        Assert $c ($dp.exit -eq 0 -and $dp.json.success) "旧格式节点 dispatch 失败: $($dp.text)"
+        $ent = Read-NodePrompt $fx.run_id $nodeId
+        Assert $c ($null -ne $ent) "旧格式节点 dispatch 未产生指针"
+        $txt = [string]$ent.payload.content[0].text
+        Assert $c (-not $txt.Contains("本次唯一任务：")) "旧格式节点不应注入目标段(保守降级): $txt"
+        Assert $c (-not $txt.Contains("目标：完成「")) "旧格式节点被错误翻译(应保守降级而非翻译): $txt"
+        Assert $c ($txt.EndsWith("goal-tree-run=$($fx.run_id) node=$nodeId")) "旧格式节点 marker 未居最末: $txt"
+        # (b) 空 -TaskBrief 直调(桥接标记在、目标段缺省):base+marker,与改造前逐字节同构
+        $sr = Join-Path $RepoRoot "rdd-engine\scripts\start-role.cmd"
+        $prevEap = $ErrorActionPreference; $ErrorActionPreference = "Continue"
+        try { $null = & $sr @("-Role", "DEV", "-TaskId", "1", "-TaskJson", (Join-Path $fx.dir "task.json"), "-GoalTreeRun", $fx.run_id, "-GoalTreeNode", $nodeId) 2>$null; $code = $LASTEXITCODE }
+        finally { $ErrorActionPreference = $prevEap }
+        Assert $c ($code -eq 0) "空 brief 直调失败(exit=$code)"
+        $last = @((Read-DshMockLog) | Where-Object { $_.method -eq "session.prompt" }) | Select-Object -Last 1
+        $txt2 = [string]$last.payload.content[0].text
+        Assert $c (-not $txt2.Contains("本次唯一任务：")) "空 brief 注入了目标段: $txt2"
+        Assert $c ($txt2.EndsWith("goal-tree-run=$($fx.run_id) node=$nodeId")) "空 brief 指针 marker 形态异常: $txt2"
+    }
+
+    Run-Tc "TC-B36" "长度边界:标题>60 截断加…;node.task 全文永不截断;brief 超 240 硬截断(239+…);设计文档段 node.task 保留/brief 剔除" "P1" "TGA-AC-1" {
+        param($c)
+        $longTitle = ("长标题" * 40)
+        # reqRel 受 graft ref ≤128 约束(<归档名>/<reqRel>):取 66 字符——标题 61+路径 66+命令 ~131,自然 brief ~297 仍稳超 240 触发硬截断
+        $longReqRel = "requirements/" + ("p" * 50) + ".md"
+        $fx = New-PayloadFixture "tga36" @(
+            @{ id = 1; title = $longTitle; owners = "DEV"; reqRel = $longReqRel; reqBody = "# 长文`r`n`r`n- **依赖关系**：无"; designRels = @("design/long-cto.md") }
+        )
+        $r = TB @("-Command", "promulgate", "-TaskJson", (Join-Path $fx.dir "task.json"))
+        Assert $c ($r.exit -eq 0 -and $r.json.success) "promulgate 失败: $($r.text)"
+        $nodeId = [string](@($r.json.data.tasks) | Where-Object { $_.task_id -eq 1 })[0].node
+        $task = [string](Get-TreeNode $fx.run_id $nodeId).task
+        Assert $c ($task.Contains($longTitle)) "node.task 标题被截断(全文永不截断)"
+        Assert $c ($task.Contains("；设计文档：design/long-cto.md；归档：")) "设计文档段未合成: $task"
+        $ent = Read-NodePrompt $fx.run_id $nodeId
+        Assert $c ($null -ne $ent) "长载荷节点未被推送"
+        $txt = [string]$ent.payload.content[0].text
+        $briefFull = [regex]::Match($txt, "(?<b>本次唯一任务：.+?)(?= goal-tree-run=)").Groups['b'].Value
+        Assert $c ($briefFull -ne "") "指针缺目标段: $txt"
+        Assert $c ($briefFull.Length -eq 240 -and $briefFull.EndsWith("…")) "brief 240 硬截断异常(len=$($briefFull.Length)): $briefFull"
+        $titleInBrief = [regex]::Match($briefFull, "「(?<t>[^」]+)」").Groups['t'].Value
+        Assert $c ($titleInBrief.Length -eq 61 -and $titleInBrief.EndsWith("…")) "标题 60 字截断异常(len=$($titleInBrief.Length))"
+        Assert $c (-not $briefFull.Contains("设计文档：")) "brief 未剔除设计文档段"
+        Assert $c (-not $briefFull.Contains("归档：")) "brief 未剔除归档段"
+    }
+
+    Run-Tc "TC-B37" "graft 构造点同新形态:DEV settle 链式 QA 节点目标为主文本(职责映射 测试与验收)+推送目标段含真实 nodeId" "P1" "TGA-AC-1" {
+        param($c)
+        $fx = New-FixtureArchive "tga37"
+        $r = TB @("-Command", "promulgate", "-TaskJson", (Join-Path $fx.dir "task.json"))
+        Assert $c ($r.exit -eq 0 -and $r.json.success) "promulgate 失败: $($r.text)"
+        $devNode = [string](@($r.json.data.tasks) | Where-Object { $_.task_id -eq 1 })[0].node
+        $s1 = Complete-Stage $fx.run_id $devNode "DEV"
+        Assert $c ($s1.exit -eq 0 -and $s1.json.success) "DEV settle 失败: $($s1.text)"
+        $qaNode = [string]$s1.json.data.next_stage_node
+        Assert $c ($qaNode -ne "") "settle 未链式 graft 下阶段节点"
+        $task = [string](Get-TreeNode $fx.run_id $qaNode).task
+        Assert $c ($task.StartsWith("目标：完成「T1 bottom」的 QA 阶段（测试与验收）。")) "graft 节点非目标为主新形态: $task"
+        Assert $c ($task.Contains("需求文档：requirements/t1.md；归档：$($fx.name)。")) "graft 节点缺引用段: $task"
+        Assert $c ($task.Contains("-NodeId <本节点id> -Role QA。")) "graft 节点占位符/角色异常: $task"
+        # 依赖满足后推送:QA 节点指针目标段含真实 nodeId
+        $st = TB @("-Command", "status", "-RunId", $fx.run_id)
+        Assert $c ($st.exit -eq 0 -and $st.json.success) "status 失败: $($st.text)"
+        $ent = Read-NodePrompt $fx.run_id $qaNode
+        Assert $c ($null -ne $ent) "QA 节点未被推送(依赖满足后应自动)"
+        $txt = [string]$ent.payload.content[0].text
+        Assert $c ($txt.Contains("本次唯一任务：完成「T1 bottom」的 QA 阶段（测试与验收）。")) "QA 推送缺目标段: $txt"
+        Assert $c ($txt.Contains("-NodeId $qaNode -Role QA。")) "QA 目标段缺真实 nodeId: $txt"
+        Assert $c ($txt.EndsWith("goal-tree-run=$($fx.run_id) node=$qaNode")) "QA 推送 marker 未居末: $txt"
+    }
+}
+
+# ============================================================
 # 主流程
 # ============================================================
 
@@ -1395,7 +1627,7 @@ $env:RDD_RUNTIME = $null
 $env:DSH_SESSION_ID = "qa-bridge-mock"
 Write-Host "dsh-mock carrier: $script:DshMockUrl"
 
-$selected = if ($Suite -eq "all") { @("promulgate", "claim", "settle", "recover", "conclude", "regression", "compat", "autopush", "callback", "review", "uniqueness") } else { @($Suite) }
+$selected = if ($Suite -eq "all") { @("promulgate", "claim", "settle", "recover", "conclude", "regression", "compat", "autopush", "callback", "review", "uniqueness", "payload") } else { @($Suite) }
 foreach ($s in $selected) {
     switch ($s) {
         "promulgate" { Suite-Promulgate }
@@ -1409,6 +1641,7 @@ foreach ($s in $selected) {
         "callback"   { Suite-Callback }
         "review"     { Suite-Review }
         "uniqueness" { Suite-Uniqueness }
+        "payload"    { Suite-Payload }
     }
 }
 

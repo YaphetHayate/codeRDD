@@ -102,6 +102,8 @@ $rdd = $null; $t = $null; try { $t = git rev-parse --show-toplevel } catch { }; 
 1. **指针消息标记**：入口指针（A0 CLI 预填 / B2 应用层指针）尾部带 `goal-tree-run=<RunId> node=<NodeId>` 标记段——`start-role` 的可选参数 `-GoalTreeRun/-GoalTreeNode` 由桥接 dispatch/自动推送注入，三后端同构；不传时消息逐字节与旧格式一致。A0/B2 的指针模式识别按前缀语义匹配，容忍该可选后缀。
 2. **claim 上下文**：本会话经 `delivery-bridge -Command claim` 认领了当前任务节点（含手工开窗认领场景）。
 
+> **任务目标段（2026-09-20 dispatch-task-goal-anchoring）**：桥接指针消息在主体与标记段之间可含可选目标段——` 本次唯一任务：完成「<需求标题>」的 <阶段> 阶段（<阶段职责>）。需求文档：<rel>。开工先领取节点：delivery-bridge.cmd -Command claim … -NodeId <id> -Role <阶段>。`——由 delivery-bridge 派发时从已落盘 `node.task`（`New-NodeTaskText` 单源合成，目标为主、claim 命令退居辅助）派生并经 `start-role -TaskBrief` 注入，三后端一致；**marker 仍居最末**，A0/B2 前缀语义识别对目标段零感知。无该段时（含存量旧格式 `Execute TaskId` 节点的保守降级）消息与旧形态逐字节一致。
+
 双否定（无标记段、也非 bridge claim）时自然回落上方 4 步硬流程——普通 rdd-flow 流程与非桥 goal-tree run 的行为零变化。
 
 **动作**：完成节点任务后**不执行 4 步硬流程直交**，而是立即回调规划者：

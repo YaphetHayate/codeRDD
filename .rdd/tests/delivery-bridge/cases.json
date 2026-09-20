@@ -650,6 +650,105 @@
                                     "断言 2d 节(planner lease resolution)输出"
                                 ],
                       "expected":  "PLANNER_LEASE_FRESH_MS=30*60*1000(钉住与 delivery-bridge $LeaseStaleMinutes 缺省一致,防双侧漂移);readPlannerLease:新鲜 dsh holder→其 sid(接管/续跑换手后投递随指)、边界内仍新鲜、stale→null(回退 planner.json=原规划者空闲存活场景)、非 dsh holder(CLI pid 形态)→null、缺失/损坏/畸形/坏时间戳→null 不抛;watcher plannerOf=lease 优先回退 planner.json 兜底,去重键(repo::run::entry)与目标无关——误启者未持租约回调不偏移、不双投;整跑 all green"
+                  },
+                  {
+                      "id":  "TC-B33",
+                      "title":  "node.task 目标为主落盘(promulgate 构造点):目标句开头+需求文档/归档引用+claim 命令退居辅助尾段;claim 输出透传同一文本;goaltrees.ts 纯映射钉;设计文档段合成",
+                      "type":  "positive",
+                      "priority":  "P0",
+                      "acceptance":  "TGA-AC-1/TGA-AC-2",
+                      "codeRef":  ".rdd/tests/delivery-bridge/delivery-bridge-verify.ps1:1438",
+                      "sourceChange":  "2026-09-20-planner-capability-optimization",
+                      "status":  "active",
+                      "crossFeature":  [
+                                           "goal-tree"
+                                       ],
+                      "precondition":  "fixture 归档 promulgate 后;New-NodeTaskText 为 node.task 唯一权威产出者",
+                      "steps":  [
+                                    "读 state/tree.json 中 t1 DEV 节点的 task 文本",
+                                    "delivery-bridge claim 同节点,比对输出 task 与落盘文本",
+                                    "静态断言 goaltrees.ts 含 task: str(node.task) 纯映射",
+                                    "带 designDocs 的 fixture 再颁一次,断言设计文档段合成"
+                                ],
+                      "expected":  "node.task 以「目标：完成「T1 bottom」的 DEV 阶段（编码实现）。」开头,含需求文档/归档引用,claim 命令位于「开工动作（辅助）」尾段且目标句先于命令(信息次序硬要求);claim 输出与落盘文本逐字一致(树视图/claim/指针三展示面单源);goaltrees.ts 纯映射在位(数据改展示自动跟上);有 designDocs 时合成「；设计文档：<rel>」段"
+                  },
+                  {
+                      "id":  "TC-B34",
+                      "title":  "指针消息目标段(autopush+手动 dispatch 双路径):目标句/需求文档/真实 nodeId 认领命令,剔除归档与设计文档段,marker 居最末;三后端(cli 预填/app body/dsh text)注入同构",
+                      "type":  "positive",
+                      "priority":  "P0",
+                      "acceptance":  "TGA-AC-1/TGA-AC-3",
+                      "codeRef":  ".rdd/tests/delivery-bridge/delivery-bridge-verify.ps1:1468",
+                      "sourceChange":  "2026-09-20-planner-capability-optimization",
+                      "status":  "active",
+                      "crossFeature":  [
+                                           "role-handoff"
+                                       ],
+                      "precondition":  "fixture 归档 promulgate 后(mock dsh 载波接管推送);三后端 DryRun 需要 stub opencode 上 PATH(cli)与 -EmployeeId(app)",
+                      "steps":  [
+                                    "读 mock 日志 autopush 的 session.prompt 指针文本",
+                                    "手动 dispatch 同节点,再读追加的指针",
+                                    "同一 -TaskBrief 分别以 dsh/app/cli 三后端 DryRun 直调 start-role,提取三处消息文本"
+                                ],
+                      "expected":  "指针含「本次唯一任务：完成「…」的 <阶段> 阶段（<职责>）。需求文档：<rel>。开工先领取节点：…-NodeId <真实nodeId> -Role <阶段>。」——占位符已填真实 nodeId,归档/设计文档段被剔除(B2 精简),目标段先于 marker 且 marker 逐字居最末;三后端消息同含目标段、次序一致(base→brief→marker)"
+                  },
+                  {
+                      "id":  "TC-B35",
+                      "title":  "存量旧格式节点保守降级:Execute TaskId 签名 → 零注入,指针=base+marker 旧形态(marker 仍居末,不做旧串翻译);空 -TaskBrief 直调零注入",
+                      "type":  "negative",
+                      "priority":  "P0",
+                      "acceptance":  "TGA-AC-4",
+                      "codeRef":  ".rdd/tests/delivery-bridge/delivery-bridge-verify.ps1:1532",
+                      "sourceChange":  "2026-09-20-planner-capability-optimization",
+                      "status":  "active",
+                      "crossFeature":  [
+                                           "role-handoff"
+                                       ],
+                      "precondition":  "fixture run 落盘后手工改写 node.task 为改造前英文命令串形态(Execute TaskId … 签名)",
+                      "steps":  [
+                                    "改写 state/tree.json 中 t1 节点 task 为旧格式命令串",
+                                    "手动 dispatch 该节点,读 mock 日志指针文本",
+                                    "start-role 直调(带桥接标记、不带 -TaskBrief),读最后一条指针"
+                                ],
+                      "expected":  "旧格式节点派发零注入:指针不含「本次唯一任务」也不做旧串翻译,marker 仍逐字居最末(与改造前形态逐字节同构);空 -TaskBrief 同样零注入——非目标化路径消息与旧版一致(回归锚点;另有 QA 独立 HEAD 对拍:dsh/cli×有/无 marker 四形态逐字节一致)"
+                  },
+                  {
+                      "id":  "TC-B36",
+                      "title":  "长度边界:标题>60 截断加…;node.task 全文永不截断;brief 超 240 硬截断(239+…);设计文档段 node.task 保留/brief 剔除",
+                      "type":  "boundary",
+                      "priority":  "P1",
+                      "acceptance":  "TGA-AC-1",
+                      "codeRef":  ".rdd/tests/delivery-bridge/delivery-bridge-verify.ps1:1564",
+                      "sourceChange":  "2026-09-20-planner-capability-optimization",
+                      "status":  "active",
+                      "crossFeature":  [],
+                      "precondition":  "New-PayloadFixture:80 字标题+66 字符需求路径(ref≤128 合法窗内)+设计文档段;自然 brief ~297 字符稳超 240",
+                      "steps":  [
+                                    "promulgate 后读 node.task 与推送指针",
+                                    "提取指针中目标段全文与其中标题段",
+                                    "比对 node.task 与 brief 的截断/保留差异"
+                                ],
+                      "expected":  "node.task 含完整 80 字标题与设计文档段(永不截断);brief 中标题=60 字+…(61 字符);brief 总长恰 240 且以…收尾(239+…硬截断);brief 剔除设计文档/归档段——B2 通道长度约束由截断规则守住,全文留在树视图"
+                  },
+                  {
+                      "id":  "TC-B37",
+                      "title":  "graft 构造点同新形态:DEV settle 链式 QA 节点目标为主文本(职责映射 测试与验收)+推送目标段含真实 nodeId",
+                      "type":  "positive",
+                      "priority":  "P1",
+                      "acceptance":  "TGA-AC-1",
+                      "codeRef":  ".rdd/tests/delivery-bridge/delivery-bridge-verify.ps1:1590",
+                      "sourceChange":  "2026-09-20-planner-capability-optimization",
+                      "status":  "active",
+                      "crossFeature":  [
+                                           "goal-tree"
+                                       ],
+                      "precondition":  "fixture run DEV 节点 claim→report→settle 闭环后",
+                      "steps":  [
+                                    "Complete-Stage 闭环 DEV 节点,取 next_stage_node",
+                                    "读 graft QA 节点 task 文本",
+                                    "status 触碰自动推送后读 mock 日志 QA 指针"
+                                ],
+                      "expected":  "QA 节点 task 以「目标：完成「T1 bottom」的 QA 阶段（测试与验收）。」开头(StageDuty 职责映射),含需求文档/归档引用与「开工动作（辅助）」尾段(占位符形态);推送指针含目标段且 claim 命令带真实 QA nodeId,marker 居末——第二构造点(graft)与 promulgate 同构"
                   }
               ]
 }
