@@ -27,6 +27,14 @@ param(
     # dispatch/auto-push. Empty → zero injection; every backend's message stays
     # byte-for-byte identical to the pre-brief output (regression anchor).
     [string]$TaskBrief = "",
+
+    # PLANNER uniqueness guard (planner-uniqueness-callback): explicit user
+    # override that skips ONLY the startup gate below — the session gets
+    # created, but the orchestration right and callback re-pointing still
+    # require the command-level lease (LEASE_HELD / lease -Takeover). Absent →
+    # an active delivery run rejects the startup with PLANNER_RUN_ACTIVE.
+    [switch]$Force,
+
     [switch]$DryRun
 )
 
@@ -81,6 +89,87 @@ function Find-LatestTaskJson {
     # 归档名以 YYYY-MM-DD 开头，按名降序取最新
     # Select-Object -First 1 避免 Sort-Object 单元素返回字符串后被 [0] 索引成字符
     return $candidates | Sort-Object -Descending | Select-Object -First 1
+}
+
+function Test-ActiveDeliveryRun {
+    # PLANNER uniqueness guard (planner-uniqueness-callback): probe whether the
+    # archive named by $TaskJsonAbs already has an ACTIVE delivery run. Probe
+    # path = the public goal-tree status CLI as a child process (black-box
+    # style, no internal state-file coupling); RunId is the bridge's frozen
+    # convention deliver-<archive-name>. Returns:
+    #   $null                     probe itself failed      → caller fails OPEN
+    #   @{ active = $false; ... } run answered "not found" → proceed normally
+    #   @{ active = $true;  ... } active run facts         → caller rejects
+    # (fail-open rationale: this gate is an auxiliary front line; the
+    # command-level RUN_EXISTS / LEASE_HELD guards remain the hard backstop,
+    # and failing closed would block legitimate PM-driven takeovers.)
+    param([string]$TaskJsonAbs)
+
+    $archiveName = Split-Path -Leaf (Split-Path -Parent $TaskJsonAbs)
+    $runId = "deliver-$archiveName"
+    $goalTreeCmd = Join-Path $PSScriptRoot "goal-tree.cmd"
+    if (-not (Test-Path -LiteralPath $goalTreeCmd -PathType Leaf)) { return $null }
+
+    $output = ""
+    try {
+        # stdout only: the CLI emits its JSON (success AND error objects) on
+        # stdout and signals via exit code; stderr stays on the console.
+        $output = (& $goalTreeCmd -Command status -RunId $runId) -join "`n"
+    } catch {
+        return $null
+    }
+    if ([string]::IsNullOrWhiteSpace($output)) { return $null }
+
+    try {
+        $parsed = $output | ConvertFrom-Json
+    } catch {
+        return $null
+    }
+    if (-not $parsed) { return $null }
+
+    if (-not [bool]$parsed.success) {
+        # RUN_NOT_FOUND is a definite "no active run" answer; any other error
+        # code is a probe self-failure → fail open at the caller.
+        if ([string]$parsed.error.code -eq "RUN_NOT_FOUND") {
+            return @{ active = $false; runId = $runId }
+        }
+        return $null
+    }
+
+    $data = $parsed.data
+    $nodes = $data.nodes
+    return @{
+        active   = ([string]$data.state -ne "concluded")
+        runId    = $runId
+        state    = [string]$data.state
+        goal     = [string]$data.goal
+        total    = [int]$nodes.total
+        pending  = @($nodes.pending).Count
+        claimed  = @($nodes.claimed).Count
+        reported = @($nodes.reported).Count
+        done     = @($nodes.done).Count
+        pruned   = @($nodes.pruned).Count
+    }
+}
+
+function Get-PlannerLeaseHolder {
+    # Advisory-only read of the bridge-written lease sidecar for the resume
+    # hint (planner-lease.json is a delivery-bridge artifact, not goal-tree
+    # internal state — reading it here keeps the status-CLI probe as the only
+    # goal-tree coupling). Returns "" whenever anything is off; the hint
+    # degrades silently and never blocks the resume path.
+    param([string]$Root, [string]$RunId)
+
+    try {
+        $leasePath = Join-Path $Root ".rdd\goal-trees\$RunId\planner-lease.json"
+        if (-not (Test-Path -LiteralPath $leasePath -PathType Leaf)) { return "" }
+        $lease = Get-Content -LiteralPath $leasePath -Raw -Encoding UTF8 | ConvertFrom-Json
+        $holder = [string]$lease.holder
+        if ([string]::IsNullOrWhiteSpace($holder)) { return "" }
+        return $holder
+    } catch {
+        return ""
+    }
 }
 
 function Get-GoalTreeMarker {
@@ -437,8 +526,59 @@ function Start-WithPowerShell {
     Start-Process -FilePath $Opencode -ArgumentList @("--prompt", $Message) -WorkingDirectory $Root
 }
 
+function Test-PlannerTakeoverBlocked {
+    # PLANNER uniqueness guard, takeover shape (-Role PLANNER, no -RunId):
+    # probe the target archive for an active delivery run and print the
+    # verdict. Returns $true ONLY after the PLANNER_RUN_ACTIVE reject banner
+    # was printed (the caller then exits 1); every pass-through path (-Force
+    # override, no task.json, probe self-failure → fail-open warn, no active
+    # run) returns $false with output/exit behavior byte-for-byte identical
+    # to the former inline guard (regression anchor).
+    if ($Force) { return $false }
+    $taskJsonProbe = Resolve-TaskJsonAbsolute
+    if ([string]::IsNullOrWhiteSpace($taskJsonProbe)) { return $false }
+    $probe = Test-ActiveDeliveryRun -TaskJsonAbs $taskJsonProbe
+    if ($null -eq $probe) {
+        Write-Host "[!] 活跃交付 run 探测失败，fail-open 放行（命令级 RUN_EXISTS / LEASE_HELD 防线仍然生效）" -ForegroundColor Yellow
+        return $false
+    }
+    if (-not $probe.active) { return $false }
+    Write-Host "[x] PLANNER_RUN_ACTIVE: 该归档已有活跃的规划者交付 run，拒绝重复启动 PLANNER（唯一有效规划者约束）。" -ForegroundColor Red
+    Write-Host "    run:   $($probe.runId)（state=$($probe.state)；节点 done $($probe.done)/$($probe.total)，claimed $($probe.claimed)，reported $($probe.reported)，pending $($probe.pending)）" -ForegroundColor Cyan
+    Write-Host "    goal:  $($probe.goal)" -ForegroundColor Cyan
+    Write-Host "[i] 续跑合法入口: start-role.cmd -Role PLANNER -RunId $($probe.runId)" -ForegroundColor Cyan
+    Write-Host "[i] 查看进度: delivery-bridge.cmd -Command status -RunId $($probe.runId)；确认原规划者会话已死后经 lease -RunId $($probe.runId) -Takeover 留痕接管（他人持新鲜租约时报 LEASE_HELD）" -ForegroundColor Cyan
+    Write-Host "[!] 用户显式裁决通道: 追加 -Force 强制启动——仅跳过本校验创建会话，编排权与回调投递仍受租约（LEASE_HELD / lease -Takeover）约束" -ForegroundColor Yellow
+    return $true
+}
+
 $root = Resolve-ProjectRoot
 $mode = Resolve-RuntimeMode
+
+# --- PLANNER uniqueness guard (planner-uniqueness-callback) ------------------
+# start-role is the single handoff entry shared by all three backends, so the
+# gate sits BEFORE any backend dispatch (message builders stay pure functions).
+# Two shapes:
+#   * takeover shape (-Role PLANNER, no -RunId): probe the target archive for
+#     an active delivery run via the public goal-tree status CLI. Active →
+#     reject with PLANNER_RUN_ACTIVE + run facts + the -RunId resume guidance
+#     (which chains into LEASE_HELD / lease -Takeover). A probe self-failure
+#     fails OPEN (proceed + warn) — the command-level RUN_EXISTS/LEASE_HELD
+#     guards remain the hard backstop. No active run → output and behavior are
+#     identical to before (regression anchor; only one extra read-only child
+#     process). -Force skips ONLY this gate (explicit user override).
+#   * resume shape (-Role PLANNER -RunId <id>): the legal re-entry, never
+#     blocked; prints an advisory line naming the current lease holder.
+if ($Role -eq "PLANNER") {
+    if ([string]::IsNullOrWhiteSpace($RunId)) {
+        if (Test-PlannerTakeoverBlocked) { exit 1 }
+    }
+    else {
+        $leaseHolder = Get-PlannerLeaseHolder -Root $root -RunId $RunId
+        $holderText = if ($leaseHolder) { "当前租约持有者: $leaseHolder" } else { "当前无租约持有者记录（可能已过期或从未获取）" }
+        Write-Host "[i] PLANNER 续跑模式（run $RunId）为合法入口，不拦截；$holderText。若原规划者会话仍存活请勿并发操作——接管经 delivery-bridge.cmd -Command lease -RunId $RunId -Takeover 留痕。" -ForegroundColor Cyan
+    }
+}
 
 # --- Plus backend -----------------------------------------------------------
 # When running inside the app (RDD_RUNTIME=app), drive the target role's

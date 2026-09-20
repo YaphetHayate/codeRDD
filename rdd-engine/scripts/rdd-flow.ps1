@@ -865,7 +865,7 @@ function Build-NextFlow {
             skill = "rdd-engine/references/planner-guide.md"
             taskCount = $longTaskActive
             tasks = @($activeTaskBlocks.ToArray())
-            note = "整批接管建议（可选，用户确认后才接管）：PLANNER 以归档为整体接管交付，promulgate 仍按 currentOwners 建阶段节点；TaskJson 指针即本输出 taskTracker 字段。不采纳则按 4 步硬流程逐条交接，行为不变。"
+            note = "整批接管建议（可选，用户确认后才接管）：PLANNER 以归档为整体接管交付，promulgate 仍按 currentOwners 建阶段节点；TaskJson 指针即本输出 taskTracker 字段。不采纳则按 4 步硬流程逐条交接，行为不变。若本会话是桥接 run 的 worker（入口消息带 goal-tree-run 标记），本块不适用——完成即回调规划者，勿启动 PLANNER。"
         }
         $roles = @($plannerBlock) + @($roles)
     }

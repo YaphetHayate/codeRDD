@@ -8,8 +8,10 @@
  *
  * Session binding joins (both engine-written additive sidecars, absent on
  * legacy runs): `state/planner.json` carries the run-creating DSH session
- * (the worker-report callback target); `state/claims/<node>.json` carries the
- * claiming DSH session per node (a worker session's focused view).
+ * (the worker-report callback fallback target — a fresh planner-lease.json
+ * holder wins over it, see {@link readPlannerLease});
+ * `state/claims/<node>.json` carries the claiming DSH session per node (a
+ * worker session's focused view).
  * @module rdd-goal-tree/goaltrees
  */
 
@@ -111,6 +113,43 @@ function num(value: unknown, fallback: number): number {
 
 function str(value: unknown): string | null {
   return typeof value === 'string' && value !== '' ? value : null
+}
+
+/**
+ * Lease freshness window for callback-target resolution
+ * (planner-uniqueness-callback). MUST stay in sync with the engine side:
+ * delivery-bridge.ps1's `-LeaseStaleMinutes` default (30). A lease older than
+ * this is stale — the resolver then falls back to the planner.json sidecar,
+ * mirroring the engine's own lease-staleness gating.
+ */
+export const PLANNER_LEASE_FRESH_MS = 30 * 60 * 1000
+
+/**
+ * Resolve a callback target from the bridge-written lease sidecar
+ * (planner-lease.json). Returns the DSH session id when the lease is FRESH
+ * (within {@link PLANNER_LEASE_FRESH_MS}) and its holder is dsh-shaped
+ * (`^dsh-<sid>$` — the bridge's prefix for DSH session holders); null
+ * otherwise (no lease, stale lease, non-dsh holder such as a CLI pid,
+ * unparsable file) so the caller falls back to the planner.json sidecar.
+ * Tolerant by design: a corrupt lease must never break callback delivery.
+ * Semantics (planner-uniqueness-callback): takeover/resume hand the lease to
+ * the new planner session without touching planner.json, so lease-first
+ * re-points delivery legally; a mistakenly started second planner never holds
+ * the lease, so callbacks keep reaching the original planner (no drift, no
+ * double delivery — the exactly-once key ignores the target).
+ * @param runDir - absolute path of one run directory under the goal-trees root.
+ */
+export async function readPlannerLease(runDir: string): Promise<string | null> {
+  const lease = await readJson(join(runDir, 'planner-lease.json'))
+  if (lease === undefined) return null
+  const acquiredAt = str(lease.acquired_at)
+  const holder = str(lease.holder)
+  if (acquiredAt === null || holder === null) return null
+  const acquiredMs = Date.parse(acquiredAt)
+  if (!Number.isFinite(acquiredMs)) return null
+  if (Date.now() - acquiredMs > PLANNER_LEASE_FRESH_MS) return null // stale → planner.json fallback
+  const match = /^dsh-(.+)$/.exec(holder)
+  return match === null ? null : match[1]
 }
 
 /**

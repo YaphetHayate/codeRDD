@@ -11,13 +11,13 @@
  *
  * The callback side watches ledgers of the repositories the endpoint served
  * (a plain interval over a bounded LRU of roots). Each NEW ledger report
- * entry is delivered once into the run-creating DSH session's inbox
- * (`agent.inbox.append('next-turn', …)` — the same durable queue the goal
- * round driver uses): the Planner session visibly receives "node reported —
- * settle/prune/graft" and consumes it on its next turn. The engine's additive
+ * entry is delivered once into the CURRENT effective planner session's inbox
+ * (`agent.inbox.append('next-turn', …` — the same durable queue the goal
+ * round driver uses): target resolution is fresh-lease-first — a fresh
+ * `planner-lease.json` holder (`^dsh-<sid>`) wins, else the additive
  * `state/planner.json` sidecar (written when a dsh session runs goal-tree
- * start / bridge promulgate) carries the target session id; legacy runs
- * without it are skipped. Delivery never starts a turn by itself.
+ * start / bridge promulgate) carries the run-creating session id; legacy runs
+ * with neither are skipped. Delivery never starts a turn by itself.
  *
  * Runtime imports beyond the platform: `createUserMessage` (dsh-llm) and the
  * `agents` registry service (dsh-agent). Everything else is type-only.
@@ -33,7 +33,7 @@ import type { SessionId } from '@deepseek-ai/dsh-session'
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
 // Type-only: pulls the webServer Context declaration merge (ctx.webServer).
 import type {} from '@deepseek-ai/dsh-host-webserver'
-import { aggregateGoalTrees, artifactLine, collectReportEntries, type GoalTreeReportEntry } from './goaltrees.js'
+import { aggregateGoalTrees, artifactLine, collectReportEntries, readPlannerLease, type GoalTreeReportEntry } from './goaltrees.js'
 
 export const name = 'rdd-goal-tree'
 export const inject = ['webServer', 'agents']
@@ -218,7 +218,19 @@ class PlannerCallbackWatcher {
       collectReportEntries(goalTreesRoot),
       aggregateGoalTrees(goalTreesRoot),
     ])
-    const plannerOf = new Map(runs.map(run => [run.runId, run.plannerSessionId]))
+    const plannerOf = new Map<string, string | null>()
+    for (const run of runs) {
+      // Callback-target resolution (planner-uniqueness-callback): fresh-lease
+      // first, planner.json fallback. A FRESH planner-lease.json holder
+      // (^dsh-<sid>) wins — takeover/resume hand the lease to the new planner
+      // session without touching planner.json, so lease-first re-points
+      // delivery and repairs the resume break. Anything else (no lease, stale
+      // lease, non-dsh holder) falls back to the run-creating planner.json
+      // sidecar: a mistakenly started second planner never holds the lease,
+      // so callbacks keep reaching the original planner (no drift). The
+      // exactly-once dedupe key (repo::run::entry) is target-independent.
+      plannerOf.set(run.runId, (await readPlannerLease(join(goalTreesRoot, run.runId))) ?? run.plannerSessionId)
+    }
     for (const entry of entries) {
       const key = `${repoRoot}::${entry.runId}::${entry.entryId}`
       if (this.delivered.has(key)) continue

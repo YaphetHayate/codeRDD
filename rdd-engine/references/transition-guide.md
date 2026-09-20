@@ -111,7 +111,7 @@ $rdd = $null; $t = $null; try { $t = git rev-parse --show-toplevel } catch { }; 
 1. `goal-tree-leaf.cmd -Command report -RunId <RunId> -Worker <角色> -CallbackFile <cb.json>`——回调在既有字段之上携带产物位置：`citations` = 改动清单（真实路径）、`full_report` = 主产物文档指针（设计文档 / 实现说明，桥接 run 内规范必填）、`extras.verification` = 验证结果。
 2. 告知用户："已回调规划者（ledger 留痕），等待裁定——三查通过经 bridge settle 流转并自动推送后继节点；不通过则回收重派。"
 
-**禁止直交**：不经 `start-role` 拉起下游角色；task.json 流转由规划者经 `bridge settle` 唯一通道执行（`rdd-engine/references/planner-guide.md` 硬约束 2）。
+**禁止直交**：不经 `start-role` 拉起下游角色；task.json 流转由规划者经 `bridge settle` 唯一通道执行（`rdd-engine/references/planner-guide.md` 硬约束 2）。**不启动 PLANNER**：`rdd-flow next` 输出的 PLANNER 候选块/接管建议不适用于桥接 worker——忽略；误启将收到启动拒绝（`PLANNER_RUN_ACTIVE`，附 `-RunId` 续跑指引），接管路径经 `-RunId` 续跑 + `lease -Takeover` 留痕。
 
 **用户显式直交的优先级**：用户在桥接 run 内明确要求直交某角色时，指令优先执行，但 leaf report 回调**先行不可省**（回调的 `next_suggestion`/`summary` 注明"用户指令直交 <角色>"），规划者照常对账裁定；直交会话与树推送会话撞车由 `FLOW_CLAIM_CONFLICT` / `NODE_NOT_CLAIMABLE` 确定性反馈 + 可领清单兜底（现状机制）。
 

@@ -215,6 +215,53 @@ import { aggregateGoalTrees, artifactLine, collectReportEntries } from '../lib/g
   console.log('[smoke] view gating table (worker/planner/plain/null) OK')
 }
 
+// --- 2d. planner lease resolution (planner-uniqueness-callback) ---------------
+// The watcher's callback-target rule: a FRESH dsh-shaped lease holder wins,
+// anything else falls back to planner.json. These assertions also pin the
+// freshness constant against the engine side (delivery-bridge.ps1's
+// $LeaseStaleMinutes default = 30) — drift between the two breaks the
+// takeover/resume semantics both sides assume.
+{
+  const { readPlannerLease, PLANNER_LEASE_FRESH_MS } = await import('../lib/goaltrees.js')
+  assert.equal(PLANNER_LEASE_FRESH_MS, 30 * 60 * 1000, 'freshness window mirrors delivery-bridge $LeaseStaleMinutes default (30min)')
+
+  const tmpRoot = join(tmpdir(), `rdgt-smoke-lease-${Date.now()}`)
+  const mk = (name, lease) => {
+    const dir = join(tmpRoot, name)
+    mkdirSync(dir, { recursive: true })
+    writeFileSync(join(dir, 'planner-lease.json'), typeof lease === 'string' ? lease : JSON.stringify(lease))
+    return dir
+  }
+  const iso = msAgo => new Date(Date.now() - msAgo).toISOString()
+
+  // fresh dsh holder → its sid wins (takeover/resume re-pointing, resume repair)
+  const fresh = mk('fresh', { acquired_at: iso(5 * 60 * 1000), holder: 'dsh-session-takeover', taken_over_from: 'dsh-session-origin' })
+  assert.equal(await readPlannerLease(fresh), 'session-takeover')
+
+  // just inside the boundary still counts as fresh
+  const boundary = mk('boundary', { acquired_at: iso(PLANNER_LEASE_FRESH_MS - 1000), holder: 'dsh-session-b' })
+  assert.equal(await readPlannerLease(boundary), 'session-b')
+
+  // stale lease → null: falls back to planner.json (idle-origin case)
+  const stale = mk('stale', { acquired_at: iso(31 * 60 * 1000), holder: 'dsh-session-old' })
+  assert.equal(await readPlannerLease(stale), null)
+
+  // non-dsh holder (CLI pid shape) → null: planner.json fallback preserves the CLI status quo
+  const cli = mk('cli', { acquired_at: iso(60 * 1000), holder: 'planner-pid-1234' })
+  assert.equal(await readPlannerLease(cli), null)
+
+  // missing / corrupt / malformed leases never throw (delivery must not break)
+  const none = join(tmpRoot, 'no-lease')
+  mkdirSync(none, { recursive: true })
+  assert.equal(await readPlannerLease(none), null)
+  assert.equal(await readPlannerLease(mk('corrupt', '{not json')), null)
+  assert.equal(await readPlannerLease(mk('malformed', { holder: 'dsh-session-x' })), null)
+  assert.equal(await readPlannerLease(mk('badtime', { acquired_at: 'not-a-date', holder: 'dsh-session-y' })), null)
+
+  rmSync(tmpRoot, { recursive: true, force: true })
+  console.log('[smoke] planner lease resolution (fresh-lease-first, fallback) OK')
+}
+
 // --- 3. engine regression: sidecars on the real CLI ---------------------------
 // Runs the patched engine scripts in a temp fixture. Skipped when the ambient
 // sandbox forbids spawning a capturing subprocess (EPERM on piped stdio) — the
