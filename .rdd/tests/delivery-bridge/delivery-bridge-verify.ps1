@@ -6,10 +6,10 @@
 #   断言锚定规划者交付编排需求验收标准 1~7 与 planner-guide.md 协议;
 #   2026-09-18 goal-tree-goal-root:目标根树形/依赖驱动自动推送/存活门禁/v2 账目。
 #
-# 用例规约:TC-B01 ~ TC-B20(映射 BR-AC-1 ~ BR-AC-7 + GR-AC-2~6)
+# 用例规约:TC-B01 ~ TC-B27(映射 BR-AC-1 ~ BR-AC-7 + GR-AC-2~6 + CB-AC + RR-AC-1~4)
 #
 # 用法:
-#   pwsh -File .rdd/tests/delivery-bridge/delivery-bridge-verify.ps1 [-Suite all|promulgate|claim|settle|recover|conclude|regression|compat|autopush] [-KeepRuns] [-Json]
+#   pwsh -File .rdd/tests/delivery-bridge/delivery-bridge-verify.ps1 [-Suite all|promulgate|claim|settle|recover|conclude|regression|compat|autopush|callback|review] [-KeepRuns] [-Json]
 #   (Windows PowerShell 5.1 亦可运行;建议 pwsh 7+)
 #
 # 套件说明:
@@ -22,6 +22,10 @@
 #   compat     更名零兼容(旧命名 sidecar 不被识别,显式 reclaim 是迁移路径) —— TC-B13
 #   autopush   目标根/依赖驱动自动推送/存活判定两极/失败分档(含真实分类)/v2 格式门禁 —— TC-B14~B20
 #   callback   回调契约呈现层:指针 goal-tree 标记段(autopush+dispatch) + claim report_hint 三件套 + 非桥零标记回归 —— TC-B21~B22
+#   review     需求审查门(-ReviewFile,planner-requirement-review RR-AC-1~4):三级处置消费/审计
+#              三载体/错误码三枚/部分达成结案/缺省回归 —— TC-B23~B27(2026-09-20-planner-capability-optimization)
+#   uniqueness 规划者唯一性(planner-uniqueness-callback PU-AC 引擎侧):start-role 误启拒绝/合法入口
+#              (-RunId 续跑/-Force)/无活跃 run 放行回归/信息层禁令文案 —— TC-B28~B31(2026-09-20-planner-capability-optimization)
 #   all        全部
 #
 # 严重度语义:P0 失败=阻塞(退出码 1);P1 失败=严重不阻塞;P2 失败=备忘警告(WARN)。
@@ -35,7 +39,7 @@
 # (alive/dead/unknown,TC-B17 切规则覆盖);原环境变量在退出时恢复。
 
 param(
-    [ValidateSet("all", "promulgate", "claim", "settle", "recover", "conclude", "regression", "compat", "autopush", "callback")]
+    [ValidateSet("all", "promulgate", "claim", "settle", "recover", "conclude", "regression", "compat", "autopush", "callback", "review", "uniqueness")]
     [string]$Suite = "all",
     [switch]$KeepRuns,
     [switch]$Json
@@ -1034,6 +1038,350 @@ function Suite-Callback {
 }
 
 # ============================================================
+# 套件:review — TC-B23 ~ TC-B27(RR-AC-1~4,需求审查门 -ReviewFile)
+# 来源:2026-09-20-planner-capability-optimization / requirements/planner-requirement-review.md
+# (用例设计自 DEV 自测 TC-DR1~DR5 转正;QA 独立复核断言后固化)
+# ============================================================
+
+function New-ReviewFixture {
+    # 可变任务形态的 fixture 归档(审查门需要 5 任务/2 任务等非默认形态)
+    # $Tasks: @( @{ id; title; owners; req } ) — req 为需求文档正文
+    param([string]$Tag, [object[]]$Tasks)
+    $archName = "2099-12-31-qa-fixture-$Tag-$($script:RunStamp)"
+    $archDir = Join-Path $script:WorkDir $archName
+    New-Item -ItemType Directory -Path (Join-Path $archDir "requirements") -Force | Out-Null
+    [System.IO.File]::WriteAllText((Join-Path $archDir "requirements\overview.md"), "# 审查门夹具总纲`r`n`r`n$Tag:供审查门验证器断言三级处置语义。", $Utf8NoBom)
+    $taskJson = @()
+    foreach ($t in $Tasks) {
+        $reqRel = "requirements/t$($t.id).md"
+        [System.IO.File]::WriteAllText((Join-Path $archDir ("requirements\t$($t.id).md")), $t.req, $Utf8NoBom)
+        $taskJson += @{
+            id = $t.id; title = $t.title; requirement = $reqRel
+            currentOwners = @($t.owners); designDocs = @(); currentWorker = @()
+            remark = ""; lifecycle = "active"
+        }
+    }
+    @{ version = 1; archive = $Tag; tasks = $taskJson } | ConvertTo-Json -Depth 6 | ForEach-Object {
+        [System.IO.File]::WriteAllText((Join-Path $archDir "task.json"), $_, $Utf8NoBom)
+    }
+    $script:CreatedArchives.Add($archDir) | Out-Null
+    return @{ name = $archName; dir = $archDir; run_id = "deliver-$archName" }
+}
+
+function New-ReviewVerdictFile {
+    # ReviewFile(planner-guide 硬约束 6 契约):verdicts 数组原样落盘
+    param([string]$Tag, $Verdicts)
+    $p = Join-Path $script:WorkDir ("review-$Tag.json")
+    $obj = @{
+        reviewed_at = "2026-09-20T00:00:00Z"; reviewer = "qa-verifier"; verdicts = $Verdicts
+    }
+    [System.IO.File]::WriteAllText($p, ($obj | ConvertTo-Json -Depth 6), $Utf8NoBom)
+    return $p
+}
+
+function Suite-Review {
+    Write-Host "`n== suite: review (RR-AC-1~4 需求审查门:三级处置/审计三载体/错误码/部分达成/缺省回归) =="
+
+    Run-Tc "TC-B23" "审查门 happy path:pass/override 清空/合并(已 deprecate)/驳回(已 reject)/依赖重定向 + 审计三载体 + 不阻断其余交付" "P0" "RR-AC-1/RR-AC-2" {
+        param($c)
+        $fx = New-ReviewFixture "rv1" @(
+            @{ id = 1; title = "T1 base";       owners = "DEV"; req = "# T1`r`n`r`n- **描述**：底座`r`n- **依赖关系**：无" }
+            @{ id = 2; title = "T2 dep-marked"; owners = "DEV"; req = "# T2`r`n`r`n- **描述**：依赖方（实际不依赖）`r`n- **依赖关系**：依赖需求 1（t1 底座）" }
+            @{ id = 3; title = "T3 absorbed";   owners = "DEV"; req = "# T3`r`n`r`n- **描述**：与 T1 同一改动两个侧面`r`n- **依赖关系**：无" }
+            @{ id = 4; title = "T4 off-goal";   owners = "DEV"; req = "# T4`r`n`r`n- **描述**：与根目标不符`r`n- **依赖关系**：无" }
+            @{ id = 5; title = "T5 via3";       owners = "DEV"; req = "# T5`r`n`r`n- **描述**：经 T3 间接依赖底座`r`n- **依赖关系**：依赖需求 3（t3）" }
+        )
+        # 前置动作(planner 语义,脚本消费前完成):deprecate 被并入方 + reject 驳回方
+        $null = TFlow @("-Command", "deprecate", "-TaskId", "3", "-Archive", $fx.dir)
+        $null = TFlow @("-Command", "reject", "-TaskId", "4", "-From", "PLANNER", "-To", "PM", "-Reason", "与 overview 根目标不符", "-Archive", $fx.dir)
+        $rf = New-ReviewVerdictFile "rv1" @(
+            @{ task_id = 1; verdict = "pass";             reason = "独立、与根目标一致" }
+            @{ task_id = 2; verdict = "tree_adjudicated"; reason = "依赖错标：实际不依赖 #1"; depends_on_override = @() }
+            @{ task_id = 3; verdict = "tree_adjudicated"; reason = "与 #1 实为同一改动两个侧面"; merged_into_task_id = 1 }
+            @{ task_id = 4; verdict = "reject_return";    reason = "与 overview 根目标不符" }
+        )
+        $r = TB @("-Command", "promulgate", "-TaskJson", (Join-Path $fx.dir "task.json"), "-ReviewFile", $rf)
+        Assert $c ($r.exit -eq 0 -and $r.json.success) "promulgate 失败: $($r.text)"
+        $d = $r.json.data
+        # 建树集 1/2/5;排除账目:skipped_review=[4](3 走既有 skipped_deprecated,不双计)
+        Assert $c (@($d.tasks).Count -eq 3) "颁布任务数 $(@($d.tasks).Count), 期望 3"
+        Assert $c (((@($d.tasks | ForEach-Object { $_.task_id })) -join ',') -eq "1,2,5") "颁布任务集异常: $(@($d.tasks | ForEach-Object { $_.task_id }) -join ',')"
+        Assert $c (((@($d.skipped_review)) -join ',') -eq "4") "skipped_review=$(@($d.skipped_review) -join ','), 期望 4"
+        Assert $c (((@($d.skipped_deprecated)) -join ',') -eq "3") "skipped_deprecated=$(@($d.skipped_deprecated) -join ','), 期望 3"
+        # 节点映射与依赖:t2 override 清空;t5 重定向到 t1 的节点
+        $t1n = [string](@($d.tasks | Where-Object { $_.task_id -eq 1 })[0].node)
+        $t2n = [string](@($d.tasks | Where-Object { $_.task_id -eq 2 })[0].node)
+        $t5n = [string](@($d.tasks | Where-Object { $_.task_id -eq 5 })[0].node)
+        Assert $c ((@(@($d.tasks | Where-Object { $_.task_id -eq 2 })[0].dep_task_ids).Count -eq 0)) "t2 override 未清空依赖"
+        Assert $c (((@(@($d.tasks | Where-Object { $_.task_id -eq 5 })[0].dep_task_ids)) -join ',') -eq "1") "t5 未重定向到 #1: $(@($d.tasks | Where-Object { $_.task_id -eq 5 })[0].dep_task_ids -join ',')"
+        # 树侧真实边
+        $tree = Read-RunTree $fx.run_id
+        $n5 = @($tree.nodes | Where-Object { $_.id -eq $t5n })[0]
+        Assert $c (@($n5.depends_on) -contains $t1n) "树侧 t5→t1 重定向边缺失: $($n5.depends_on -join ',')"
+        $n2 = @($tree.nodes | Where-Object { $_.id -eq $t2n })[0]
+        Assert $c (@($n2.depends_on).Count -eq 0) "树侧 t2 依赖未清空: $($n2.depends_on -join ',')"
+        # 根下只有 3 个链头
+        $heads = @($tree.nodes | Where-Object { $_.id -eq "n1" })[0].children
+        Assert $c (@($heads).Count -eq 3 -and ($heads -contains $t1n) -and ($heads -contains $t2n) -and ($heads -contains $t5n)) "链头集异常: $($heads -join ',')"
+        # 自动推送:t1/t2 被推;t5 被重定向依赖阻塞(其余需求交付不被阻断)
+        $pushed = @($d.auto_push.pushed); $blocked = @($d.auto_push.blocked)
+        Assert $c (($pushed -contains $t1n) -and ($pushed -contains $t2n)) "无依赖节点未推: $($pushed -join ',')"
+        Assert $c ($pushed -notcontains $t5n) "t5 不应被推: $($pushed -join ',')"
+        Assert $c ($blocked -contains $t5n) "t5 未进阻塞视图: $($blocked -join ',')"
+        # 审计三载体:bridge.review / report/review.md / 返回值 review
+        $b = Read-BridgeJson $fx.run_id
+        Assert $c ($null -ne $b.review -and @($b.review.verdicts).Count -eq 4 -and $b.review.applied_at) "bridge review 段异常"
+        Assert $c ($null -eq $b.tasks.'3' -and $null -eq $b.tasks.'4') "排除任务进入了 bridge.tasks"
+        $rev = Read-RunFileText $fx.run_id "report/review.md"
+        foreach ($needle in @("通过", "树内裁定", "驳回回流", "依赖错标", "两个侧面", "根目标不符", "合并至 #1", "T5 via3", "最终裁决权在用户")) {
+            Assert $c ($rev.Contains($needle)) "review.md 缺少: $needle"
+        }
+        Assert $c ($null -ne $d.review -and @($d.review.verdicts).Count -eq 4 -and ([string]$d.review.report).EndsWith("review.md")) "返回值 review 段异常"
+        # flow 侧:t4 驳回路由 PM 保持 active(文档级驳回复用既有协议)
+        $flow = TFlow @("-Command", "show", "-Archive", $fx.dir)
+        $t4 = @($flow.json.data.tasks | Where-Object { $_.id -eq 4 })[0]
+        Assert $c ((@($t4.currentOwners) -contains "PM") -and [string]$t4.lifecycle -eq "active") "t4 驳回路由异常: $($t4.currentOwners -join '+')/$($t4.lifecycle)"
+    }
+
+    Run-Tc "TC-B24" "延后缝合:override 指向后位任务 → goal-tree deps add 补边 + deps-log 审计 + 新边阻塞推送" "P1" "RR-AC-2" {
+        param($c)
+        $fx = New-ReviewFixture "rv2" @(
+            @{ id = 1; title = "F1"; owners = "DEV"; req = "# F1`r`n`r`n- **依赖关系**：无" }
+            @{ id = 2; title = "F2 fwd"; owners = "DEV"; req = "# F2`r`n`r`n- **依赖关系**：无" }
+            @{ id = 3; title = "F3 target"; owners = "DEV"; req = "# F3`r`n`r`n- **依赖关系**：无" }
+        )
+        $rf = New-ReviewVerdictFile "rv2" @(
+            @{ task_id = 2; verdict = "tree_adjudicated"; reason = "实际依赖后位任务 #3"; depends_on_override = @(3) }
+        )
+        $r = TB @("-Command", "promulgate", "-TaskJson", (Join-Path $fx.dir "task.json"), "-ReviewFile", $rf)
+        Assert $c ($r.exit -eq 0 -and $r.json.success) "promulgate 失败: $($r.text)"
+        $d = $r.json.data
+        $t2n = [string](@($d.tasks | Where-Object { $_.task_id -eq 2 })[0].node)
+        $t3n = [string](@($d.tasks | Where-Object { $_.task_id -eq 3 })[0].node)
+        $tree = Read-RunTree $fx.run_id
+        $n2 = @($tree.nodes | Where-Object { $_.id -eq $t2n })[0]
+        Assert $c (@($n2.depends_on) -contains $t3n) "延后缝合边缺失: $($n2.depends_on -join ',')"
+        $depsLog = Read-RunFileText $fx.run_id "state/deps-log.jsonl"
+        Assert $c ($depsLog.Contains("dep-add")) "deps-log 未留 dep-add 审计痕"
+        Assert $c (@($d.review.deferred_dep_edges).Count -ge 1) "返回值 deferred_dep_edges 为空"
+        Assert $c (@($d.auto_push.blocked) -contains $t2n) "t2 未被延后缝合边阻塞: $($d.auto_push.blocked -join ',')"
+    }
+
+    Run-Tc "TC-B25" "错误码三枚(REVIEW_FILE_INVALID/REVIEW_TASK_NOT_FOUND/REVIEW_EXCLUDED_DEP)×7 场景确定性拒绝;错误均发生在建树前,无 run 目录残留" "P0" "RR-AC-1" {
+        param($c)
+        $fx = New-ReviewFixture "rv3" @(
+            @{ id = 1; title = "E1 base"; owners = "DEV"; req = "# E1`r`n`r`n- **依赖关系**：无" }
+            @{ id = 2; title = "E2 dep";  owners = "DEV"; req = "# E2`r`n`r`n- **依赖关系**：依赖需求 1（e1）" }
+        )
+        # a) pass 携带 merged_into_task_id
+        $rfA = New-ReviewVerdictFile "rv3a" @( @{ task_id = 1; verdict = "pass"; reason = "x"; merged_into_task_id = 2 } )
+        $ra = TB @("-Command", "promulgate", "-TaskJson", (Join-Path $fx.dir "task.json"), "-ReviewFile", $rfA)
+        Assert $c ($ra.exit -eq 2 -and $ra.json.error.code -eq "REVIEW_FILE_INVALID") "pass+merged 未拒: $($ra.text)"
+        # b) task_id 不在归档
+        $rfB = New-ReviewVerdictFile "rv3b" @( @{ task_id = 99; verdict = "pass"; reason = "x" } )
+        $rb = TB @("-Command", "promulgate", "-TaskJson", (Join-Path $fx.dir "task.json"), "-ReviewFile", $rfB)
+        Assert $c ($rb.exit -eq 2 -and $rb.json.error.code -eq "REVIEW_TASK_NOT_FOUND") "未知 task 未拒: $($rb.text)"
+        # c) REVIEW_EXCLUDED_DEP:t2 推导依赖被驳回排除的 t1(消息指向依赖方,禁止静默丢弃)
+        $null = TFlow @("-Command", "reject", "-TaskId", "1", "-From", "PLANNER", "-To", "PM", "-Reason", "不符", "-Archive", $fx.dir)
+        $rfC = New-ReviewVerdictFile "rv3c" @( @{ task_id = 1; verdict = "reject_return"; reason = "与根目标不符" } )
+        $rc = TB @("-Command", "promulgate", "-TaskJson", (Join-Path $fx.dir "task.json"), "-ReviewFile", $rfC)
+        Assert $c ($rc.exit -eq 1 -and $rc.json.error.code -eq "REVIEW_EXCLUDED_DEP") "悬空依赖未硬拒: $($rc.text)"
+        Assert $c ($rc.json.error.message.Contains("#2")) "硬拒消息未指向依赖方: $($rc.json.error.message)"
+        # d) 同任务重复 verdict
+        $rfD = New-ReviewVerdictFile "rv3d" @(
+            @{ task_id = 2; verdict = "pass"; reason = "x" }
+            @{ task_id = 2; verdict = "pass"; reason = "y" }
+        )
+        $rd = TB @("-Command", "promulgate", "-TaskJson", (Join-Path $fx.dir "task.json"), "-ReviewFile", $rfD)
+        Assert $c ($rd.exit -eq 2 -and $rd.json.error.code -eq "REVIEW_FILE_INVALID") "重复 verdict 未拒: $($rd.text)"
+        # e) 不可解析 JSON
+        $badPath = Join-Path $script:WorkDir "review-bad.json"
+        [System.IO.File]::WriteAllText($badPath, "{ not json", $Utf8NoBom)
+        $re = TB @("-Command", "promulgate", "-TaskJson", (Join-Path $fx.dir "task.json"), "-ReviewFile", $badPath)
+        Assert $c ($re.exit -eq 2 -and $re.json.error.code -eq "REVIEW_FILE_INVALID") "坏 JSON 未拒: $($re.text)"
+        # f) reject_return 打在 deprecated 任务上
+        $fx2 = New-ReviewFixture "rv3f" @(
+            @{ id = 1; title = "G1"; owners = "DEV"; req = "# G1`r`n`r`n- **依赖关系**：无" }
+            @{ id = 2; title = "G2"; owners = "DEV"; req = "# G2`r`n`r`n- **依赖关系**：无" }
+        )
+        $null = TFlow @("-Command", "deprecate", "-TaskId", "1", "-Archive", $fx2.dir)
+        $rfF = New-ReviewVerdictFile "rv3f" @( @{ task_id = 1; verdict = "reject_return"; reason = "x" } )
+        $rf = TB @("-Command", "promulgate", "-TaskJson", (Join-Path $fx2.dir "task.json"), "-ReviewFile", $rfF)
+        Assert $c ($rf.exit -eq 2 -and $rf.json.error.code -eq "REVIEW_FILE_INVALID") "deprecated 上 reject 未拒: $($rf.text)"
+        # g) 合并目标自身被驳回(不存活)
+        $fx3 = New-ReviewFixture "rv3g" @(
+            @{ id = 1; title = "H1"; owners = "DEV"; req = "# H1`r`n`r`n- **依赖关系**：无" }
+            @{ id = 2; title = "H2"; owners = "DEV"; req = "# H2`r`n`r`n- **依赖关系**：无" }
+        )
+        $rfG = New-ReviewVerdictFile "rv3g" @(
+            @{ task_id = 1; verdict = "reject_return"; reason = "x" }
+            @{ task_id = 2; verdict = "tree_adjudicated"; reason = "并入被驳回的 #1"; merged_into_task_id = 1 }
+        )
+        $rg = TB @("-Command", "promulgate", "-TaskJson", (Join-Path $fx3.dir "task.json"), "-ReviewFile", $rfG)
+        Assert $c ($rg.exit -eq 2 -and $rg.json.error.code -eq "REVIEW_FILE_INVALID") "合并目标不存活未拒: $($rg.text)"
+        # 无部分状态残留:错误全部发生在 goal-tree start 之前
+        foreach ($a in @($fx, $fx2, $fx3)) {
+            Assert $c (-not (Test-Path (Get-RunDirPath $a.run_id))) "错误后残留 run 目录: $($a.run_id)"
+        }
+    }
+
+    Run-Tc "TC-B26" "部分达成结案:驳回任务 active@PM 豁免 DELIVERY_INCOMPLETE 门禁(豁免严格限定 reject_return 集);annex 如实呈现部分达成与注记" "P0" "RR-AC-3" {
+        param($c)
+        $fx = New-ReviewFixture "rv4" @(
+            @{ id = 1; title = "P1 deliver"; owners = "DEV"; req = "# P1`r`n`r`n- **依赖关系**：无" }
+            @{ id = 2; title = "P2 reject";  owners = "DEV"; req = "# P2`r`n`r`n- **依赖关系**：无" }
+        )
+        $null = TFlow @("-Command", "reject", "-TaskId", "2", "-From", "PLANNER", "-To", "PM", "-Reason", "与根目标不符", "-Archive", $fx.dir)
+        $rf = New-ReviewVerdictFile "rv4" @(
+            @{ task_id = 1; verdict = "pass"; reason = "独立、与根目标一致" }
+            @{ task_id = 2; verdict = "reject_return"; reason = "与 overview 根目标不符" }
+        )
+        $r = TB @("-Command", "promulgate", "-TaskJson", (Join-Path $fx.dir "task.json"), "-ReviewFile", $rf)
+        Assert $c ($r.exit -eq 0 -and $r.json.success) "promulgate 失败: $($r.text)"
+        $devNode = [string](@($r.json.data.tasks) | Where-Object { $_.task_id -eq 1 })[0].node
+        $s1 = Complete-Stage $fx.run_id $devNode "DEV"
+        Assert $c ($s1.exit -eq 0) "DEV settle 失败: $($s1.text)"
+        $qaNode = [string]$s1.json.data.next_stage_node
+        $s2 = Complete-Stage $fx.run_id $qaNode "QA"
+        Assert $c ($s2.exit -eq 0 -and $s2.json.data.flow_operation -eq "complete") "QA settle/complete 失败: $($s2.text)"
+        $cc = TB @("-Command", "conclude", "-RunId", $fx.run_id, "-Summary", "QA-REVIEW-CONCLUDE-PARTIAL")
+        Assert $c ($cc.exit -eq 0 -and $cc.json.success) "conclude 失败: $($cc.text)"
+        Assert $c ([string]$cc.json.data.tasks_terminal -eq "2/2") "tasks_terminal 异常: $($cc.json.data.tasks_terminal)"
+        Assert $c (((@($cc.json.data.reject_return_pending)) -join ',') -eq "2") "reject_return_pending 异常: $(@($cc.json.data.reject_return_pending) -join ',')"
+        $annex = Read-RunFileText $fx.run_id "report/delivery-annex.md"
+        Assert $c ($annex.Contains("部分达成（1 条驳回回流 PM")) "annex 未呈现部分达成"
+        Assert $c ($annex.Contains("驳回回流 PM，修订中")) "annex 任务表缺驳回注记"
+        Assert $c (-not $annex.Contains("根目标: **达成** —")) "annex 误呈现完全达成"
+        Assert $c ($annex.Contains("P2 reject")) "annex 任务表缺被驳回任务行"
+        Assert $c (Test-Path (Join-Path (Get-RunDirPath $fx.run_id) "report\final-report.md")) "final-report 缺失"
+    }
+
+    Run-Tc "TC-B27" "缺省回归:无 -ReviewFile 时 review=null、bridge 无 review 段、无 review.md、既有依赖推导不变(缺省路径与无审查门行为零变化)" "P0" "REG" {
+        param($c)
+        $fx = New-ReviewFixture "rv5" @(
+            @{ id = 1; title = "D1"; owners = "DEV"; req = "# D1`r`n`r`n- **依赖关系**：无" }
+            @{ id = 2; title = "D2"; owners = "DEV"; req = "# D2`r`n`r`n- **依赖关系**：依赖需求 1（d1）" }
+        )
+        $r = TB @("-Command", "promulgate", "-TaskJson", (Join-Path $fx.dir "task.json"))
+        Assert $c ($r.exit -eq 0 -and $r.json.success) "promulgate 失败: $($r.text)"
+        $d = $r.json.data
+        Assert $c ($null -eq $d.review) "缺省路径返回了 review 段"
+        Assert $c (@($d.skipped_review).Count -eq 0) "缺省路径 skipped_review 非空"
+        $b = Read-BridgeJson $fx.run_id
+        Assert $c ($null -eq $b.review) "缺省路径 bridge.json 出现 review 段"
+        Assert $c (-not (Test-Path (Join-Path (Get-RunDirPath $fx.run_id) "report\review.md"))) "缺省路径出现 review.md"
+        Assert $c (((@(@($d.tasks | Where-Object { $_.task_id -eq 2 })[0].dep_task_ids)) -join ',') -eq "1") "既有依赖推导被改"
+    }
+}
+
+# ============================================================
+# 套件:uniqueness — TC-B28 ~ TC-B31(PU-AC-1~4,规划者唯一性与回调防劫持)
+# 来源:2026-09-20-planner-capability-optimization / requirements/planner-uniqueness-callback.md
+# (AC3 投递层 readPlannerLease 单元断言在 dsh/rdd-goal-tree/tests/smoke.mjs 2d 节,
+#  规约 TC-B32 挂 cases.json,codeRef 指向该文件——本套件只覆盖引擎侧可黑盒驱动面)
+# ============================================================
+
+function Suite-Uniqueness {
+    Write-Host "`n== suite: uniqueness (PU-AC 规划者唯一性:误启拒绝/合法入口/无 run 放行/信息层禁令) =="
+
+    Run-Tc "TC-B28" "误启动确定性反馈:活跃 run 归档上 start-role PLANNER → PLANNER_RUN_ACTIVE 拒绝(run 信息+-RunId 续跑指引+Takeover 衔接+-Force 通道),零会话创建" "P0" "PU-AC-2" {
+        param($c)
+        $fx = New-FixtureArchive "pu28"
+        $r = TB @("-Command", "promulgate", "-TaskJson", (Join-Path $fx.dir "task.json"))
+        Assert $c ($r.exit -eq 0 -and $r.json.success) "promulgate 失败: $($r.text)"
+        # 注入 rdd-planner preset:若门禁失效,会话将真实创建(让零创建断言有判别力)
+        Set-DshMockRule -Methods @{ "agentPreset.list" = @{ kind = "ok"; value = @{ presets = @(@{ id = "rdd-planner" }, @{ id = "default" }) } } }
+        $sr = Join-Path $RepoRoot "rdd-engine\scripts\start-role.cmd"
+        $createsBefore = @((Read-DshMockLog) | Where-Object { $_.method -eq "session.create" }).Count
+        $prevEap = $ErrorActionPreference; $ErrorActionPreference = "Continue"
+        try { $txt = (& $sr @("-Role", "PLANNER", "-TaskJson", (Join-Path $fx.dir "task.json")) 2>$null | Out-String).Trim(); $code = $LASTEXITCODE }
+        finally { $ErrorActionPreference = $prevEap }
+        Assert $c ($code -eq 1) "误启动未被拒绝(exit=$code)"
+        Assert $c ($txt.Contains("PLANNER_RUN_ACTIVE")) "拒绝反馈缺错误码 PLANNER_RUN_ACTIVE: $txt"
+        Assert $c ($txt.Contains($fx.run_id)) "拒绝反馈缺 run 标识 $($fx.run_id)"
+        Assert $c ($txt.Contains("start-role.cmd -Role PLANNER -RunId $($fx.run_id)")) "缺 -RunId 续跑合法入口指引"
+        Assert $c ($txt.Contains("lease -RunId $($fx.run_id) -Takeover")) "缺 Takeover 衔接指引"
+        Assert $c ($txt.Contains("-Force")) "缺 -Force 用户裁决通道说明"
+        $createsAfter = @((Read-DshMockLog) | Where-Object { $_.method -eq "session.create" }).Count
+        Assert $c ($createsAfter -eq $createsBefore) "拒绝路径仍发起了会话创建(before=$createsBefore after=$createsAfter)"
+        Set-DshMockRule
+    }
+
+    Run-Tc "TC-B29" "合法入口零误伤:-RunId 续跑不拦截(DryRun+租约持有者提示+接管指引);-Force 跳过门禁后 rdd-planner 会话照常创建" "P0" "PU-AC-2" {
+        param($c)
+        $fx = New-FixtureArchive "pu29"
+        $r = TB @("-Command", "promulgate", "-TaskJson", (Join-Path $fx.dir "task.json"))
+        Assert $c ($r.exit -eq 0 -and $r.json.success) "promulgate 失败: $($r.text)"
+        $sr = Join-Path $RepoRoot "rdd-engine\scripts\start-role.cmd"
+        # (a) -RunId 续跑:合法再入,不拦截
+        $prevEap = $ErrorActionPreference; $ErrorActionPreference = "Continue"
+        try { $txtA = (& $sr @("-Role", "PLANNER", "-RunId", $fx.run_id, "-DryRun") 2>$null | Out-String).Trim(); $codeA = $LASTEXITCODE }
+        finally { $ErrorActionPreference = $prevEap }
+        Assert $c ($codeA -eq 0) "续跑模式被误拦(exit=$codeA)"
+        Assert $c ($txtA.Contains("续跑模式") -and $txtA.Contains("合法入口")) "续跑合法入口提示缺失: $txtA"
+        Assert $c ($txtA.Contains("lease -RunId $($fx.run_id) -Takeover")) "续跑提示缺接管指引"
+        # (b) -Force:跳过门禁,会话照常创建(用户显式裁决通道)
+        Set-DshMockRule -Methods @{ "agentPreset.list" = @{ kind = "ok"; value = @{ presets = @(@{ id = "rdd-planner" }, @{ id = "default" }) } } }
+        $prevEap = $ErrorActionPreference; $ErrorActionPreference = "Continue"
+        try { $null = & $sr @("-Role", "PLANNER", "-TaskJson", (Join-Path $fx.dir "task.json"), "-Force") 2>$null; $codeB = $LASTEXITCODE }
+        finally { $ErrorActionPreference = $prevEap }
+        Assert $c ($codeB -eq 0) "-Force 强启失败(exit=$codeB)"
+        $plannerCreates = @((Read-DshMockLog) | Where-Object { $_.method -eq "session.create" -and [string]$_.payload.agentPreset -eq "rdd-planner" })
+        Assert $c ($plannerCreates.Count -ge 1) "-Force 未创建 rdd-planner 会话(门禁外溢或通道断裂)"
+        Set-DshMockRule
+    }
+
+    Run-Tc "TC-B30" "非桥回归:无活跃 run 归档启动 PLANNER 照常放行(RUN_NOT_FOUND→probe 放行),会话创建,指针零 goal-tree 标记段" "P0" "PU-AC-4" {
+        param($c)
+        $fx = New-FixtureArchive "pu30"   # 不 promulgate:该归档无桥接 run
+        Set-DshMockRule -Methods @{ "agentPreset.list" = @{ kind = "ok"; value = @{ presets = @(@{ id = "rdd-planner" }, @{ id = "default" }) } } }
+        $sr = Join-Path $RepoRoot "rdd-engine\scripts\start-role.cmd"
+        $prevEap = $ErrorActionPreference; $ErrorActionPreference = "Continue"
+        try { $txt = (& $sr @("-Role", "PLANNER", "-TaskJson", (Join-Path $fx.dir "task.json")) 2>$null | Out-String).Trim(); $code = $LASTEXITCODE }
+        finally { $ErrorActionPreference = $prevEap }
+        Assert $c ($code -eq 0) "无活跃 run 归档启动被误拦(exit=$code): $txt"
+        Assert $c (-not $txt.Contains("PLANNER_RUN_ACTIVE")) "无 run 时不应报 PLANNER_RUN_ACTIVE"
+        $log = Read-DshMockLog
+        $created = @($log | Where-Object { $_.method -eq "session.create" -and [string]$_.payload.agentPreset -eq "rdd-planner" })
+        Assert $c ($created.Count -ge 1) "放行后未创建会话(行为与改前不一致)"
+        $lastPrompt = @($log | Where-Object { $_.method -eq "session.prompt" }) | Select-Object -Last 1
+        $pText = [string]$lastPrompt.payload.content[0].text
+        Assert $c ($pText -ne "" -and (-not $pText.Contains("goal-tree-run"))) "非桥 PLANNER 指针意外携带标记段: $pText"
+        Set-DshMockRule
+    }
+
+    Run-Tc "TC-B31" "信息层禁令在位:next PLANNER 块自声明桥接 worker 不适用(longTask 照常触发);四 worker 卡逐字同构禁令+PM 卡适用前提+协议真源同步" "P0" "PU-AC-1" {
+        param($c)
+        $fx = New-FixtureArchive "pu31"
+        # (a) 非桥 next:longTask 信号与 PLANNER 候选块照常输出(AC4 回归),note 含 worker 不适用声明(AC1 兜底)
+        $n = TFlow @("-Command", "next", "-Archive", $fx.dir)
+        Assert $c ($n.exit -eq 0 -and $n.json.success) "next 失败: $($n.text)"
+        Assert $c ([bool]$n.json.data.longTask.triggered) "longTask 信号未触发(非桥回归破坏)"
+        $plannerBlock = @($n.json.data.roles) | Where-Object { [string]$_.role -eq "PLANNER" } | Select-Object -First 1
+        Assert $c ($null -ne $plannerBlock) "PLANNER 候选块未输出(非桥回归破坏)"
+        Assert $c (([string]$plannerBlock.note).Contains("桥接 run 的 worker")) "PLANNER 块 note 缺桥接 worker 不适用声明"
+        Assert $c (([string]$plannerBlock.note).Contains("勿启动 PLANNER")) "PLANNER 块 note 缺勿启动指引"
+        # (b) 四张 worker 卡 goal-tree 分支禁令逐字同构
+        $sentences = @()
+        foreach ($card in @("rdd-cto", "rdd-ux", "rdd-dev", "rdd-qa")) {
+            $t = [System.IO.File]::ReadAllText((Join-Path $RepoRoot "$card\SKILL.md"), [System.Text.Encoding]::UTF8)
+            $m = [regex]::Match($t, "桥接 run 内\*\*不启动 PLANNER\*\*.*?留痕。")
+            Assert $c $m.Success "$card\SKILL.md 缺「不启动 PLANNER」禁令"
+            if ($m.Success) { $sentences += $m.Value }
+        }
+        Assert $c (@($sentences | Select-Object -Unique).Count -le 1) "四卡禁令非逐字同构"
+        # (c) PM 卡适用前提 + 协议真源(transition-guide / planner-guide)同步
+        $pm = [System.IO.File]::ReadAllText((Join-Path $RepoRoot "rdd-pm\SKILL.md"), [System.Text.Encoding]::UTF8)
+        Assert $c ($pm.Contains("PLANNER_RUN_ACTIVE")) "PM 卡 planner-takeover 话术缺适用前提(PLANNER_RUN_ACTIVE)"
+        $tg = [System.IO.File]::ReadAllText((Join-Path $RepoRoot "rdd-engine\references\transition-guide.md"), [System.Text.Encoding]::UTF8)
+        Assert $c ($tg.Contains("不启动 PLANNER")) "transition-guide goal-tree 分支缺不启动 PLANNER 禁令"
+        $pg = [System.IO.File]::ReadAllText((Join-Path $RepoRoot "rdd-engine\references\planner-guide.md"), [System.Text.Encoding]::UTF8)
+        Assert $c ($pg.Contains("回调投递目标解析")) "planner-guide 缺回调投递目标解析段"
+        Assert $c ($pg.Contains("PLANNER_RUN_ACTIVE")) "planner-guide 双规划者误起条目未更新"
+    }
+}
+
+# ============================================================
 # 主流程
 # ============================================================
 
@@ -1047,7 +1395,7 @@ $env:RDD_RUNTIME = $null
 $env:DSH_SESSION_ID = "qa-bridge-mock"
 Write-Host "dsh-mock carrier: $script:DshMockUrl"
 
-$selected = if ($Suite -eq "all") { @("promulgate", "claim", "settle", "recover", "conclude", "regression", "compat", "autopush", "callback") } else { @($Suite) }
+$selected = if ($Suite -eq "all") { @("promulgate", "claim", "settle", "recover", "conclude", "regression", "compat", "autopush", "callback", "review", "uniqueness") } else { @($Suite) }
 foreach ($s in $selected) {
     switch ($s) {
         "promulgate" { Suite-Promulgate }
@@ -1059,6 +1407,8 @@ foreach ($s in $selected) {
         "compat"     { Suite-Compat }
         "autopush"   { Suite-AutoPush }
         "callback"   { Suite-Callback }
+        "review"     { Suite-Review }
+        "uniqueness" { Suite-Uniqueness }
     }
 }
 

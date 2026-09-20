@@ -49,15 +49,17 @@
         "rdd-engine/scripts/goal-tree-leaf.ps1",
         "rdd-engine/scripts/rdd-flow.ps1",
         "rdd-engine/scripts/start-role.ps1",
-        "rdd-engine/references/planner-guide.md"
+        "rdd-engine/references/planner-guide.md",
+        "rdd-engine/references/rejection-protocol.md",
+        "rdd-engine/references/task-routing.md"
       ],
       "testCode": [
         ".rdd/tests/delivery-bridge/delivery-bridge-verify.ps1"
       ],
-      "activeCount": 22,
+      "activeCount": 32,
       "deprecatedCount": 0,
-      "lastUpdated": "2026-09-19",
-      "lastChange": "2026-09-18-planner-goal-tree-upgrade"
+      "lastUpdated": "2026-09-20",
+      "lastChange": "2026-09-20-planner-capability-optimization"
     },
     {
       "feature": "investigation-role-cards",

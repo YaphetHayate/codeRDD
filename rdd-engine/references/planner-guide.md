@@ -18,16 +18,21 @@
 
 ```
 PM 归档（longTask 信号触发）→ start-role -Role PLANNER -TaskJson ...（或用户直接启动）
-  1. promulgate   颁布：归档任务集 → goal-tree run（目标根 + 需求链头节点 + 阶段链 + 依赖推导
-                  + bridge.json v2）→ 尾部【自动推送】全部无前置依赖节点
-  2. （推送即调度）角色会话被自动拉起，第一动作 bridge claim
-  3. （worker）claim → 干活 → 完成即 leaf report 回调规划者（不 start-role 直交下游；
+  1. review      需求审查门（建树前，推荐）：逐条审视子需求独立性与合理性 → 三级处置
+                  （通过 / 树内裁定 / 驳回回流）产出 ReviewFile，结论呈现用户（最终裁决权在用户）
+  2. promulgate   颁布：归档任务集 → goal-tree run（目标根 + 需求链头节点 + 阶段链 + 依赖推导
+                  + bridge.json v2；可选 -ReviewFile 消费审查结论——排除过滤/依赖覆盖/合并重定向）
+                  → 尾部【自动推送】全部无前置依赖节点
+  3. （推送即调度）角色会话被自动拉起，第一动作 bridge claim
+  4. （worker）claim → 干活 → 完成即 leaf report 回调规划者（不 start-role 直交下游、
+                  不启动 PLANNER——rdd-flow next 的 PLANNER 候选块对 worker 不适用，
+                  误启收到 start-role 拒绝 PLANNER_RUN_ACTIVE；
                   回调携带产物位置：citations=改动清单，full_report=主产物文档指针，
                   extras.verification=验证结果）
-  4. settle       流转：三查 → 树 settle → rdd-flow advance/complete → 自动 graft 下阶段节点
+  5. settle       流转：三查 → 树 settle → rdd-flow advance/complete → 自动 graft 下阶段节点
                   → 尾部【自动推送】新解锁节点（依赖满足者）
-  5. 循环 3-4；中断后任意新规划者会话 resume 续跑（status 触碰兜底补推漏推节点）
-  6. conclude     结案：全部任务终态 → 以目标根为锚 → final-report + delivery-annex.md（含 rdd-flow check）
+  6. 循环 4-5；中断后任意新规划者会话 resume 续跑（status 触碰兜底补推漏推节点）
+  7. conclude     结案：全部任务终态 → 以目标根为锚 → final-report + delivery-annex.md（含 rdd-flow check）
 ```
 
 **自动推送（依赖驱动，无人工确认门）**：dispatch 不再是规划者的逐节点手动命令。单一机制 `Invoke-AutoDispatch` 在四个触发点重算解锁集并推送：**建树推初始**（promulgate 尾）、**流转推解锁**（settle 尾）、**回收推重派**（reclaim 尾）、**巡检补漏**（status 触碰，租约空闲时）。推送条件 = 解锁（depends_on 全终态）∧ 未终态 ∧ 无活跃 claim（泊位除外）∧ 从未成功推送或回收后待重推。逐节点 try/catch 隔离失败，账目内嵌 bridge.json v2（`pushes`：node/at/ok/error/retry_class，逐节点落盘、崩溃后幂等重算续推）。失败分档：`session-create` 类（未建成会话）下一触发点自动重试；`pointer` 类（会话已建、指针投递失败）**只人工重推**（dispatch 命令保留用于此类与异常处置），防会话堆积。
@@ -52,7 +57,7 @@ PM 归档（longTask 信号触发）→ start-role -Role PLANNER -TaskJson ...�
 
 | 命令 | 形态 | 作用 |
 |------|------|------|
-| 颁布 | `delivery-bridge.cmd -Command promulgate -TaskJson <path> [-MaxRounds N] [-NodeWidth N] [-MaxNodes N] [-CreatedBy label] [-Session label]` | 读归档 → goal-tree start（目标根模式，原始需求=goal 根）+ round-start + 按任务×当前阶段 graft 需求链头（`ref=<归档名>/<需求文档>`）→ 写 bridge.json v2 → **自动推送全部无前置依赖节点**。RunId 固定为 `deliver-<归档名>`。预算默认：rounds 12 / width max(4, 任务数) / nodes 任务数×5+6 |
+| 颁布 | `delivery-bridge.cmd -Command promulgate -TaskJson <path> [-ReviewFile <path>] [-MaxRounds N] [-NodeWidth N] [-MaxNodes N] [-CreatedBy label] [-Session label]` | 读归档 → goal-tree start（目标根模式，原始需求=goal 根）+ round-start + 按任务×当前阶段 graft 需求链头（`ref=<归档名>/<需求文档>`）→ 写 bridge.json v2 → **自动推送全部无前置依赖节点**。可选 `-ReviewFile` 消费需求审查结论（硬约束 6）：驳回/合并任务不建节点、`depends_on_override` 整体替代正则推导、合并依赖重定向到并入方、驳回残留依赖硬拒 `REVIEW_EXCLUDED_DEP`；缺省时行为与无审查门完全一致。RunId 固定为 `deliver-<归档名>`。预算默认：rounds 12 / width max(4, 任务数) / nodes 任务数×5+6 |
 | 调动 | `delivery-bridge.cmd -Command dispatch -RunId <id> -NodeId <n> [-DryRun]` | 手动单节点推送（异常处置 / pointer 类失败人工重推；正常流程由自动推送承担） |
 | 认领 | `delivery-bridge.cmd -Command claim -RunId <id> -NodeId <n> -Role <CTO/UX/DEV/QA>` | **被推送会话的第一动作**。双侧只读预检 → leaf claim → rdd-flow claim；冲突给确定性反馈 + 当前可领节点清单；goal 根报 `GOAL_NODE_NOT_CLAIMABLE` |
 | 回收 | `delivery-bridge.cmd -Command reclaim -RunId <id> -NodeId <n>` | 复合回收，两种模式：**dead-claim**（卡死 claimed：存活预检——alive 拒 `RECLAIM_TARGET_ALIVE`、unknown 未达 60min 阈值拒 `RECLAIM_UNPROVEN_DEAD`——通过后 leaf `-Steal` + rdd-flow `claim -Force` 入泊位 → **自动重推**）与 **rejected-delivery**（reported 但证据不合格：剪枝失败交付 + graft 替换节点（ref 重绑需求文档）+ 重映射 → **自动推送替换节点**，账本保留审计痕） |
@@ -77,6 +82,29 @@ PM 归档（longTask 信号触发）→ start-role -Role PLANNER -TaskJson ...�
 3. **规划者变更操作需持租约**：promulgate/dispatch/settle/reclaim/conclude 要求 planner-lease（自动获取/刷新；他人持新鲜租约时报 `LEASE_HELD`，`-Takeover` 强制接管留痕）。worker 的 `claim` 免租约。
 4. **中断恢复不重复消费**：reported 节点永不被重新消费（goal-tree 既有不变量）；死 claim 用 reclaim 统一出口。
 5. **轮次纪律由桥接承担**：promulgate 开第 1 轮并保持开放至 conclude（conclude 自动收轮）；规划者不手工 round-start/end。
+6. **建树前需求审查门（`-ReviewFile`）**：规划者接管归档时先审查后建树——读 task.json + 全部需求文档 + overview，逐条判定子需求的独立性与合理性（与根目标一致性、粒度、依赖标注真实度），结论分级：**通过**（正常建树）/ **树内裁定**（轻度问题：依赖错标 → `depends_on_override`；同一改动两个侧面 → `merged_into_task_id` 合并剪枝，留审计痕、不阻断其余需求交付）/ **驳回回流**（文档级不合理 → 先按驳回协议处置再 promulgate，见 `rejection-protocol.md`「PLANNER 发起的驳回」）。审查是规划者会话的语义判断，脚本层不硬拦（`-ReviewFile` 缺省不阻塞再 promulgate/自动化）；ReviewFile 契约（精确模板）：
+
+   ```json
+   {
+     "reviewed_at": "<ISO-8601>",
+     "reviewer": "planner",
+     "verdicts": [
+       { "task_id": 1, "verdict": "pass",             "reason": "独立、与根目标一致" },
+       { "task_id": 2, "verdict": "tree_adjudicated", "reason": "依赖错标：实际不依赖 #1",
+         "depends_on_override": [] },
+       { "task_id": 3, "verdict": "tree_adjudicated", "reason": "与 #2 实为同一改动两个侧面",
+         "merged_into_task_id": 2 },
+       { "task_id": 4, "verdict": "reject_return",    "reason": "与 overview 根目标不符" }
+     ]
+   }
+   ```
+
+   - `verdict` 枚举 `pass / tree_adjudicated / reject_return`；未列出的任务 = 隐式通过。`pass` 不得携带 `depends_on_override`/`merged_into_task_id`；两者也不得同现于一条 verdict（合并任务不建节点）；同任务重复 verdict、指向不在归档的任务均拒。
+   - **前置动作**（脚本消费前规划者必须完成）：`reject_return` → 需求文档「## 驳回记录」追加行 + `rdd-flow reject -From PLANNER -To PM`；`merged_into_task_id` → `rdd-flow deprecate -TaskId <被并入方>`（误判经 `reopen` 可恢复；ReviewFile 对已 deprecate 的被并入方记 merged_into 即为其留痕）。
+   - **机械消费保证**：排除任务不建节点、不进 bridge.tasks、不被推送（`skipped_review` 与既有 `skipped_deprecated` 并列入 promulgate 返回值）；依赖被合并排除的任务重定向到并入方；依赖悬空于驳回排除任务硬拒 `REVIEW_EXCLUDED_DEP`（**禁止静默丢弃依赖**——静默丢弃会让依赖方被过早推送，正是审查门要消灭的错序 bug 类）；审查显式依赖（override/重定向）指向后位任务时经 `deps add` 延后缝合（DAG 校验 + deps-log 审计）。
+   - **确定性错误码三枚**：`REVIEW_FILE_INVALID`（解析/schema/字段一致性）、`REVIEW_TASK_NOT_FOUND`（task_id/override/merge 指向不在归档）、`REVIEW_EXCLUDED_DEP`（依赖悬空于驳回排除任务）。
+   - **结论呈现**：`report/review.md`（人读逐条结论表：结论/理由/处置/时间）+ promulgate 返回值 `review` 段 + bridge.json `review` 段（机器可读审计）。用户可随时干预或推翻裁定（**最终裁决权在用户**），推翻处置见异常处置速查。
+   - **结案如实呈现**：conclude 门禁豁免严格限定 review 段 `reject_return` 集（该类任务 active@PM 是真实状态）；其余非终态任务照旧 `DELIVERY_INCOMPLETE` 硬拒。annex 根目标措辞：无未决驳回 =「达成」；有 =「部分达成（N 条驳回回流 PM，见任务终态表）」；被合并任务标注「deprecated（树内合并至 #N，非放弃）」。
 
 ## 交付语义映射（回调契约）
 
@@ -91,6 +119,8 @@ worker 沿用 goal-tree 证据导向回调结构承载交付语义，核心零�
 
 真实性判断由 **QA 阶段节点**承担：QA 会话的 citations = 验收证据（功能+质量双通过），QA 节点 settle 即任务 complete。QA 判不合格 → 不 report done / 规划者收到 settle 拒绝 → reopen 语义经 rdd-flow（或重新 dispatch DEV 节点）处理。
 
+**回调投递目标解析（dsh 后端）**：worker 回调投递给按「新鲜租约优先、planner.json 兜底」解析出的当前有效规划者——`planner-lease.json` 新鲜（30 分钟内，与 lease 命令 stale 阈值一致）且 holder 为 dsh 会话（`dsh-<sid>` 前缀）时投给该会话（Takeover 换手、续跑者拿租约后投递随之前指，修复断路）；否则回退 `state/planner.json` 记录的建 run 会话（误启的第二个规划者未持租约，回调不偏移；原规划者空闲存活时租约恰好 stale，回退目标正是它）。去重键（repo::run::entry）与投递目标无关，不会双投。CLI/Plus 后端无 watcher 实时投递（经 status/resume 拉取），不受影响。
+
 ## 异常处置速查
 
 | 症状 | 处置 |
@@ -104,8 +134,11 @@ worker 沿用 goal-tree 证据导向回调结构承载交付语义，核心零�
 | reclaim 报 `RECLAIM_TARGET_ALIVE` | 认领会话仍存活（agents 注册表证实）——不是回收对象；等它 report 或让该会话自行处置 |
 | reclaim 报 `RECLAIM_UNPROVEN_DEAD` | 存活无法证实（CLI/查证不可达）且 claim 未达 60min 阈值——宁等多收；达阈值后重试或换 dsh 会话执行 |
 | 推送失败（status 可见 pushes 账目） | `session-create` 类：status 触碰自动重试；`pointer` 类：人工 `dispatch -NodeId` 重推（防会话堆积） |
-| 双规划者误起 | 新会话报 `LEASE_HELD`；确认原会话已死后 `lease -Takeover` |
+| 双规划者误起 | 启动即被 start-role 前置校验拒绝（`PLANNER_RUN_ACTIVE`，附 run 信息与 `-RunId` 续跑指引；`-Force` 强启创建通道后命令级仍有 `LEASE_HELD` 防线，不产生第二个有效规划者）；确认原会话已死后 `lease -Takeover` 留痕接管 |
 | promulgate 报 `RUN_EXISTS` | 该归档已颁布过，用 `status/resume -RunId deliver-<归档名>` 续跑 |
+| promulgate 报 `REVIEW_FILE_INVALID` / `REVIEW_TASK_NOT_FOUND` | ReviewFile 契约违规（解析/schema/字段一致性/指向不在归档）——按错误消息修正 ReviewFile 后重试；错误均发生在建树前，无部分状态残留 |
+| promulgate 报 `REVIEW_EXCLUDED_DEP` | 某任务依赖被驳回排除的任务—— planner 补裁定该任务（`depends_on_override` 或一并驳回），依赖不会被静默丢弃 |
+| 用户推翻 planner 审查裁定 | **建树前**：直接改 ReviewFile 重产出（promulgate 未消费，无残留）。**run 已颁布**：误合并 → `rdd-flow reopen` 恢复被并入方（deprecate 非不可逆）+ 规划者经 `deps`/graft 补树内调整；误驳回 → PM 按驳回协议辩解翻案或 `rdd-flow reopen`，修订后经后续 run/正常流程承接。裁定推翻过程在会话内向用户留痕说明 |
 | status 报 `BRIDGE_FORMAT_UNSUPPORTED` | 旧版 v1 桥（零兼容裁定）：重新 promulgate 或按本协议人工处置存量 run |
 | 需求/设计不可行 | 走 `rdd-engine/references/rejection-protocol.md` 驳回协议移交上游 |
 
@@ -113,9 +146,10 @@ worker 沿用 goal-tree 证据导向回调结构承载交付语义，核心零�
 
 | 文件 | 语义 |
 |------|------|
-| `bridge.json` | **v2**：节点↔TaskId 权威映射（1:N）+ `goal_root` 锚 + `goal`（原始需求标题/来源）+ `pushes` 推送账目（node/at/ok/error/retry_class）+ pending_sync 分歧账（v1 拒读 `BRIDGE_FORMAT_UNSUPPORTED`，零兼容裁定） |
+| `bridge.json` | **v2**：节点↔TaskId 权威映射（1:N）+ `goal_root` 锚 + `goal`（原始需求标题/来源）+ `pushes` 推送账目（node/at/ok/error/retry_class）+ pending_sync 分歧账 + `review` 段（`-ReviewFile` 颁布时：reviewed_at/reviewer/verdicts/applied_at，机器可读审计）（v1 拒读 `BRIDGE_FORMAT_UNSUPPORTED`，零兼容裁定） |
 | `planner-lease.json` | 会话租约（holder / acquired_at / taken_over_from 留痕） |
-| `report/delivery-annex.md` | 结案附录（根目标达成状态 + 每任务终态 + 阶段链 + rdd-flow check 结果） |
+| `report/review.md` | 需求审查结论（仅 `-ReviewFile` 颁布的 run）：逐条 verdict 表（结论/理由/处置/时间），呈现用户的人读持久化载体 |
+| `report/delivery-annex.md` | 结案附录（根目标达成状态——有未决驳回时如实呈现「部分达成」+ 每任务终态（含树内合并/驳回注记）+ 阶段链 + rdd-flow check 结果） |
 | （goal-tree 既有）tree.json / ledger.jsonl / round-*.md / final-report.md | 树状态 / 回调账本 / 轮快照 / 结案报告（目标根锚时含「根目标达成状态」区） |
 
 > 桥接 run 目录：`.rdd/goal-trees/deliver-<归档名>/`。非桥接的 goal-tree run 与普通 rdd-flow 流程行为与引入桥接前完全一致（回归硬约束，由 delivery-bridge-verify 断言）。

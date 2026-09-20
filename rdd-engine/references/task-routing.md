@@ -248,6 +248,7 @@ CTO/UX 完成设计归档后，先 `add-design` 再 `advance`。
 - `-From`：发起方角色（调用方自己）
 - `-To`：被驳回方角色（路由指向谁）
 - 将 `currentOwners` 改为 `[-To]`，`remark` 追加驳回摘要
+- 规划者可用：PLANNER 在需求审查门（建树前）判定文档级不合理时以 `-From PLANNER -To PM` 发起（前置：需求文档「## 驳回记录」追加行；见 `rejection-protocol.md`「PLANNER 发起的驳回」与 `planner-guide.md` 硬约束 6）
 
 驳回记录的完整表格仍写在文档自身的 `## 驳回记录` 章节（见 `rejection-protocol.md`）。本命令只同步路由状态。
 
@@ -331,6 +332,7 @@ task.json 此前只有 `lifecycle`（生命周期）与 `currentOwners`（路由
 | **QA** | 验证通过闭环 | `complete` |
 | **QA** | 发现问题回退 | `reopen -To DEV` |
 | **任意角色** | 发起驳回 | `reject -From <自己> -To <被驳回方> -Reason` |
+| **PLANNER** | 需求审查门驳回回流（建树前） | `reject -From PLANNER -To PM -Reason`（见 `rejection-protocol.md`「PLANNER 发起的驳回」） |
 | **EVAL/PSE** | 只读了解状态 | `show` |
 
 ---
