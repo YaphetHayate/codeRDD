@@ -30,16 +30,17 @@ PM 归档（longTask 信号触发）→ start-role -Role PLANNER -TaskJson ...�
                   回调携带产物位置：citations=改动清单，full_report=主产物文档指针，
                   extras.verification=验证结果）
   5. settle       流转：三查 → 树 settle → rdd-flow advance/complete → 自动 graft 下阶段节点
-                  → 尾部【自动推送】新解锁节点（依赖满足者）
+                  → 尾部【自动推送】新解锁节点（依赖满足者）；三查不过即拒（不合格交付不流转）——
+                  同阶段重做走 reclaim，跨阶段回退走 rollback（剪枝+兄弟重建+reopen+自动重推）
   6. 循环 4-5；中断后任意新规划者会话 resume 续跑（status 触碰兜底补推漏推节点）
   7. conclude     结案：全部任务终态 → 以目标根为锚 → final-report + delivery-annex.md（含 rdd-flow check）
 ```
 
-**自动推送（依赖驱动，无人工确认门）**：dispatch 不再是规划者的逐节点手动命令。单一机制 `Invoke-AutoDispatch` 在四个触发点重算解锁集并推送：**建树推初始**（promulgate 尾）、**流转推解锁**（settle 尾）、**回收推重派**（reclaim 尾）、**巡检补漏**（status 触碰，租约空闲时）。推送条件 = 解锁（depends_on 全终态）∧ 未终态 ∧ 无活跃 claim（泊位除外）∧ 从未成功推送或回收后待重推。逐节点 try/catch 隔离失败，账目内嵌 bridge.json v2（`pushes`：node/at/ok/error/retry_class，逐节点落盘、崩溃后幂等重算续推）。失败分档：`session-create` 类（未建成会话）下一触发点自动重试；`pointer` 类（会话已建、指针投递失败）**只人工重推**（dispatch 命令保留用于此类与异常处置），防会话堆积。
+**自动推送（依赖驱动，无人工确认门）**：dispatch 不再是规划者的逐节点手动命令。单一机制 `Invoke-AutoDispatch` 在四个触发点重算解锁集并推送：**建树推初始**（promulgate 尾）、**流转推解锁**（settle 尾）、**回收推重派**（reclaim 尾）、**回退推重做**（rollback 尾）、**巡检补漏**（status 触碰，租约空闲时）。推送条件 = 解锁（depends_on 全终态）∧ 未终态 ∧ 无活跃 claim（泊位除外）∧ 从未成功推送或回收后待重推。逐节点 try/catch 隔离失败，账目内嵌 bridge.json v2（`pushes`：node/at/ok/error/retry_class，逐节点落盘、崩溃后幂等重算续推）。失败分档：`session-create` 类（未建成会话）下一触发点自动重试；`pointer` 类（会话已建、指针投递失败）**只人工重推**（dispatch 命令保留用于此类与异常处置），防会话堆积。
 
 **树形语义（目标根模型）**：根节点 = `type=goal` 的**目标根**——承载归档原始需求（overview.md 的 H1 标题 + 全文描述），不可认领（`GOAL_NODE_NOT_CLAIMABLE`）、不参与依赖（`DEP_GOAL_FORBIDDEN`）、conclude 终局锚点（全部直接子节点终态 ⇒ 根目标达成）。一级子节点 = PM 拆分的**子需求链头**（合一模型：链头即首阶段工作节点，`ref=<归档名>/<需求文档路径>` 绑定需求文档）；CTO→DEV→QA 阶段链在需求节点下随流转链式 graft（1 任务 : N 节点，映射落盘 bridge.json）。
 
-**阶段链模型**：任务生命周期跨角色，阶段推进链：`CTO → DEV → QA`；任务从 UX 起步时为 `UX → DEV → QA`。settle 一阶段节点后，下一阶段节点自动 graft 为**该节点的子节点**（链式 parent，无幽灵父节点）。
+**阶段链模型**：任务生命周期跨角色，阶段推进链：`CTO → DEV → QA`；任务从 UX 起步时为 `UX → DEV → QA`。settle 一阶段节点后，下一阶段节点自动 graft 为**该节点的子节点**（链式 parent，无幽灵父节点）。rollback 跨阶段回退时，重建的前一阶段节点以**兄弟挂接**回到链头层（parent = 前一阶段节点的 parent）——链不变量与树深在多轮回退下保持。
 
 **任务级依赖**：promulgate 从各任务需求文档的「依赖关系」字段自动推导（"依赖需求 N" / "依赖 #N" → 依赖任务 N 的初始节点）；跨阶段/运行中的依赖维护用 `goal-tree deps add/remove`（机械 DAG 校验 + deps-log.jsonl 审计）。
 
@@ -61,6 +62,7 @@ PM 归档（longTask 信号触发）→ start-role -Role PLANNER -TaskJson ...�
 | 调动 | `delivery-bridge.cmd -Command dispatch -RunId <id> -NodeId <n> [-DryRun]` | 手动单节点推送（异常处置 / pointer 类失败人工重推；正常流程由自动推送承担） |
 | 认领 | `delivery-bridge.cmd -Command claim -RunId <id> -NodeId <n> -Role <CTO/UX/DEV/QA>` | **被推送会话的第一动作**。双侧只读预检 → leaf claim → rdd-flow claim；冲突给确定性反馈 + 当前可领节点清单；goal 根报 `GOAL_NODE_NOT_CLAIMABLE` |
 | 回收 | `delivery-bridge.cmd -Command reclaim -RunId <id> -NodeId <n>` | 复合回收，两种模式：**dead-claim**（卡死 claimed：存活预检——alive 拒 `RECLAIM_TARGET_ALIVE`、unknown 未达 60min 阈值拒 `RECLAIM_UNPROVEN_DEAD`——通过后 leaf `-Steal` + rdd-flow `claim -Force` 入泊位 → **自动重推**）与 **rejected-delivery**（reported 但证据不合格：剪枝失败交付 + graft 替换节点（ref 重绑需求文档）+ 重映射 → **自动推送替换节点**，账本保留审计痕） |
+| 回退 | `delivery-bridge.cmd -Command rollback -RunId <id> -NodeId <失败节点> -Reason "<理由>"` | **跨阶段回退单命令**（与 settle 正向 / reclaim 同阶段构成三通道）：剪枝失败节点（prune reason 入 ledger 留审计：回退理由+操作者+证据问题清单）→ **兄弟挂接**重建前一阶段节点（parent=前一阶段节点的 parent；QA 证据问题+回退理由进新节点 task 的重做上下文）→ `rdd-flow reopen` 路由回退（owners 对齐，`Sync-TaskClaims` 自动清 worker 残留）→ **自动重推**重建节点。目标阶段机械单源推导（失败节点 parent 的 stage）；守卫 `ROLLBACK_REQUIRES_REPORTED` / `ROLLBACK_REQUIRES_UNQUALIFIED` / `ROLLBACK_NO_PREVIOUS_STAGE` / `TASK_NOT_ACTIVE`；prune→graft 崩溃窗口由剪枝签名幂等续跑守卫兜底（重跑同命令自动续 graft 步，不二次剪枝）。QA→DEV 为一等路径，DEV→CTO/UX 同一代码路径；返回值 `dependents_warning[]` 仅警示直接依赖边（不展开传递闭包，闭包经 `goal-tree deps list` 自查），不动其他任务节点 |
 | 流转 | `delivery-bridge.cmd -Command settle -RunId <id> -NodeId <n> [-Note ...]` | **task.json 流转的唯一通道**（见下方三查门禁）；settle 尾自动推送新解锁节点 |
 | 全景 | `delivery-bridge.cmd -Command status -RunId <id>` | join 视图：树 census + 任务阶段 + 依赖阻塞 + 双侧死 claim + pending_sync 分歧（自动重试修复）+ pushes 推送账目 + 会话存活 + **会话花名册**（sessions：本体/派发/直交全量清单）+ **触碰兜底补推**（租约空闲时）+ 租约 |
 | 续跑 | `delivery-bridge.cmd -Command resume -RunId <id>` | 断点视图 + 恢复步骤清单（新规划者会话入口；本体会话自动入花名册） |
@@ -79,8 +81,8 @@ PM 归档（longTask 信号触发）→ start-role -Role PLANNER -TaskJson ...�
 ## 硬约束
 
 1. **不合格交付不得流转**：settle 三查（verdict=done / citations 改动清单非空且每条 ref 真实存在 / extras.verification 非空）任一不过即拒，节点停在 reported。
-2. **禁止手工双写**：桥接 run 的 task.json 流转只能走 `bridge settle`——手工 `rdd-flow advance/complete` 会造成双源矛盾（status 的 pending_sync 只修复 settle 先行、flow 后补的半失败，不覆盖手工乱写）。
-3. **规划者变更操作需持租约**：promulgate/dispatch/settle/reclaim/conclude 要求 planner-lease（自动获取/刷新；他人持新鲜租约时报 `LEASE_HELD`，`-Takeover` 强制接管留痕）。worker 的 `claim` 免租约。
+2. **禁止手工双写**：桥接 run 的 task.json 流转正向只能走 `bridge settle`、反向只能走 `bridge rollback`——双通道皆收敛进桥接层；手工 `rdd-flow advance/complete/reopen` 会造成双源矛盾（status 的 pending_sync 只修复 settle/rollback 先行、flow 后补的半失败，不覆盖手工乱写）。
+3. **规划者变更操作需持租约**：promulgate/dispatch/settle/reclaim/rollback/conclude 要求 planner-lease（自动获取/刷新；他人持新鲜租约时报 `LEASE_HELD`，`-Takeover` 强制接管留痕）。worker 的 `claim` 免租约。
 4. **中断恢复不重复消费**：reported 节点永不被重新消费（goal-tree 既有不变量）；死 claim 用 reclaim 统一出口。
 5. **轮次纪律由桥接承担**：promulgate 开第 1 轮并保持开放至 conclude（conclude 自动收轮）；规划者不手工 round-start/end。
 6. **建树前需求审查门（`-ReviewFile`）**：规划者接管归档时先审查后建树——读 task.json + 全部需求文档 + overview，逐条判定子需求的独立性与合理性（与根目标一致性、粒度、依赖标注真实度），结论分级：**通过**（正常建树）/ **树内裁定**（轻度问题：依赖错标 → `depends_on_override`；同一改动两个侧面 → `merged_into_task_id` 合并剪枝，留审计痕、不阻断其余需求交付）/ **驳回回流**（文档级不合理 → 先按驳回协议处置再 promulgate，见 `rejection-protocol.md`「PLANNER 发起的驳回」）。审查是规划者会话的语义判断，脚本层不硬拦（`-ReviewFile` 缺省不阻塞再 promulgate/自动化）；ReviewFile 契约（精确模板）：
@@ -118,7 +120,7 @@ worker 沿用 goal-tree 证据导向回调结构承载交付语义，核心零�
 | `full_report` | 主产物文档指针（设计文档 / 实现说明；桥接 run 内规范必填——回调消息据此呈现 Doc 行，规划者凭单条消息即可裁定。引擎结构校验不强制：漏带降级可接受，citations 仍含文档路径，三查不卡） |
 | `extras.verification` | 验证结果（lint/test/build 摘要；缺失即拒） |
 
-真实性判断由 **QA 阶段节点**承担：QA 会话的 citations = 验收证据（功能+质量双通过），QA 节点 settle 即任务 complete。QA 判不合格 → 不 report done / 规划者收到 settle 拒绝 → reopen 语义经 rdd-flow（或重新 dispatch DEV 节点）处理。
+真实性判断由 **QA 阶段节点**承担：QA 会话的 citations = 验收证据（功能+质量双通过），QA 节点 settle 即任务 complete。QA 判不合格 → report 非 done verdict（失败清单写入回调 full_report/extras），规划者收到后二选一：**同阶段重做** `reclaim -NodeId`（问题在本阶段可修）或**跨阶段回退** `rollback -NodeId -Reason <理由>`（退回 DEV 重做：单命令完成剪枝+重建+路由回退+自动重推，见命令面板「回退」行）。
 
 **回调投递目标解析（dsh 后端）**：worker 回调投递给按「新鲜租约优先、planner.json 兜底」解析出的当前有效规划者——`planner-lease.json` 新鲜（30 分钟内，与 lease 命令 stale 阈值一致）且 holder 为 dsh 会话（`dsh-<sid>` 前缀）时投给该会话（Takeover 换手、续跑者拿租约后投递随之前指，修复断路）；否则回退 `state/planner.json` 记录的建 run 会话（误启的第二个规划者未持租约，回调不偏移；原规划者空闲存活时租约恰好 stale，回退目标正是它）。去重键（repo::run::entry）与投递目标无关，不会双投。CLI/Plus 后端无 watcher 实时投递（经 status/resume 拉取），不受影响。
 
@@ -130,11 +132,14 @@ worker 沿用 goal-tree 证据导向回调结构承载交付语义，核心零�
 | 回调收到完成、但用户已手动直交下游角色 | 属正常优先级裁决：用户显式直交指令优先执行，但 worker 的 leaf report 回调先行不可省（next_suggestion 注明直交指令）——照常三查裁定 settle（ledger 留痕可对账）；直交会话与树推送会话撞车由 `FLOW_CLAIM_CONFLICT` / `NODE_NOT_CLAIMABLE` 确定性反馈兜底 |
 | 同一节点第二个会话被唤起 | bridge claim 返回 `NODE_NOT_CLAIMABLE` + 认领者信息 + 可领清单，按清单改领即可 |
 | 节点被依赖阻塞 | `NODE_BLOCKED_BY_DEPS` 附阻塞源；等上游 settle（解锁后**自动推送**，无需手动 dispatch），或规划者调整依赖（deps remove） |
-| settle 报 `SETTLE_EVIDENCE_REJECTED` | `reclaim -NodeId`（rejected-delivery 模式：剪枝失败交付并建+**自动推送**替换节点） |
+| settle 报 `SETTLE_EVIDENCE_REJECTED` | `reclaim -NodeId`（rejected-delivery 模式：剪枝失败交付并建+**自动推送**替换节点——同阶段重做）或 `rollback -NodeId -Reason <理由>`（跨阶段回退：剪枝+重建前一阶段节点+reopen 路由回退+**自动重推**——退回 DEV 重做） |
 | 树已 settle、flow 未流转 | `pending_sync` 自动记录；每次 status 自动重试修复，或手工补 |
 | 会话死在 claimed | `reclaim -NodeId`（dead-claim 模式，入泊位后**自动重推**，新会话第一动作 claim 自动接管） |
 | reclaim 报 `RECLAIM_TARGET_ALIVE` | 认领会话仍存活（agents 注册表证实）——不是回收对象；等它 report 或让该会话自行处置 |
 | reclaim 报 `RECLAIM_UNPROVEN_DEAD` | 存活无法证实（CLI/查证不可达）且 claim 未达 60min 阈值——宁等多收；达阈值后重试或换 dsh 会话执行 |
+| rollback 报 `ROLLBACK_REQUIRES_UNQUALIFIED` | 该节点证据合格——不该回退，settle 它即可 |
+| rollback 报 `ROLLBACK_NO_PREVIOUS_STAGE` | 失败节点是链头（无前一阶段可退）——同阶段重做走 reclaim |
+| rollback 报 `ROLLBACK_GRAFT_FAILED` | prune 已完成、graft 未成——**重跑同一条 rollback 命令**（剪枝签名幂等续跑守卫：自动从 graft 步续起，不二次剪枝） |
 | 推送失败（status 可见 pushes 账目） | `session-create` 类：status 触碰自动重试；`pointer` 类：人工 `dispatch -NodeId` 重推（防会话堆积） |
 | 双规划者误起 | 启动即被 start-role 前置校验拒绝（`PLANNER_RUN_ACTIVE`，附 run 信息与 `-RunId` 续跑指引；`-Force` 强启创建通道后命令级仍有 `LEASE_HELD` 防线，不产生第二个有效规划者）；确认原会话已死后 `lease -Takeover` 留痕接管 |
 | promulgate 报 `RUN_EXISTS` | 该归档已颁布过，用 `status/resume -RunId deliver-<归档名>` 续跑 |

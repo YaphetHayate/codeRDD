@@ -229,6 +229,8 @@ CTO/UX 完成设计归档后，先 `add-design` 再 `advance`。
 
 将 `lifecycle` 从 `completed` 改回 `active`，并设置 `currentOwners`。QA 或用户后续发现问题时调用，重启流转。
 
+**桥接 run 注记（planner-stage-rollback）**：run 进行中的跨阶段回退**不直接手调本命令**——经 `delivery-bridge.cmd -Command rollback -RunId <id> -NodeId <失败节点> -Reason "<理由>"` 承载（其 flow 侧内部即 `reopen -To <前一阶段>`，另有树剪枝/重建/自动重推编排，协议见 `planner-guide.md`）。裸 `reopen` 仅适用于：非桥接流程，或桥接 run 结束/任务 completed 之后的返工。
+
 #### `deprecate` — 标记废弃
 
 ```powershell
@@ -330,7 +332,7 @@ task.json 此前只有 `lifecycle`（生命周期）与 `currentOwners`（路由
 | **DEV** | 实现完成推进 QA | `advance -From DEV -To QA` |
 | **QA** | 定位自己的任务 | `show -Role QA` |
 | **QA** | 验证通过闭环 | `complete` |
-| **QA** | 发现问题回退 | `reopen -To DEV` |
+| **QA** | 发现问题回退 | `reopen -To DEV`（桥接 run 进行中改走 `delivery-bridge -Command rollback`，见 reopen 条目注记） |
 | **任意角色** | 发起驳回 | `reject -From <自己> -To <被驳回方> -Reason` |
 | **PLANNER** | 需求审查门驳回回流（建树前） | `reject -From PLANNER -To PM -Reason`（见 `rejection-protocol.md`「PLANNER 发起的驳回」） |
 | **EVAL/PSE** | 只读了解状态 | `show` |

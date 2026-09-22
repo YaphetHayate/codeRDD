@@ -885,6 +885,111 @@
                                      "无标记/带标记 DryRun 各一次,读 RPC 预览行"
                                  ],
                        "expected":  "exit 0;零 session.rename;指针=「请处理 <fixture 相对路径>/ 下的需求。」逐字节旧形态;无花名册副作用;无标记 DryRun RPC 3 仍为 session.prompt;带标记 DryRun RPC 3=rename、RPC 4=prompt 且载荷含 [短名] T1·QA·n2——未采用者零影响"
-                   }
+                   },
+                    {
+                        "id":  "TC-B45",
+                        "title":  "rollback 守卫矩阵:pending/claimed 拒(REQUIRES_REPORTED)/缺 Reason 拒/链头无前一阶段拒(NO_PREVIOUS_STAGE 指引 reclaim)/根节点非映射拒/证据合格拒(REQUIRES_UNQUALIFIED 指引 settle)",
+                        "type":  "negative",
+                        "priority":  "P0",
+                        "acceptance":  "SRB-AC-1",
+                        "codeRef":  ".rdd/tests/delivery-bridge/delivery-bridge-verify.ps1:1825",
+                        "sourceChange":  "2026-09-20-planner-enhancements",
+                        "status":  "active",
+                        "crossFeature":  [
+                                             "goal-tree"
+                                         ],
+                        "precondition":  "fixture run 已颁布(DEV 链头 n2)",
+                        "steps":  [
+                                      "pending/claimed 状态各调一次 rollback",
+                                      "缺 -Reason 调用",
+                                      "report 失败 verdict 后对链头 rollback(父=goal 根)",
+                                      "对根节点 n1 rollback",
+                                      "经 reclaim 重建后 report 合格 verdict 再 rollback"
+                                  ],
+                        "expected":  "ROLLBACK_REQUIRES_REPORTED×2/MISSING_REASON/ROLLBACK_NO_PREVIOUS_STAGE(消息指引 reclaim)/NODE_NOT_MAPPED/ROLLBACK_REQUIRES_UNQUALIFIED(消息指引 settle);全程路由零变更——守卫全部确定性拒绝,无半执行状态"
+                    },
+                    {
+                        "id":  "TC-B46",
+                        "title":  "rollback 全链:QA 判不合格 → 单命令剪枝+兄弟挂接重建 DEV+reopen 路由回退+自动重推;三层一致;重做上下文进 node.task 与指针;重做闭环后链不变量保持",
+                        "type":  "positive",
+                        "priority":  "P0",
+                        "acceptance":  "SRB-AC-1/2/3",
+                        "codeRef":  ".rdd/tests/delivery-bridge/delivery-bridge-verify.ps1:1865",
+                        "sourceChange":  "2026-09-20-planner-enhancements",
+                        "status":  "active",
+                        "crossFeature":  [
+                                             "goal-tree"
+                                         ],
+                        "precondition":  "T1 已 settle DEV 到 QA 节点并 claim;mock dsh 载波在场",
+                        "steps":  [
+                                      "QA report 非 done verdict(failed)回调",
+                                      "rollback -NodeId <QA节点> -Reason 验收未过",
+                                      "读树/流/桥三层状态与 node.task",
+                                      "读 auto_push 与 mock prompt 日志",
+                                      "重做闭环:claim 重建节点→report done→settle→复核新 QA 节点挂接→settle 完成"
+                                  ],
+                        "expected":  "单命令成功:pruned_node=QA 节点(status=pruned,pruned_reason 含 rollback 签名+操作者+理由+证据问题);重建 DEV 节点 pending、parent=goal 根(兄弟挂接)、role=dev、task 含重做上下文(理由+verdict 问题);流 owners=[DEV] 且 QA worker 残留清零;桥映射 stages.DEV=重建节点;auto_push.pushed 含重建节点,指针消息含重做上下文节选;重做 settle 后新 QA 节点 parent=重建节点(链不变量),任务 complete"
+                    },
+                    {
+                        "id":  "TC-B47",
+                        "title":  "rollback 幂等续跑:prune 后崩溃态(手工 prune 带 rollback 签名)重跑 → 不二次剪枝、续 graft 步、签名恢复证据问题;完整回退后重跑 → 幂等不重复重建",
+                        "type":  "boundary",
+                        "priority":  "P0",
+                        "acceptance":  "SRB-AC-1",
+                        "codeRef":  ".rdd/tests/delivery-bridge/delivery-bridge-verify.ps1:1928",
+                        "sourceChange":  "2026-09-20-planner-enhancements",
+                        "status":  "active",
+                        "crossFeature":  [
+                                             "goal-tree"
+                                         ],
+                        "precondition":  "T1 已到 QA 并 report 失败 verdict",
+                        "steps":  [
+                                      "手工 goal-tree prune 带 rollback 签名 reason(模拟 prune 后崩溃)",
+                                      "重跑同一条 rollback 命令",
+                                      "复核 resumed 标记/重建节点/三层状态/node.task",
+                                      "再次重跑(完整回退已发生)"
+                                  ],
+                        "expected":  "第一次重跑:resumed=true,不触发 ALREADY_PRUNED(证明跳过二次剪枝),graft 重建 pending DEV 节点,签名中恢复的证据问题进重做上下文,owners 回 DEV,映射回写;第二次重跑:幂等——rebuilt_node 不变(在建后继存在→跳过 graft),不产生额外节点——prune→graft 崩溃窗口可安全重入"
+                    },
+                    {
+                        "id":  "TC-B48",
+                        "title":  "他任务无扰 + dependents_warning:回退不动同 run 其他任务节点/路由/依赖边;直接依赖边仅警示(含推送状态派生)",
+                        "type":  "positive",
+                        "priority":  "P1",
+                        "acceptance":  "SRB-AC-4",
+                        "codeRef":  ".rdd/tests/delivery-bridge/delivery-bridge-verify.ps1:1968",
+                        "sourceChange":  "2026-09-20-planner-enhancements",
+                        "status":  "active",
+                        "crossFeature":  [
+                                             "goal-tree"
+                                         ],
+                        "precondition":  "fixture 3 任务;T1 到 QA;人为给 T2 链头 n3 加对 QA 节点的直接依赖(deps add)",
+                        "steps":  [
+                                      "deps add n3 ON <T1 的 QA 节点>",
+                                      "QA report 失败 verdict 后 rollback",
+                                      "读 dependents_warning 与 T2/T3 节点、路由、依赖边"
+                                  ],
+                        "expected":  "dependents_warning 恰含 n3(带 task_id=2/stage=DEV/pushed 派生);n3 仍 pending 且 depends_on 仍含被剪节点(依赖边不动);T2 owners=[DEV]/active、T3 owners=[CTO]/active 与节点状态零变化——回退的波及面仅警示不动作"
+                    },
+                     {
+                         "id":  "TC-B49",
+                         "title":  "rollback 边界:任务非 active(completed)确定性拒绝(TASK_NOT_ACTIVE 指引既有 reopen 语义)且零副作用——run 结束后的返工不属本命令范围",
+                         "type":  "boundary",
+                         "priority":  "P2",
+                         "acceptance":  "SRB-AC-1",
+                         "codeRef":  ".rdd/tests/delivery-bridge/delivery-bridge-verify.ps1:2003",
+                         "sourceChange":  "2026-09-20-planner-enhancements",
+                         "status":  "active",
+                         "crossFeature":  [
+                                              "goal-tree"
+                                          ],
+                         "precondition":  "fixture T1 已到 QA 节点并 report 失败 verdict;测试侧将夹具 task.json T1 置为 completed",
+                         "steps":  [
+                                       "夹具 task.json 中 T1 lifecycle 改为 completed",
+                                       "rollback -NodeId <QA节点> -Reason post-run rework",
+                                       "读节点状态/剪枝痕/桥映射复核零副作用"
+                                   ],
+                         "expected":  "exit 1 且 error.code=TASK_NOT_ACTIVE,消息指引既有 rdd-flow reopen 语义;节点仍 reported、无剪枝痕、桥映射未动——守卫先于一切不可逆动作"
+                     }
               ]
 }

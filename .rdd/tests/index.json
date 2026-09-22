@@ -56,10 +56,10 @@
       "testCode": [
         ".rdd/tests/delivery-bridge/delivery-bridge-verify.ps1"
       ],
-      "activeCount": 44,
+      "activeCount": 49,
       "deprecatedCount": 0,
-      "lastUpdated": "2026-09-20",
-      "lastChange": "2026-09-20-planner-session-roster"
+      "lastUpdated": "2026-09-22",
+      "lastChange": "2026-09-20-planner-enhancements"
     },
     {
       "feature": "investigation-role-cards",

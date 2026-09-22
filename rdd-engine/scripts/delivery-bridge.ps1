@@ -24,9 +24,15 @@
 #   reclaim     composite recovery (dead-claim / rejected-delivery); alive sessions
 #               are mechanically unreclaimable (RECLAIM_TARGET_ALIVE) — liveness via
 #               the dsh agents registry, time-threshold fallback for unknown
-#   settle      the ONLY task.json transition channel: three evidence checks ->
-#               tree settle -> flow advance/complete -> auto-graft next stage ->
-#               dependency-driven auto-push of newly unlocked nodes
+#   settle      the ONLY forward task.json transition channel: three evidence
+#               checks -> tree settle -> flow advance/complete -> auto-graft next
+#               stage -> dependency-driven auto-push of newly unlocked nodes
+#   rollback    cross-stage reverse transition (planner-stage-rollback): prune the
+#               reported-but-unqualified node (ledger keeps the audit) ->
+#               sibling-graft a rebuilt previous-stage node (parent = the
+#               previous-stage node's parent) -> rdd-flow reopen -> auto re-push;
+#               with settle (forward) and reclaim (same-stage redo) this closes
+#               the three transition channels inside the bridge
 #   status      joined view: tree census + task stages + dep blocking + dead claims +
 #               pending_sync repair + push ledger + session liveness + catch-up push
 #   resume      breakpoint view for a fresh Planner session
@@ -63,7 +69,7 @@
 
 [CmdletBinding()]
 param(
-    [ValidateSet("promulgate", "dispatch", "claim", "reclaim", "settle", "status", "resume", "conclude", "lease", "register-session")]
+    [ValidateSet("promulgate", "dispatch", "claim", "reclaim", "rollback", "settle", "status", "resume", "conclude", "lease", "register-session")]
     [string]$Command = "status",
 
     [string]$RunId,
@@ -90,6 +96,10 @@ param(
 
     # settle
     [string]$Note,
+    # rollback (planner-stage-rollback)
+    [string]$Reason,              # rollback audit trail (required): lands in the
+                                   # prune reason AND the rebuilt node's redo context
+
 
     # conclude
     [string]$Summary,
@@ -1010,6 +1020,29 @@ function Get-NodeFromTree {
     return $null
 }
 
+function Get-NodePruneReason {
+    # Read-only probe of state/tree.json for one node's pruned_reason. The leaf
+    # status view omits pruned_reason (slim serializer) while the rollback
+    # resume guard needs the prune signature. Same direct-state-file read
+    # precedent as Read-LedgerEntries / claim liveness (the bridge never
+    # WRITES engine state). Returns "" when the node/reason is absent, $null
+    # when no readable tree file carries the node.
+    param([string]$RunDir, [string]$NodeId)
+    foreach ($f in @((Join-Path $RunDir "state/tree.json"), (Join-Path $RunDir "state/tree.json.bak"))) {
+        if (-not (Test-Path -LiteralPath $f -PathType Leaf)) { continue }
+        try {
+            $obj = [System.IO.File]::ReadAllText($f, [System.Text.Encoding]::UTF8) | ConvertFrom-Json
+        }
+        catch { continue }
+        foreach ($n in @(Convert-ToSafeArray $obj.nodes)) {
+            if ([string]$n.id -ne $NodeId) { continue }
+            if ($null -ne $n.PSObject.Properties['pruned_reason'] -and $n.pruned_reason) { return [string]$n.pruned_reason }
+            return ""
+        }
+    }
+    return $null
+}
+
 function Read-LedgerEntries {
     param([string]$RunDir)
     $p = Join-Path (Join-Path $RunDir "state") "ledger.jsonl"
@@ -1707,7 +1740,308 @@ function Invoke-BridgeReclaim {
     }
 }
 
-# === Settle evidence gate (shared by settle and reclaim) ===
+# === Command: rollback (cross-stage reverse transition, planner-stage-rollback) ===
+#
+# The third bridge channel beside settle (forward) and reclaim (same-stage redo):
+# a reported node whose delivery FAILED the three-check gate is sent back to the
+# PREVIOUS stage as ONE command — prune the failed node (the goal-tree ledger
+# keeps the audit) -> sibling-graft a rebuilt previous-stage node (parent = the
+# previous-stage node's parent, preserving the chain invariant and the tree
+# depth across multi-round rollbacks) -> rdd-flow reopen (owners back to the
+# target stage; Sync-TaskClaims drops the stale worker residue) -> auto re-push
+# of the never-pushed rebuilt node. No manual state editing anywhere (hard
+# constraint 2: forward transitions go through settle, reverse ones through
+# rollback — the manual double-write door stays closed in both directions).
+# Target-stage derivation is mechanical single-source: the failed node's
+# parent's stage (the chain invariant encodes the previous stage); a chain head
+# (parent = goal root / unmapped) has no previous stage -> ROLLBACK_NO_PREVIOUS_STAGE
+# (use same-stage reclaim instead). The prune -> graft -> reopen -> dispatch
+# order keeps "no two in-flight nodes for one task" true at every instant; the
+# prune->graft crash window is covered by the signature-based idempotent resume
+# guard (a rerun recognizes its own prune signature and continues at the graft
+# step instead of pruning twice).
+# Decomposition (QA function-size gate, qa-ast-review <= 40 effective lines):
+# the command is an orchestrator over guard/step helpers — Get-RollbackContext
+# (probe + status dispatch), Resolve-RollbackReportedPlan / Resolve-
+# RollbackResumePlan (guards + plan), Invoke-RollbackPrune / Invoke-
+# RollbackRebuild / Invoke-RollbackFlowSide (prune -> graft -> reopen+push),
+# Get-RollbackDependents / New-RollbackNextStep (report assembly). Behavior is
+# identical to the pre-split single function (same codes/messages/order).
+
+function Get-RollbackContext {
+    # probe + guard dispatch shared by the whole rollback chain: mapping ->
+    # leaf status -> archive task (same order as settle/reclaim), then the
+    # node-status dispatch resolves WHAT to roll back and TO WHICH stage into
+    # the plan fields (problems / target_stage / reason / resume). Guards call
+    # Write-ErrorResult, which exits the process — identical to the inline
+    # pre-split originals.
+    param([string]$RunDir, $Bridge)
+    $mapping = Get-NodeTaskStage $Bridge $NodeId
+    if ($null -eq $mapping) { Write-ErrorResult "NODE_NOT_MAPPED" "Node $NodeId is not in this run's bridge mapping" 2 }
+    $leafStatus = Invoke-GoalTreeLeaf @("-Command", "status", "-RunId", $RunId, "-NodeId", $NodeId)
+    if ($leafStatus.exit -ne 0 -or $null -eq $leafStatus.json -or -not $leafStatus.json.success) {
+        Write-ErrorResult "NODE_STATUS_FAILED" "leaf status failed: $($leafStatus.text)" 2
+    }
+    $task = Find-ArchiveTask (Read-ArchiveTasks $Bridge.archive).tasks $mapping.task_id
+    if ($null -eq $task) { Write-ErrorResult "TASK_NOT_FOUND" "TaskId $($mapping.task_id) not found in $($Bridge.archive)" 2 }
+    $ctx = @{
+        node = $leafStatus.json.data.node; task = $task
+        task_id = $mapping.task_id; stage = $mapping.stage
+        resume = $false; reason = $Reason; problems = @(); target_stage = $null
+    }
+    $nodeStatus = [string]$ctx.node.status
+    if ($nodeStatus -eq "reported") {
+        $plan = Resolve-RollbackReportedPlan $RunDir $Bridge $ctx.node $task
+        $ctx.problems = $plan.problems; $ctx.target_stage = $plan.target_stage
+    }
+    elseif ($nodeStatus -eq "pruned") {
+        $plan = Resolve-RollbackResumePlan $RunDir $ctx.node
+        $ctx.resume = $true; $ctx.target_stage = $plan.target_stage
+        $ctx.reason = $plan.reason; $ctx.problems = $plan.problems
+    }
+    elseif ($nodeStatus -in @("claimed", "pending")) {
+        Write-ErrorResult "ROLLBACK_REQUIRES_REPORTED" "Node $NodeId is '$nodeStatus' — rollback only rolls back REPORTED nodes that failed the evidence gate. For a stuck/parked claim use reclaim (delivery-bridge -Command reclaim -RunId $RunId -NodeId $NodeId); for a pending node wait for its report." 1
+    }
+    else {
+        Write-ErrorResult "ROLLBACK_REQUIRES_REPORTED" "Node $NodeId is '$nodeStatus' (terminal); nothing to roll back." 1
+    }
+    return $ctx
+}
+
+function Resolve-RollbackReportedPlan {
+    # reported path: rollback only recovers failed deliveries — qualified ones
+    # settle; the flow precheck before anything irreversible (same discipline as
+    # settle) restricts rollback to ACTIVE bridged tasks. Target-stage
+    # derivation is mechanical single-source: the failed node's parent IS the
+    # previous stage (chain invariant); an unmapped parent (goal root or
+    # foreign subtree) means there is no previous stage to roll back to.
+    param([string]$RunDir, $Bridge, $Node, $Task)
+    $problems = @(Test-SettleEvidence -RunDir $RunDir -Node $Node -NodeId $NodeId)
+    if ($problems.Count -eq 0) {
+        Write-ErrorResult "ROLLBACK_REQUIRES_UNQUALIFIED" "Node $NodeId is reported with QUALIFIED evidence — settle it instead (settle -RunId $RunId -NodeId $NodeId); rollback only rolls back unqualified deliveries." 1
+    }
+    if (([string]$Task.lifecycle) -ne "active") {
+        Write-ErrorResult "TASK_NOT_ACTIVE" "TaskId $($Task.id) lifecycle is '$($Task.lifecycle)'; rollback only covers ACTIVE bridged tasks — post-completion rework stays on the plain rdd-flow reopen semantics (out of scope)." 1
+    }
+    $parentNode = Get-NodeTaskStage $Bridge ([string]$Node.parent)
+    if ([string]::IsNullOrWhiteSpace([string]$Node.parent) -or $null -eq $parentNode) {
+        Write-ErrorResult "ROLLBACK_NO_PREVIOUS_STAGE" "Node $NodeId is a chain head (parent '$($Node.parent)' is the goal root or not stage-mapped) — there is no previous stage to roll back to. For a same-stage redo use reclaim (delivery-bridge -Command reclaim -RunId $RunId -NodeId $NodeId)." 1
+    }
+    return @{ problems = $problems; target_stage = $parentNode.stage }
+}
+
+function Resolve-RollbackResumePlan {
+    # idempotent resume guard: a rollback prune that already happened (crash
+    # or graft failure before this rerun) is recognized by the rollback
+    # signature in the prune reason — the rerun continues at the graft step
+    # (goal-tree would refuse a second prune with ALREADY_PRUNED anyway).
+    # The original user reason + evidence problems are recovered from the
+    # signature so the rebuilt node's redo context matches a fresh run.
+    # (The leaf status view omits pruned_reason — slim serializer — so the
+    # reason falls back to the read-only state/tree.json probe.)
+    param([string]$RunDir, $Node)
+    $pr = [string]$Node.pruned_reason
+    if ([string]::IsNullOrWhiteSpace($pr)) { $pr = [string](Get-NodePruneReason $RunDir $NodeId) }
+    if (-not ($pr -match '^cross-stage rollback to (CTO|UX|DEV|QA) ')) {
+        Write-ErrorResult "ROLLBACK_REQUIRES_REPORTED" "Node $NodeId is pruned without a rollback signature; rollback only accepts reported nodes with unqualified evidence." 1
+    }
+    $targetStage = $Matches[1]
+    $reason = $Reason
+    $problems = @()
+    if ($pr -match '^cross-stage rollback to (?:CTO|UX|DEV|QA) \(by [^)]*\): (?<reason>.*?); evidence problems: (?<probs>.*)$') {
+        $reason = [string]$Matches['reason']
+        $problems = @([string]$Matches['probs'] -split '; ')
+    }
+    return @{ target_stage = $targetStage; reason = $reason; problems = $problems }
+}
+
+function Invoke-RollbackPrune {
+    # step 1: prune the failed delivery. A chain-tail leaf prunes without
+    # cascade; the reason (user reason + operator + evidence problems) is
+    # the ledger audit trail (acceptance 3), and the rollback signature it
+    # starts with is what the resume guard recognizes.
+    param([string]$RunDir, $Ctx, [string]$Holder)
+    $auditReason = "cross-stage rollback to $($Ctx.target_stage) (by $Holder): $($Ctx.reason); evidence problems: $(@($Ctx.problems) -join '; ')"
+    $rp = Invoke-GoalTree @("-Command", "prune", "-RunId", $RunId, "-NodeId", $NodeId, "-Reason", $auditReason)
+    if ($rp.exit -ne 0 -or $null -eq $rp.json -or -not $rp.json.success) {
+        Write-ErrorResult "ROLLBACK_PRUNE_FAILED" "prune of the failed delivery failed (nothing rolled back): $($rp.text)" 1
+    }
+}
+
+function Resolve-RollbackGraftParent {
+    # step 2 prelude: the graft parent is the PREVIOUS-STAGE NODE's parent
+    # (the failed node's grandparent) — the rebuilt node becomes a sibling
+    # of the previous stage's chain head, so "every stage node's parent =
+    # the previous stage node" keeps holding for the live chain and
+    # multi-round rollbacks never deepen the tree.
+    param([string]$PrevStageNode)
+    $graftParent = $null
+    if (-not [string]::IsNullOrWhiteSpace($PrevStageNode)) {
+        $ps = Invoke-GoalTreeLeaf @("-Command", "status", "-RunId", $RunId, "-NodeId", $PrevStageNode)
+        if ($ps.exit -eq 0 -and $null -ne $ps.json -and $ps.json.success -and $null -ne $ps.json.data.node) {
+            $graftParent = [string]$ps.json.data.node.parent
+        }
+    }
+    if ([string]::IsNullOrWhiteSpace($graftParent)) {
+        Write-ErrorResult "ROLLBACK_NO_PREVIOUS_STAGE" "Cannot resolve the sibling-graft parent (previous-stage node '$PrevStageNode' has no readable parent). Rerun the same rollback command to resume from the graft step." 1
+    }
+    return $graftParent
+}
+
+function Find-RollbackExistingGraft {
+    # resume path: an in-flight successor for (task, target stage) already
+    # exists when the graft step had completed before the interruption —
+    # adopt it instead of grafting a second rebuilt node.
+    param($Bridge, $TaskId, $TargetStage)
+    $existing = $null
+    if ($Bridge.tasks.Contains("$TaskId")) {
+        $bTask = $Bridge.tasks["$TaskId"]
+        if ($bTask.Contains('stages') -and $null -ne $bTask['stages'] -and $bTask['stages'].Contains($TargetStage)) {
+            $existing = [string]$bTask['stages'][$TargetStage]
+        }
+    }
+    if ($null -eq $existing) { return $null }
+    $exNode = Get-NodeFromTree (Get-TreeStatusView $RunId) $existing
+    $exStatus = if ($exNode) { [string]$exNode.status } else { "missing" }
+    if ($exStatus -in @("pending", "claimed", "reported")) { return $existing }
+    return $null
+}
+
+function Invoke-RollbackRebuild {
+    # step 2: sibling-graft the rebuilt target-stage node (resume-aware — a
+    # rerun whose graft already landed adopts the in-flight successor).
+    param([string]$RunDir, $Bridge, $Ctx)
+    $graftParent = Resolve-RollbackGraftParent ([string]$Ctx.node.parent)
+    $rebuiltNode = $null
+    if ($Ctx.resume) { $rebuiltNode = Find-RollbackExistingGraft $Bridge $Ctx.task_id $Ctx.target_stage }
+    if ($null -ne $rebuiltNode) { return @{ bridge = $Bridge; node_id = $rebuiltNode } }
+    $redo = @{ from_stage = $Ctx.stage; reason = $Ctx.reason; problems = $Ctx.problems }
+    $g = Invoke-GraftNextStage $RunDir $Bridge $Ctx.task $graftParent $Ctx.target_stage -RedoContext $redo
+    if (-not $g.success) {
+        Write-ErrorResult "ROLLBACK_GRAFT_FAILED" "rebuilt $($Ctx.target_stage) node graft failed after prune (task $($Ctx.task_id) still routed at $($Ctx.stage); the prune already happened). RERUN THE SAME COMMAND — the rollback signature in the prune reason makes the rerun resume at the graft step without pruning twice. Error: $($g.error)" 1
+    }
+    return @{ bridge = $g.bridge; node_id = $g.node_id }
+}
+
+function Invoke-RollbackFlowSide {
+    # steps 3+4: flow side — reopen routes the task back to the target stage
+    # (owners rewrite + Sync-TaskClaims drops the failed stage's worker
+    # residue); then the auto re-push reaches the never-pushed rebuilt node.
+    # A reopen half-failure lands in pending_sync (reopen op) which every
+    # status touch retries; the push is deferred until the repair succeeds
+    # (a worker pushed while owners are stale would hit ROLE_NOT_OWNER on
+    # its very first claim).
+    param([string]$RunDir, $Bridge, $Ctx)
+    $warnings = @()
+    $r3 = Invoke-RddFlow @("-Command", "reopen", "-TaskId", "$($Ctx.task_id)", "-To", $Ctx.target_stage, "-Archive", $Bridge.archive)
+    $reopenFailed = ($r3.exit -ne 0 -or $null -eq $r3.json -or -not $r3.json.success)
+    if ($reopenFailed) {
+        $warnings += "flow reopen failed after prune/graft — recorded as pending_sync (every status touch retries the repair, then the catch-up push fires): $($r3.text)"
+        $Bridge = Add-PendingSync $RunDir $Bridge $NodeId "reopen" $Ctx.stage $Ctx.target_stage ($r3.text)
+    }
+    $push = @{ trigger = "rollback"; considered = 0; pushed = @(); skipped = @(); failed = @() }
+    if (-not $reopenFailed) {
+        $push = Invoke-AutoDispatch $RunDir $Bridge "rollback"
+        $Bridge = $push.bridge
+        foreach ($f in @($push.failed)) {
+            $warnings += "auto-push failed for node $($f.node) (retry_class=$($f.retry_class)): session-create class auto-retries on the next trigger; pointer class needs manual dispatch. $($f.error)"
+        }
+    }
+    return @{ bridge = $Bridge; reopen_failed = $reopenFailed; push = $push; warnings = @($warnings) }
+}
+
+function Get-RollbackDependents {
+    # dependents warning (warn-only, direct edges): other tasks' nodes that
+    # depend on the pruned node keep their dep edge untouched (acceptance 4);
+    # a pruned dep target discharges the obligation, so such dependents may
+    # have been unblocked/pushed against a delivery now being redone —
+    # surface them (push ledger derived). Direct edges only; the transitive
+    # closure stays inspectable via goal-tree deps list (protocol v1 limit).
+    param($Bridge, [string]$TheNodeId)
+    $dependents = @()
+    foreach ($e in @(Convert-ToSafeArray (Get-TreeStatusView $RunId).dependencies.edges)) {
+        $eNode = [string]$e.node
+        if ($eNode -eq $TheNodeId) { continue }
+        if ([string]$e.status -eq "pruned") { continue }
+        $hit = $false
+        foreach ($t in @(Convert-ToSafeArray $e.depends_on)) {
+            if ([string]$t.target -eq $TheNodeId) { $hit = $true }
+        }
+        if (-not $hit) { continue }
+        $m = Get-NodeTaskStage $Bridge $eNode
+        $ps2 = Get-NodePushState $Bridge $eNode
+        $pushedOk = ($null -ne $ps2 -and $ps2.Contains('last_ok_at') -and $null -ne $ps2['last_ok_at'])
+        $dependents += @{
+            node    = $eNode
+            task_id = $(if ($m) { $m.task_id } else { $null })
+            stage   = $(if ($m) { $m.stage } else { $null })
+            pushed  = $pushedOk
+            note    = "depends on the pruned node $TheNodeId — dep edge untouched (prune discharges it); verify this dependent against the redone delivery"
+        }
+    }
+    return @($dependents)
+}
+
+function New-RollbackNextStep {
+    # next_step assembly over the flow-side outcome (reopen repair / push
+    # repair / pushed / awaits push) + the dependents count hint.
+    param($Flow, [string]$RebuiltNode, $TargetStage, [int]$DependentCount)
+    $nextStep = ""
+    if ($Flow.reopen_failed) {
+        $nextStep = "reopen recorded as pending_sync — run status -RunId $RunId (the touch retries the repair, then the catch-up push picks up node $RebuiltNode)"
+    }
+    elseif (@($Flow.push.failed).Count -gt 0) {
+        $nextStep = "repair failed pushes: session-create class auto-retries via status; pointer class → dispatch -NodeId <id> manually"
+    }
+    elseif (@($Flow.push.pushed) -contains $RebuiltNode) {
+        $nextStep = "rebuilt $TargetStage node $RebuiltNode auto-pushed — its worker session re-claims with -Role $TargetStage and redoes the work against the redo context in node.task"
+    }
+    else {
+        $nextStep = "rebuilt node $RebuiltNode awaits push — status touch or dispatch -NodeId $RebuiltNode"
+    }
+    if ($DependentCount -gt 0) { $nextStep += "; dependents_warning lists $DependentCount direct dependent(s) to verify" }
+    return $nextStep
+}
+
+function Invoke-BridgeRollback {
+    $runDir = Get-BridgeRunDir $RunId
+    $bridge = Require-Bridge $runDir
+    if ([string]::IsNullOrWhiteSpace($NodeId)) { Write-ErrorResult "MISSING_NODE_ID" "-NodeId is required" 1 }
+    if ([string]::IsNullOrWhiteSpace($Reason)) { Write-ErrorResult "MISSING_REASON" "-Reason is required (rollback audit trail)" 1 }
+
+    $lease = Enter-PlannerLease $runDir
+    $ctx = Get-RollbackContext $runDir $bridge
+    if (-not $ctx.resume) { Invoke-RollbackPrune $runDir $ctx $lease.holder }
+
+    $rebuild = Invoke-RollbackRebuild $runDir $bridge $ctx
+    $bridge = $rebuild.bridge
+
+    $flow = Invoke-RollbackFlowSide $runDir $bridge $ctx
+    $bridge = $flow.bridge
+
+    $dependents = @(Get-RollbackDependents $bridge $NodeId)
+    $nextStep = New-RollbackNextStep $flow $rebuild.node_id $ctx.target_stage @($dependents).Count
+
+    return @{
+        success = $true
+        data    = @{
+            run_id             = $RunId
+            pruned_node        = $NodeId
+            rebuilt_node       = $rebuild.node_id
+            task_id            = $ctx.task_id
+            from_stage         = $ctx.stage
+            to_stage           = $ctx.target_stage
+            resumed            = $ctx.resume
+            reason             = $ctx.reason
+            auto_push          = @{ trigger = $flow.push.trigger; pushed = @($flow.push.pushed); failed = @($flow.push.failed); skipped = @($flow.push.skipped | ForEach-Object { "$($_.node):$($_.reason)" }) }
+            dependents_warning = @($dependents)
+            warnings           = @($flow.warnings)
+            next_step          = $nextStep
+        }
+    }
+}
+
+# === Settle evidence gate (shared by settle, reclaim and rollback) ===
 
 function Test-SettleEvidence {
     # The three checks gating any task.json transition (hard constraint:
@@ -1900,7 +2234,13 @@ function New-NodeTaskText {
     # node-update command) and reaches the worker via the pointer brief,
     # the claim output, and the view instead. Archive name derives from the
     # frozen deliver-<archive> run-id convention.
-    param([string]$Title, [string]$Stage, [string]$ReqRel, [string[]]$DesignRels, [string]$RunId)
+    # RedoContext (optional, planner-stage-rollback): @{ from_stage; reason;
+    # problems[] } — a rebuilt node carries the failed delivery's evidence
+    # problems + the rollback reason so the redo worker sees them at claim
+    # time (the prune reason alone stays invisible to workers). The redo
+    # section is composed HERE like every other segment (sole-producer
+    # invariant); its stable prefix is what Get-NodeTaskBrief re-extracts.
+    param([string]$Title, [string]$Stage, [string]$ReqRel, [string[]]$DesignRels, [string]$RunId, $RedoContext)
 
     $duty = ""
     if ($script:StageDuty.Contains($Stage)) { $duty = "（$($script:StageDuty[$Stage])）" }
@@ -1910,6 +2250,16 @@ function New-NodeTaskText {
     $t += "需求文档：$ReqRel"
     if (@($DesignRels).Count -gt 0) { $t += "；设计文档：$(@($DesignRels) -join '、')" }
     $t += "；归档：$archiveName。"
+    if ($null -ne $RedoContext) {
+        $rcFrom = [string]$RedoContext.from_stage
+        if ([string]::IsNullOrWhiteSpace($rcFrom)) { $rcFrom = "上一" }
+        $rcReason = [string]$RedoContext.reason
+        $rcProblems = @()
+        foreach ($p in @(Convert-ToSafeArray $RedoContext.problems)) { $rcProblems += [string]$p }
+        $t += "重做上下文（跨阶段回退）：本节点因 $rcFrom 阶段交付不合格被回退重建。回退理由：$rcReason。"
+        if ($rcProblems.Count -gt 0) { $t += "证据问题清单：$($rcProblems -join '；')。" }
+        $t += "本轮请针对上述问题重做。"
+    }
     $t += "开工动作（辅助）：delivery-bridge.cmd -Command claim -RunId $RunId -NodeId <本节点id> -Role $Stage。"
     return $t
 }
@@ -1939,11 +2289,27 @@ function Get-NodeTaskBrief {
     if ($NodeTask -match '需求文档：(?<req>[^；。]+)') {
         $brief += "需求文档：$($Matches['req'])。"
     }
+    $claimPart = ""
     if ($NodeTask -match '开工动作（辅助）：(?<cmd>delivery-bridge\.cmd[^。]*?)。') {
         $cmd = [string]$Matches['cmd']
         $cmd = $cmd -replace '<本节点id>', $NodeId
-        $brief += "开工先领取节点：$cmd。"
+        $claimPart = "开工先领取节点：$cmd。"
     }
+    # redo excerpt (planner-stage-rollback): ride the 重做上下文 section along
+    # when it fits — room-aware so the claim command always survives the cap;
+    # overlong redo text truncates here but the full text always remains in
+    # node.task and the claim output (the brief only keeps the message compact)
+    if ($NodeTask -match '重做上下文（跨阶段回退）：(?<redo>.+?)(?=开工动作（辅助）：)') {
+        $redoPrefix = "重做上下文（跨阶段回退）："
+        $room = 240 - $brief.Length - $redoPrefix.Length - $claimPart.Length - 1
+        if (-not $claimPart) { $room = 0 }
+        if ($room -ge 1) {
+            $redoText = [string]$Matches['redo']
+            if ($redoText.Length -gt $room) { $redoText = $redoText.Substring(0, $room) + "…" }
+            $brief += $redoPrefix + $redoText
+        }
+    }
+    $brief += $claimPart
 
     if ($brief.Length -gt 240) { $brief = $brief.Substring(0, 239) + "…" }
     return $brief
@@ -1965,15 +2331,16 @@ function Get-NodeTaskText {
 }
 
 function Invoke-GraftNextStage {
-    param([string]$RunDir, $Bridge, $Task, [string]$ParentNodeId, [string]$NextStage)
+    param([string]$RunDir, $Bridge, $Task, [string]$ParentNodeId, [string]$NextStage, $RedoContext)
     $taskId = [int]$Task.id
     $title = [string]$Task.title
     $reqRel = ([string]$Task.requirement -replace '\\', '/')
     $designRels = @()
     foreach ($d in @(Convert-ToSafeArray $Task.designDocs)) { $designRels += ([string]$d.path -replace '\\', '/') }
     # goal-first node task text (dispatch-task-goal-anchoring): single
-    # authoritative producer — see New-NodeTaskText above
-    $taskText = New-NodeTaskText -Title $title -Stage $NextStage -ReqRel $reqRel -DesignRels $designRels -RunId ([string]$Bridge.run_id)
+    # authoritative producer — see New-NodeTaskText above; RedoContext is
+    # only supplied by rollback (rebuilt previous-stage node)
+    $taskText = New-NodeTaskText -Title $title -Stage $NextStage -ReqRel $reqRel -DesignRels $designRels -RunId ([string]$Bridge.run_id) -RedoContext $RedoContext
     $graftItem = @{
         title = "$title"
         task  = $taskText
@@ -2002,6 +2369,11 @@ function Repair-PendingSync {
         $r = $null
         if ([string]$e.op -eq "complete") {
             $r = Invoke-RddFlow @("-Command", "complete", "-TaskId", "$taskId", "-Archive", $Bridge.archive)
+        }
+        elseif ([string]$e.op -eq "reopen") {
+            # rollback half-failure (planner-stage-rollback): the tree side moved
+            # (prune + rebuilt node) but the flow reopen did not land — retry it
+            $r = Invoke-RddFlow @("-Command", "reopen", "-TaskId", "$taskId", "-To", [string]$e.to, "-Archive", $Bridge.archive)
         }
         else {
             $r = Invoke-RddFlow @("-Command", "advance", "-TaskId", "$taskId", "-From", [string]$e.from, "-To", [string]$e.to, "-Archive", $Bridge.archive)
@@ -2105,6 +2477,28 @@ function Get-BridgeOverview {
         }
     }
 
+    # reported-but-unqualified deliveries (planner-stage-rollback): settle refuses
+    # them; surface the disposition menu — same-stage reclaim (redo THIS stage)
+    # vs cross-stage rollback (send the task one stage back) — so the choice
+    # never degrades into hand-edited state (hard constraint 2). The status
+    # view's reported rows lack last_verdict, so the full node comes from the
+    # per-node leaf status probe (black-box, same channel Get-NodeTaskText uses).
+    $flagged = @()
+    foreach ($rn in @(Convert-ToSafeArray $treeData.nodes.reported)) {
+        $rid = if ($rn -is [string]) { $rn } else { [string]$rn.id }
+        $rs = Invoke-GoalTreeLeaf @("-Command", "status", "-RunId", $RunId, "-NodeId", $rid)
+        if ($rs.exit -ne 0 -or $null -eq $rs.json -or -not $rs.json.success -or $null -eq $rs.json.data.node) { continue }
+        $probs = @(Test-SettleEvidence -RunDir $RunDir -Node $rs.json.data.node -NodeId $rid)
+        if ($probs.Count -gt 0) {
+            $flagged += @{
+                node        = $rid
+                problems    = $probs
+                same_stage  = "delivery-bridge.cmd -Command reclaim -RunId $RunId -NodeId $rid"
+                cross_stage = "delivery-bridge.cmd -Command rollback -RunId $RunId -NodeId $rid -Reason <why>"
+            }
+        }
+    }
+
     $deps = $treeData.dependencies
 
     $terminalCount = @($flow.tasks | Where-Object { ([string]$_.lifecycle) -in @("completed", "deprecated") }).Count
@@ -2115,6 +2509,7 @@ function Get-BridgeOverview {
         task_rows      = $taskRows
         dead_claims    = @{ tree = $deadTreeClaims; flow = $deadFlowClaims }
         claimable      = $claimable
+        flagged_deliveries = $flagged
         dependencies   = $deps
         repair         = @{ repaired = $repair.repaired; remaining = $repair.remaining }
         lease          = (Get-LeaseState $RunDir)
@@ -2197,6 +2592,9 @@ function Invoke-BridgeStatus {
     if ($view.repair.remaining.Count -gt 0) { $warnings += "pending_sync unresolved: $(@($view.repair.remaining | ForEach-Object { "$($_.node):$($_.op)" }) -join ', ')" }
     if ($view.dead_claims.tree.Count -gt 0) { $warnings += "dead tree claim(s) (>= ${DeadClaimMinutes} min): $(@($view.dead_claims.tree | ForEach-Object { $_.node }) -join ', ') — reclaim them" }
     if ($view.dead_claims.flow.Count -gt 0) { $warnings += "dead flow claim(s): $(@($view.dead_claims.flow | ForEach-Object { "task#$($_.task_id):$($_.role)" }) -join ', ')" }
+    if (@($view.flagged_deliveries).Count -gt 0) {
+        $warnings += "unqualified reported delivery(ies): $(@($view.flagged_deliveries | ForEach-Object { $_.node }) -join ', ') — adjudicate: reclaim -NodeId <id> (redo the same stage) or rollback -NodeId <id> -Reason <why> (send the task one stage back)"
+    }
     $failedPushes = @($pushRows | Where-Object { $_.retry_class })
     if ($failedPushes.Count -gt 0) {
         $warnings += "push failures: $(@($failedPushes | ForEach-Object { "$($_.node)($($_.retry_class))" }) -join ', ') — session-create class auto-retries on every status touch; pointer class needs manual dispatch"
@@ -2216,6 +2614,7 @@ function Invoke-BridgeStatus {
             dependencies   = $view.dependencies
             claimable      = $view.claimable
             dead_claims    = $view.dead_claims
+            flagged_deliveries = @($view.flagged_deliveries)
             session_liveness = $livenessRows
             sessions       = $sessionRows
             pushes         = $pushRows
@@ -2225,7 +2624,7 @@ function Invoke-BridgeStatus {
             lease          = $view.lease
             terminal       = "$($view.terminalCount)/$($view.flow_taskCount)"
             warnings       = $warnings
-            next_step      = $(if ($view.terminalCount -eq $view.flow_taskCount -and $view.flow_taskCount -gt 0) { "all tasks terminal — conclude: delivery-bridge.cmd -Command conclude -RunId $RunId -Summary <...>" } else { "settle reported nodes; pushes are automatic (initial/unlock/reclaim + status touch); claimable now: [$($view.claimable -join ', ')]" })
+            next_step      = $(if (@($view.flagged_deliveries).Count -gt 0) { "adjudicate unqualified delivery(ies) [$(@($view.flagged_deliveries | ForEach-Object { $_.node }) -join ', ')]: rollback -NodeId <id> -Reason <why> (one stage back) or reclaim -NodeId <id> (same-stage redo)" } elseif ($view.terminalCount -eq $view.flow_taskCount -and $view.flow_taskCount -gt 0) { "all tasks terminal — conclude: delivery-bridge.cmd -Command conclude -RunId $RunId -Summary <...>" } else { "settle reported nodes; pushes are automatic (initial/unlock/reclaim/rollback + status touch); claimable now: [$($view.claimable -join ', ')]" })
         }
     }
 }
@@ -2249,6 +2648,9 @@ function Invoke-BridgeResume {
         foreach ($n in @(Convert-ToSafeArray $view.tree.nodes.reported)) {
             $id = if ($n -is [string]) { $n } else { $n.id }
             $steps += "Reported node awaiting settle: $id — run 'delivery-bridge.cmd -Command settle -RunId $RunId -NodeId $id' (three evidence checks gate the transition)."
+        }
+        if (@($view.flagged_deliveries).Count -gt 0) {
+            $steps += "Unqualified reported delivery(ies) (settle will refuse): $(@($view.flagged_deliveries | ForEach-Object { $_.node }) -join ', ') — 'delivery-bridge.cmd -Command rollback -RunId $RunId -NodeId <id> -Reason <why>' (send the task one stage back) or 'delivery-bridge.cmd -Command reclaim -RunId $RunId -NodeId <id>' (redo the same stage)."
         }
         if ($view.claimable.Count -gt 0) {
             $steps += "Dispatch sessions for claimable nodes: [$($view.claimable -join ', ')] — 'delivery-bridge.cmd -Command dispatch -RunId $RunId -NodeId <id>'."
@@ -2532,6 +2934,7 @@ switch ($Command) {
     "dispatch"         { $result = Invoke-Dispatch }
     "claim"            { $result = Invoke-BridgeClaim }
     "reclaim"          { $result = Invoke-BridgeReclaim }
+    "rollback"         { $result = Invoke-BridgeRollback }
     "settle"           { $result = Invoke-BridgeSettle }
     "status"           { $result = Invoke-BridgeStatus }
     "resume"           { $result = Invoke-BridgeResume }
