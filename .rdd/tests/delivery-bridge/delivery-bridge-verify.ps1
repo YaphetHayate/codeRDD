@@ -35,6 +35,10 @@
 #   rollback   跨阶段回退单命令(planner-stage-rollback SRB-AC):守卫矩阵/剪枝+兄弟重建+reopen+自动重推全链/
 #              三层一致性+重做上下文(node.task+指针)/幂等续跑(剪枝签名)/同 run 他任务无扰+dependents_warning
 #              —— TC-B45~B48(2026-09-20-planner-enhancements)
+#   automode   纯自动模式(planner-auto-mode AM-AC):开关快照+默认表明确列出/claim 授权传递/低风险自动拍板
+#              全字段留痕/决策门禁矩阵(R1 硬底)/高风险升级+resolution 闭环/可见性与推翻通道/分级表覆盖
+#              (R1 强制合并+无效策略零残留)/编排层不自动化+CTO 豁免文档锚/-NoPush 隔离性行为证据
+#              —— TC-B50~B57(2026-09-20-planner-enhancements)
 #   all        全部
 #
 # 严重度语义:P0 失败=阻塞(退出码 1);P1 失败=严重不阻塞;P2 失败=备忘警告(WARN)。
@@ -48,7 +52,7 @@
 # (alive/dead/unknown,TC-B17 切规则覆盖);原环境变量在退出时恢复。
 
 param(
-    [ValidateSet("all", "promulgate", "claim", "settle", "recover", "conclude", "regression", "compat", "autopush", "callback", "review", "uniqueness", "payload", "roster", "rollback")]
+    [ValidateSet("all", "promulgate", "claim", "settle", "recover", "conclude", "regression", "compat", "autopush", "callback", "review", "uniqueness", "payload", "roster", "rollback", "automode")]
     [string]$Suite = "all",
     [switch]$KeepRuns,
     [switch]$Json
@@ -1816,6 +1820,8 @@ function Suite-Roster {
 }
 
 # ============================================================
+# 套件:rollback — TC-B45 ~ TC-B48(2026-09-20-planner-enhancements)
+# ============================================================
 
 function Suite-Rollback {
     Write-Host "`n== suite: rollback (跨阶段回退单命令:守卫/全链/幂等续跑/他任务无扰) =="
@@ -2029,6 +2035,255 @@ function Suite-Rollback {
 # ============================================================
 # 套件:automode — TC-B50 ~ TC-B57(2026-09-20-planner-enhancements · planner-auto-mode)
 # ============================================================
+
+function Suite-AutoMode {
+    Write-Host "`n== suite: automode (纯自动模式:开关/授权/留痕/门禁/升级/可见性/分级表/编排边界/-NoPush 隔离性) =="
+
+    Run-Tc "TC-B50" "开关与快照:-AutoMode 快照入 bridge.json(9 规则 R1~R9 序/R1 manual/源 default/含 auto 行);默认关闭回归(无 auto_mode 键/无 decisions.jsonl/claim 无段);planner-guide 默认分级表明确列出" "P0" "AM-AC-1/AM-AC-4" {
+        param($c)
+        $fx = New-FixtureArchive "am50"
+        $r = TB @("-Command", "promulgate", "-TaskJson", (Join-Path $fx.dir "task.json"), "-AutoMode")
+        Assert $c ($r.exit -eq 0 -and $r.json.success -eq $true) "auto promulgate 失败: $($r.text)"
+        $b = Read-BridgeJson $fx.run_id
+        Assert $c ([bool]$b.auto_mode.enabled) "bridge.json 无 auto_mode.enabled"
+        Assert $c ([string]$b.auto_mode.policy_source -eq "default") "policy_source 非 default: $($b.auto_mode.policy_source)"
+        $rules = @($b.auto_mode.policy.rules)
+        Assert $c ($rules.Count -eq 9) "默认分级表规则数非 9: $($rules.Count)"
+        $ids = (@($rules) | ForEach-Object { [string]$_.id }) -join ","
+        Assert $c ($ids -eq "R1,R2,R3,R4,R5,R6,R7,R8,R9") "规则 id 序列异常: $ids"
+        $r1 = @($rules) | Where-Object { [string]$_.id -eq "R1" } | Select-Object -First 1
+        Assert $c ([string]$r1.action -eq "manual") "R1 非 manual: $($r1.action)"
+        Assert $c ((@($rules) | Where-Object { [string]$_.action -eq "auto" }).Count -ge 1) "默认表无 auto 规则"
+        # 默认关闭回归:同形态 fixture 不带 -AutoMode
+        $fx2 = New-FixtureArchive "am50m"
+        $r2 = TB @("-Command", "promulgate", "-TaskJson", (Join-Path $fx2.dir "task.json"))
+        Assert $c ($r2.exit -eq 0) "legacy promulgate 失败: $($r2.text)"
+        $raw = Read-RunFileText $fx2.run_id "bridge.json"
+        Assert $c ($raw -notmatch "auto_mode") "legacy bridge.json 出现 auto_mode 键"
+        Assert $c (-not (Test-Path (Join-Path (Get-RunDirPath $fx2.run_id) "decisions.jsonl"))) "legacy run 出现 decisions.jsonl"
+        $cl2 = TB @("-Command", "claim", "-RunId", $fx2.run_id, "-NodeId", "n2", "-Role", "DEV")
+        Assert $c ($cl2.exit -eq 0) "legacy claim 失败: $($cl2.text)"
+        Assert $c ($null -eq $cl2.json.data.auto_mode) "legacy claim 响应携带 auto_mode 段"
+        # 默认分级表「明确列出」(协议真源文档锚,AC-4)
+        $guide = [System.IO.File]::ReadAllText((Join-Path $RepoRoot "rdd-engine\references\planner-guide.md"), [System.Text.Encoding]::UTF8)
+        Assert $c ($guide.Contains("纯自动模式")) "planner-guide 无「纯自动模式」节"
+        foreach ($k in @("R1", "R5", "R9")) { Assert $c ($guide -match "\| $k \|") "planner-guide 分级表缺 $k 行" }
+    }
+
+    Run-Tc "TC-B51" "授权传递与低风险自动拍板留痕:claim 注入 auto_mode 段(enabled+分级表快照+decide/escalate 协议指引);decide -Kind auto 落 decisions.jsonl——输入/依据/时间/代答者身份/risk 全字段留痕可查" "P0" "AM-AC-2" {
+        param($c)
+        $fx = New-FixtureArchive "am51"
+        $null = TB @("-Command", "promulgate", "-TaskJson", (Join-Path $fx.dir "task.json"), "-AutoMode")
+        $cl = TB @("-Command", "claim", "-RunId", $fx.run_id, "-NodeId", "n2", "-Role", "DEV")
+        Assert $c ($cl.exit -eq 0) "claim 失败: $($cl.text)"
+        $am = $cl.json.data.auto_mode
+        Assert $c ($null -ne $am -and [bool]$am.enabled) "claim 响应缺 auto_mode 段"
+        Assert $c (@($am.policy.rules).Count -eq 9) "claim 注入分级表规则数非 9"
+        Assert $c (([string]$am.protocol -match "decide -RunId") -and ([string]$am.protocol -match "escalate")) "协议指引缺 decide/escalate 命令"
+        $r = TB @("-Command", "decide", "-RunId", $fx.run_id, "-NodeId", "n2", "-Kind", "auto", "-RuleId", "R5", "-Checkpoint", "单一方案确认", "-Decision", "沿用既有范式", "-Inputs", "设计输入:候选方案仅 1 个", "-Basis", "R5 单一可行方案/沿用现状范式", "-Risk", "low")
+        Assert $c ($r.exit -eq 0 -and $r.json.success -eq $true) "decide auto 失败: $($r.text)"
+        $led = @([System.IO.File]::ReadAllLines((Join-Path (Get-RunDirPath $fx.run_id) "decisions.jsonl")) | Where-Object { $_.Trim() -ne "" })
+        Assert $c ($led.Count -eq 1) "账本条目数非 1: $($led.Count)"
+        $e = $led[0] | ConvertFrom-Json
+        Assert $c ([string]$e.entry_id -eq "D1" -and [string]$e.kind -eq "auto") "条目 id/kind 异常: $($e.entry_id)/$($e.kind)"
+        Assert $c ([string]$e.decider -eq "auto/R5@DEV") "代答者身份异常: $($e.decider)"
+        Assert $c ([string]$e.rule_id -eq "R5") "rule_id 异常: $($e.rule_id)"
+        Assert $c ([string]$e.checkpoint -eq "单一方案确认" -and [string]$e.decision -eq "沿用既有范式") "checkpoint/decision 回读异常"
+        Assert $c ([string]$e.inputs -eq "设计输入:候选方案仅 1 个" -and [string]$e.basis -eq "R5 单一可行方案/沿用现状范式") "inputs/basis 回读异常"
+        Assert $c ([string]$e.risk -eq "low") "risk 回读异常: $($e.risk)"
+        Assert $c ([string]$e.at -match "^\d{4}-\d{2}-\d{2}T") "at 时间戳缺失/畸形: $($e.at)"
+        Assert $c ([string]$e.run_id -eq $fx.run_id -and [string]$e.node_id -eq "n2" -and [string]$e.stage -eq "DEV") "run/node/stage 归属异常"
+    }
+
+    Run-Tc "TC-B52" "决策门禁矩阵:R1 硬底拒自动答(manual 规则同拒)/未知规则拒/缺 RuleId 拒/auto 带 RefEntry 拒;非自动 run decide+escalate 双拒(AUTO_MODE_DISABLED);未认领节点拒;goal 根非映射拒" "P0" "AM-AC-2" {
+        param($c)
+        $fx = New-FixtureArchive "am52"
+        $null = TB @("-Command", "promulgate", "-TaskJson", (Join-Path $fx.dir "task.json"), "-AutoMode")
+        $null = TB @("-Command", "claim", "-RunId", $fx.run_id, "-NodeId", "n2", "-Role", "DEV")
+        $w1 = TB @("-Command", "decide", "-RunId", $fx.run_id, "-NodeId", "n2", "-Kind", "auto", "-RuleId", "R1", "-Checkpoint", "git 操作", "-Decision", "push")
+        Assert $c ($w1.exit -eq 1 -and $w1.json.error.code -eq "RULE_NOT_AUTO") "R1 硬底未拒: $($w1.text)"
+        $w2 = TB @("-Command", "decide", "-RunId", $fx.run_id, "-NodeId", "n2", "-Kind", "auto", "-RuleId", "R2", "-Checkpoint", "新依赖", "-Decision", "x")
+        Assert $c ($w2.exit -eq 1 -and $w2.json.error.code -eq "RULE_NOT_AUTO") "manual 规则(R2)未拒: $($w2.text)"
+        $w3 = TB @("-Command", "decide", "-RunId", $fx.run_id, "-NodeId", "n2", "-Kind", "auto", "-RuleId", "RX", "-Checkpoint", "x", "-Decision", "x")
+        Assert $c ($w3.exit -eq 1 -and $w3.json.error.code -eq "RULE_NOT_FOUND") "未知规则未拒: $($w3.text)"
+        $w4 = TB @("-Command", "decide", "-RunId", $fx.run_id, "-NodeId", "n2", "-Kind", "auto", "-Checkpoint", "x", "-Decision", "x")
+        Assert $c ($w4.exit -eq 1 -and $w4.json.error.code -eq "RULE_REQUIRED") "缺 RuleId 未拒: $($w4.text)"
+        $w5 = TB @("-Command", "decide", "-RunId", $fx.run_id, "-NodeId", "n2", "-Kind", "auto", "-RuleId", "R5", "-Checkpoint", "x", "-Decision", "x", "-RefEntry", "D1")
+        Assert $c ($w5.exit -eq 1 -and $w5.json.error.code -eq "REF_ENTRY_FORBIDDEN") "auto 带 RefEntry 未拒: $($w5.text)"
+        $w6 = TB @("-Command", "decide", "-RunId", $fx.run_id, "-NodeId", "n3", "-Kind", "auto", "-RuleId", "R5", "-Checkpoint", "x", "-Decision", "x")
+        Assert $c ($w6.exit -eq 1 -and $w6.json.error.code -eq "DECISION_NODE_NOT_CLAIMED") "未认领节点未拒: $($w6.text)"
+        $w7 = TB @("-Command", "decide", "-RunId", $fx.run_id, "-NodeId", "n1", "-Kind", "auto", "-RuleId", "R5", "-Checkpoint", "x", "-Decision", "x")
+        Assert $c ($w7.exit -in 1, 2 -and $w7.json.error.code -eq "NODE_NOT_MAPPED") "goal 根未拒: $($w7.text)"
+        $fx2 = New-FixtureArchive "am52m"
+        $null = TB @("-Command", "promulgate", "-TaskJson", (Join-Path $fx2.dir "task.json"))
+        $null = TB @("-Command", "claim", "-RunId", $fx2.run_id, "-NodeId", "n2", "-Role", "DEV")
+        $w8 = TB @("-Command", "decide", "-RunId", $fx2.run_id, "-NodeId", "n2", "-Kind", "auto", "-RuleId", "R5", "-Checkpoint", "x", "-Decision", "x")
+        Assert $c ($w8.exit -eq 1 -and $w8.json.error.code -eq "AUTO_MODE_DISABLED") "非自动 run decide 未拒: $($w8.text)"
+        $w9 = TB @("-Command", "escalate", "-RunId", $fx2.run_id, "-NodeId", "n2", "-Checkpoint", "x", "-Decision", "x")
+        Assert $c ($w9.exit -eq 1 -and $w9.json.error.code -eq "AUTO_MODE_DISABLED") "非自动 run escalate 未拒: $($w9.text)"
+    }
+
+    Run-Tc "TC-B53" "高风险升级链路:escalate 写 open 条目(decider=null/risk 缺省 high/rule 留痕);status auto_mode 块列出未决升级;resolution 回填(user@in-session/ref_entry)后派生视图关闭;重复关闭/悬空引用/非升级目标均确定性拒绝" "P0" "AM-AC-3" {
+        param($c)
+        $fx = New-FixtureArchive "am53"
+        $null = TB @("-Command", "promulgate", "-TaskJson", (Join-Path $fx.dir "task.json"), "-AutoMode")
+        $null = TB @("-Command", "claim", "-RunId", $fx.run_id, "-NodeId", "n2", "-Role", "DEV")
+        $r = TB @("-Command", "escalate", "-RunId", $fx.run_id, "-NodeId", "n2", "-Checkpoint", "技术选型分叉", "-Decision", "消息队列选 RocketMQ 还是 RabbitMQ？", "-RuleId", "R4")
+        Assert $c ($r.exit -eq 0 -and $r.json.success -eq $true) "escalate 失败: $($r.text)"
+        $e = $r.json.data.entry
+        Assert $c ([string]$e.kind -eq "escalation" -and $null -eq $e.decider) "升级条目 kind/decider 异常: $($e.kind)/$($e.decider)"
+        Assert $c ([string]$e.risk -eq "high") "缺省 risk 非 high: $($e.risk)"
+        Assert $c ([string]$e.rule_id -eq "R4") "升级条目 rule_id 丢失"
+        $st = TB @("-Command", "status", "-RunId", $fx.run_id)
+        Assert $c ($st.exit -eq 0 -and [bool]$st.json.data.auto_mode.enabled) "status 无 auto_mode 块"
+        $open = @($st.json.data.auto_mode.open_escalations)
+        Assert $c ($open.Count -eq 1) "open_escalations 数非 1: $($open.Count)"
+        Assert $c ([string]$open[0].entry_id -eq "D1" -and [string]$open[0].question -match "RocketMQ") "未决条目 entry/question 异常"
+        Assert $c ([string]$open[0].rule_id -eq "R4" -and [string]$open[0].checkpoint -eq "技术选型分叉") "未决条目 rule/checkpoint 异常"
+        $res = TB @("-Command", "decide", "-RunId", $fx.run_id, "-NodeId", "n2", "-Kind", "resolution", "-RefEntry", "D1", "-Checkpoint", "技术选型分叉", "-Decision", "用户拍板:RabbitMQ")
+        Assert $c ($res.exit -eq 0) "resolution 失败: $($res.text)"
+        $re = $res.json.data.entry
+        Assert $c ([string]$re.kind -eq "resolution" -and [string]$re.decider -eq "user@in-session" -and [string]$re.ref_entry -eq "D1") "resolution 条目异常: $($re.kind)/$($re.decider)/$($re.ref_entry)"
+        $st2 = TB @("-Command", "status", "-RunId", $fx.run_id)
+        Assert $c (@($st2.json.data.auto_mode.open_escalations).Count -eq 0) "resolution 后派生视图未关闭升级"
+        $w1 = TB @("-Command", "decide", "-RunId", $fx.run_id, "-NodeId", "n2", "-Kind", "resolution", "-RefEntry", "D1", "-Checkpoint", "x", "-Decision", "x")
+        Assert $c ($w1.exit -eq 1 -and $w1.json.error.code -eq "ESCALATION_ALREADY_RESOLVED") "重复关闭未拒: $($w1.text)"
+        $w2 = TB @("-Command", "decide", "-RunId", $fx.run_id, "-NodeId", "n2", "-Kind", "resolution", "-RefEntry", "D99", "-Checkpoint", "x", "-Decision", "x")
+        Assert $c ($w2.exit -eq 1 -and $w2.json.error.code -eq "REF_ENTRY_NOT_FOUND") "悬空引用未拒: $($w2.text)"
+        $w3 = TB @("-Command", "decide", "-RunId", $fx.run_id, "-NodeId", "n2", "-Kind", "resolution", "-RefEntry", "D2", "-Checkpoint", "x", "-Decision", "x")
+        Assert $c ($w3.exit -eq 1 -and $w3.json.error.code -eq "REF_ENTRY_NOT_ESCALATION") "非升级目标 resolution 未拒: $($w3.text)"
+    }
+
+    Run-Tc "TC-B54" "自动决策可见性与推翻通道:status 决策计数(逐节点 auto/escalation/resolution/overturn)+账本指针;decisions.jsonl 追加不改写(旧条目原样);overturn 推翻既有决策留痕(含依据);推翻推翻拒;resume 恢复步骤含未决升级处置指引" "P0" "AM-AC-5" {
+        param($c)
+        $fx = New-FixtureArchive "am54"
+        $null = TB @("-Command", "promulgate", "-TaskJson", (Join-Path $fx.dir "task.json"), "-AutoMode")
+        $null = TB @("-Command", "claim", "-RunId", $fx.run_id, "-NodeId", "n2", "-Role", "DEV")
+        $null = TB @("-Command", "decide", "-RunId", $fx.run_id, "-NodeId", "n2", "-Kind", "auto", "-RuleId", "R7", "-Checkpoint", "命名清单", "-Decision", "按既有命名表", "-Inputs", "命名输入:模块 3 个", "-Basis", "R7 命名/文件清单")
+        $null = TB @("-Command", "escalate", "-RunId", $fx.run_id, "-NodeId", "n2", "-Checkpoint", "含 P1 风险取舍", "-Decision", "缓存失效策略取舍呈用户", "-RuleId", "R8", "-Risk", "high")
+        $ov = TB @("-Command", "decide", "-RunId", $fx.run_id, "-NodeId", "n2", "-Kind", "overturn", "-RefEntry", "D1", "-Checkpoint", "命名清单", "-Decision", "改用新命名表", "-Basis", "用户事后补充约束")
+        Assert $c ($ov.exit -eq 0 -and $ov.json.success -eq $true) "overturn 失败: $($ov.text)"
+        $oe = $ov.json.data.entry
+        Assert $c ([string]$oe.kind -eq "overturn" -and [string]$oe.ref_entry -eq "D1" -and [string]$oe.decider -eq "user@in-session") "overturn 条目异常"
+        Assert $c ([string]$oe.basis -eq "用户事后补充约束") "overturn 依据(basis)未留痕"
+        $w = TB @("-Command", "decide", "-RunId", $fx.run_id, "-NodeId", "n2", "-Kind", "overturn", "-RefEntry", "D3", "-Checkpoint", "x", "-Decision", "x")
+        Assert $c ($w.exit -eq 1 -and $w.json.error.code -eq "REF_ENTRY_KIND_INVALID") "推翻推翻未拒: $($w.text)"
+        # 账本追加不改写:D1 仍为 auto 原样(含 inputs/basis)
+        $led = @([System.IO.File]::ReadAllLines((Join-Path (Get-RunDirPath $fx.run_id) "decisions.jsonl")) | Where-Object { $_.Trim() -ne "" })
+        Assert $c ($led.Count -eq 3) "账本条目数非 3: $($led.Count)"
+        $d1 = $led[0] | ConvertFrom-Json
+        Assert $c ([string]$d1.kind -eq "auto" -and [string]$d1.decider -eq "auto/R7@DEV") "D1 被改写(append-only 破坏): $($d1.kind)/$($d1.decider)"
+        Assert $c ([string]$d1.inputs -eq "命名输入:模块 3 个" -and [string]$d1.basis -eq "R7 命名/文件清单") "D1 inputs/basis 丢失"
+        # status 可见性:计数/账本指针/策略源
+        $st = TB @("-Command", "status", "-RunId", $fx.run_id)
+        $amb = $st.json.data.auto_mode
+        Assert $c ([bool]$amb.enabled -and [string]$amb.ledger -match "decisions\.jsonl") "status 缺 enabled/账本指针"
+        Assert $c ([string]$amb.policy_source -eq "default") "status policy_source 异常"
+        $row = @($amb.decision_counts) | Where-Object { [string]$_.node -eq "n2" } | Select-Object -First 1
+        Assert $c ($null -ne $row) "decision_counts 缺 n2 行"
+        Assert $c ([int]$row.auto -eq 1 -and [int]$row.escalation -eq 1 -and [int]$row.overturn -eq 1 -and [int]$row.total -eq 3) "n2 决策计数异常: $($row | ConvertTo-Json -Compress)"
+        Assert $c (@($amb.open_escalations).Count -eq 1 -and [string]$amb.open_escalations[0].entry_id -eq "D2") "未决升级视图异常"
+        # resume:恢复步骤含未决升级处置指引(CLI/Plus 兼容可见性)
+        $rs = TB @("-Command", "resume", "-RunId", $fx.run_id)
+        $rsText = $rs.json | ConvertTo-Json -Depth 8
+        Assert $c ($rs.exit -eq 0 -and $rsText -match "D2" -and $rsText -match "resolution") "resume 缺未决升级处置指引"
+    }
+
+    Run-Tc "TC-B55" "分级表可配置:-RiskPolicy 整表覆盖(policy_source=override);R1 硬底强制合并(缺失→插入/改 auto→恢复 manual);无效策略(空表/重复 id/非法 action/坏 JSON)确定性拒绝且零 run 残留" "P1" "AM-AC-4" {
+        param($c)
+        $pol1 = Join-Path $script:WorkDir "am55-pol1.json"
+        [System.IO.File]::WriteAllText($pol1, '{"rules":[{"id":"X1","match":"自定义低风险","action":"auto","note":"覆盖"}]}', $Utf8NoBom)
+        $fx = New-FixtureArchive "am55"
+        $r = TB @("-Command", "promulgate", "-TaskJson", (Join-Path $fx.dir "task.json"), "-AutoMode", "-RiskPolicy", $pol1)
+        Assert $c ($r.exit -eq 0) "覆盖颁布失败: $($r.text)"
+        $b = Read-BridgeJson $fx.run_id
+        Assert $c ([string]$b.auto_mode.policy_source -eq "override") "policy_source 非 override"
+        $rules = @($b.auto_mode.policy.rules)
+        Assert $c ($rules.Count -eq 2) "覆盖后规则数非 2(强制 R1+X1): $($rules.Count)"
+        Assert $c ($rules.Count -eq 2) "覆盖后规则数非 2(强制 R1+X1): $($rules.Count)"
+        # 探针式断言(逐规则取 psobject 属性值比较):同 Where 模式在独立进程可复现通过、
+        # 在本套件进程内对 override 表恒不中(根因未定位,PS 5.1 进程内行为差异),改用
+        # 逐规则显式比较并内嵌探针结果;两侧断言口径不变
+        $r1Forced = $false
+        $x1Present = $false
+        $probe = @()
+        foreach ($r in $rules) {
+            $rid = [string]$r.psobject.Properties['id'].Value
+            $raction = [string]$r.psobject.Properties['action'].Value
+            $probe += ("{0}:{1}" -f $rid, $raction)
+            if ($rid -eq "R1" -and $raction -eq "manual") { $r1Forced = $true }
+            if ($rid -eq "X1") { $x1Present = $true }
+        }
+        Assert $c $r1Forced "R1 硬底未强制合并; 逐规则探针: $($probe -join ' | ')"
+        Assert $c $x1Present "X1 未入表; 逐规则探针: $($probe -join ' | ')"
+        $pol2 = Join-Path $script:WorkDir "am55-pol2.json"
+        [System.IO.File]::WriteAllText($pol2, '{"rules":[{"id":"R1","match":"宪法禁令","action":"auto"}]}', $Utf8NoBom)
+        $fx2 = New-FixtureArchive "am55b"
+        $r2 = TB @("-Command", "promulgate", "-TaskJson", (Join-Path $fx2.dir "task.json"), "-AutoMode", "-RiskPolicy", $pol2)
+        Assert $c ($r2.exit -eq 0) "R1=auto 覆盖颁布失败: $($r2.text)"
+        $b2 = Read-BridgeJson $fx2.run_id
+        $r1b = @($b2.auto_mode.policy.rules) | Where-Object { [string]$_.id -eq "R1" } | Select-Object -First 1
+        Assert $c ([string]$r1b.action -eq "manual") "R1 被 override 放开为 auto(硬底失效)"
+        # 无效策略四形态:确定性拒绝 + 零 run 残留(校验先于任何 run 状态创建)
+        $badCases = @(
+            @{ tag = "empty"; json = '{"rules":[]}' },
+            @{ tag = "dupe"; json = '{"rules":[{"id":"Y1","match":"a","action":"auto"},{"id":"Y1","match":"b","action":"manual"}]}' },
+            @{ tag = "action"; json = '{"rules":[{"id":"Y2","match":"a","action":"banana"}]}' },
+            @{ tag = "parse"; json = 'not-json{' }
+        )
+        foreach ($bc in $badCases) {
+            $badPath = Join-Path $script:WorkDir ("am55-bad-{0}.json" -f $bc.tag)
+            [System.IO.File]::WriteAllText($badPath, $bc.json, $Utf8NoBom)
+            $bfx = New-FixtureArchive ("am55bad" + $bc.tag)
+            $br = TB @("-Command", "promulgate", "-TaskJson", (Join-Path $bfx.dir "task.json"), "-AutoMode", "-RiskPolicy", $badPath)
+            Assert $c ($br.json.error.code -eq "RISK_POLICY_INVALID") "[$($bc.tag)] 无效策略未确定性拒绝: $($br.text)"
+            Assert $c (-not (Test-Path (Get-RunDirPath $bfx.run_id))) "[$($bc.tag)] 无效策略留下 run 残留"
+        }
+    }
+
+    Run-Tc "TC-B56" "编排层裁决不自动化+CTO 宪法豁免锚:planner-guide 硬约束 7(编排层裁决不进分级表);rdd-cto SKILL 豁免指针(宪法原文不改写)+纯自动模式分支(门槛达标语义不豁免/decide+escalate 指引);staging 与真源逐字节一致" "P0" "AM-AC-4/边界" {
+        param($c)
+        $guide = [System.IO.File]::ReadAllText((Join-Path $RepoRoot "rdd-engine\references\planner-guide.md"), [System.Text.Encoding]::UTF8)
+        Assert $c ($guide.Contains("纯自动模式边界")) "planner-guide 缺硬约束 7(纯自动模式边界)"
+        Assert $c ($guide.Contains("不进分级表")) "硬约束 7 未声明编排层裁决不进分级表"
+        $skill = [System.IO.File]::ReadAllText((Join-Path $RepoRoot "rdd-cto\SKILL.md"), [System.Text.Encoding]::UTF8)
+        Assert $c ($skill.Contains("纯自动模式豁免指针")) "CTO SKILL 缺宪法豁免指针"
+        Assert $c ($skill.Contains("宪法原文不因自动模式改写")) "豁免指针缺「宪法原文不改写」声明"
+        Assert $c ($skill.Contains("门槛达标语义不豁免")) "纯自动模式分支缺「门槛达标语义不豁免」声明"
+        Assert $c ($skill.Contains("decide -Kind auto") -and $skill.Contains("escalate")) "分支缺 decide/escalate 操作指引"
+        $staging = Join-Path $RepoRoot "dist\skills-staging\skills\rdd-cto\SKILL.md"
+        Assert $c (Test-Path $staging) "staging SKILL.md 缺失(交付清单 #8)"
+        if (Test-Path $staging) {
+            $h1 = (Get-FileHash -LiteralPath $staging).Hash
+            $h2 = (Get-FileHash -LiteralPath (Join-Path $RepoRoot "rdd-cto\SKILL.md")).Hash
+            Assert $c ($h1 -eq $h2) "staging 与真源不一致(应逐字节一致)"
+        }
+    }
+
+    Run-Tc "TC-B57" "-NoPush 隔离性(交付物·用户裁决核验项):promulgate -NoPush 推送惰性(trigger 含 NoPush/pushed=0/零 per-node pushes 账);status 触碰不得对隔离 run 发起推送(期望零新增会话创建——0923 事故后隔离承诺)" "P0" "AM-DELIVERY" {
+        param($c)
+        $fx = New-FixtureArchive "am57"
+        $r = TB @("-Command", "promulgate", "-TaskJson", (Join-Path $fx.dir "task.json"), "-AutoMode", "-NoPush")
+        Assert $c ($r.exit -eq 0) "-NoPush 颁布失败: $($r.text)"
+        Assert $c ([string]$r.json.data.auto_push.trigger -match "NoPush") "trigger 未标记 NoPush: $($r.json.data.auto_push.trigger)"
+        Assert $c (@($r.json.data.auto_push.pushed).Count -eq 0) "NoPush 颁布仍推送: $($r.json.data.auto_push.pushed)"
+        $b = Read-BridgeJson $fx.run_id
+        $pushCount = 0
+        if ($null -ne $b.pushes) { $pushCount = @($b.pushes.PSObject.Properties).Count }
+        Assert $c ($pushCount -eq 0) "NoPush run 出现 per-node pushes 账(共 $pushCount 项)"
+        $createsBefore = @((Read-DshMockLog) | Where-Object { $_.method -eq "session.create" }).Count
+        $st = TB @("-Command", "status", "-RunId", $fx.run_id)
+        Assert $c ($st.exit -eq 0) "status 失败: $($st.text)"
+        $createsAfter = @((Read-DshMockLog) | Where-Object { $_.method -eq "session.create" }).Count
+        Assert $c ($createsAfter -eq $createsBefore) "status 触碰对 -NoPush run 发起了真实推送(session.create before=$createsBefore after=$createsAfter)——隔离承诺失效(0923 事故机制,缺陷 F1)"
+        $b2 = Read-BridgeJson $fx.run_id
+        $pushCount2 = 0
+        if ($null -ne $b2.pushes) { $pushCount2 = @($b2.pushes.PSObject.Properties).Count }
+        Assert $c ($pushCount2 -eq 0) "status 觸碰后 per-node pushes 账被写入(共 $pushCount2 项)——触碰确实执行了推送"
+    }
+}
+
+# ============================================================
 # 主流程
 # ============================================================
 
@@ -2042,7 +2297,7 @@ $env:RDD_RUNTIME = $null
 $env:DSH_SESSION_ID = "qa-bridge-mock"
 Write-Host "dsh-mock carrier: $script:DshMockUrl"
 
-$selected = if ($Suite -eq "all") { @("promulgate", "claim", "settle", "recover", "conclude", "regression", "compat", "autopush", "callback", "review", "uniqueness", "payload", "roster", "rollback") } else { @($Suite) }
+$selected = if ($Suite -eq "all") { @("promulgate", "claim", "settle", "recover", "conclude", "regression", "compat", "autopush", "callback", "review", "uniqueness", "payload", "roster", "rollback", "automode") } else { @($Suite) }
 foreach ($s in $selected) {
     switch ($s) {
         "promulgate" { Suite-Promulgate }
@@ -2059,6 +2314,7 @@ foreach ($s in $selected) {
         "payload"    { Suite-Payload }
         "roster"     { Suite-Roster }
         "rollback"   { Suite-Rollback }
+        "automode"   { Suite-AutoMode }
     }
 }
 

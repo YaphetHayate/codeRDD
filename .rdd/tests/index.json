@@ -56,7 +56,7 @@
       "testCode": [
         ".rdd/tests/delivery-bridge/delivery-bridge-verify.ps1"
       ],
-      "activeCount": 49,
+      "activeCount": 57,
       "deprecatedCount": 0,
       "lastUpdated": "2026-09-22",
       "lastChange": "2026-09-20-planner-enhancements"
@@ -103,6 +103,20 @@
       "deprecatedCount": 0,
       "lastUpdated": "2026-09-20",
       "lastChange": "2026-09-20-planner-session-roster"
+    },
+    {
+      "feature": "session-badges",
+      "relatedCode": [
+        "rdd-engine/scripts/start-role.ps1",
+        "rdd-engine/scripts/delivery-bridge.ps1"
+      ],
+      "testCode": [
+        ".rdd/tests/session-badges/session-badges-verify.ps1"
+      ],
+      "activeCount": 11,
+      "deprecatedCount": 0,
+      "lastUpdated": "2026-09-22",
+      "lastChange": "2026-09-20-planner-enhancements"
     }
   ]
 }

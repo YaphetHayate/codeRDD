@@ -35,6 +35,14 @@ param(
     # (session.rename, user source); the pointer message is never touched.
     [string]$SessionLabel = "",
 
+    # Task summary title (session-list-badges): optional one-line requirement
+    # summary ("「<需求标题>」<阶段>") the delivery bridge derives from the
+    # persisted node.task. Rides the TITLE channel (session.rename) so the
+    # workspace row shows "badges + summary" instead of the legacy text marker.
+    # Display-only, never a mission parameter; empty → the title keeps the
+    # legacy marker shape (regression anchor).
+    [string]$TaskSummary = "",
+
     # PLANNER uniqueness guard (planner-uniqueness-callback): explicit user
     # override that skips ONLY the startup gate below — the session gets
     # created, but the orchestration right and callback re-pointing still
@@ -279,6 +287,69 @@ function Get-SessionTitle {
         return "[直交] $label·$Role"
     }
     return ""
+}
+
+function Get-SessionBadges {
+    # session-list-badges: structured identity chips for the freshly created dsh
+    # session, pinned via the session.setBadges RPC (log-only session/badges
+    # event + sessionBadges projection; display-only, never a mission
+    # parameter). Mirrors Get-SessionTitle's three shapes, one badge per
+    # structural fact — open kind vocabulary, rdd:* namespace consumed by the
+    # DSH workspace-row renderer (unknown kinds degrade to a generic chip):
+    #   PLANNER body     rdd:planner + rdd:run(<run短名>)
+    #   bridge dispatch  rdd:run(<run短名>) + rdd:task(T#) + rdd:stage(<阶段>) [+ rdd:node(<节点>)]
+    #   off-tree direct  rdd:direct(<标签>) + rdd:role(<角色>)
+    # Returns @() for the unmarked plain handoff — zero badges, zero setBadges
+    # calls, behavior byte-for-byte identical to the pre-feature output
+    # (regression anchor, same contract as Get-SessionTitle's "" return).
+    $badges = @()
+    if ($Role -eq "PLANNER") {
+        $badges += @{ kind = "rdd:planner" }
+        $short = Get-RunShortName
+        if ($short) { $badges += @{ kind = "rdd:run"; label = $short } }
+        return $badges
+    }
+    if (-not [string]::IsNullOrWhiteSpace($GoalTreeRun)) {
+        $short = ConvertTo-RunShortName $GoalTreeRun
+        if ($short) { $badges += @{ kind = "rdd:run"; label = $short } }
+        if ($TaskId -ge 1) { $badges += @{ kind = "rdd:task"; label = "T$TaskId" } }
+        $badges += @{ kind = "rdd:stage"; label = $Role }
+        if (-not [string]::IsNullOrWhiteSpace($GoalTreeNode)) { $badges += @{ kind = "rdd:node"; label = $GoalTreeNode } }
+        return $badges
+    }
+    $handoffPresent = -not [string]::IsNullOrWhiteSpace($Handoff)
+    $labelPresent = -not [string]::IsNullOrWhiteSpace($SessionLabel)
+    if ($handoffPresent -or $labelPresent) {
+        $label = ""
+        if ($labelPresent) {
+            $label = $SessionLabel.Trim()
+        }
+        else {
+            $leaf = Split-Path -Leaf ($Handoff.Trim())
+            $label = [System.IO.Path]::GetFileNameWithoutExtension($leaf)
+        }
+        if (-not [string]::IsNullOrWhiteSpace($label)) {
+            $badges += @{ kind = "rdd:direct"; label = $label }
+            $badges += @{ kind = "rdd:role"; label = $Role }
+        }
+        return $badges
+    }
+    return $badges
+}
+
+function Get-PinnedTitle {
+    # session-list-badges: the title text the rename RPC actually pins, given
+    # the legacy marker title, the badge pin verdict, and the optional task
+    # summary. Badges pinned → the summary alone replaces the marker text (the
+    # chips carry the structure now, freeing the whole 80-byte budget for the
+    # requirement line); badges failed → one-shot degraded concatenation keeps
+    # the structural facts alive in text form (single rename, no second
+    # overwrite); no badges → the legacy shape stands unchanged.
+    param([string]$LegacyTitle, [bool]$BadgesPinned, [string]$Summary)
+    if ([string]::IsNullOrWhiteSpace($Summary)) { return $LegacyTitle }
+    if ($BadgesPinned) { return $Summary.Trim() }
+    if ($LegacyTitle) { return "$LegacyTitle $($Summary.Trim())" }
+    return $Summary.Trim()
 }
 
 function Build-PromptMessage {
@@ -587,6 +658,27 @@ function Invoke-DshHandoff {
     if ($create.status -ne "ok") { return $create }
     $sessionId = [string]$create.value.sessionId
 
+    # session-list-badges: pin the structured identity chips BEFORE the title
+    # rename (design RPC matrix: create → setBadges → rename → prompt — badges
+    # first so a badge failure can fold its structural facts into the one
+    # rename that follows, never a second overwrite). Same display-only policy
+    # as the title: any failure degrades with a warning and NEVER blocks the
+    # handoff. Zero badges (plain handoff) → zero calls, byte-identical legacy
+    # behavior.
+    $badges = @(Get-SessionBadges)
+    $badgesResult = $null
+    if ($badges.Count -gt 0) {
+        $setBadges = Invoke-DshApi -Method "session.setBadges" -Payload @{ sessionId = $sessionId; badges = $badges }
+        if ($setBadges.status -eq "ok") {
+            $badgesResult = @{ pinned = $true; count = $badges.Count }
+        }
+        else {
+            $reason = $setBadges.message
+            if ($setBadges.status -eq "business") { $reason = "业务错误 $($setBadges.code): $($setBadges.message)" }
+            $badgesResult = @{ pinned = $false; count = $badges.Count; error = $reason }
+        }
+    }
+
     # planner-session-roster: pin the structured title right after create and
     # BEFORE the pointer prompt — the user-source rename pins the title against
     # first-message auto-regeneration, so order matters (rename after the prompt
@@ -595,7 +687,9 @@ function Invoke-DshHandoff {
     # opposite of the mission-param fail-loud policy — the title carries no
     # mission, see incident-2026-09-20-stray-dispatch). Plus backend has no dsh
     # session concept at all and never reaches this function.
-    $title = Get-SessionTitle
+    # session-list-badges: the pinned text is the task summary when one rides
+    # along (badges carrying the structure), else the legacy marker shape.
+    $title = Get-PinnedTitle -LegacyTitle (Get-SessionTitle) -BadgesPinned ([bool]($badgesResult -and $badgesResult.pinned)) -Summary $TaskSummary
     $titleResult = $null
     if (-not [string]::IsNullOrWhiteSpace($title)) {
         $rename = Invoke-DshApi -Method "session.rename" -Payload @{ sessionId = $sessionId; title = $title }
@@ -615,9 +709,9 @@ function Invoke-DshHandoff {
         content   = @(@{ type = "text"; text = $Message })
     }
     if ($prompt.status -ne "ok") {
-        return @{ status = "prompt-failed"; sessionId = $sessionId; title = $titleResult; failure = $prompt }
+        return @{ status = "prompt-failed"; sessionId = $sessionId; title = $titleResult; badges = $badgesResult; failure = $prompt }
     }
-    return @{ status = "done"; sessionId = $sessionId; title = $titleResult }
+    return @{ status = "done"; sessionId = $sessionId; title = $titleResult; badges = $badgesResult }
 }
 
 function Start-WithWindowsTerminal {
@@ -741,18 +835,25 @@ if ($mode -eq "dsh") {
         Write-Host "[DRYRUN] payload: path=$root（resolve-or-create，realpath 规范化）" -ForegroundColor Yellow
         Write-Host "[DRYRUN] RPC 2:   POST $DshUrl/api/session.create" -ForegroundColor Yellow
         Write-Host "[DRYRUN] payload: workspaceId=<RPC 1 返回> agentPreset=$preset（入账 workspace，侧栏进项目文件夹）" -ForegroundColor Yellow
-        # planner-session-roster: the rename RPC prints ONLY when a title
-        # applies — an unmarked plain handoff keeps the exact legacy DryRun
-        # lines (byte-for-byte regression anchor).
-        $dryTitle = Get-SessionTitle
+        # planner-session-roster + session-list-badges: the setBadges/rename
+        # RPCs print ONLY when they apply — an unmarked plain handoff keeps the
+        # exact legacy DryRun lines (byte-for-byte regression anchor).
+        $dryBadges = @(Get-SessionBadges)
+        $rpcNo = 3
+        if ($dryBadges.Count -gt 0) {
+            $dryBadgesJson = $dryBadges | ConvertTo-Json -Compress
+            if ($dryBadges.Count -eq 1) { $dryBadgesJson = "[{0}]" -f ($dryBadges | ConvertTo-Json -Compress) }
+            Write-Host "[DRYRUN] RPC 3:   POST $DshUrl/api/session.setBadges" -ForegroundColor Yellow
+            Write-Host "[DRYRUN] payload: sessionId=<RPC 2 返回> badges=$dryBadgesJson（rdd:* 结构徽章；失败降级警告不阻断）" -ForegroundColor Yellow
+            $rpcNo = 4
+        }
+        $dryTitle = Get-PinnedTitle -LegacyTitle (Get-SessionTitle) -BadgesPinned ($dryBadges.Count -gt 0) -Summary $TaskSummary
         if ($dryTitle) {
-            Write-Host "[DRYRUN] RPC 3:   POST $DshUrl/api/session.rename" -ForegroundColor Yellow
+            Write-Host "[DRYRUN] RPC $rpcNo`:   POST $DshUrl/api/session.rename" -ForegroundColor Yellow
             Write-Host "[DRYRUN] payload: sessionId=<RPC 2 返回> title=$dryTitle（user 源钉住标题；失败降级警告不阻断）" -ForegroundColor Yellow
-            Write-Host "[DRYRUN] RPC 4:   POST $DshUrl/api/session.prompt" -ForegroundColor Yellow
+            $rpcNo++
         }
-        else {
-            Write-Host "[DRYRUN] RPC 3:   POST $DshUrl/api/session.prompt" -ForegroundColor Yellow
-        }
+        Write-Host "[DRYRUN] RPC $rpcNo`:   POST $DshUrl/api/session.prompt" -ForegroundColor Yellow
         Write-Host "[DRYRUN] payload: sessionId=<RPC 2 返回> mode=queue text=$pointerMessage" -ForegroundColor Yellow
         exit 0
     }
@@ -762,6 +863,14 @@ if ($mode -eq "dsh") {
     switch ($result.status) {
         "done" {
             Write-Ok "已在 dsh 内为 $Role 创建会话（preset: $preset, sessionId: $($result.sessionId)）"
+            if ($result.badges) {
+                if ($result.badges.pinned) {
+                    Write-Host "[i] 会话徽章已钉住（rdd:* 结构标识，工作区行首图标化展示）: $($result.badges.count) 枚" -ForegroundColor Cyan
+                }
+                else {
+                    Write-Host "[!] 会话徽章钉住失败（$($result.badges.error)），标题已降级为拼接形态，会话照常创建与派发" -ForegroundColor Yellow
+                }
+            }
             if ($result.title) {
                 if ($result.title.pinned) {
                     Write-Host "[i] 会话标题已钉住（user 源，不再随首消息重生成）: $($result.title.title)" -ForegroundColor Cyan

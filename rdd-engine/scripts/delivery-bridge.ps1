@@ -17,7 +17,14 @@
 #               depends_on_override wholesale-replaces regex inference, merged
 #               deps redirect to the absorber, deps dangling on a rejected task
 #               hard-fail REVIEW_EXCLUDED_DEP; absent -> byte-identical legacy
-#               behavior. Audit: bridge.json review section + report/review.md
+#               behavior. Audit: bridge.json review section + report/review.md.
+#               Optional -NoPush: suppress auto-push entirely (test / incident
+#               isolation — no role sessions started, ever). The isolation is a
+#               PERSISTED run-level attribute (bridge.json no_push=true) that
+#               every later auto-dispatch trigger (status touch / reclaim /
+#               settle / rollback) consumes and stays inert on; the promulgate
+#               response reports it as trigger='promulgate (-NoPush)'. Manual
+#               dispatch (explicit human action) remains the designated override.
 #   dispatch    manual single-node start-role push (exception handling /
 #               pointer-class re-push; the normal flow is auto-push)
 #   claim       composite claim: read-only prechecks -> tree leaf claim -> rdd-flow claim
@@ -45,10 +52,25 @@
 #               run's sessions.json roster (planner-session-roster): after a
 #               direct start-role dispatch the planner registers the printed
 #               sessionId + label so the session stays traceable
+#   decide      pure-auto-mode decision ledger append (planner-auto-mode):
+#               -Kind auto (grading-table answer for a low-risk checkpoint) /
+#               resolution (user verdict closing an open escalation) /
+#               overturn (in-session redo note over an existing decision).
+#               Requires bridge.json auto_mode.enabled + this stage's claimed
+#               node (overturn additionally tolerates reported); append happens
+#               inside the run .lock with read-back finish
+#   escalate    pure-auto-mode escalation append: a checkpoint the grading
+#               table routes to humans (prohibition-class / unmatched / worker
+#               judgment) lands as an open entry; dsh watcher delivers it to
+#               the Planner inbox, CLI/Plus see it via status/resume
 #
 # Run artifacts (inside the goal-tree run dir, gitignored):
 #   bridge.json           authoritative node<->TaskId mapping (v2: + goal_root anchor
 #                         + per-node pushes ledger; v1 rejected BRIDGE_FORMAT_UNSUPPORTED)
+#                         + auto_mode snapshot (ONLY for -AutoMode promulgations:
+#                         enabled + immutable risk-policy table; absent otherwise)
+#                         + no_push isolation flag (ONLY for -NoPush promulgations:
+#                         true = every auto-dispatch trigger stays inert)
 #   planner-lease.json    advisory session lease
 #   sessions.json         run session roster (planner-session-roster): every dsh
 #                         session this run derived — planner body (promulgate/
@@ -61,6 +83,11 @@
 #                         machine-readable copy rides bridge.json's review section
 #   report/delivery-annex.md  per-task terminal states + rdd-flow check result
 #                         + root-goal achievement state
+#   decisions.jsonl       append-only pure-auto-mode decision ledger (ONLY for
+#                         -AutoMode runs; same paradigm as state/ledger.jsonl):
+#                         auto / escalation / resolution / overturn entries,
+#                         open-escalation view derived by ref_entry join — the
+#                         ledger is never rewritten
 #
 # Hard constraint: "不合格交付不得流转" — settle enforces the three evidence checks
 # (verdict=done / citations non-empty and real paths / extras.verification non-empty)
@@ -69,7 +96,7 @@
 
 [CmdletBinding()]
 param(
-    [ValidateSet("promulgate", "dispatch", "claim", "reclaim", "rollback", "settle", "status", "resume", "conclude", "lease", "register-session")]
+    [ValidateSet("promulgate", "dispatch", "claim", "reclaim", "rollback", "settle", "status", "resume", "conclude", "lease", "register-session", "decide", "escalate")]
     [string]$Command = "status",
 
     [string]$RunId,
@@ -78,15 +105,38 @@ param(
     [string]$TaskJson,
     [string]$ReviewFile,          # optional requirement-review verdicts (planner
                                    # session product; planner-guide hard constraint 6)
+    [switch]$AutoMode,            # pure-auto-mode opt-in (planner-auto-mode): snapshot
+                                   # the risk-grading table into bridge.json auto_mode;
+                                   # default off = byte-identical legacy behavior
+    [string]$RiskPolicy,          # optional full-table override for -AutoMode (JSON
+                                   # file); R1 constitutional hard floor is force-merged
+                                   # back no matter what the file says
+    [switch]$NoPush,              # promulgate isolation: build the run but suppress
+                                   # auto-push for its WHOLE lifetime — persisted as
+                                   # bridge.json no_push=true and consumed by every
+                                   # auto-dispatch trigger (engine test suite / incident
+                                   # drills — no real role sessions started; default
+                                   # off = byte-identical behavior)
     [int]$MaxRounds = 12,
     [int]$NodeWidth = 0,          # 0 = auto (>= task count, floor 4)
     [int]$MaxNodes = 0,           # 0 = auto (task count * 5 + 6)
     [string]$CreatedBy = "planner",
 
-    # dispatch / claim / reclaim / settle
+    # dispatch / claim / reclaim / settle / decide / escalate
     [string]$NodeId,
     [string]$Role,                # stage role (CTO/UX/DEV/QA) for claim; inferred from node for others
     [string]$Session,             # Planner lease holder label
+
+    # decide / escalate (planner-auto-mode checkpoint payload)
+    [ValidateSet("auto", "resolution", "overturn")]
+    [string]$Kind,                # decide entry kind (escalate always writes kind=escalation)
+    [string]$Checkpoint,          # checkpoint name (e.g. "技术选型" / "命名")
+    [string]$Decision,            # the verdict text (for escalate: the question awaiting the user)
+    [string]$Inputs,              # decision inputs (what was considered)
+    [string]$Basis,               # rationale / recommendation source
+    [string]$Risk,                # risk label (low / high / free text)
+    [string]$RuleId,              # grading-table rule id (required for -Kind auto)
+    [string]$RefEntry,            # referenced entry_id (required for resolution / overturn)
 
     # register-session (planner-session-roster): off-tree direct-handoff
     # registration into the run's sessions.json roster — the planner records
@@ -96,10 +146,10 @@ param(
 
     # settle
     [string]$Note,
+
     # rollback (planner-stage-rollback)
     [string]$Reason,              # rollback audit trail (required): lands in the
                                    # prune reason AND the rebuilt node's redo context
-
 
     # conclude
     [string]$Summary,
@@ -291,6 +341,329 @@ function Write-BridgeFile {
             Copy-Item -LiteralPath "$p.bak" -Destination $p -Force
         }
         Write-ErrorResult "BRIDGE_WRITE_READBACK_FAILED" "bridge.json read-back failed after write; previous snapshot restored" 3
+    }
+}
+
+# === Pure auto mode (planner-auto-mode: worker-side checkpoint auto-decision) ===
+#
+# Bridge-run workers (CTO's four checkpoints being the canonical case) wait for
+# in-session user confirmation; unattended runs would hang forever. Pure auto
+# mode answers LOW-RISK checkpoints from an immutable risk-grading snapshot
+# (decide -Kind auto, fully ledgered) and routes HIGH-RISK ones to humans
+# (escalate -> open entry -> dsh watcher delivers to the Planner inbox /
+# CLI-Plus degrade to status+resume visibility). Scope is EXACTLY worker-side
+# in-session checkpoints: orchestration verdicts (review gate / settle
+# adjudication / overturn adjudication) are never automated.
+# Default OFF: no -AutoMode => no auto_mode key anywhere (byte-identical
+# legacy behavior, same gating discipline as -ReviewFile).
+
+# Default risk-grading table (first match wins, top-down). Conservative by
+# design: substantive forks (R2-R4) go to humans; only mechanical/local calls
+# (R5-R7, P2/P3 risk trades) auto-answer. R1 is the constitutional hard floor
+# (safety / cost / irreversible / git) and CANNOT be removed or relaxed by a
+# -RiskPolicy override — the snapshot builder force-merges it back in.
+$script:AutoModeDefaultRules = @(
+    @{ id = "R1"; match = "宪法禁令类：安全 / 成本 / 不可逆操作 / git 操作"; action = "manual"; note = "硬底：覆盖不可移除" }
+    @{ id = "R2"; match = "新框架 / 中间件 / 外部依赖引入";              action = "manual"; note = "" }
+    @{ id = "R3"; match = "协议语义变更 / 跨模块新机制";                 action = "manual"; note = "" }
+    @{ id = "R4"; match = "技术选型实质分叉（多可行方案取舍）";          action = "manual"; note = "选型错沿链放大，默认保守" }
+    @{ id = "R5"; match = "单一可行方案 / 沿用现状范式";                 action = "auto";   note = "" }
+    @{ id = "R6"; match = "模块归属（放哪个模块/包）";                   action = "auto";   note = "" }
+    @{ id = "R7"; match = "命名 / 文件清单 / 配置项";                    action = "auto";   note = "" }
+    @{ id = "R8"; match = "风险取舍：含 P1 → 人工；仅 P2/P3 → 自动";     action = "auto";   note = "按风险级别二分" }
+    @{ id = "R9"; match = "回退 / 推翻既有决策";                          action = "manual"; note = "" }
+)
+
+$script:BridgeLockStream = $null
+$script:BridgeLockPath = $null
+
+function Enter-BridgeRunLock {
+    # Mirror of goal-tree.ps1's Enter-RunLock (same .lock file, same semantics:
+    # CreateNew+FileShare::None OS mutex, stale takeover at 60s, loud timeout).
+    # Duplicated on purpose — the bridge orchestrates ONLY through public CLIs
+    # and never dot-sources engine internals (see the roster title precedent
+    # above; changes must be synced on both sides).
+    param([string]$RunDir, [int]$TimeoutSec = 10, [int]$StaleSec = 60)
+    $script:BridgeLockPath = Join-Path $RunDir ".lock"
+    $deadline = (Get-Date).AddSeconds($TimeoutSec)
+    $stolen = $false
+    while ($true) {
+        try {
+            $fs = [System.IO.File]::Open($script:BridgeLockPath, [System.IO.FileMode]::CreateNew, [System.IO.FileAccess]::ReadWrite, [System.IO.FileShare]::None)
+            $info = "cmd=$Command pid=$PID at=$(Get-Date -Format s)"
+            $bytes = [System.Text.Encoding]::UTF8.GetBytes($info)
+            $fs.Write($bytes, 0, $bytes.Length)
+            $fs.Flush()
+            $script:BridgeLockStream = $fs
+            return @{ path = $script:BridgeLockPath; stale_taken_over = $stolen }
+        }
+        catch [System.IO.IOException], [System.UnauthorizedAccessException] {
+            if (Test-Path -LiteralPath $script:BridgeLockPath -PathType Leaf) {
+                $age = ((Get-Date) - (Get-Item -LiteralPath $script:BridgeLockPath).LastWriteTime).TotalSeconds
+                if ($age -gt $StaleSec) {
+                    try { Remove-Item -LiteralPath $script:BridgeLockPath -Force -ErrorAction SilentlyContinue } catch {}
+                    $stolen = $true
+                    continue
+                }
+            }
+            else {
+                continue
+            }
+            if ((Get-Date) -gt $deadline) {
+                Write-ErrorResult "LOCK_TIMEOUT" "Run lock held by another writer for > ${TimeoutSec}s: $script:BridgeLockPath. Back off and retry." 3
+            }
+            Start-Sleep -Milliseconds 100
+        }
+    }
+}
+
+function Exit-BridgeRunLock {
+    if ($null -ne $script:BridgeLockStream) {
+        try { $script:BridgeLockStream.Close() } catch {}
+        $script:BridgeLockStream = $null
+    }
+    if ($script:BridgeLockPath -and (Test-Path -LiteralPath $script:BridgeLockPath -PathType Leaf)) {
+        try {
+            $raw = [System.IO.File]::ReadAllText($script:BridgeLockPath, [System.Text.Encoding]::UTF8)
+            if ($raw -match "pid=$PID ") { Remove-Item -LiteralPath $script:BridgeLockPath -Force -ErrorAction SilentlyContinue }
+        } catch {}
+    }
+}
+
+function ConvertTo-PolicyRule {
+    # One raw JSON rule object -> @{ id; match; action; note } (trimmed, action
+    # lowercased), with the entry-level RISK_POLICY_INVALID errors: non-object
+    # shape, missing id/match/action, duplicate id, action outside auto/manual.
+    # $SeenIds is the caller's duplicate-id bookkeeper (hashtable, mutated in place).
+    param($RawRule, $SeenIds)
+    $rh = Convert-PSObjectToHashtable $RawRule
+    if ($null -eq $rh -or -not ($rh -is [System.Collections.IDictionary])) {
+        Write-ErrorResult "RISK_POLICY_INVALID" "each rule must be a JSON object with id/match/action" 2
+    }
+    foreach ($k in @('id', 'match', 'action')) {
+        if (-not $rh.Contains($k) -or [string]::IsNullOrWhiteSpace([string]$rh[$k])) {
+            Write-ErrorResult "RISK_POLICY_INVALID" "rule entry missing required field: $k" 2
+        }
+    }
+    $id = ([string]$rh['id']).Trim()
+    if ($SeenIds.Contains($id)) { Write-ErrorResult "RISK_POLICY_INVALID" "duplicate rule id: $id" 2 }
+    $SeenIds[$id] = $true
+    $action = ([string]$rh['action']).Trim().ToLowerInvariant()
+    if ($action -notin @('auto', 'manual')) {
+        Write-ErrorResult "RISK_POLICY_INVALID" "rule '$id' action '$action' not in auto/manual" 2
+    }
+    return @{ id = $id; match = ([string]$rh['match']).Trim(); action = $action; note = $(if ($rh.Contains('note')) { [string]$rh['note'] } else { "" }) }
+}
+
+function Read-RiskPolicyFile {
+    # -RiskPolicy override parser/validator: a JSON object
+    # { "rules": [ { "id": "R1", "match": "...", "action": "manual"|"auto", "note": "..." }, ... ] }.
+    # Wholesale table replacement (empty array is invalid — the floor survives
+    # only as a forced merge, a policy with nothing else to grade is a mistake).
+    # Deterministic error: RISK_POLICY_INVALID (file-level here, entry-level in
+    # ConvertTo-PolicyRule).
+    param([string]$Path)
+    if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
+        Write-ErrorResult "RISK_POLICY_INVALID" "RiskPolicy file not found: $Path" 2
+    }
+    $h = $null
+    try {
+        $h = Convert-PSObjectToHashtable ([System.IO.File]::ReadAllText($Path, [System.Text.Encoding]::UTF8) | ConvertFrom-Json)
+    }
+    catch {
+        Write-ErrorResult "RISK_POLICY_INVALID" "RiskPolicy failed to parse as JSON: $($_.Exception.Message)" 2
+    }
+    if ($null -eq $h -or -not ($h -is [System.Collections.IDictionary]) -or -not $h.Contains('rules')) {
+        Write-ErrorResult "RISK_POLICY_INVALID" "RiskPolicy must be a JSON object with a rules array" 2
+    }
+    $raw = @(Convert-ToSafeArray $h['rules'])
+    if ($raw.Count -eq 0) {
+        Write-ErrorResult "RISK_POLICY_INVALID" "RiskPolicy rules must be a non-empty array (the override wholesale-replaces the default table)" 2
+    }
+    $rules = @()
+    $seen = @{}
+    foreach ($r in $raw) { $rules += (ConvertTo-PolicyRule $r $seen) }
+    return @{ rules = $rules }
+}
+
+function New-AutoModeSnapshot {
+    # Immutable in-run snapshot: @{ enabled = $true; policy = @{ rules = @(...) };
+    # policy_source = "default" | "override" }. R1 hard floor: whatever the
+    # override says, the built-in R1 (manual) survives — dropped or relaxed to
+    # auto, it is (re)inserted at the head of the table.
+    param([string]$RiskPolicyPath)
+    $rules = @()
+    $source = "default"
+    if (-not [string]::IsNullOrWhiteSpace($RiskPolicyPath)) {
+        $pol = Read-RiskPolicyFile $RiskPolicyPath
+        $rules = @($pol.rules)
+        $source = "override"
+    }
+    else {
+        foreach ($r in $script:AutoModeDefaultRules) { $rules += @{ id = $r['id']; match = $r['match']; action = $r['action']; note = $r['note'] } }
+    }
+    $r1 = $script:AutoModeDefaultRules[0]
+    $r1Entry = $null
+    foreach ($r in $rules) { if ($r['id'] -eq "R1") { $r1Entry = $r; break } }
+    if ($null -eq $r1Entry) {
+        $rules = @(@{ id = $r1['id']; match = $r1['match']; action = $r1['action']; note = $r1['note'] }) + $rules
+    }
+    elseif ($r1Entry['action'] -ne 'manual') {
+        $r1Entry['action'] = 'manual'
+        if ([string]::IsNullOrWhiteSpace([string]$r1Entry['note'])) { $r1Entry['note'] = $r1['note'] }
+    }
+    return @{
+        enabled       = $true
+        policy        = @{ rules = $rules }
+        policy_source = $source
+    }
+}
+
+function Get-AutoModeSection {
+    # $null unless this run was promulgated with -AutoMode and enabled — every
+    # gated surface (claim injection / decide / escalate / status block) calls
+    # this first; absence means plain legacy behavior.
+    param($Bridge)
+    if (-not (Test-PropPresent $Bridge 'auto_mode') -or $null -eq $Bridge['auto_mode']) { return $null }
+    $am = $Bridge['auto_mode']
+    if ($am -isnot [System.Collections.IDictionary]) { $am = Convert-PSObjectToHashtable $am }
+    if (-not $am.Contains('enabled') -or $am['enabled'] -ne $true) { return $null }
+    return $am
+}
+
+function Get-AutoModeProtocolHint {
+    # The protocol guidance string injected into the claim response (the
+    # report_hint precedent: plain text the worker session can follow verbatim).
+    param([string]$RunIdText)
+    return "pure auto mode is ENABLED on this run: at each in-session confirmation checkpoint, classify it against the injected risk policy (first match wins, top-down). Low-risk (rule action=auto): answer it yourself with 'delivery-bridge.cmd -Command decide -RunId $RunIdText -NodeId <n> -Kind auto -RuleId <rule> -Checkpoint <name> -Decision <verdict> [-Inputs ...] [-Basis ...] [-Risk ...]' — the ledgered decide counts as the confirmation gate. Prohibition-class (R1 hard floor: safety/cost/irreversible/git) or manual-graded or unsure: 'delivery-bridge.cmd -Command escalate -RunId $RunIdText -NodeId <n> -Checkpoint <name> -Decision <question for the user> [-Risk high] [-RuleId <rule>] [-Inputs ...]' and WAIT for the user verdict (delivered back through your session or the Planner; never proceed past an open escalation). Every decision is auditable in .rdd/goal-trees/$RunIdText/decisions.jsonl and overturnable (decide -Kind overturn) before settle."
+}
+
+function Get-DecisionsPath { param([string]$RunDir); Join-Path $RunDir "decisions.jsonl" }
+
+function Read-DecisionEntries {
+    # All decision entries as deep hashtables; blank/unparseable lines are
+    # skipped (our own writer enforces read-back finish; external corruption
+    # degrades to the parseable prefix, never throws).
+    # NOTE: callers MUST wrap the result in @() — PS 5.1 unwraps a single-element
+    # return into the entry itself, and .Count on an OrderedDictionary means
+    # KEY count, not entry count.
+    param([string]$RunDir)
+    $p = Get-DecisionsPath $RunDir
+    $entries = @()
+    if (-not (Test-Path -LiteralPath $p -PathType Leaf)) { return @() }
+    foreach ($line in @([System.IO.File]::ReadAllLines($p))) {
+        if ([string]::IsNullOrWhiteSpace($line)) { continue }
+        try {
+            $e = Convert-PSObjectToHashtable ($line | ConvertFrom-Json)
+            if ($null -ne $e -and $e -is [System.Collections.IDictionary]) { $entries += ,$e }
+        } catch { continue }
+    }
+    return @($entries)
+}
+
+function Add-DecisionEntry {
+    # THE decision-ledger append chain (lock -> read -> assign D<n> -> append ->
+    # read-back finish -> unlock; ledger.jsonl paradigm) — the single copy shared
+    # by escalate AND decide (no duplicated inline chain). $ValidateCallback
+    # (optional, with $ValidateContext) runs INSIDE the lock against the fresh
+    # entries: race-sensitive validation (decide's ref-entry lookups) shares the
+    # append's critical section instead of a stale pre-lock check. Contract:
+    # & $ValidateCallback <entries> <context>; returns the written entry.
+    param([string]$RunDir, $Entry, [scriptblock]$ValidateCallback = $null, $ValidateContext = $null)
+    $lockInfo = Enter-BridgeRunLock $RunDir
+    try {
+        $entries = @(Read-DecisionEntries $RunDir)
+        if ($null -ne $ValidateCallback) { & $ValidateCallback $entries $ValidateContext }
+        $Entry['entry_id'] = "D$($entries.Count + 1)"
+        $line = ConvertTo-Json $Entry -Depth 8 -Compress
+        [System.IO.File]::AppendAllText((Get-DecisionsPath $RunDir), $line + "`n", $script:Utf8NoBom)
+        $all = @([System.IO.File]::ReadAllLines((Get-DecisionsPath $RunDir)) | Where-Object { $_.Trim() -ne "" })
+        try { $null = $all[-1] | ConvertFrom-Json } catch {
+            Write-ErrorResult "DECISIONS_READBACK_FAILED" "decisions.jsonl last line failed to parse after append" 3
+        }
+    }
+    finally {
+        Exit-BridgeRunLock
+    }
+    $Entry['lock'] = $lockInfo
+    return $Entry
+}
+
+function Find-DecisionEntry {
+    param($Entries, [string]$EntryId)
+    foreach ($e in @($Entries)) {
+        if ([string]$e['entry_id'] -eq $EntryId) { return $e }
+    }
+    return $null
+}
+
+function Get-ReferencedEntryIds {
+    # entry_ids already referenced by a resolution/overturn (the join inputs for
+    # the open-escalation derivation — the ledger itself is never rewritten).
+    param($Entries)
+    $refs = @{}
+    foreach ($e in @($Entries)) {
+        $k = [string]$e['kind']
+        if (($k -eq 'resolution' -or $k -eq 'overturn') -and -not [string]::IsNullOrWhiteSpace([string]$e['ref_entry'])) {
+            $refs[[string]$e['ref_entry']] = $true
+        }
+    }
+    return $refs
+}
+
+function Get-OpenEscalationRows {
+    # Derived open-escalation rows for the decision view (join: escalation
+    # entries minus those a resolution/overturn references via ref_entry — the
+    # ledger itself is never rewritten). A pruned/missing node degrades to
+    # historical=true: the entry stays listed, just annotated.
+    param($Entries, $TreeData)
+    $refs = Get-ReferencedEntryIds $Entries
+    $open = @()
+    foreach ($e in @($Entries)) {
+        if ([string]$e['kind'] -ne 'escalation') { continue }
+        if ($refs.Contains([string]$e['entry_id'])) { continue }
+        $node = [string]$e['node_id']
+        $nodeStatus = "missing"
+        $nodeState = Get-NodeViewState $TreeData $node
+        if ($null -ne $nodeState) { $nodeStatus = [string]$nodeState.status }
+        $open += @{
+            entry_id    = [string]$e['entry_id']
+            node        = $node
+            stage       = [string]$e['stage']
+            checkpoint  = [string]$e['checkpoint']
+            question    = [string]$e['decision']
+            risk        = $(if (-not [string]::IsNullOrWhiteSpace([string]$e['risk'])) { [string]$e['risk'] } else { $null })
+            rule_id     = $(if (-not [string]::IsNullOrWhiteSpace([string]$e['rule_id'])) { [string]$e['rule_id'] } else { $null })
+            at          = [string]$e['at']
+            node_status = $nodeStatus
+            historical  = ($nodeStatus -eq 'pruned' -or $nodeStatus -eq 'missing')
+        }
+    }
+    return @($open)
+}
+
+function Get-AutoModeDecisionView {
+    # Visibility block for status/resume: per-node decision counts + the derived
+    # open-escalation list (Get-OpenEscalationRows). Counts and open rows read
+    # the same single ledger snapshot taken here.
+    param([string]$RunDir, $Bridge, $TreeData)
+    $entries = @(Read-DecisionEntries $RunDir)
+    $countsByNode = @{}
+    foreach ($e in $entries) {
+        $node = [string]$e['node_id']
+        if (-not $countsByNode.Contains($node)) { $countsByNode[$node] = @{ node = $node; auto = 0; escalation = 0; resolution = 0; overturn = 0; total = 0 } }
+        $c = $countsByNode[$node]
+        $k = [string]$e['kind']
+        if ($c.Contains($k)) { $c[$k] = [int]$c[$k] + 1 }
+        $c['total'] = [int]$c['total'] + 1
+    }
+    $amSection = Get-AutoModeSection $Bridge
+    return @{
+        enabled          = $true
+        ledger           = ".rdd/goal-trees/$($Bridge.run_id)/decisions.jsonl"
+        policy_source    = $(if ($null -ne $amSection -and $amSection.Contains('policy_source')) { [string]$amSection['policy_source'] } else { "default" })
+        decision_counts  = @(@($countsByNode.Values) | Sort-Object node)
+        open_escalations = @(Get-OpenEscalationRows $entries $TreeData)
     }
 }
 
@@ -613,6 +986,16 @@ function Invoke-AutoDispatch {
     # Returns @{ trigger; considered; pushed; skipped; failed; bridge } — failures
     # are data, never exceptions (callers embed them in their own output).
     param([string]$RunDir, $Bridge, [string]$Trigger)
+    # Run-level isolation gate (bridge.json no_push, set by promulgate -NoPush):
+    # every auto-dispatch trigger funnels through here, so one upfront check
+    # makes an isolated run provably zero-backend for its whole lifetime — the
+    # 0923 incident mechanism was exactly a later trigger (the status touch)
+    # re-deriving never-pushed nodes as candidates and really pushing them
+    # (QA F1). The manual dispatch command stays open: an explicit human action
+    # is the designated isolation override.
+    if (Test-PropPresent $Bridge 'no_push' -and $Bridge['no_push'] -eq $true) {
+        return @{ trigger = "$Trigger (no_push)"; considered = 0; pushed = @(); skipped = @(); failed = @(); bridge = $Bridge; no_push = $true }
+    }
     $result = @{ trigger = $Trigger; considered = 0; pushed = @(); skipped = @(); failed = @() }
     $treeData = Get-TreeStatusView $Bridge.run_id
     # whole-tree status/depends maps: unlock is computed HERE, not via the leaf next
@@ -708,6 +1091,10 @@ function Invoke-AutoDispatch {
         }
         if (-not $taskText) { $taskText = Get-NodeTaskText -RunId $Bridge.run_id -NodeId $nodeId }
         $brief = Get-NodeTaskBrief -NodeTask $taskText -NodeId $nodeId
+        # session-list-badges: the workspace-row summary rides start-role's
+        # -TaskSummary (title channel). Same zero-injection contract as the
+        # brief: unparseable/legacy node.task → "" → arg omitted.
+        $summary = Get-NodeTaskSummary -NodeTask $taskText
         try {
             # -GoalTreeRun/-GoalTreeNode stamp the pointer message with the bridge
             # marker so the pushed worker session knows (first turn) that completion
@@ -715,6 +1102,7 @@ function Invoke-AutoDispatch {
             # (planner-callback-handoff dual-channel check, channel 1).
             $startArgs = @("-Role", $mapping.stage, "-TaskId", "$($mapping.task_id)", "-TaskJson", (Join-Path $Bridge.archive "task.json"), "-GoalTreeRun", $Bridge.run_id, "-GoalTreeNode", $nodeId)
             if ($brief) { $startArgs += @("-TaskBrief", $brief) }
+            if ($summary) { $startArgs += @("-TaskSummary", $summary) }
             $r = Invoke-StartRole $startArgs
         }
         catch {
@@ -1020,6 +1408,29 @@ function Get-NodeFromTree {
     return $null
 }
 
+function Get-NodeViewState {
+    # Status-normalized node lookup (planner-auto-mode): the tree status view's
+    # claimed/reported buckets carry rich objects WITHOUT a status field (bucket
+    # membership IS the status there), while pending/done/pruned are bare id
+    # strings — Get-NodeFromTree passes both shapes through raw. This helper
+    # always resolves @{ status; claimed_by } (or $null when absent).
+    param($TreeData, [string]$NodeId)
+    foreach ($bucket in @("pending", "done", "pruned")) {
+        foreach ($n in @(Convert-ToSafeArray $TreeData.nodes.$bucket)) {
+            if (($n -is [string] -and $n -eq $NodeId) -or ($null -ne $n -and $n -isnot [string] -and [string]$n.id -eq $NodeId)) {
+                return @{ status = $bucket; claimed_by = $null }
+            }
+        }
+    }
+    foreach ($n in @(Convert-ToSafeArray $TreeData.nodes.claimed)) {
+        if ($null -ne $n -and [string]$n.id -eq $NodeId) { return @{ status = "claimed"; claimed_by = [string]$n.claimed_by } }
+    }
+    foreach ($n in @(Convert-ToSafeArray $TreeData.nodes.reported)) {
+        if ($null -ne $n -and [string]$n.id -eq $NodeId) { return @{ status = "reported"; claimed_by = $null } }
+    }
+    return $null
+}
+
 function Get-NodePruneReason {
     # Read-only probe of state/tree.json for one node's pruned_reason. The leaf
     # status view omits pruned_reason (slim serializer) while the rollback
@@ -1159,6 +1570,19 @@ function Invoke-Promulgate {
                 Write-ErrorResult "REVIEW_FILE_INVALID" "task #$tid merged_into_task_id=$target does not survive the review (deprecated / rejected / itself merged) — merge into a task this run actually delivers" 2
             }
         }
+    }
+
+    # pure-auto-mode snapshot build (planner-auto-mode): EARLY, before any run
+    # state exists — an invalid -RiskPolicy is a deterministic usage error and
+    # must never leave a half-promulgated run behind (the Read-ReviewFile
+    # ordering discipline). $null when -AutoMode is absent (byte-identical
+    # legacy promulgation); the snapshot lands in bridge.json at 3c-2 below.
+    # NOTE: the local is named $amSnapshot (NOT $autoMode) — PS variable names
+    # are case-INsensitive, so a `$autoMode = $null` init would shadow the
+    # bound $AutoMode switch before the `if` below ever reads it.
+    $amSnapshot = $null
+    if ($AutoMode) {
+        $amSnapshot = New-AutoModeSnapshot $RiskPolicy
     }
 
     # stage resolution + dependency inference (task-level, from requirement docs)
@@ -1347,6 +1771,25 @@ function Invoke-Promulgate {
         }
     }
 
+    # 3c-2) auto_mode snapshot (planner-auto-mode): ONLY for -AutoMode
+    #       promulgations — the immutable in-run copy built EARLY above (default
+    #       R1-R9, or the -RiskPolicy wholesale override with the R1
+    #       constitutional hard floor force-merged back) lands in bridge.json.
+    #       Absent when off: byte-identical legacy promulgation (the -ReviewFile
+    #       gating discipline).
+    if ($null -ne $amSnapshot) {
+        $bridge['auto_mode'] = $amSnapshot
+    }
+
+    # 3c-3) -NoPush isolation as a PERSISTED run-level attribute (0923 incident
+    #       response, QA F1): a promulgate-time skip alone was pierceable — every
+    #       later auto-dispatch trigger (status touch / reclaim / settle /
+    #       rollback) re-derived never-pushed nodes as candidates and really
+    #       pushed them. Invoke-AutoDispatch consumes this flag at the top of its
+    #       gate chain, so the run stays zero-backend for its whole lifetime;
+    #       absent when off: byte-identical legacy promulgation.
+    if ($NoPush) { $bridge['no_push'] = $true }
+
     Write-BridgeFile $runDir $bridge
 
     # 3d) report/review.md — the human-readable per-task conclusions table
@@ -1399,7 +1842,17 @@ function Invoke-Promulgate {
     # 4) initial dependency-driven push (goal-tree-goal-root): every node with no
     #    unsatisfied dependency gets its role session started right here — no
     #    manual per-node dispatch, no confirmation gate (decision 1-A/3).
-    $push = Invoke-AutoDispatch $runDir $bridge "promulgate"
+    #    -NoPush (test/incident isolation): build the run but start NOTHING —
+    #    deterministic zero-backend runs for the engine test-suite. The isolation
+    #    lives in the PERSISTED run-level flag (bridge.json no_push=true, 3c-3
+    #    above) and is re-asserted by Invoke-AutoDispatch's gate on every later
+    #    trigger; this local early-out only spells the trigger out in the
+    #    response and keeps the per-node pushes ledger empty.
+    if ($NoPush) {
+        $push = @{ trigger = "promulgate (-NoPush)"; considered = 0; pushed = @(); skipped = @(); failed = @() }
+    } else {
+        $push = Invoke-AutoDispatch $runDir $bridge "promulgate"
+    }
 
     return @{
         success = $true
@@ -1420,6 +1873,15 @@ function Invoke-Promulgate {
                     report      = ".rdd/goal-trees/$runId/report/review.md"
                     verdicts    = @($review.verdicts)
                     deferred_dep_edges = @($deferredEdges | ForEach-Object { "task#$($_.task_id)->task#$($_.on_task_id) ($($_.node)->$($_.on))" })
+                }
+            } else { $null })
+            auto_mode     = $(if ($null -ne $amSnapshot) {
+                @{
+                    enabled       = $true
+                    policy_source = $amSnapshot.policy_source
+                    rule_count    = @($amSnapshot.policy.rules).Count
+                    r1_floor      = "manual (hard floor, force-merged)"
+                    protocol      = Get-AutoModeProtocolHint $runId
                 }
             } else { $null })
             budget       = @{ max_rounds = $MaxRounds; node_width = $effWidth; max_nodes = $effMaxNodes }
@@ -1454,9 +1916,14 @@ function Invoke-Dispatch {
     # carries ids only for pending nodes, so the brief source is the per-node
     # leaf status probe (full node incl. task). Empty brief (legacy-format
     # nodes, read failures) → arg omitted → zero injection.
-    $brief = Get-NodeTaskBrief -NodeTask (Get-NodeTaskText -RunId $RunId -NodeId $NodeId) -NodeId $NodeId
+    $nodeTaskText = Get-NodeTaskText -RunId $RunId -NodeId $NodeId
+    $brief = Get-NodeTaskBrief -NodeTask $nodeTaskText -NodeId $NodeId
+    # session-list-badges: workspace-row summary rides -TaskSummary (title
+    # channel); zero-injection contract identical to the brief above.
+    $summary = Get-NodeTaskSummary -NodeTask $nodeTaskText
     $startArgs = @("-Role", $mapping.stage, "-TaskId", "$($mapping.task_id)", "-TaskJson", (Join-Path $bridge.archive "task.json"), "-GoalTreeRun", $RunId, "-GoalTreeNode", $NodeId)
     if ($brief) { $startArgs += @("-TaskBrief", $brief) }
+    if ($summary) { $startArgs += @("-TaskSummary", $summary) }
     $r = Invoke-StartRole ($startArgs + $(if ($DryRun) { @("-DryRun") } else { @() }))
     # a real (non-dry-run) dispatch IS a push: record it in the ledger — the
     # manual path is the designated resolution for pointer-class failures, and
@@ -1608,6 +2075,18 @@ function Invoke-BridgeClaim {
             task        = $r2.json.data.task
             start_context = "requirement: $($bridge.archive_rel)/$($bridge.tasks["$taskId"].requirement) — full pointers in task.summary fields above"
             report_hint = "goal-tree bridge run: on completion report back to the Planner instead of start-role-ing a downstream role — goal-tree-leaf.cmd -Command report -RunId $RunId -Worker $stage -CallbackFile <cb.json>. Artifact locations ride the callback: citations = change list (real paths; settle checks every ref exists), full_report = main deliverable doc pointer (design doc / implementation notes; expected in bridge runs), extras.verification = verification result (settle requires citations + verification non-empty)"
+            auto_mode   = $(if ($null -ne (Get-AutoModeSection $bridge)) {
+                # authorization passthrough (planner-auto-mode): the claim is the
+                # worker's mandatory first action, so it is the natural injection
+                # point — enabled flag + the immutable snapshot + the protocol
+                # hint (report_hint precedent). Absent on non-auto runs (legacy
+                # claim responses stay byte-identical).
+                @{
+                    enabled  = $true
+                    policy   = (Get-AutoModeSection $bridge)['policy']
+                    protocol = Get-AutoModeProtocolHint $RunId
+                }
+            } else { $null })
         }
     }
 }
@@ -2315,6 +2794,30 @@ function Get-NodeTaskBrief {
     return $brief
 }
 
+function Get-NodeTaskSummary {
+    # session-list-badges: the workspace-row summary title (<标题> <阶段>)
+    # derived from the PERSISTED node.task — same source and same regex as
+    # Get-NodeTaskBrief (single source: the summary always agrees with the
+    # tree view / claim output), title capped at 60 chars with … (the host's
+    # rename then truncates to its own 80-UTF-8-byte budget; double-layer
+    # consistency per the design). No 「」 wrapper (UX spec §2.1: badges carry
+    # the structure; the summary stays a bare readable line, still
+    # self-describing after CLI/legacy-text degrade). Any unparseable input
+    # (including the legacy "Execute TaskId …" English signature persisted by
+    # pre-change runs) returns "" → -TaskSummary omitted → zero injection:
+    # start-role keeps the legacy marker title and every backend's behavior
+    # stays byte-identical.
+    param([string]$NodeTask)
+
+    if ([string]::IsNullOrWhiteSpace($NodeTask)) { return "" }
+    if ($NodeTask.StartsWith("Execute TaskId")) { return "" }
+    if ($NodeTask -notmatch '^目标：完成「(?<title>.+?)」的 (?<stage>CTO|UX|DEV|QA) 阶段(?<duty>（[^）]*）)?。') { return "" }
+
+    $title = [string]$Matches['title']
+    if ($title.Length -gt 60) { $title = $title.Substring(0, 60) + "…" }
+    return "$title $($Matches['stage'])"
+}
+
 function Get-NodeTaskText {
     # Read one node's persisted task text via the public leaf status CLI
     # (black-box: no internal state-file coupling). The tree STATUS view the
@@ -2600,6 +3103,18 @@ function Invoke-BridgeStatus {
         $warnings += "push failures: $(@($failedPushes | ForEach-Object { "$($_.node)($($_.retry_class))" }) -join ', ') — session-create class auto-retries on every status touch; pointer class needs manual dispatch"
     }
 
+    # pure-auto-mode visibility block (planner-auto-mode): ONLY for -AutoMode
+    # runs — enabled + per-node decision counts + the derived open-escalation
+    # list (QA / the Planner audit every auto answer's inputs / rule / time /
+    # decider from here or the ledger). Absent on legacy runs (byte-identical).
+    $autoModeBlock = $null
+    if ($null -ne (Get-AutoModeSection $bridge)) {
+        $autoModeBlock = Get-AutoModeDecisionView $runDir $bridge $view.tree
+        if (@($autoModeBlock.open_escalations).Count -gt 0) {
+            $warnings += "open escalation(s): $(@($autoModeBlock.open_escalations | ForEach-Object { "$($_.entry_id)@$($_.node)/$($_.checkpoint)$(if ($_.historical) { ' (historical: node pruned)' })" }) -join ', ') — present them to the user; verdict lands via decide -Kind resolution"
+        }
+    }
+
     return @{
         success = $true
         data    = [ordered]@{
@@ -2619,6 +3134,7 @@ function Invoke-BridgeStatus {
             sessions       = $sessionRows
             pushes         = $pushRows
             auto_push_touch = $touch
+            auto_mode      = $autoModeBlock
             pending_sync   = $view.repair.remaining
             repaired_now   = $view.repair.repaired
             lease          = $view.lease
@@ -2667,6 +3183,19 @@ function Invoke-BridgeResume {
     }
     $steps += "Reported nodes are never re-consumed; duplicate sessions get deterministic conflict feedback from bridge claim."
 
+    # pure-auto-mode breakpoint visibility (planner-auto-mode): open
+    # escalations ARE the unattended-run breakpoints — a resuming planner
+    # presents each to the user and records the verdict (decide -Kind
+    # resolution). Absent on legacy runs (byte-identical resume).
+    $autoModeBlock = $null
+    if ($null -ne (Get-AutoModeSection $bridge)) {
+        $autoModeBlock = Get-AutoModeDecisionView $runDir $bridge $view.tree
+        foreach ($esc in @($autoModeBlock.open_escalations)) {
+            $hist = if ($esc.historical) { " [historical: node $($esc.node) pruned]" } else { "" }
+            $steps += "Open escalation${hist}: $($esc.entry_id) @ node $($esc.node) ($($esc.stage)) checkpoint '$($esc.checkpoint)' — present to the user, then record: delivery-bridge.cmd -Command decide -RunId $RunId -NodeId $($esc.node) -Kind resolution -RefEntry $($esc.entry_id) -Checkpoint '$($esc.checkpoint)' -Decision <user verdict>."
+        }
+    }
+
     return @{
         success = $true
         data    = [ordered]@{
@@ -2682,6 +3211,7 @@ function Invoke-BridgeResume {
             claimable      = $view.claimable
             dead_claims    = $view.dead_claims
             dependencies   = $view.dependencies
+            auto_mode      = $autoModeBlock
             recovery_steps = $steps
             lease          = $view.lease
         }
@@ -2927,6 +3457,228 @@ function Invoke-BridgeRegisterSession {
     }
 }
 
+# === Commands: decide / escalate (planner-auto-mode) ===
+
+function Get-DecisionGateContext {
+    # Shared preflight for both decision commands. Returns
+    # @{ run_dir; bridge; auto_mode; mapping; node; node_status }.
+    # Gates (deterministic errors, exit 1):
+    #   AUTO_MODE_DISABLED      run not promulgated with -AutoMode
+    #   NODE_NOT_MAPPED         node not in the bridge mapping
+    #   DECISION_NODE_NOT_CLAIMED  node not in this stage's claimed state
+    #                            (overturn additionally tolerates reported — the
+    #                            pre-settle in-session redo window)
+    param([string]$KindContext)   # "auto"|"escalation"|"resolution"|"overturn"
+    $runDir = Get-BridgeRunDir $RunId
+    $bridge = Require-Bridge $runDir
+    if ([string]::IsNullOrWhiteSpace($NodeId)) { Write-ErrorResult "MISSING_NODE_ID" "-NodeId is required" 1 }
+
+    $am = Get-AutoModeSection $bridge
+    if ($null -eq $am) {
+        Write-ErrorResult "AUTO_MODE_DISABLED" "Run $RunId was not promulgated with -AutoMode — checkpoint auto-decisions are disabled (re-promulgate with -AutoMode to enable; the default posture is manual confirmation)" 1
+    }
+
+    $mapping = Get-NodeTaskStage $bridge $NodeId
+    if ($null -eq $mapping) { Write-ErrorResult "NODE_NOT_MAPPED" "Node $NodeId is not in this run's bridge mapping" 2 }
+    $stage = $mapping.stage
+    $taskId = $mapping.task_id
+
+    # tree-side node state (read-only view; status-normalized — the raw view's
+    # claimed/reported rows carry no status field, see Get-NodeViewState)
+    $treeData = Get-TreeStatusView $RunId
+    $nodeState = Get-NodeViewState $treeData $NodeId
+    $nodeStatus = if ($nodeState) { [string]$nodeState.status } else { "missing" }
+    $claimedByStage = ($nodeStatus -eq "claimed" -and [string]$nodeState.claimed_by -eq $stage)
+    $allowed = $claimedByStage
+    if ($KindContext -eq "overturn" -and $nodeStatus -eq "reported") { $allowed = $true }
+    if (-not $allowed) {
+        $who = if ($nodeState -and $nodeState.claimed_by) { " (claimed_by=$($nodeState.claimed_by))" } else { "" }
+        Write-ErrorResult "DECISION_NODE_NOT_CLAIMED" "Node $NodeId is '$nodeStatus'$who — decision commands require this stage's ($stage) claimed node$(if ($KindContext -eq 'overturn') { ' (overturn also tolerates reported: the pre-settle redo window)' }). Claim it first: delivery-bridge.cmd -Command claim -RunId $RunId -NodeId $NodeId -Role $stage" 1
+    }
+
+    return @{ run_dir = $runDir; bridge = $bridge; auto_mode = $am; mapping = $mapping; node_state = $nodeState; node_status = $nodeStatus; tree = $treeData }
+}
+
+function Find-PolicyRule {
+    # Locate a rule in the run's policy snapshot by id; $null when absent (the
+    # one lookup shared by decide's auto-kind gate and escalate's optional
+    # rule-id check — first-match table semantics live at the WORKER's grading
+    # step; here it is plain id resolution).
+    param($AutoMode, [string]$RuleIdText)
+    foreach ($r in @(Convert-ToSafeArray $AutoMode['policy']['rules'])) {
+        if ($null -ne $r -and ([string]$r['id']) -eq $RuleIdText) { return $r }
+    }
+    return $null
+}
+
+function New-DecisionEntryPayload {
+    # Ordered decide/escalate entry hashtable — the design's single field list
+    # (at / run_id / node_id / task_id / stage / kind / checkpoint / risk /
+    # rule_id / decision / inputs / basis / decider / ref_entry; entry_id is
+    # assigned by Add-DecisionEntry inside the lock). $RiskFallback: escalate
+    # defaults a missing risk to "high", decide leaves it null. Reads the
+    # script-scope command params ($RunId/$NodeId/$Checkpoint/$Decision/$Risk/
+    # $Inputs/$Basis) like every other command function here.
+    param([string]$KindText, [int]$TaskIdNum, [string]$Stage, [string]$RiskFallback, $Decider, $RuleIdOut, $RefEntryOut)
+    return [ordered]@{
+        at         = Get-UtcNowIso
+        run_id     = $RunId
+        node_id    = $NodeId
+        task_id    = $TaskIdNum
+        stage      = $Stage
+        kind       = $KindText
+        checkpoint = $Checkpoint
+        risk       = $(if (-not [string]::IsNullOrWhiteSpace($Risk)) { $Risk } elseif (-not [string]::IsNullOrWhiteSpace($RiskFallback)) { $RiskFallback } else { $null })
+        rule_id    = $RuleIdOut
+        decision   = $Decision
+        inputs     = $(if (-not [string]::IsNullOrWhiteSpace($Inputs)) { $Inputs } else { $null })
+        basis      = $(if (-not [string]::IsNullOrWhiteSpace($Basis)) { $Basis } else { $null })
+        decider    = $Decider
+        ref_entry  = $RefEntryOut
+    }
+}
+
+function Get-DecisionKindContext {
+    # Kind-specific argument context for decide — runs AFTER Get-DecisionGateContext
+    # so error precedence is unchanged. Required-arg matrix, the rule-table gate
+    # (auto must reference an action=auto rule of the run's snapshot; R1 grades
+    # manual, hence mechanically unreachable), and the decider/rule_id/ref_entry
+    # payload fields. Errors: CHECKPOINT_REQUIRED / DECISION_REQUIRED /
+    # RULE_REQUIRED / REF_ENTRY_FORBIDDEN / RULE_NOT_FOUND / RULE_NOT_AUTO /
+    # REF_ENTRY_REQUIRED.
+    param($Gate)
+    if ([string]::IsNullOrWhiteSpace($Checkpoint)) { Write-ErrorResult "CHECKPOINT_REQUIRED" "-Checkpoint (the checkpoint name this decision answers) is required" 1 }
+    if ([string]::IsNullOrWhiteSpace($Decision)) { Write-ErrorResult "DECISION_REQUIRED" "-Decision (the verdict text) is required" 1 }
+    switch ($Kind) {
+        'auto' {
+            if ([string]::IsNullOrWhiteSpace($RuleId)) { Write-ErrorResult "RULE_REQUIRED" "-Kind auto requires -RuleId (the grading-table rule that authorizes this answer)" 1 }
+            if (-not [string]::IsNullOrWhiteSpace($RefEntry)) { Write-ErrorResult "REF_ENTRY_FORBIDDEN" "-Kind auto must not carry -RefEntry (references are for resolution / overturn)" 1 }
+            $rule = Find-PolicyRule $Gate.auto_mode $RuleId
+            if ($null -eq $rule) {
+                $ruleSummary = (@(Convert-ToSafeArray $Gate.auto_mode['policy']['rules']) | ForEach-Object { "$($_['id'])=$($_['action'])" }) -join ', '
+                Write-ErrorResult "RULE_NOT_FOUND" "rule '$RuleId' is not in this run's risk-policy snapshot (first-match table: $ruleSummary)" 1
+            }
+            if ([string]$rule['action'] -ne 'auto') {
+                Write-ErrorResult "RULE_NOT_AUTO" "rule '$RuleId' grades '$($rule['action'])' — manual-graded checkpoints must be escalated (delivery-bridge.cmd -Command escalate ...), never auto-answered" 1
+            }
+            return @{ decider = "auto/$RuleId@$($Gate.mapping.stage)"; rule_id = $RuleId; ref_entry = $null }
+        }
+        'resolution' {
+            if ([string]::IsNullOrWhiteSpace($RefEntry)) { Write-ErrorResult "REF_ENTRY_REQUIRED" "-Kind resolution requires -RefEntry (the open escalation entry_id it answers)" 1 }
+            return @{ decider = "user@in-session"; rule_id = $null; ref_entry = $RefEntry }
+        }
+        'overturn' {
+            if ([string]::IsNullOrWhiteSpace($RefEntry)) { Write-ErrorResult "REF_ENTRY_REQUIRED" "-Kind overturn requires -RefEntry (the decision entry_id being overturned)" 1 }
+            return @{ decider = "user@in-session"; rule_id = $null; ref_entry = $RefEntry }
+        }
+    }
+}
+
+function Test-DecisionRefEntry {
+    # Race-sensitive ref-entry validation for decide resolution/overturn — the
+    # Add-DecisionEntry in-lock callback (contract: (Entries, Context{kind, ref}),
+    # fresh ledger inside the append's critical section; auto-kind entries carry
+    # no ref, non-applicable kinds return immediately). Errors:
+    # REF_ENTRY_NOT_FOUND / REF_ENTRY_NOT_ESCALATION / REF_ENTRY_KIND_INVALID /
+    # ESCALATION_ALREADY_RESOLVED.
+    param($Entries, $Context)
+    if ($null -eq $Context) { return }
+    $kindText = [string]$Context['kind']
+    if ($kindText -notin @('resolution', 'overturn')) { return }
+    $refId = [string]$Context['ref']
+    $target = Find-DecisionEntry $Entries $refId
+    if ($null -eq $target) {
+        Write-ErrorResult "REF_ENTRY_NOT_FOUND" "-RefEntry '$refId' does not exist in this run's decision ledger (run-level lookup — cross-node references are tolerated)" 1
+    }
+    $targetKind = [string]$target['kind']
+    if ($kindText -eq 'resolution' -and $targetKind -ne 'escalation') {
+        Write-ErrorResult "REF_ENTRY_NOT_ESCALATION" "-RefEntry '$refId' is kind='$targetKind' — resolution closes escalation entries (overturn is the channel for revising decisions)" 1
+    }
+    if ($kindText -eq 'overturn' -and $targetKind -eq 'overturn') {
+        Write-ErrorResult "REF_ENTRY_KIND_INVALID" "-RefEntry '$refId' is itself an overturn — overturn the underlying decision instead of stacking meta-entries" 1
+    }
+    if ($kindText -eq 'resolution') {
+        $refs = Get-ReferencedEntryIds $Entries
+        if ($refs.Contains($refId)) {
+            Write-ErrorResult "ESCALATION_ALREADY_RESOLVED" "escalation '$refId' is already closed by a resolution/overturn entry — a changed verdict goes through a NEW overturn of that closing entry" 1
+        }
+    }
+}
+
+function Get-DecideNextStep {
+    # Per-kind post-write guidance (decide's next_step string; reads the
+    # script-scope params $RuleId/$RefEntry/$Checkpoint like the callers).
+    param([string]$KindText, $Entry, $View)
+    switch ($KindText) {
+        'auto'       { return "ledgered as $($Entry.entry_id) (rule $RuleId) — the confirmation gate for checkpoint '$Checkpoint' is satisfied; continue the stage work and leaf-report when done." }
+        'resolution' { return "escalation $RefEntry closed by $($Entry.entry_id) — the waiting worker proceeds from the recorded verdict; open escalations remaining: $(@($View.open_escalations).Count)." }
+        'overturn'   { return "decision $RefEntry overturned by $($Entry.entry_id) — redo the affected work in-session (pre-settle window); the chain stays auditable in decisions.jsonl." }
+    }
+    return $null
+}
+
+function Invoke-BridgeDecide {
+    # decide — ledger append for one checkpoint decision:
+    #   -Kind auto        grading-table answer (rule must be action=auto);
+    #                     decider = auto/<rule>@<stage>
+    #   -Kind resolution  user verdict closing an open escalation (ref_entry);
+    #                     decider = user@in-session
+    #   -Kind overturn    in-session redo note over an existing decision (auto /
+    #                     resolution / escalation target via ref_entry, run-level
+    #                     existence tolerated); decider = user@in-session
+    # Composition (each piece ≤40 lines, ONE append chain): gate context ->
+    # kind context -> Add-DecisionEntry (ref validation in-lock) -> view.
+    if ([string]::IsNullOrWhiteSpace($Kind)) { Write-ErrorResult "DECISION_KIND_REQUIRED" "-Kind is required (auto / resolution / overturn)" 1 }
+    $g = Get-DecisionGateContext $Kind
+    $k = Get-DecisionKindContext $g
+    $payload = New-DecisionEntryPayload -KindText $Kind -TaskIdNum $g.mapping.task_id -Stage $g.mapping.stage -RiskFallback $null -Decider $k.decider -RuleIdOut $k.rule_id -RefEntryOut $k.ref_entry
+    $entry = Add-DecisionEntry $g.run_dir $payload -ValidateCallback ${function:Test-DecisionRefEntry} -ValidateContext @{ kind = $Kind; ref = $RefEntry }
+    $view = Get-AutoModeDecisionView $g.run_dir $g.bridge $g.tree
+    return @{
+        success = $true
+        data    = @{
+            run_id     = $RunId
+            node_id    = $NodeId
+            task_id    = $g.mapping.task_id
+            stage      = $g.mapping.stage
+            kind       = $Kind
+            entry      = $entry
+            open_escalations = @($view.open_escalations | ForEach-Object { $_.entry_id })
+            next_step  = Get-DecideNextStep -Kind $Kind -Entry $entry -View $view
+        }
+    }
+}
+
+function Invoke-BridgeEscalate {
+    # escalate — append an open escalation entry for a checkpoint the grading
+    # table routes to humans (R1 hard floor / manual rule / no rule matched /
+    # worker judgment). decider stays $null: no one has answered yet (the
+    # pending-human state IS the escalation). Delivery: dsh watcher scans the
+    # open entries into the Planner inbox (exactly-once); CLI/Plus see them in
+    # status/resume. The worker WAITS — never proceeds past an open escalation.
+    $g = Get-DecisionGateContext "escalation"
+    if ([string]::IsNullOrWhiteSpace($Checkpoint)) { Write-ErrorResult "CHECKPOINT_REQUIRED" "-Checkpoint (the checkpoint name awaiting adjudication) is required" 1 }
+    if ([string]::IsNullOrWhiteSpace($Decision)) { Write-ErrorResult "DECISION_REQUIRED" "-Decision (the question presented to the user) is required" 1 }
+    if (-not [string]::IsNullOrWhiteSpace($RuleId) -and $null -eq (Find-PolicyRule $g.auto_mode $RuleId)) {
+        Write-ErrorResult "RULE_NOT_FOUND" "rule '$RuleId' is not in this run's risk-policy snapshot" 1
+    }
+    $ruleIdOut = $(if (-not [string]::IsNullOrWhiteSpace($RuleId)) { $RuleId } else { $null })
+    $payload = New-DecisionEntryPayload -KindText "escalation" -TaskIdNum $g.mapping.task_id -Stage $g.mapping.stage -RiskFallback "high" -Decider $null -RuleIdOut $ruleIdOut -RefEntryOut $null
+    $entry = Add-DecisionEntry $g.run_dir $payload
+    return @{
+        success = $true
+        data    = @{
+            run_id     = $RunId
+            node_id    = $NodeId
+            task_id    = $g.mapping.task_id
+            stage      = $g.mapping.stage
+            kind       = "escalation"
+            entry      = $entry
+            next_step  = "escalation $($entry.entry_id) is OPEN — dsh: the watcher delivers it to the Planner inbox (present it to the user); CLI/Plus: visible via status/resume. The worker WAITS at this checkpoint; the verdict lands via: delivery-bridge.cmd -Command decide -RunId $RunId -NodeId $NodeId -Kind resolution -RefEntry $($entry.entry_id) -Checkpoint '$Checkpoint' -Decision <verdict>."
+        }
+    }
+}
+
 # === Dispatch ===
 
 switch ($Command) {
@@ -2941,6 +3693,8 @@ switch ($Command) {
     "conclude"         { $result = Invoke-BridgeConclude }
     "lease"            { $result = Invoke-BridgeLease }
     "register-session" { $result = Invoke-BridgeRegisterSession }
+    "decide"           { $result = Invoke-BridgeDecide }
+    "escalate"         { $result = Invoke-BridgeEscalate }
 }
 
 ConvertTo-PortableJson $result -Depth 14

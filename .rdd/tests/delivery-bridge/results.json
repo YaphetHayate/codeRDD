@@ -1,10 +1,10 @@
 {
     "verifier":  "delivery-bridge-verify.ps1",
     "suite":  "roster",
-    "ranAt":  "2026-09-20T12:55:21Z",
+    "ranAt":  "2026-09-22T03:13:11Z",
     "total":  7,
-    "passed":  7,
-    "failed":  0,
+    "passed":  5,
+    "failed":  2,
     "warned":  0,
     "results":  [
                     {
@@ -12,9 +12,13 @@
                         "title":  "桥接派发标题钉住:autopush 后 session.rename(user 源)先于同会话 prompt,载荷 title=[run短名] T#·角色·节点,sessionId 与创建回包一致",
                         "priority":  "P0",
                         "acceptance":  "PSR-AC-1",
-                        "status":  "PASS",
+                        "status":  "FAIL",
                         "fails":  [
-
+                                      "rename 调用数 0,期望 2(n2/n4 各一次,planner 本体不经 start-role 改名)",
+                                      "标题形态异常: n2=0/n4=0,期望各 1([qa-fixture-rs38-qa-bridge-20260922-111224-54640] T1·DEV·n2 / [qa-fixture-rs38-qa-bridge-20260922-111224-54640] T3·CTO·n4)",
+                                      "rename sessionId 应各归不同会话: n2= n4=(期望互异且来自 seq 回包,不耦合推送顺序)",
+                                      "mock 日志缺 n2 指针(无法断言 rename→prompt 次序)",
+                                      "rename(行 -1) 未先于 n2 prompt(行 -1)"
                                   ]
                     },
                     {
@@ -72,9 +76,9 @@
                         "title":  "回归锚:普通 4 步交接(无 goal-tree/无 handoff/无 label)零 rename 调用、指针逐字节保持、无花名册副作用;DryRun 预览无 rename RPC 行",
                         "priority":  "P0",
                         "acceptance":  "PSR-AC-5",
-                        "status":  "PASS",
+                        "status":  "FAIL",
                         "fails":  [
-
+                                      "带标记 DryRun 应预览 rename(RPC 3)+prompt(RPC 4): [DRYRUN] 模式:    dsh backend (http://127.0.0.1:64522)\r\n[DRYRUN] 项目根:  D:/YaphetHayate/projects/codeRDD\r\n[DRYRUN] preset:  rdd-qa（经 agentPreset.list 预检存在性）\r\n[DRYRUN] RPC 1:   POST http://127.0.0.1:64522/api/workspace.create\r\n[DRYRUN] payload: path=D:/YaphetHayate/projects/codeRDD（resolve-or-create，realpath 规范化）\r\n[DRYRUN] RPC 2:   POST http://127.0.0.1:64522/api/session.create\r\n[DRYRUN] payload: workspaceId=\u003cRPC 1 返回\u003e agentPreset=rdd-qa（入账 workspace，侧栏进项目文件夹）\r\n[DRYRUN] RPC 3:   POST http://127.0.0.1:64522/api/session.setBadges\r\n[DRYRUN] payload: sessionId=\u003cRPC 2 返回\u003e badges=[{\"kind\":\"rdd:run\",\"label\":\"gt-probe\"},{\"kind\":\"rdd:task\",\"label\":\"T1\"},{\"kind\":\"rdd:stage\",\"label\":\"QA\"},{\"kind\":\"rdd:node\",\"label\":\"n2\"}]（rdd:* 结构徽章；失败降级警告不阻断）\r\n[DRYRUN] RPC 4:   POST http://127.0.0.1:64522/api/session.rename\r\n[DRYRUN] payload: sessionId=\u003cRPC 2 返回\u003e title=[gt-probe] T1·QA·n2（user 源钉住标题；失败降级警告不阻断）\r\n[DRYRUN] RPC 5:   POST http://127.0.0.1:64522/api/session.prompt\r\n[DRYRUN] payload: sessionId=\u003cRPC 2 返回\u003e mode=queue text=请处理 .rdd/tmp/delivery-bridge-verify/qa-bridge-20260922-111224-54640/2099-12-31-qa-fixture-rs44-qa-bridge-20260922-111224-54640/ 下的需求。 goal-tree-run=deliver-2099-12-31-gt-probe node=n2"
                                   ]
                     }
                 ]
