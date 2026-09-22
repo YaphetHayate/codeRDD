@@ -25,13 +25,13 @@
 
 ## Worker 回调（v0.2.0）
 
-宿主半边带一个 ledger 监视器（默认 5s，仅扫描该端点服务过的仓库，LRU 上限 8 个）：发现**新的 report 账目行**且该 run 绑定了规划者会话时，经 `agent.inbox.append('next-turn', …)`（goal round driver 同款持久队列）向规划者会话投递一条插件消息——内容为节点/worker/verdict/confidence/账目号 + settle/prune/graft 行动提示。规划者会话立即可见，并在其下一轮被消费。**投递从不自动开启新轮**（不替用户花 token）；按 entry 幂等，插件重启靠 inbox 扫描去重。
+宿主半边带一个 ledger 监视器（默认 5s，仅扫描该端点服务过的仓库，LRU 上限 8 个）：发现**新的 report 账目行**或（纯自动模式 run 的）**open 升级条目**且该 run 绑定了规划者会话时，经 `agent.send(msg, 'next-turn', true)`（goal round driver 同款持久队列边界 **+ 唤醒驱动**）向规划者会话投递一条插件消息——report 为节点/worker/verdict/confidence/账目号 + settle/prune/graft 行动提示；升级为 checkpoint/风险/规则 + 呈用户与 `decide -Kind resolution` 回填指引（`decision <id>` 去重命名空间，与 ledger `L<n>` 天然隔离）。**投递送达即唤醒**：空闲的规划者会话被立即唤醒开轮消费（送达但不唤醒 = 无人值守时回调永久积压，已裁决为交付缺陷）；按 entry 幂等——内存 set + 规划者 pending inbox 扫描 + run 级 `.callback-delivered.json` 持久 marker 三重去重，插件/宿主重启不重放。
 
 ## 构建与冒烟（codeRDD 仓）
 
 ```powershell
 node scripts\build-dsh-goal-tree.mjs            # tsc ×2 → client bundle 包装 → npm pack → dist/plugin/dsh-rdd-goal-tree.tgz
-node dsh\rdd-goal-tree\tests\smoke.mjs          # 聚合（自播种 legacy demo run）+ 回调产物行 + 视图分档判定表 + bundle 格式断言
+node dsh\rdd-goal-tree\tests\smoke.mjs          # 聚合（自播种 legacy demo run）+ 回调产物行 + 视图分档判定表 + watcher 投递 harness（唤醒/幂等/重启去重）+ bundle 格式断言
 node scripts\build-dsh-goal-tree.mjs --check    # 产物形状校验
 ```
 

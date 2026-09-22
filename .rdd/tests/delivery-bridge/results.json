@@ -1,84 +1,90 @@
 {
     "verifier":  "delivery-bridge-verify.ps1",
-    "suite":  "roster",
-    "ranAt":  "2026-09-22T03:13:11Z",
-    "total":  7,
-    "passed":  5,
-    "failed":  2,
+    "suite":  "automode",
+    "ranAt":  "2026-09-22T04:31:16Z",
+    "total":  8,
+    "passed":  8,
+    "failed":  0,
     "warned":  0,
     "results":  [
                     {
-                        "id":  "TC-B38",
-                        "title":  "桥接派发标题钉住:autopush 后 session.rename(user 源)先于同会话 prompt,载荷 title=[run短名] T#·角色·节点,sessionId 与创建回包一致",
+                        "id":  "TC-B50",
+                        "title":  "开关与快照:-AutoMode 快照入 bridge.json(9 规则 R1~R9 序/R1 manual/源 default/含 auto 行);默认关闭回归(无 auto_mode 键/无 decisions.jsonl/claim 无段);planner-guide 默认分级表明确列出",
                         "priority":  "P0",
-                        "acceptance":  "PSR-AC-1",
-                        "status":  "FAIL",
-                        "fails":  [
-                                      "rename 调用数 0,期望 2(n2/n4 各一次,planner 本体不经 start-role 改名)",
-                                      "标题形态异常: n2=0/n4=0,期望各 1([qa-fixture-rs38-qa-bridge-20260922-111224-54640] T1·DEV·n2 / [qa-fixture-rs38-qa-bridge-20260922-111224-54640] T3·CTO·n4)",
-                                      "rename sessionId 应各归不同会话: n2= n4=(期望互异且来自 seq 回包,不耦合推送顺序)",
-                                      "mock 日志缺 n2 指针(无法断言 rename→prompt 次序)",
-                                      "rename(行 -1) 未先于 n2 prompt(行 -1)"
-                                  ]
-                    },
-                    {
-                        "id":  "TC-B39",
-                        "title":  "花名册落盘:promulgate 后 sessions.json 含 planner 本体行 + 桥接派发行,字段 session_id/role/node/source/title/created_at 齐;status 经 sessions 字段透出",
-                        "priority":  "P0",
-                        "acceptance":  "PSR-AC-3",
+                        "acceptance":  "AM-AC-1/AM-AC-4",
                         "status":  "PASS",
                         "fails":  [
 
                                   ]
                     },
                     {
-                        "id":  "TC-B40",
-                        "title":  "register-session 直交登记:合法参数入册(source=direct,title=[直交] 标签·角色),status 可溯源,next_step 指向 status",
+                        "id":  "TC-B51",
+                        "title":  "授权传递与低风险自动拍板留痕:claim 注入 auto_mode 段(enabled+分级表快照+decide/escalate 协议指引);decide -Kind auto 落 decisions.jsonl——输入/依据/时间/代答者身份/risk 全字段留痕可查",
                         "priority":  "P0",
-                        "acceptance":  "PSR-AC-3",
+                        "acceptance":  "AM-AC-2",
                         "status":  "PASS",
                         "fails":  [
 
                                   ]
                     },
                     {
-                        "id":  "TC-B41",
-                        "title":  "register-session 确定性校验:缺 SessionId/非法格式/PLANNER 或非法 Role/缺 Label 均拒绝(错误码+exit 1)",
+                        "id":  "TC-B52",
+                        "title":  "决策门禁矩阵:R1 硬底拒自动答(manual 规则同拒)/未知规则拒/缺 RuleId 拒/auto 带 RefEntry 拒;非自动 run decide+escalate 双拒(AUTO_MODE_DISABLED);未认领节点拒;goal 根非映射拒",
+                        "priority":  "P0",
+                        "acceptance":  "AM-AC-2",
+                        "status":  "PASS",
+                        "fails":  [
+
+                                  ]
+                    },
+                    {
+                        "id":  "TC-B53",
+                        "title":  "高风险升级链路:escalate 写 open 条目(decider=null/risk 缺省 high/rule 留痕);status auto_mode 块列出未决升级;resolution 回填(user@in-session/ref_entry)后派生视图关闭;重复关闭/悬空引用/非升级目标均确定性拒绝",
+                        "priority":  "P0",
+                        "acceptance":  "AM-AC-3",
+                        "status":  "PASS",
+                        "fails":  [
+
+                                  ]
+                    },
+                    {
+                        "id":  "TC-B54",
+                        "title":  "自动决策可见性与推翻通道:status 决策计数(逐节点 auto/escalation/resolution/overturn)+账本指针;decisions.jsonl 追加不改写(旧条目原样);overturn 推翻既有决策留痕(含依据);推翻推翻拒;resume 恢复步骤含未决升级处置指引",
+                        "priority":  "P0",
+                        "acceptance":  "AM-AC-5",
+                        "status":  "PASS",
+                        "fails":  [
+
+                                  ]
+                    },
+                    {
+                        "id":  "TC-B55",
+                        "title":  "分级表可配置:-RiskPolicy 整表覆盖(policy_source=override);R1 硬底强制合并(缺失→插入/改 auto→恢复 manual);无效策略(空表/重复 id/非法 action/坏 JSON)确定性拒绝且零 run 残留",
                         "priority":  "P1",
-                        "acceptance":  "PSR-AC-3",
+                        "acceptance":  "AM-AC-4",
                         "status":  "PASS",
                         "fails":  [
 
                                   ]
                     },
                     {
-                        "id":  "TC-B42",
-                        "title":  "幂等 upsert:同 sessionId 重复登记不增行,created_at 保留;resume 再登记 planner 行不重复",
-                        "priority":  "P1",
-                        "acceptance":  "PSR-AC-3",
-                        "status":  "PASS",
-                        "fails":  [
-
-                                  ]
-                    },
-                    {
-                        "id":  "TC-B43",
-                        "title":  "改名失败降级不阻断:mock 注入 session.rename 业务错误 → 推送照常成功(pushed 含节点),花名册照常回写",
+                        "id":  "TC-B56",
+                        "title":  "编排层裁决不自动化+CTO 宪法豁免锚:planner-guide 硬约束 7(编排层裁决不进分级表);rdd-cto SKILL 豁免指针(宪法原文不改写)+纯自动模式分支(门槛达标语义不豁免/decide+escalate 指引);staging 与真源逐字节一致",
                         "priority":  "P0",
-                        "acceptance":  "PSR-AC-4",
+                        "acceptance":  "AM-AC-4/边界",
                         "status":  "PASS",
                         "fails":  [
 
                                   ]
                     },
                     {
-                        "id":  "TC-B44",
-                        "title":  "回归锚:普通 4 步交接(无 goal-tree/无 handoff/无 label)零 rename 调用、指针逐字节保持、无花名册副作用;DryRun 预览无 rename RPC 行",
+                        "id":  "TC-B57",
+                        "title":  "-NoPush 隔离性(交付物·用户裁决核验项):promulgate -NoPush 推送惰性(trigger 含 NoPush/pushed=0/零 per-node pushes 账);status 触碰不得对隔离 run 发起推送(期望零新增会话创建——0923 事故后隔离承诺)",
                         "priority":  "P0",
-                        "acceptance":  "PSR-AC-5",
-                        "status":  "FAIL",
+                        "acceptance":  "AM-DELIVERY",
+                        "status":  "PASS",
                         "fails":  [
-                                      "带标记 DryRun 应预览 rename(RPC 3)+prompt(RPC 4): [DRYRUN] 模式:    dsh backend (http://127.0.0.1:64522)\r\n[DRYRUN] 项目根:  D:/YaphetHayate/projects/codeRDD\r\n[DRYRUN] preset:  rdd-qa（经 agentPreset.list 预检存在性）\r\n[DRYRUN] RPC 1:   POST http://127.0.0.1:64522/api/workspace.create\r\n[DRYRUN] payload: path=D:/YaphetHayate/projects/codeRDD（resolve-or-create，realpath 规范化）\r\n[DRYRUN] RPC 2:   POST http://127.0.0.1:64522/api/session.create\r\n[DRYRUN] payload: workspaceId=\u003cRPC 1 返回\u003e agentPreset=rdd-qa（入账 workspace，侧栏进项目文件夹）\r\n[DRYRUN] RPC 3:   POST http://127.0.0.1:64522/api/session.setBadges\r\n[DRYRUN] payload: sessionId=\u003cRPC 2 返回\u003e badges=[{\"kind\":\"rdd:run\",\"label\":\"gt-probe\"},{\"kind\":\"rdd:task\",\"label\":\"T1\"},{\"kind\":\"rdd:stage\",\"label\":\"QA\"},{\"kind\":\"rdd:node\",\"label\":\"n2\"}]（rdd:* 结构徽章；失败降级警告不阻断）\r\n[DRYRUN] RPC 4:   POST http://127.0.0.1:64522/api/session.rename\r\n[DRYRUN] payload: sessionId=\u003cRPC 2 返回\u003e title=[gt-probe] T1·QA·n2（user 源钉住标题；失败降级警告不阻断）\r\n[DRYRUN] RPC 5:   POST http://127.0.0.1:64522/api/session.prompt\r\n[DRYRUN] payload: sessionId=\u003cRPC 2 返回\u003e mode=queue text=请处理 .rdd/tmp/delivery-bridge-verify/qa-bridge-20260922-111224-54640/2099-12-31-qa-fixture-rs44-qa-bridge-20260922-111224-54640/ 下的需求。 goal-tree-run=deliver-2099-12-31-gt-probe node=n2"
+
                                   ]
                     }
                 ]

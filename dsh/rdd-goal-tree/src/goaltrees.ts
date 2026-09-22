@@ -15,7 +15,7 @@
  * @module rdd-goal-tree/goaltrees
  */
 
-import { readdir, readFile, stat } from 'node:fs/promises'
+import { readdir, readFile, stat, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 
 /** One tree node projected for the strip (depth is computed from the parent chain). */
@@ -95,8 +95,64 @@ export interface GoalTreeReportEntry {
   verification: string | null
 }
 
+/**
+ * One open escalation entry from a bridge run's decisions.jsonl
+ * (planner-auto-mode): a checkpoint the risk-grading table routed to humans.
+ * "Open" is join-derived — a resolution/overturn entry references the
+ * escalation via ref_entry; the ledger itself is never rewritten. Entries on
+ * pruned nodes are still collected (flagged historical — the user may still
+ * owe a verdict; the planner decides the disposition).
+ */
+export interface GoalTreeDecisionEntry {
+  runId: string
+  entryId: string
+  nodeId: string
+  stage: string | null
+  checkpoint: string | null
+  /** The question awaiting the user (the escalation's decision field). */
+  question: string | null
+  risk: string | null
+  ruleId: string | null
+  inputs: string | null
+  basis: string | null
+  at: string | null
+}
+
 /** Compact-discipline cap shared by the callback message lines (chars). */
 const MESSAGE_LINE_CAP = 160
+
+/**
+ * Durable exactly-once marker store for planner callback delivery
+ * (incident 0923 fix): one JSON sidecar per run, `<runDir>/.callback-delivered.json`
+ * — `{"delivered": ["ledger L7", "decision D3", ...]}`. The in-memory delivered
+ * set dies with the host process; without this sidecar a dsh crash+restart
+ * re-delivers every already-consumed ledger entry (the L1..Ln replay storm —
+ * the inbox guard only sees still-PENDING messages). Markers are namespaced
+ * exactly like the runtime dedupe keys' suffixes (`ledger <id>` / `decision
+ * <id>`), so both delivery loops share one store. Tolerant by design: a
+ * missing or corrupt sidecar reads as empty (degrades to the pre-fix window,
+ * never worse); writes rewrite the full sorted set.
+ */
+const DELIVERED_MARKERS_FILE = '.callback-delivered.json'
+
+/** Read one run's delivered-marker set (missing/corrupt file -> empty set). */
+export async function readDeliveredMarkers(runDir: string): Promise<Set<string>> {
+  try {
+    const raw = JSON.parse(await readFile(join(runDir, DELIVERED_MARKERS_FILE), 'utf8')) as { delivered?: unknown }
+    const list = Array.isArray(raw?.delivered) ? (raw.delivered as unknown[]) : []
+    return new Set(list.filter((m): m is string => typeof m === 'string' && m !== ''))
+  } catch {
+    return new Set<string>()
+  }
+}
+
+/** Persist one delivered marker (idempotent; full-set rewrite keeps it plain). */
+export async function recordDeliveredMarker(runDir: string, marker: string): Promise<void> {
+  const current = await readDeliveredMarkers(runDir)
+  if (current.has(marker)) return
+  current.add(marker)
+  await writeFile(join(runDir, DELIVERED_MARKERS_FILE), `${JSON.stringify({ delivered: [...current].sort() }, null, 2)}\n`, 'utf8')
+}
 
 /** Tolerant JSON file read: missing or unparsable returns undefined (never throws). */
 async function readJson(file: string): Promise<Record<string, unknown> | undefined> {
@@ -411,4 +467,80 @@ export function artifactLine(entry: GoalTreeReportEntry): string {
     : 'none'
   const line = `Artifacts: Changes: ${changes} / Doc: ${entry.fullReport ?? 'none'} / Verified: ${entry.verification ?? 'none'}`
   return line.length > MESSAGE_LINE_CAP ? `${line.slice(0, MESSAGE_LINE_CAP - 1)}…` : line
+}
+
+/**
+ * Read one run's decision-ledger text; null when absent (a run without pure
+ * auto mode — the default — never writes decisions.jsonl).
+ */
+async function readDecisionsText(rootDir: string, runId: string): Promise<string | null> {
+  try {
+    return await readFile(join(rootDir, runId, 'decisions.jsonl'), 'utf8')
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Project one decisions.jsonl line; null on blank/corrupt/id-less/kind-less
+ * lines (same tolerance as {@link parseLedgerEntry}).
+ */
+function parseDecisionEntry(line: string, runId: string): Record<string, unknown> | null {
+  const trimmed = line.trim()
+  if (trimmed === '') return null
+  try {
+    const entry = JSON.parse(trimmed) as Record<string, unknown>
+    if (typeof entry.entry_id !== 'string' || entry.entry_id === '') return null
+    if (typeof entry.kind !== 'string' || entry.kind === '') return null
+    return entry
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Collect every OPEN escalation across the runs of one goal-trees root — the
+ * watcher's input for the planner-auto-mode human-adjudication callback
+ * (planner-auto-mode). An escalation is open until a resolution/overturn
+ * entry references it via ref_entry (join-derived, ledger never rewritten);
+ * an escalation that lands already-resolved never notifies (nothing to
+ * adjudicate). Corrupt lines are skipped; a missing ledger yields no entries.
+ * @param rootDir - absolute path of `<repoRoot>/.rdd/goal-trees`.
+ */
+export async function collectDecisionEntries(rootDir: string): Promise<GoalTreeDecisionEntry[]> {
+  const { runs } = await aggregateGoalTrees(rootDir)
+  const open: GoalTreeDecisionEntry[] = []
+  for (const run of runs) {
+    const text = await readDecisionsText(rootDir, run.runId)
+    if (text === null) continue
+    const raw = text.split('\n')
+      .map(line => parseDecisionEntry(line, run.runId))
+      .filter((e): e is Record<string, unknown> => e !== null)
+    // join inputs: entry_ids already closed by a resolution/overturn
+    const referenced = new Set<string>()
+    for (const entry of raw) {
+      if (entry.kind === 'resolution' || entry.kind === 'overturn') {
+        if (typeof entry.ref_entry === 'string' && entry.ref_entry !== '') referenced.add(entry.ref_entry)
+      }
+    }
+    for (const entry of raw) {
+      if (entry.kind !== 'escalation') continue
+      const entryId = entry.entry_id as string
+      if (referenced.has(entryId)) continue
+      open.push({
+        runId: run.runId,
+        entryId,
+        nodeId: str(entry.node_id) ?? '',
+        stage: str(entry.stage),
+        checkpoint: str(entry.checkpoint),
+        question: str(entry.decision),
+        risk: str(entry.risk),
+        ruleId: str(entry.rule_id),
+        inputs: str(entry.inputs),
+        basis: str(entry.basis),
+        at: str(entry.at),
+      })
+    }
+  }
+  return open
 }

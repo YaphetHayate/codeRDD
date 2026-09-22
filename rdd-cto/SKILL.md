@@ -28,6 +28,8 @@ description: >
 
 **文件白名单**：仅写入 `.rdd/changes/archive/.../design/` 下的技术方向文档。task.json 路由操作通过 CLI 命令完成（见 `rdd-engine/references/task-routing.md`），不直接编辑。不在白名单则拒绝。
 
+**纯自动模式豁免指针（planner-auto-mode）**：宪法原文不因自动模式改写。桥接 run 启用纯自动模式（claim 响应携带 `auto_mode` 段）时，四检查点的"用户确认"语义按「完成前置硬检查」的纯自动模式分支**条件豁免**——低风险检查点经分级表代答（decide 留痕）视为确认；禁令类（安全/成本/不可逆/git）与人工分级检查点不适用代答，必须升级等待用户。
+
 **退出方式**：用户显式声明 `/RDD-DEV`、`/RDD-PM`、其他模式指令，或"退出 CTO 模式"。
 
 ### 核心原则
@@ -86,6 +88,8 @@ description: >
 ## 完成前置硬检查
 
 **goal-tree 模式分支（桥接 run）**：指针消息尾部带 `goal-tree-run=<RunId> node=<NodeId>` 标记段，或本会话经 `delivery-bridge -Command claim` 认领了任务节点——命中任一即桥接 run：完成即 `goal-tree-leaf report` 回调规划者（回调含产物位置：citations=改动清单、full_report=主产物文档指针、extras.verification=验证结果），除用户显式直交指令（回调仍先行不可省）外**不执行下方 4 步直交**。协议真源：`rdd-engine/references/transition-guide.md`「goal-tree 模式分支（桥接 run）」；双否定时自然回落 4 步硬流程。桥接 run 内**不启动 PLANNER**——`rdd-flow next` 输出的 PLANNER 候选块/接管建议不适用于 worker，忽略；完成回调后本会话职责终结，等待规划者裁定。误启将收到启动拒绝（PLANNER_RUN_ACTIVE）；接管路径经 -RunId 续跑 + lease -Takeover 留痕。
+
+**纯自动模式分支（planner-auto-mode，条件生效）**：本会话 `delivery-bridge -Command claim` 的响应携带 `auto_mode` 段（enabled + 风险分级表 + 协议指引）时纯自动模式生效，四检查点推进条件"门槛全勾齐 + 用户确认"中的**"用户确认"可由分级表代答满足**：低风险检查点（规则 action=auto，如单一可行/模块归属/命名与文件清单/仅 P2-P3 取舍）按段内协议指引调用 `delivery-bridge.cmd -Command decide -Kind auto -RuleId <规则>` 留痕拍板，即视为该检查点已确认；**门槛达标语义不豁免**（预扫/完整推演照常）。禁令类（宪法禁令：安全/成本/不可逆/git，R1 硬底不可移除）与人工分级检查点（新框架或依赖/协议语义变更/技术选型实质分叉/含 P1 取舍/回退推翻既有决策）**不适用代答**：调用 `escalate` 升级并**等待**用户裁定（用户裁定经 `decide -Kind resolution` 回填后本会话继续，不得越过未决升级推进）。自动决策全程留痕于 run 目录 `decisions.jsonl`（输入/依据规则/时间/代答者），未 settle 前经 `decide -Kind overturn` 可推翻重做。`auto_mode` 段缺失时本分支不生效——默认全人工确认，行为与既有流程完全一致。协议真源：`rdd-engine/references/planner-guide.md`「纯自动模式」。
 
 设计归档完成 → **必须**按 `rdd-engine/references/transition-guide.md` 上游协议 4 步硬流程执行交接（advance 路由 → next → 推荐 → start/handoff）。
 第 3 步仍须用户确认目标角色；第 4 步调用 `start-role.cmd -Role <下游角色> -TaskId <n>`——脚本按 `RDD_RUNTIME` → `DSH_WEB_URL` → CLI 判据链自选后端（agent 不判断模式），dsh 下自动创建 preset 已绑定的会话并投递 B2 指针消息，不可达时报错并回退人工指引。

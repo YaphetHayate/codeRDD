@@ -7,6 +7,9 @@
  *      (focused worker view / Planner callback target), plus collectReportEntries
  *   2b. goal-root aggregation: type passthrough on nodes and counts excluding
  *      the type=goal root (goal-tree-goal-root)
+ *   2g. watcher delivery harness (F3): delivery goes through
+ *      agent.send(message, 'next-turn', true) — never a bare inbox.append —
+ *      with exactly-once across scans, restarts, and the pending guard
  *   3. engine regression (real CLI, temp fixture): claim writes the claims
  *      sidecar (with DSH_SESSION_ID when the env is set, null when not) and
  *      start writes planner.json
@@ -15,7 +18,7 @@
  */
 import assert from 'node:assert/strict'
 import { execFileSync } from 'node:child_process'
-import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { appendFileSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { aggregateGoalTrees, artifactLine, collectReportEntries } from '../lib/goaltrees.js'
@@ -287,6 +290,206 @@ import { aggregateGoalTrees, artifactLine, collectReportEntries } from '../lib/g
 
   rmSync(tmpRoot, { recursive: true, force: true })
   console.log('[smoke] planner lease resolution (fresh-lease-first, fallback) OK')
+}
+
+// --- 2e. decision collection (planner-auto-mode) -------------------------------
+// Open-escalation join over decisions.jsonl: escalation entries minus those
+// referenced by a resolution/overturn ref_entry; corrupt lines skip; a run
+// without the ledger (the default, non-auto-mode shape) yields nothing.
+{
+  const { collectDecisionEntries } = await import('../lib/goaltrees.js')
+  const tmpRoot = join(tmpdir(), `rdgt-smoke-dec-${Date.now()}`)
+  const runDir = join(tmpRoot, 'auto-run')
+  const stateDir = join(runDir, 'state')
+  mkdirSync(stateDir, { recursive: true })
+  writeFileSync(join(runDir, 'manifest.json'), JSON.stringify({
+    run_id: 'auto-run', state: 'running', goal: 'auto mode goal', budget: { max_rounds: 4, max_nodes: 12 },
+  }))
+  writeFileSync(join(stateDir, 'tree.json'), JSON.stringify({
+    format_version: 1, run_id: 'auto-run', updated_at: '2026-01-01T00:10:00Z',
+    nodes: [{ id: 'n1', parent: null, title: 'root', task: 't', status: 'pending', depends_on: [] }],
+  }))
+  writeFileSync(join(runDir, 'decisions.jsonl'), [
+    JSON.stringify({ entry_id: 'D1', node_id: 'n1', task_id: 1, stage: 'CTO', kind: 'auto', checkpoint: '命名', decision: 'x', decider: 'auto/R7@CTO' }),
+    JSON.stringify({ entry_id: 'D2', node_id: 'n1', task_id: 1, stage: 'CTO', kind: 'escalation', checkpoint: '技术选型', decision: 'A 还是 B？', risk: 'high', rule_id: 'R4', decider: null }),
+    JSON.stringify({ entry_id: 'D3', node_id: 'n1', task_id: 1, stage: 'CTO', kind: 'escalation', checkpoint: 'git 操作', decision: '允许 push 吗？', risk: 'high', rule_id: 'R1' }),
+    JSON.stringify({ entry_id: 'D4', node_id: 'n1', task_id: 1, stage: 'CTO', kind: 'resolution', checkpoint: '技术选型', decision: '选 A', decider: 'user@in-session', ref_entry: 'D2' }),
+    'not json at all',
+    JSON.stringify({ entry_id: 'D5', node_id: 'n1', task_id: 1, stage: 'DEV', kind: 'overturn', checkpoint: '命名', decision: '重想', decider: 'user@in-session', ref_entry: 'D1' }),
+    '',
+  ].join('\n'))
+  // sibling run WITHOUT a decisions ledger (legacy / default posture) must stay silent
+  const plainDir = join(tmpRoot, 'plain-run')
+  mkdirSync(join(plainDir, 'state'), { recursive: true })
+  writeFileSync(join(plainDir, 'manifest.json'), JSON.stringify({
+    run_id: 'plain-run', state: 'running', goal: 'g', budget: { max_rounds: 2, max_nodes: 6 },
+  }))
+
+  const open = await collectDecisionEntries(tmpRoot)
+  // D2 is closed by D4 (resolution), D1 is referenced by D5 (overturn), D3 stays open
+  assert.equal(open.length, 1, 'only the unreferenced escalation is open')
+  const d3 = open[0]
+  assert.equal(d3.entryId, 'D3')
+  assert.equal(d3.runId, 'auto-run')
+  assert.equal(d3.nodeId, 'n1')
+  assert.equal(d3.stage, 'CTO')
+  assert.equal(d3.checkpoint, 'git 操作')
+  assert.equal(d3.question, '允许 push 吗？')
+  assert.equal(d3.risk, 'high')
+  assert.equal(d3.ruleId, 'R1')
+  assert.equal(d3.decider, undefined, 'decider is not part of the wire shape')
+
+  // resolution closing the remaining escalation empties the open set (join-derived)
+  appendFileSync(join(runDir, 'decisions.jsonl'), `${JSON.stringify({ entry_id: 'D6', kind: 'resolution', ref_entry: 'D3', decision: 'no' })}\n`)
+  const closed = await collectDecisionEntries(tmpRoot)
+  assert.equal(closed.length, 0, 'all escalations closed')
+
+  // corrupt-line prefix never throws (degrades to the parseable set)
+  writeFileSync(join(runDir, 'decisions.jsonl'), [
+    '{broken',
+    JSON.stringify({ entry_id: 'D9', node_id: 'n1', kind: 'escalation', checkpoint: 'c', decision: 'q' }),
+  ].join('\n'))
+  const degraded = await collectDecisionEntries(tmpRoot)
+  assert.equal(degraded.length, 1)
+  assert.equal(degraded[0].entryId, 'D9')
+
+  rmSync(tmpRoot, { recursive: true, force: true })
+  console.log('[smoke] collectDecisionEntries (open-escalation join) OK')
+}
+
+// --- 2f. durable delivered-markers (incident 0923 fix) -------------------------
+// The exactly-once sidecar: missing/corrupt file reads empty (never throws),
+// record is idempotent, and a fresh read after "restart" (new call = new
+// in-memory life) recovers the recorded markers — the replay-storm fix.
+{
+  const { readDeliveredMarkers, recordDeliveredMarker } = await import('../lib/goaltrees.js')
+  const tmpRoot = join(tmpdir(), `rdgt-smoke-markers-${Date.now()}`)
+  const runDir = join(tmpRoot, 'mk-run')
+  mkdirSync(runDir, { recursive: true })
+
+  const empty = await readDeliveredMarkers(runDir)
+  assert.equal(empty.size, 0, 'missing sidecar reads as empty')
+
+  await recordDeliveredMarker(runDir, 'ledger L1')
+  await recordDeliveredMarker(runDir, 'decision D3')
+  await recordDeliveredMarker(runDir, 'ledger L1') // idempotent
+  const one = await readDeliveredMarkers(runDir)
+  assert.equal(one.size, 2, 'two distinct markers persisted')
+  assert.ok(one.has('ledger L1') && one.has('decision D3'), 'markers round-trip')
+
+  // "crash + restart": a fresh read (new process would re-read the same file)
+  const two = await readDeliveredMarkers(runDir)
+  assert.ok(two.has('ledger L1'), 'marker survives a reader restart')
+
+  // corrupt sidecar degrades to empty, and record rewrites it whole
+  writeFileSync(join(runDir, '.callback-delivered.json'), '{broken json')
+  const degraded = await readDeliveredMarkers(runDir)
+  assert.equal(degraded.size, 0, 'corrupt sidecar reads as empty')
+  await recordDeliveredMarker(runDir, 'ledger L2')
+  const repaired = await readDeliveredMarkers(runDir)
+  assert.equal(repaired.size, 1, 'record repairs a corrupt sidecar')
+  assert.ok(repaired.has('ledger L2'))
+
+  rmSync(tmpRoot, { recursive: true, force: true })
+  console.log('[smoke] durable delivered-markers (restart-safe exactly-once) OK')
+}
+
+// --- 2g. watcher delivery harness (F3 wake semantics + exactly-once) -----------
+// Drives the extracted PlannerCallbackWatcher standalone (the module is
+// runtime-dependency-free: the message factory is constructor-injected, the
+// agent registry is a recording stub). Pins the F3 ruling — delivery routes
+// through agent.send(message, 'next-turn', true) and NEVER a bare
+// inbox.append — plus the exactly-once invariants around it (in-memory set,
+// restart marker hydration, pending-inbox guard). scanRoot is TS-private;
+// the harness reaches it deliberately from untyped JS.
+{
+  const { PlannerCallbackWatcher } = await import('../lib/watcher.js')
+  const { readDeliveredMarkers } = await import('../lib/goaltrees.js')
+  const PLUGIN_ID = '@coderrdd/dsh-rdd-goal-tree'
+  const tmpRoot = join(tmpdir(), `rdgt-smoke-watcher-${Date.now()}`)
+  // scanRoot treats its argument as a REPO root and joins .rdd/goal-trees itself
+  const runDir = join(tmpRoot, '.rdd', 'goal-trees', 'watch-run')
+  const stateDir = join(runDir, 'state')
+  mkdirSync(stateDir, { recursive: true })
+  writeFileSync(join(runDir, 'manifest.json'), JSON.stringify({
+    run_id: 'watch-run', state: 'running', goal: 'watcher harness goal', budget: { max_rounds: 2, max_nodes: 6 },
+  }))
+  writeFileSync(join(stateDir, 'planner.json'), JSON.stringify({
+    format_version: 1, run_id: 'watch-run', dsh_session_id: 'session-planner-w', recorded_at: '2026-01-01T00:00:00Z',
+  }))
+  writeFileSync(join(stateDir, 'tree.json'), JSON.stringify({
+    format_version: 1, run_id: 'watch-run', updated_at: '2026-01-01T00:10:00Z',
+    nodes: [{ id: 'n1', parent: null, title: 'root', task: 't', status: 'pending', depends_on: [] }],
+  }))
+  writeFileSync(join(stateDir, 'ledger.jsonl'), `${JSON.stringify({
+    entry_id: 'L1', node_id: 'n1', worker: 'DEV', reported_at: '2026-01-01T00:20:00Z', callback: {
+      verdict: 'done', confidence: 0.9, summary: 'watcher fixture', full_report: 'report/n1.md',
+      citations: [{ ref: 'rdd-engine/scripts/delivery-bridge.ps1', locator: 'claim' }],
+      extras: { verification: 'tests pass' },
+    },
+  })}\n`)
+  writeFileSync(join(runDir, 'decisions.jsonl'), `${JSON.stringify({
+    entry_id: 'D2', node_id: 'n1', task_id: 1, stage: 'CTO', kind: 'escalation',
+    checkpoint: '技术选型', decision: 'A 还是 B？', risk: 'high', rule_id: 'R4', decider: null,
+  })}\n`)
+
+  const sends = [], appends = [], infoLogs = []
+  let seq = 0
+  const stubFactory = input => ({ id: `m-${++seq}`, role: 'user', content: input.content, source: input.source })
+  const fakeAgent = {
+    inbox: {
+      nextTurn: [],
+      nextStep: [],
+      append: (target, message) => { appends.push({ target, message }) },
+    },
+    send: (message, target, wakeup) => { sends.push({ message, target, wakeup }) },
+  }
+  const ctx = {
+    logger: { info: line => infoLogs.push(line), warn: () => {} },
+    agents: { get: sid => (sid === 'session-planner-w' ? fakeAgent : undefined) },
+  }
+
+  const watcher = new PlannerCallbackWatcher(ctx, true, 0, stubFactory)
+  await watcher.scanRoot(tmpRoot)
+
+  // F3 core: wakeful delivery on the next-turn boundary, no bare appends
+  assert.equal(sends.length, 2, 'ledger + escalation each delivered once')
+  assert.ok(sends.every(call => call.target === 'next-turn'), 'delivery targets the next-turn boundary')
+  assert.ok(sends.every(call => call.wakeup === true), 'F3: delivery wakes the planner driver')
+  assert.equal(appends.length, 0, 'F3: no bare inbox.append delivery path')
+  assert.ok(sends.every(call => call.message.source.kind === 'plugin' && call.message.source.plugin === PLUGIN_ID))
+  const ledgerText = sends[0].message.content.map(block => block.text).join('\n')
+  const decisionText = sends[1].message.content.map(block => block.text).join('\n')
+  assert.ok(ledgerText.includes('(ledger L1)') && ledgerText.includes('verdict=done'), 'ledger notice carries entry + verdict')
+  assert.ok(decisionText.includes('decision D2 is OPEN') && decisionText.includes('技术选型'), 'escalation notice carries id + checkpoint')
+  assert.ok(infoLogs.length === 2 && infoLogs.every(line => line.endsWith('→ session session-planner-w')), 'delivery logs name the target session')
+  const markers = await readDeliveredMarkers(runDir)
+  assert.ok(markers.has('ledger L1') && markers.has('decision D2'), 'durable markers persisted')
+
+  // exactly-once within a plugin life (in-memory set)
+  await watcher.scanRoot(tmpRoot)
+  assert.equal(sends.length, 2, 'exactly-once within a plugin life')
+
+  // exactly-once across a restart: fresh watcher, empty in-memory set, the
+  // durable markers hydrate back in before the delivery arm runs
+  const restarted = new PlannerCallbackWatcher(ctx, true, 0, stubFactory)
+  await restarted.scanRoot(tmpRoot)
+  assert.equal(sends.length, 2, 'exactly-once across a plugin restart (marker hydration)')
+
+  // pending-inbox guard: a previous plugin life already queued both notices
+  // (markers wiped to force the path) — the guard marks and skips, no re-send
+  rmSync(join(runDir, '.callback-delivered.json'))
+  fakeAgent.inbox.nextTurn.push(
+    { source: { kind: 'plugin', plugin: PLUGIN_ID }, content: [{ type: 'text', text: 'already carrying ledger L1' }] },
+    { source: { kind: 'plugin', plugin: PLUGIN_ID }, content: [{ type: 'text', text: 'already carrying decision D2' }] },
+  )
+  const third = new PlannerCallbackWatcher(ctx, true, 0, stubFactory)
+  await third.scanRoot(tmpRoot)
+  assert.equal(sends.length, 2, 'already-queued notices are marked, never re-sent')
+  assert.ok((await readDeliveredMarkers(runDir)).has('ledger L1'), 'the guard persists the marker it skipped')
+
+  rmSync(tmpRoot, { recursive: true, force: true })
+  console.log('[smoke] watcher delivery harness (send+wakeup, exactly-once, hydration, pending guard) OK')
 }
 
 // --- 3. engine regression: sidecars on the real CLI ---------------------------

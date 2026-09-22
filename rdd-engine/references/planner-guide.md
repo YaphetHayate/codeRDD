@@ -58,9 +58,11 @@ PM 归档（longTask 信号触发）→ start-role -Role PLANNER -TaskJson ...�
 
 | 命令 | 形态 | 作用 |
 |------|------|------|
-| 颁布 | `delivery-bridge.cmd -Command promulgate -TaskJson <path> [-ReviewFile <path>] [-MaxRounds N] [-NodeWidth N] [-MaxNodes N] [-CreatedBy label] [-Session label]` | 读归档 → goal-tree start（目标根模式，原始需求=goal 根）+ round-start + 按任务×当前阶段 graft 需求链头（`ref=<归档名>/<需求文档>`）→ 写 bridge.json v2 → **自动推送全部无前置依赖节点**。可选 `-ReviewFile` 消费需求审查结论（硬约束 6）：驳回/合并任务不建节点、`depends_on_override` 整体替代正则推导、合并依赖重定向到并入方、驳回残留依赖硬拒 `REVIEW_EXCLUDED_DEP`；缺省时行为与无审查门完全一致。RunId 固定为 `deliver-<归档名>`。预算默认：rounds 12 / width max(4, 任务数) / nodes 任务数×5+6 |
+| 颁布 | `delivery-bridge.cmd -Command promulgate -TaskJson <path> [-ReviewFile <path>] [-AutoMode [-RiskPolicy <path>]] [-NoPush] [-MaxRounds N] [-NodeWidth N] [-MaxNodes N] [-CreatedBy label] [-Session label]` | 读归档 → goal-tree start（目标根模式，原始需求=goal 根）+ round-start + 按任务×当前阶段 graft 需求链头（`ref=<归档名>/<需求文档>`）→ 写 bridge.json v2 → **自动推送全部无前置依赖节点**。可选 `-ReviewFile` 消费需求审查结论（硬约束 6）：驳回/合并任务不建节点、`depends_on_override` 整体替代正则推导、合并依赖重定向到并入方、驳回残留依赖硬拒 `REVIEW_EXCLUDED_DEP`；缺省时行为与无审查门完全一致。可选 `-AutoMode` 启用纯自动模式（见「纯自动模式」节；缺省关闭=行为逐字节不变），`-RiskPolicy` 整表覆盖默认分级表（R1 硬底强制保留）。可选 `-NoPush`：只建 run 不启动任何角色会话（引擎测试套件/事故演练隔离——不触真后端，跳过入 pushes 账 `trigger='promulgate (-NoPush)'`）。RunId 固定为 `deliver-<归档名>`。预算默认：rounds 12 / width max(4, 任务数) / nodes 任务数×5+6；重度返工 run 按回退预期调 `-MaxNodes`（每轮跨阶段回退净增 2 节点） |
 | 调动 | `delivery-bridge.cmd -Command dispatch -RunId <id> -NodeId <n> [-DryRun]` | 手动单节点推送（异常处置 / pointer 类失败人工重推；正常流程由自动推送承担） |
-| 认领 | `delivery-bridge.cmd -Command claim -RunId <id> -NodeId <n> -Role <CTO/UX/DEV/QA>` | **被推送会话的第一动作**。双侧只读预检 → leaf claim → rdd-flow claim；冲突给确定性反馈 + 当前可领节点清单；goal 根报 `GOAL_NODE_NOT_CLAIMABLE` |
+| 认领 | `delivery-bridge.cmd -Command claim -RunId <id> -NodeId <n> -Role <CTO/UX/DEV/QA>` | **被推送会话的第一动作**。双侧只读预检 → leaf claim → rdd-flow claim；冲突给确定性反馈 + 当前可领节点清单；goal 根报 `GOAL_NODE_NOT_CLAIMABLE`；纯自动模式 run 的响应额外携带 `auto_mode` 段（enabled + 分级表快照 + decide/escalate 协议指引，report_hint 注入先例；非自动 run 无此段） |
+| 拍板 | `delivery-bridge.cmd -Command decide -RunId <id> -NodeId <n> -Kind auto\|resolution\|overturn -Checkpoint <名> -Decision <裁定/问题> [-Inputs ...] [-Basis ...] [-Risk ...] (-Kind auto 需 -RuleId <规则>；resolution/overturn 需 -RefEntry <条目id>)` | **worker 侧检查点决策留痕**（纯自动模式专用，否则 `AUTO_MODE_DISABLED`；须本 stage 的 claimed 节点，overturn 额外容忍 reported=未 settle 重做窗口）。`auto`=分级表代答（规则须 action=auto，R1 硬底永拒 `RULE_NOT_AUTO`，代答者 `auto/<规则>@<stage>`）；`resolution`=用户裁定回填关闭未决升级（`user@in-session`，重复关闭拒 `ESCALATION_ALREADY_RESOLVED`）；`overturn`=未 settle 期内推翻既有决策（auto/resolution/escalation 条目，run 级 ref 存在性校验）。追加进 decisions.jsonl（run `.lock` 内，读回校验） |
+| 升级 | `delivery-bridge.cmd -Command escalate -RunId <id> -NodeId <n> -Checkpoint <名> -Decision <呈用户的问题> [-RuleId <规则>] [-Inputs ...] [-Basis ...] [-Risk high]` | **高风险检查点升级**（纯自动模式专用，同上门禁）：写 open 升级条目（无人拍板，decider=null），worker 就地**等待**。dsh：插件 watcher 5s 扫描投递规划者 inbox（exactly-once，`decision <id>` 去重命名空间，送达即唤醒——`agent.send(msg,'next-turn',true)`，空闲规划者会话立即开轮消费）→ 规划者呈现用户 → `decide -Kind resolution` 回填；CLI/Plus：降级为 status/resume 可见 |
 | 回收 | `delivery-bridge.cmd -Command reclaim -RunId <id> -NodeId <n>` | 复合回收，两种模式：**dead-claim**（卡死 claimed：存活预检——alive 拒 `RECLAIM_TARGET_ALIVE`、unknown 未达 60min 阈值拒 `RECLAIM_UNPROVEN_DEAD`——通过后 leaf `-Steal` + rdd-flow `claim -Force` 入泊位 → **自动重推**）与 **rejected-delivery**（reported 但证据不合格：剪枝失败交付 + graft 替换节点（ref 重绑需求文档）+ 重映射 → **自动推送替换节点**，账本保留审计痕） |
 | 回退 | `delivery-bridge.cmd -Command rollback -RunId <id> -NodeId <失败节点> -Reason "<理由>"` | **跨阶段回退单命令**（与 settle 正向 / reclaim 同阶段构成三通道）：剪枝失败节点（prune reason 入 ledger 留审计：回退理由+操作者+证据问题清单）→ **兄弟挂接**重建前一阶段节点（parent=前一阶段节点的 parent；QA 证据问题+回退理由进新节点 task 的重做上下文）→ `rdd-flow reopen` 路由回退（owners 对齐，`Sync-TaskClaims` 自动清 worker 残留）→ **自动重推**重建节点。目标阶段机械单源推导（失败节点 parent 的 stage）；守卫 `ROLLBACK_REQUIRES_REPORTED` / `ROLLBACK_REQUIRES_UNQUALIFIED` / `ROLLBACK_NO_PREVIOUS_STAGE` / `TASK_NOT_ACTIVE`；prune→graft 崩溃窗口由剪枝签名幂等续跑守卫兜底（重跑同命令自动续 graft 步，不二次剪枝）。QA→DEV 为一等路径，DEV→CTO/UX 同一代码路径；返回值 `dependents_warning[]` 仅警示直接依赖边（不展开传递闭包，闭包经 `goal-tree deps list` 自查），不动其他任务节点 |
 | 流转 | `delivery-bridge.cmd -Command settle -RunId <id> -NodeId <n> [-Note ...]` | **task.json 流转的唯一通道**（见下方三查门禁）；settle 尾自动推送新解锁节点 |
@@ -108,6 +110,7 @@ PM 归档（longTask 信号触发）→ start-role -Role PLANNER -TaskJson ...�
    - **确定性错误码三枚**：`REVIEW_FILE_INVALID`（解析/schema/字段一致性）、`REVIEW_TASK_NOT_FOUND`（task_id/override/merge 指向不在归档）、`REVIEW_EXCLUDED_DEP`（依赖悬空于驳回排除任务）。
    - **结论呈现**：`report/review.md`（人读逐条结论表：结论/理由/处置/时间）+ promulgate 返回值 `review` 段 + bridge.json `review` 段（机器可读审计）。用户可随时干预或推翻裁定（**最终裁决权在用户**），推翻处置见异常处置速查。
    - **结案如实呈现**：conclude 门禁豁免严格限定 review 段 `reject_return` 集（该类任务 active@PM 是真实状态）；其余非终态任务照旧 `DELIVERY_INCOMPLETE` 硬拒。annex 根目标措辞：无未决驳回 =「达成」；有 =「部分达成（N 条驳回回流 PM，见任务终态表）」；被合并任务标注「deprecated（树内合并至 #N，非放弃）」。
+7. **纯自动模式边界（planner-auto-mode）**：自动拍板**仅限 worker 侧会话内检查点**（CTO 四检查点这类「达标+用户确认」闸门）；编排层裁决——建树审查门（硬约束 6）、settle 三查裁定、推翻/回退裁定——**不进分级表、不自动化**，永归人工。R1 宪法禁令行（安全/成本/不可逆/git）是脚本硬底：`-RiskPolicy` 整表覆盖也强制合并保留、永不许 action=auto。自动决策全程留痕可查可推翻（未 settle 走 overturn，已 settle 走 reclaim rejected-delivery / rollback 善后）；无 `-AutoMode` 的 run 一切行为与引入前逐字节一致。
 
 ## 交付语义映射（回调契约）
 
@@ -123,6 +126,36 @@ worker 沿用 goal-tree 证据导向回调结构承载交付语义，核心零�
 真实性判断由 **QA 阶段节点**承担：QA 会话的 citations = 验收证据（功能+质量双通过），QA 节点 settle 即任务 complete。QA 判不合格 → report 非 done verdict（失败清单写入回调 full_report/extras），规划者收到后二选一：**同阶段重做** `reclaim -NodeId`（问题在本阶段可修）或**跨阶段回退** `rollback -NodeId -Reason <理由>`（退回 DEV 重做：单命令完成剪枝+重建+路由回退+自动重推，见命令面板「回退」行）。
 
 **回调投递目标解析（dsh 后端）**：worker 回调投递给按「新鲜租约优先、planner.json 兜底」解析出的当前有效规划者——`planner-lease.json` 新鲜（30 分钟内，与 lease 命令 stale 阈值一致）且 holder 为 dsh 会话（`dsh-<sid>` 前缀）时投给该会话（Takeover 换手、续跑者拿租约后投递随之前指，修复断路）；否则回退 `state/planner.json` 记录的建 run 会话（误启的第二个规划者未持租约，回调不偏移；原规划者空闲存活时租约恰好 stale，回退目标正是它）。去重键（repo::run::entry）与投递目标无关，不会双投。CLI/Plus 后端无 watcher 实时投递（经 status/resume 拉取），不受影响。
+
+## 纯自动模式（planner-auto-mode）
+
+> **协议真源**。目标：桥接 run 无人值守时 worker 侧检查点（CTO 四检查点为代表）不再无限等待——低风险按分级表自动拍板并全程留痕，高风险升级人工，run 持续推进且无静默等待。边界见硬约束 7：编排层裁决不自动化。
+
+**开关与快照**：`promulgate -AutoMode`（默认关闭；关闭时全部既有行为逐字节不变——bridge.json/claim/status/resume 均无 `auto_mode` 键；原回归套件 test-bridge-auto-mode.ps1 已按用户裁决移除（其隔离声明后仍产生真实夹具会话），字节门禁改为 `-NoPush` 开关语义与 pushes 账的静态核验）。分级表脚本内嵌默认（R1–R9，自上而下首条命中）：
+
+| 规则 | 匹配 | 处置 |
+|------|------|------|
+| R1 | 宪法禁令类：安全/成本/不可逆操作/git | **人工（硬底，覆盖不可移除）** |
+| R2 | 新框架/中间件/外部依赖 | 人工 |
+| R3 | 协议语义变更/跨模块新机制 | 人工 |
+| R4 | 技术选型实质分叉 | 人工（选型错沿链放大，默认保守） |
+| R5 | 单一可行方案/沿用现状范式 | 自动 |
+| R6 | 模块归属 | 自动 |
+| R7 | 命名/文件清单/配置项 | 自动 |
+| R8 | 风险取舍：含 P1→人工；仅 P2/P3→自动 | 按级别二分 |
+| R9 | 回退/推翻既有决策 | 人工 |
+
+`-RiskPolicy <path>` 提供整表覆盖（JSON：`{"rules":[{"id","match","action":"auto|manual","note"}]}`，空表/重复 id/非法 action 拒 `RISK_POLICY_INVALID`，校验先于任何 run 状态创建）；**R1 硬底强制合并保留**（缺失或被改成 auto 一律强制恢复内置 R1）。生效表快照入 `bridge.json.auto_mode`（enabled + policy + policy_source），**run 内不可变**（同 run 所有 worker 授权语义一致，改表经新 run 生效）。
+
+**授权传递**：claim 是 worker 必经第一动作，纯自动 run 的 claim 响应注入 `auto_mode` 段（enabled + 分级表 + 协议指引，复用 report_hint 注入先例）——worker 无需自行探测模式；旧 run 无此段，逐字节兼容。
+
+**决策账本（decisions.jsonl）**：`.rdd/goal-trees/<run>/decisions.jsonl` 追加式（与 state/ledger.jsonl 同范式：run `.lock` 内追加 + 读回校验，条目 id `D<n>` 递增）。字段：`entry_id/at/run_id/node_id/task_id/stage/kind(auto|escalation|resolution|overturn)/checkpoint/risk/rule_id/decision/inputs/basis/decider/ref_entry`。代答者身份取值：`auto/<规则>@<stage>`（规则代答）| `user@in-session`（会话内用户裁定/推翻）；升级条目 decider=null（未决=无人拍板）；`planner@lease` 为保留扩展位（规划者代答，v1 不启用）。**未决升级视图由 join 派生**：open = 升级条目 − 被 resolution/overturn 经 `ref_entry` 引用者；账本永不重写。ref_entry 校验放宽至 run 级存在性（容忍 rejected-delivery 换 node 后的悬挂引用；status 视图对 pruned 节点条目标注「历史」）。
+
+**命令语义与守卫**：`decide`/`escalate` 均要求 `auto_mode.enabled`（否则 `AUTO_MODE_DISABLED`）+ 本 stage 的 claimed 节点（否则 `DECISION_NODE_NOT_CLAIMED`；overturn 额外容忍 reported=未 settle 重做窗口）。`decide -Kind auto` 要求规则在快照内且 action=auto（`RULE_NOT_FOUND`/`RULE_NOT_AUTO`——R1 硬底由此机械不可逾越）；`resolution` 关闭升级且不得重复关闭（`ESCALATION_ALREADY_RESOLVED`，改判走对 closing 条目的新 overturn）；`overturn` 目标限 auto/resolution/escalation 条目（禁止推翻推翻）。**升级不改变 reclaim 既有机械规则**（存活预检优先；长任务纪律「等>询问用户>回收」不变），worker 越过未决升级推进属协议违规（settle 三查不豁免，QA 审账可查）。
+
+**升级通知与可见性**：dsh——rdd-goal-tree 插件 watcher 并行收集 open 升级条目（5s 扫描）投递规划者 inbox（exactly-once：`decision <id>` marker/去重命名空间，与 ledger `L<n>` 天然隔离；送达即唤醒——`agent.send(msg,'next-turn',true)`，空闲规划者会话立即开轮消费）→ 规划者呈现用户（tool-ask-user）→ `decide -Kind resolution` 回填后 worker 继续。CLI/Plus——降级为 status/resume 可见（`auto_mode` 块：enabled + 逐节点决策计数 + open escalations 清单；resume 恢复步骤含逐条升级处置指引）。QA/规划者经 decisions.jsonl 或 status 查每条自动决策的输入/依据规则/时间/代答者；worker 的 leaf report extras 可附 `auto_decisions` 摘要（计数 + 账本路径）。
+
+**推翻通道**：未 settle 阶段内——会话内重做 + `decide -Kind overturn` 留痕（账本追加不改写，链路可审计）；已 settle 后——善后复用 `reclaim rejected-delivery`（同阶段）或 `rollback`（跨阶段，需求 1 回退命令软呼应：无硬依赖，本需求独立交付）。CTO 四检查点确认语义的条件豁免见 `rdd-cto/SKILL.md`「完成前置硬检查」纯自动模式分支（宪法原文不动；门槛达标语义不豁免；禁令类与人工分级不适用代答）。其余角色 SKILL v1 不改——机制经 claim 注入天然可用（扩展点）。
 
 ## 异常处置速查
 
@@ -157,6 +190,7 @@ worker 沿用 goal-tree 证据导向回调结构承载交付语义，核心零�
 | `planner-lease.json` | 会话租约（holder / acquired_at / taken_over_from 留痕） |
 | `sessions.json` | 会话花名册（planner-session-roster）：本 run 派生的全部 dsh 会话——本体（promulgate/resume 自动登记）/ 桥接派发（推送回写）/ 直交（register-session 登记）；字段 session_id/role/node/label/source/title/created_at/updated_at，status 经 sessions 字段透出 |
 | `report/review.md` | 需求审查结论（仅 `-ReviewFile` 颁布的 run）：逐条 verdict 表（结论/理由/处置/时间），呈现用户的人读持久化载体 |
+| `decisions.jsonl` | 决策账本（仅 `-AutoMode` 颁布的 run）：追加式条目流 `D<n>`（kind=auto/escalation/resolution/overturn，含 checkpoint/风险/规则/输入/依据/代答者/引用条目），未决升级视图 join 派生、账本永不重写（见「纯自动模式」节） |
 | `report/delivery-annex.md` | 结案附录（根目标达成状态——有未决驳回时如实呈现「部分达成」+ 每任务终态（含树内合并/驳回注记）+ 阶段链 + rdd-flow check 结果） |
 | （goal-tree 既有）tree.json / ledger.jsonl / round-*.md / final-report.md | 树状态 / 回调账本 / 轮快照 / 结案报告（目标根锚时含「根目标达成状态」区） |
 

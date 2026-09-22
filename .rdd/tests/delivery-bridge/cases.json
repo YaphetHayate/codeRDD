@@ -1138,7 +1138,7 @@
                                         "status 触碰一次",
                                         "断言载波 session.create 零增量、pushes 账零写入"
                                     ],
-                          "expected":  "颁布时 trigger 含 NoPush、pushed=0、per-node pushes 账为空且 status 触碰后保持为零——【2026-09-22 验证时实际 FAIL:defect F1,status 触碰真实推送 2 节点(session.create 18→20)并写入 n4,n2 推送账;静态定位 delivery-bridge.ps1 L1799-1803(仅 promulgate 分支隔离)/L2982-2990(status 触碰)/L1019-1024(从未推送放行)→L1066 Invoke-StartRole;即 0923 真实夹具会话事故机制,待 DEV 修复后本用例转绿】"
+                          "expected":  "颁布时 trigger 含 NoPush、pushed=0、per-node pushes 账为空且 status 触碰后保持为零(session.create 零增量)——隔离承诺全生命周期成立。【缺陷史:defect F1 曾于 2026-09-22 首轮验证 FAIL(status 触碰真实推送 2 节点并写入 n4,n2 推送账,即 0923 事故机制);n13 重做轮改为 run 级 no_push 持久化属性 + Invoke-AutoDispatch 入口顶闸;2026-09-22 n14 复验 automode 8/8 全 PASS,本用例转绿(F1 销项)】"
                       }
                ]
 }
