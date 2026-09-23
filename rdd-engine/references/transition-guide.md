@@ -32,7 +32,9 @@ RDD 有三种运行环境，交接行为不同。**判据链由 `start-role.ps1`
 
 ### Step 1 — 推进 task.json 路由
 
-将已完成产物的需求行 `currentOwners` 改为下一处理角色，调用 `rdd-flow advance` 一步完成。**不修改任何文档侧的流转字段**——文档是内容工件，路由状态只活在 task.json；存量归档中已存在的「当前责任人」字段已废弃，以 task.json 为准。完整命令参考见 `rdd-engine/references/task-routing.md`。
+将已完成产物的需求行路由推进到下一处理角色，调用 `rdd-flow set-route` 一步完成：阶段内收窄不传 `-Phase`（如 `set-route -To "UX"`），跨阶段切换显式 `-Phase`（如 `set-route -To "DEV" -Phase IMPL`，owners 与 phase 原子更新）。**不修改任何文档侧的流转字段**——文档是内容工件，路由状态只活在 task.json；存量归档中已存在的「当前责任人」字段已废弃，以 task.json 为准。完整命令参考见 `rdd-engine/references/task-routing.md`。
+
+> phase-model：阶段白名单（REQ→DESIGN→IMPL→VERIFY）硬约束 `currentOwners ⊆ PhaseRoles[phase]`；`advance` 已退场为兼容路径（其单角色替换会铸造跨阶段中间态），新流转统一 `set-route`。
 
 ### Step 2 — 运行 next，展示可流转角色
 
@@ -200,13 +202,16 @@ $rdd = $null; $t = $null; try { $t = git rev-parse --show-toplevel } catch { }; 
 
 ## 各角色速查
 
-| 当前角色 | 典型下游 | 交接触发条件 | 下游入口命令 |
+按阶段白名单对齐（phase-model：REQ→DESIGN→IMPL→VERIFY 全序，阶段内并行、阶段间整组切换，`set-route [-Phase]` 为唯一流转命令）：
+
+| 当前角色（阶段） | 典型下游（阶段） | 交接触发条件 | 下游入口命令 |
 |---------|---------|-------------|-------------|
-| PM | CTO / UX / DEV | 需求归档完成，task.json 路由已设置 | `/rdd-cto` `/rdd-ux` `/rdd-dev` |
-| CTO | UX（并行）/ DEV | 设计文档归档完成，路由改为 UX 或 DEV | `/rdd-ux` `/rdd-dev` |
-| UX | DEV | 设计规格归档完成，路由改为 DEV | `/rdd-dev` |
-| QA | DEV（测试先行）/ 已完成（验证模式）/ DEV（reopen） | 测试先行：测试用例归档完成交 DEV；验证模式：功能+质量双通过 → 提交 → 标记已完成，任一硬性项不通过 → reopen 回 DEV | `/rdd-dev`（测试先行） |
-| DEV | QA | 实现完成并自测通过，路由改为 QA（DEV 不再自行提交）；QA 验证通过并提交后改为"已完成" | `/rdd-qa` |
+| PM（REQ） | CTO / UX / QA（DESIGN）/ DEV（IMPL） | 需求归档完成，task.json 路由已设置 | `/rdd-cto` `/rdd-ux` `/rdd-qa` `/rdd-dev` |
+| CTO（DESIGN） | UX（阶段内串行/收窄）/ DEV（IMPL，整组汇聚后） | 设计文档归档完成：同组还有角色 → `set-route -To "UX"` 收窄；自己是最后一个 → `set-route -To "DEV" -Phase IMPL` | `/rdd-ux` `/rdd-dev` |
+| UX（DESIGN） | DEV（IMPL，整组汇聚后） | 同上：收窄或汇聚切换 | `/rdd-dev` |
+| QA（DESIGN 测试先行） | DEV（IMPL，整组汇聚后） | 测试用例归档完成，收窄或汇聚切换 | `/rdd-dev` |
+| QA（VERIFY 验收） | 已完成 / DEV（reopen 回 IMPL） | 功能+质量双通过 → 提交 → 标记已完成；任一硬性项不通过 → reopen 回 DEV（`-Phase IMPL`） | `/rdd-dev` |
+| DEV（IMPL） | QA（VERIFY） | 实现完成并自测通过，`set-route -To "QA" -Phase VERIFY`（DEV 不再自行提交） | `/rdd-qa` |
 
 > 进入下游优先用交接脚本（入口 B0，`start-role.cmd -Role <下游> -TaskId <n>`，脚本按 `RDD_RUNTIME` → `DSH_WEB_URL` → CLI 判据链自动选后端）；脚本不可用时手动 `/new` + 入口命令（B1）。
 > app-driven（Plus）模式下脚本追加 `-EmployeeId <uuid>`。

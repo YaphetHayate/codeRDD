@@ -13,7 +13,47 @@ $ErrorActionPreference = "Stop"
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 $OutputEncoding = [System.Text.Encoding]::UTF8
 $scriptRoot = $PSScriptRoot
-$repoRoot = git rev-parse --show-toplevel
+# Resolve-RepoRoot - project-root location chain (git-optional; protocol source:
+# rdd-engine/references/engine-location.md, "Project-root location chain"). Fixed order:
+#   1. $env:RDD_PROJECT_ROOT          explicit override; invalid path -> fail-loud
+#   2. git rev-parse --show-toplevel  most accurate: worktree / submodule / GIT_DIR
+#   3. nearest .git ancestor          filesystem twin of (2) when git is missing or
+#                                     refuses the repo (dubious ownership)
+#   4. nearest .rdd/install.json ancestor  anchors non-git projects back onto their
+#                                     coderdd-init root when run from a subdirectory
+#   5. cwd                            final fallback - same rule as the dsh plugin's
+#                                     findRepoRoot (one mental model across the ecosystem)
+# (2)+(3) keep every existing git project byte-identical (regression anchor);
+# (4)+(5) only rescue trees where git says "not a repository".
+function Resolve-RepoRoot {
+    $envRoot = [string]$env:RDD_PROJECT_ROOT
+    if (-not [string]::IsNullOrWhiteSpace($envRoot)) {
+        if (Test-Path -LiteralPath $envRoot -PathType Container) { return $envRoot }
+        throw "RDD_PROJECT_ROOT does not exist: $envRoot"
+    }
+    $t = $null
+    # 2>$null must stay inside try/catch: under PS5.1, redirected native stderr
+    # plus $ErrorActionPreference=Stop raises NativeCommandError.
+    try { $t = git rev-parse --show-toplevel 2>$null } catch { }
+    if ($t) { return $t.Trim() }
+    $start = (Get-Location).ProviderPath
+    $dir = $start
+    for (;;) {
+        if (Test-Path -LiteralPath (Join-Path $dir ".git")) { return $dir }
+        $parent = Split-Path -Parent $dir
+        if (-not $parent -or $parent -eq $dir) { break }
+        $dir = $parent
+    }
+    $dir = $start
+    for (;;) {
+        if (Test-Path -LiteralPath (Join-Path $dir ".rdd/install.json")) { return $dir }
+        $parent = Split-Path -Parent $dir
+        if (-not $parent -or $parent -eq $dir) { break }
+        $dir = $parent
+    }
+    return $start
+}
+$repoRoot = Resolve-RepoRoot
 
 # explore.ps1 is the READ face of the exploration cache (explore-store.ps1
 # is the write face):

@@ -194,6 +194,119 @@ import { aggregateGoalTrees, artifactLine, collectReportEntries } from '../lib/g
   console.log('[smoke] goal-root aggregation (type passthrough + counts exclusion) OK')
 }
 
+// --- 2h. structured doc rows (node-doc-links) + UX mockups (ux-mockup-links) --
+// The bridge task template (delivery-bridge New-NodeTaskText) decomposes into
+// goal/stage/duty + archive-relative doc pointers; the aggregate resolves
+// them against .rdd/changes/archive/<归档名>/ with a host-side exists stat.
+// Every other shape (free text, legacy English signature, null) parses to
+// null — the plain single-line rendering stays the fallback. The aggregate
+// additionally enumerates the archive's design/mockups/ directory (UX Phase
+// 2.5 convention: final.html / gallery page / direction artifacts) into
+// docs.mockups — html/png only, deterministic order, capped; an archive
+// without the directory degrades to [] (no chips, no row).
+{
+  const { parseNodeTask } = await import('../lib/goaltrees.js')
+  const bridgeTask = '目标：完成「planner 纯自动模式——worker 侧检查点自动决策」的 DEV 阶段（编码实现）。需求文档：requirements/planner-auto-mode.md；设计文档：design/planner-auto-mode-cto.md、design/planner-auto-mode-qa.md；归档：2026-09-22-planner-auto-mode。开工动作（辅助）：delivery-bridge.cmd -Command claim -RunId deliver-2026-09-22-planner-auto-mode -NodeId <本节点id> -Role DEV。'
+  const parsed = parseNodeTask(bridgeTask)
+  assert.equal(parsed.goal, '完成「planner 纯自动模式——worker 侧检查点自动决策」的 DEV 阶段（编码实现）。')
+  assert.equal(parsed.stage, 'DEV')
+  assert.equal(parsed.duty, '（编码实现）')
+  assert.equal(parsed.reqRel, 'requirements/planner-auto-mode.md')
+  assert.deepEqual(parsed.designRels, ['design/planner-auto-mode-cto.md', 'design/planner-auto-mode-qa.md'])
+  assert.equal(parsed.archiveName, '2026-09-22-planner-auto-mode')
+  // non-matching shapes degrade to null (zero-injection contract)
+  assert.equal(parseNodeTask(null), null)
+  assert.equal(parseNodeTask(''), null)
+  assert.equal(parseNodeTask('leaf task'), null)
+  assert.equal(parseNodeTask('Execute TaskId 1 now'), null)
+
+  // aggregation: abs resolution under the archive root + exists stat
+  const tmp = join(tmpdir(), `rdgt-smoke-docs-${Date.now()}`)
+  const runId = 'deliver-2026-09-22-demo'
+  const runDir = join(tmp, '.rdd', 'goal-trees', runId)
+  const stateDir = join(runDir, 'state')
+  mkdirSync(stateDir, { recursive: true })
+  const arch = join(tmp, '.rdd', 'changes', 'archive', '2026-09-22-demo')
+  mkdirSync(join(arch, 'requirements'), { recursive: true })
+  mkdirSync(join(arch, 'design'), { recursive: true })
+  writeFileSync(join(arch, 'requirements', 'auto-mode.md'), '# requirement')
+  writeFileSync(join(arch, 'design', 'auto-mode-cto.md'), '# design') // the QA design stays absent (pending)
+  // UX Phase 2.5 mockup convention: finalized mockup + gallery page + one
+  // direction artifact + image reference; manifest.json is the gallery's data
+  // source and must NOT surface as a chip.
+  mkdirSync(join(arch, 'design', 'mockups', 'images'), { recursive: true })
+  writeFileSync(join(arch, 'design', 'mockups', 'final.html'), '<html>final</html>')
+  writeFileSync(join(arch, 'design', 'mockups', 'index.html'), '<html>gallery</html>')
+  writeFileSync(join(arch, 'design', 'mockups', 'direction-a-info-density.png'), 'png')
+  writeFileSync(join(arch, 'design', 'mockups', 'images', 'reference.png'), 'png')
+  writeFileSync(join(arch, 'design', 'mockups', 'manifest.json'), '{}')
+  // sibling task archive WITHOUT a mockups directory: degrades to []
+  const bareArch = join(tmp, '.rdd', 'changes', 'archive', '2026-09-22-bare')
+  mkdirSync(join(bareArch, 'design'), { recursive: true })
+  const bareRunDir = join(tmp, '.rdd', 'goal-trees', 'deliver-2026-09-22-bare')
+  mkdirSync(join(bareRunDir, 'state'), { recursive: true })
+  writeFileSync(join(bareRunDir, 'manifest.json'), JSON.stringify({
+    run_id: 'deliver-2026-09-22-bare', state: 'running', goal: 'bare goal', budget: { max_rounds: 2, max_nodes: 6 },
+  }))
+  writeFileSync(join(bareRunDir, 'state', 'tree.json'), JSON.stringify({
+    format_version: 1, run_id: 'deliver-2026-09-22-bare', updated_at: '2026-09-22T00:00:00Z',
+    nodes: [
+      {
+        id: 'b1', parent: null, title: '裸归档任务', status: 'claimed', claimed_by: 'DEV', depends_on: [],
+        task: '目标：完成「裸归档任务」的 DEV 阶段（编码实现）。需求文档：requirements/bare.md；归档：2026-09-22-bare。开工动作（辅助）：delivery-bridge.cmd -Command claim -RunId deliver-2026-09-22-bare -NodeId <本节点id> -Role DEV。',
+      },
+    ],
+  }))
+  writeFileSync(join(runDir, 'manifest.json'), JSON.stringify({
+    run_id: runId, state: 'running', goal: 'structured docs goal', budget: { max_rounds: 4, max_nodes: 12 },
+  }))
+  writeFileSync(join(stateDir, 'tree.json'), JSON.stringify({
+    format_version: 1, run_id: runId, updated_at: '2026-09-22T00:00:00Z',
+    nodes: [
+      { id: 'n1', parent: null, title: '原始需求', task: '原始需求描述全文', status: 'pending', type: 'goal', depends_on: [] },
+      {
+        id: 'n2', parent: 'n1', title: 'planner 纯自动模式——worker 侧检查点自动决策', status: 'claimed', claimed_by: 'DEV', depends_on: [],
+        task: '目标：完成「planner 纯自动模式——worker 侧检查点自动决策」的 DEV 阶段（编码实现）。需求文档：requirements/auto-mode.md；设计文档：design/auto-mode-cto.md、design/auto-mode-qa.md；归档：2026-09-22-demo。开工动作（辅助）：delivery-bridge.cmd -Command claim -RunId deliver-2026-09-22-demo -NodeId <本节点id> -Role DEV。',
+      },
+      { id: 'n3', parent: 'n1', title: 'legacy leaf', task: 'legacy free-text task', status: 'pending', depends_on: [] },
+    ],
+  }))
+  const { runs } = await aggregateGoalTrees(join(tmp, '.rdd', 'goal-trees'), tmp)
+  const run = runs.find(r => r.runId === runId)
+  assert.equal(run.nodes.find(n => n.id === 'n1')?.docs, null, 'goal-root free text never parses')
+  const n2 = run.nodes.find(n => n.id === 'n2')
+  assert.ok(n2.docs !== null, 'bridge node parses')
+  assert.equal(n2.docs.goal, '完成「planner 纯自动模式——worker 侧检查点自动决策」的 DEV 阶段（编码实现）。')
+  assert.deepEqual(n2.docs.requirement, {
+    rel: 'requirements/auto-mode.md', abs: join(arch, 'requirements', 'auto-mode.md'), exists: true,
+  })
+  assert.equal(n2.docs.designs.length, 2)
+  assert.deepEqual(n2.docs.designs[0], { rel: 'design/auto-mode-cto.md', abs: join(arch, 'design', 'auto-mode-cto.md'), exists: true })
+  assert.equal(n2.docs.designs[1].exists, false, 'not-yet-produced design doc reports exists=false')
+  // ux-mockup-links: deterministic order (final → gallery → name-sorted),
+  // html/png only (manifest.json excluded), enumerated chips exist by
+  // construction, archive-relative rel spelling
+  assert.deepEqual(n2.docs.mockups.map(m => m.rel), [
+    'design/mockups/final.html',
+    'design/mockups/index.html',
+    'design/mockups/direction-a-info-density.png',
+    'design/mockups/images/reference.png',
+  ])
+  assert.deepEqual(n2.docs.mockups[0], {
+    rel: 'design/mockups/final.html', abs: join(arch, 'design', 'mockups', 'final.html'), exists: true,
+  })
+  assert.equal(run.nodes.find(n => n.id === 'n3')?.docs, null, 'legacy task: docs null (plain fallback)')
+  // archive without design/mockups/: mockups degrade to [] (no row rendered)
+  const bare = runs.find(r => r.runId === 'deliver-2026-09-22-bare')
+  assert.ok(bare !== undefined, 'bare run aggregated')
+  const b1 = bare.nodes.find(n => n.id === 'b1')
+  assert.ok(b1.docs !== null, 'bare bridge node parses')
+  assert.deepEqual(b1.docs.mockups, [], 'no mockups directory -> empty chips (zero degradation)')
+
+  rmSync(tmp, { recursive: true, force: true })
+  console.log('[smoke] structured doc rows (parse + archive join + exists) + UX mockups OK')
+}
+
 // --- 2c. view gating table (tree-display-scoping) ----------------------------
 {
   const { pickGoalTreeView } = await import('../lib/client/view-picker.js')
@@ -585,7 +698,10 @@ import { aggregateGoalTrees, artifactLine, collectReportEntries } from '../lib/g
     return stubs[spec]
   })
   assert.equal(typeof face.apply, 'function', 'exports.apply')
-  assert.ok(Array.isArray(face.inject) && face.inject.includes('slots') && face.inject.includes('locale'), 'exports.inject')
+  assert.ok(
+    Array.isArray(face.inject) && face.inject.includes('slots') && face.inject.includes('locale') && face.inject.includes('workspaces'),
+    'exports.inject (slots + locale + workspaces for the doc opener)',
+  )
   assert.equal(typeof face.GoalTreeBar, 'function', 'exports.GoalTreeBar')
   assert.equal(typeof face.WorkerNodeBar, 'function', 'exports.WorkerNodeBar')
   assert.equal(typeof face.GoalTreeDock, 'function', 'exports.GoalTreeDock')

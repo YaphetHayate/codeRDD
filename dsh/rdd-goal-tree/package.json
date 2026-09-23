@@ -1,7 +1,7 @@
 {
   "name": "@coderrdd/dsh-rdd-goal-tree",
-  "version": "0.3.0",
-  "description": "dsh profile bundle: read-only goal-tree run status — a dock strip above the composer fed by the host half's /rdd-goal-tree endpoint over .rdd/goal-trees state files; worker sessions see their own node, worker reports call back to the Planner session's inbox",
+  "version": "0.5.1",
+  "description": "dsh profile bundle: read-only goal-tree run status — a dock strip above the composer fed by the host half's /rdd-goal-tree endpoint over .rdd/goal-trees state files; worker sessions see their own node with structured goal/doc rows plus UX mockup chips (click-to-open via the workspaces opener), worker reports call back to the Planner session's inbox",
   "type": "module",
   "main": "./lib/index.js",
   "types": "./lib/index.d.ts",

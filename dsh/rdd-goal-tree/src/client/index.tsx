@@ -18,6 +18,21 @@
  * as the degradation. The order-sensitive gating lives in view-picker.ts
  * (pickGoalTreeView), asserted row by row in the smoke suite.
  *
+ * Structured doc rows (node-doc-links): when the node's task text carries the
+ * bridge template (delivery-bridge's New-NodeTaskText), the worker view
+ * renders the goal sentence, the requirement doc, and the design docs as
+ * dedicated rows; doc chips open the file through ctx.workspaces.openPath
+ * (the Host's OS-default opener — the same channel the chat view's file
+ * paths use), and a not-yet-produced doc (design pending) renders disabled.
+ * Every non-matching task keeps the legacy single-line rendering.
+ *
+ * UX mockup chips (ux-mockup-links): the host half additionally enumerates the
+ * archive's design/mockups/ directory (final.html / gallery page / direction
+ * artifacts) into docs.mockups; the worker view renders them as a wrapped
+ * "mockups" chip row — a click opens the visual through the same workspaces
+ * opener (an .html mockup opens rendered in the default browser). An archive
+ * without mockups simply renders no row.
+ *
  * Loading, absent, and empty states render nothing at all (the GoalBar
  * posture). All framework imports are type-only except React (baseline module
  * table) — the bundle's runtime requires are exactly `react`, `react/jsx-runtime`,
@@ -56,6 +71,12 @@ const zh = {
   'mine.done': '已裁定完成',
   'mine.pruned': '已被剪枝',
   'task': '任务',
+  'mine.goal': '目标',
+  'mine.req': '需求文档',
+  'mine.design': '设计文档',
+  'mine.mockup': '视觉稿',
+  'docs.open': '点击打开',
+  'docs.missing': '未产出',
   'task.reportNext': '完成后回报：goal-tree-leaf.cmd -Command report -RunId {run} -Worker {worker} -CallbackFile <callback.json>',
   'task.reportedHint': '已回报，等待规划者裁定（settle / prune / graft）',
   'planner.hint': '个节点已回报，等待你的裁定 → settle / prune',
@@ -83,6 +104,12 @@ const en = {
   'mine.done': 'settled done',
   'mine.pruned': 'pruned',
   'task': 'task',
+  'mine.goal': 'goal',
+  'mine.req': 'requirement',
+  'mine.design': 'design',
+  'mine.mockup': 'mockups',
+  'docs.open': 'click to open',
+  'docs.missing': 'not produced',
   'task.reportNext': 'when done, report: goal-tree-leaf.cmd -Command report -RunId {run} -Worker {worker} -CallbackFile <callback.json>',
   'task.reportedHint': 'reported — awaiting Planner verdict (settle / prune / graft)',
   'planner.hint': 'node(s) reported, awaiting your verdict → settle / prune',
@@ -104,11 +131,34 @@ const NS = 'rddGoalTree'
 
 // ── wire view (mirrors the host half's aggregateGoalTrees output) ────────────
 
+/** One clickable doc pointer (node-doc-links): display spelling + open target. */
+interface DocLinkView {
+  /** Archive-relative spelling exactly as the task text carries it. */
+  rel: string
+  /** Absolute path — what ctx.workspaces.openPath receives on click. */
+  abs: string
+  /** Host-side stat: false renders a disabled "not produced" chip. */
+  exists: boolean
+}
+
+/** The structured decomposition of a bridge node's task text; null otherwise. */
+interface NodeDocsView {
+  goal: string
+  stage: string
+  duty: string | null
+  requirement: DocLinkView | null
+  designs: DocLinkView[]
+  /** UX mockups enumerated from the archive's design/mockups/ (ux-mockup-links). */
+  mockups: DocLinkView[]
+}
+
 interface GoalTreeNodeView {
   id: string
   parent: string | null
   title: string
   task: string | null
+  /** Structured goal/doc slots when the task carries the bridge template. */
+  docs: NodeDocsView | null
   /** Engine node type: 'goal' = original-requirement root (rendered with the ◎ glyph). */
   type: string | null
   status: string
@@ -191,18 +241,25 @@ const CSS = `
 .rdgt-head{display:flex;align-items:center;gap:10px;min-height:30px;width:100%;background:none;border:none;cursor:pointer;padding:0;color:inherit;text-align:left;font:inherit}
 .rdgt-glyph{color:var(--dsw-alias-label-tertiary,#888);flex:none;display:inline-flex}
 .rdgt-title{color:var(--dsw-alias-label-primary,#eee);flex:none;font-size:13px;font-weight:500;line-height:22px}
-.rdgt-run{color:var(--dsw-alias-label-secondary,#aaa);flex:none;font-size:12px;line-height:20px;font-family:ui-monospace,Consolas,monospace}
+.rdgt-run{color:var(--dsw-alias-label-secondary,#aaa);flex:0 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12px;line-height:20px;font-family:ui-monospace,Consolas,monospace}
 .rdgt-badge{flex:none;font-size:11px;line-height:18px;padding:0 8px;border-radius:999px;border:1px solid var(--dsw-alias-border-l2,rgba(127,127,127,.4));color:var(--dsw-alias-label-secondary,#aaa)}
 .rdgt-badge[data-running='1']{color:var(--dsw-alias-state-business-primary,#4c8dff);border-color:currentColor}
 .rdgt-badge[data-mine='1']{color:var(--dsw-alias-state-business-primary,#4c8dff);border-color:currentColor}
 .rdgt-badge[data-mine='2']{color:var(--dsw-alias-state-warning-primary,#e0a23a);border-color:currentColor}
 .rdgt-badge[data-mine='3']{color:var(--dsw-alias-state-success-primary,#3fb96f);border-color:currentColor}
-.rdgt-meta{color:var(--dsw-alias-label-secondary,#aaa);flex:none;font-size:12px;line-height:20px;white-space:nowrap}
+.rdgt-meta{color:var(--dsw-alias-label-secondary,#aaa);flex:0 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12px;line-height:20px}
 .rdgt-counts{color:var(--dsw-alias-label-tertiary,#888);flex:none;font-size:12px;line-height:20px;white-space:nowrap}
 .rdgt-goal{min-width:0;color:var(--dsw-alias-label-primary-dimmed,#999);text-overflow:ellipsis;white-space:nowrap;overflow:hidden;flex:1;font-size:13px;line-height:20px}
 .rdgt-chevron{color:var(--dsw-alias-label-tertiary,#888);flex:none;display:inline-flex}
 .rdgt-body{margin:1px 0 2px;padding:0 2px;display:flex;flex-direction:column;gap:1px}
 .rdgt-task{color:var(--dsw-alias-label-primary,#ddd);font-size:12px;line-height:19px;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+.rdgt-row{display:flex;align-items:baseline;gap:8px;min-width:0}
+.rdgt-rowWrap{flex-wrap:wrap}
+.rdgt-rowLabel{color:var(--dsw-alias-label-tertiary,#888);flex:none;font-size:11px;line-height:19px}
+.rdgt-rowText{color:var(--dsw-alias-label-primary,#ddd);font-size:12px;line-height:19px;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.rdgt-doc{flex:none;max-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;background:none;border:1px solid var(--dsw-alias-border-l2,rgba(127,127,127,.4));border-radius:6px;color:var(--dsw-alias-state-business-primary,#4c8dff);cursor:pointer;font:inherit;font-size:11px;line-height:18px;padding:0 8px;margin:1px 6px 1px 0}
+.rdgt-doc:hover{border-color:currentColor}
+.rdgt-doc[data-missing='1']{color:var(--dsw-alias-label-tertiary,#666);border-style:dashed;cursor:default}
 .rdgt-hint{color:var(--dsw-alias-label-tertiary,#888);font-size:11px;line-height:18px;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
 .rdgt-hint[data-kind='reported']{color:var(--dsw-alias-state-warning-primary,#e0a23a)}
 .rdgt-hint[data-kind='planner']{color:var(--dsw-alias-state-warning-primary,#e0a23a)}
@@ -271,11 +328,43 @@ function NodeList({ run, t }: { run: GoalTreeRunView; t: (key: GoalTreeKey) => s
 }
 
 /**
- * The worker (leaf-session) view: this session's claimed node front and center
- * — id, status badge, the task text, the report next-step — with the full tree
- * behind a "show full tree" toggle.
+ * One document chip (node-doc-links): existing docs open through the
+ * workspaces service — the same Host opener the chat view's own file paths
+ * use (ctx.workspaces.openPath, OS default application); a doc the archive
+ * does not carry yet (design pending) renders disabled with a "not produced"
+ * marker instead of a dead click.
  */
-export function WorkerNodeBar({ run, node, t }: { run: GoalTreeRunView; node: GoalTreeNodeView; t: (key: GoalTreeKey) => string }) {
+function DocChip({ doc, open, t }: { doc: DocLinkView; open: (abs: string) => void; t: (key: GoalTreeKey) => string }) {
+  if (!doc.exists) {
+    return <span className="rdgt-doc" data-missing="1" title={doc.abs}>{doc.rel} · {t('docs.missing')}</span>
+  }
+  return (
+    <button
+      type="button"
+      className="rdgt-doc"
+      title={`${t('docs.open')}: ${doc.abs}`}
+      onClick={() => { open(doc.abs) }}
+    >
+      {doc.rel}
+    </button>
+  )
+}
+
+/**
+ * The worker (leaf-session) view: this session's claimed node front and center
+ * — id, status badge, the task, the report next-step — with the full tree
+ * behind a "show full tree" toggle. Bridge-shaped tasks render as structured
+ * rows (goal sentence / requirement doc / design docs, the doc chips clickable
+ * through the workspaces opener); every other shape keeps the legacy single
+ * task line (zero-degradation fallback).
+ */
+export function WorkerNodeBar({ run, node, t, openDoc = () => {} }: {
+  run: GoalTreeRunView
+  node: GoalTreeNodeView
+  t: (key: GoalTreeKey) => string
+  /** Opens one absolute doc path (injected from ctx.workspaces in apply). */
+  openDoc?: (abs: string) => void
+}) {
   ensureCss()
   const [showTree, setShowTree] = useState(false)
   const badge = node.status === 'claimed'
@@ -288,6 +377,7 @@ export function WorkerNodeBar({ run, node, t }: { run: GoalTreeRunView; node: Go
           ? { text: t('mine.pruned'), data: '0' }
           : { text: t('mine.claimed'), data: '1' }
   const reportNext = t('task.reportNext').replace('{run}', run.runId).replace('{worker}', node.claimedBy ?? '?')
+  const docs = node.docs
 
   return (
     <div className="rdgt-dock" data-rdd-goal-tree="" data-view="worker">
@@ -303,7 +393,34 @@ export function WorkerNodeBar({ run, node, t }: { run: GoalTreeRunView; node: Go
           <span className="rdgt-goal">{run.goal}</span>
         </div>
         <div className="rdgt-body">
-          <div className="rdgt-task" title={node.task ?? ''}>{t('task')}: {node.task ?? node.title}</div>
+          {docs !== null ? (
+            <>
+              <div className="rdgt-row" title={docs.goal}>
+                <span className="rdgt-rowLabel">{t('mine.goal')}</span>
+                <span className="rdgt-rowText">{docs.goal}</span>
+              </div>
+              {docs.requirement !== null && (
+                <div className="rdgt-row">
+                  <span className="rdgt-rowLabel">{t('mine.req')}</span>
+                  <DocChip doc={docs.requirement} open={openDoc} t={t} />
+                </div>
+              )}
+              {docs.designs.length > 0 && (
+                <div className="rdgt-row rdgt-rowWrap">
+                  <span className="rdgt-rowLabel">{t('mine.design')}</span>
+                  {docs.designs.map(doc => <DocChip key={doc.abs} doc={doc} open={openDoc} t={t} />)}
+                </div>
+              )}
+              {docs.mockups.length > 0 && (
+                <div className="rdgt-row rdgt-rowWrap">
+                  <span className="rdgt-rowLabel">{t('mine.mockup')}</span>
+                  {docs.mockups.map(doc => <DocChip key={doc.abs} doc={doc} open={openDoc} t={t} />)}
+                </div>
+              )}
+            </>
+          ) : (
+            <div className="rdgt-task" title={node.task ?? ''}>{t('task')}: {node.task ?? node.title}</div>
+          )}
           {node.status === 'reported' || node.status === 'done' ? (
             <div className="rdgt-hint" data-kind="reported">{t('task.reportedHint')}</div>
           ) : (
@@ -374,7 +491,10 @@ export function GoalTreeBar({ run, t, isPlanner = false }: { run: GoalTreeRunVie
 }
 
 /** Full props of the dock entry: session standard kit + global seat + the locale seat. */
-export type GoalTreeDockProps = PropsRuntime<'conversation.input.dock'> & PropsLocale<'rddGoalTree'>
+export type GoalTreeDockProps = PropsRuntime<'conversation.input.dock'> & PropsLocale<'rddGoalTree'> & {
+  /** Opens one absolute doc path; injected from ctx.workspaces in apply. */
+  openDoc?: (abs: string) => void
+}
 
 /**
  * Dock adapter: reads the current session's cwd and id, polls the repository's
@@ -382,7 +502,7 @@ export type GoalTreeDockProps = PropsRuntime<'conversation.input.dock'> & PropsL
  * worker (this session claims a node) > planner (this session created a run)
  * > plain degradation (lead run without a planner sidecar) > nothing.
  */
-export function GoalTreeDock({ useSessions, t }: GoalTreeDockProps) {
+export function GoalTreeDock({ useSessions, t, openDoc }: GoalTreeDockProps) {
   const cwd = useSessions(list =>
     list.current === undefined ? undefined : list.byId[list.current]?.cwd)
   const sessionId = useSessions(list => list.current)
@@ -391,14 +511,16 @@ export function GoalTreeDock({ useSessions, t }: GoalTreeDockProps) {
 
   const picked = pickGoalTreeView(runs, sessionId)
   if (picked === null) return null
-  if (picked.view === 'worker') return <WorkerNodeBar run={picked.run} node={picked.node} t={t} />
+  if (picked.view === 'worker') return <WorkerNodeBar run={picked.run} node={picked.node} t={t} openDoc={openDoc} />
   return <GoalTreeBar run={picked.run} t={t} isPlanner={picked.view === 'planner'} />
 }
 
 // ── plugin body ───────────────────────────────────────────────────────────────
 
-/** Required services: the slot registry and the locale registry. */
-export const inject = ['slots', 'locale']
+/** Required services: the slot registry, the locale registry, and the
+ *  workspaces service (doc chips open through ctx.workspaces.openPath —
+ *  the same Host opener the chat view's file paths use). */
+export const inject = ['slots', 'locale', 'workspaces']
 
 /**
  * Client plugin body: register the dictionaries and the dock entry.
@@ -407,10 +529,16 @@ export const inject = ['slots', 'locale']
 export function apply(ctx: ClientContext): void {
   ctx.effect(() => ctx.locale.register(NS, { zh, en }), 'rdd-goal-tree: dictionaries')
 
+  // Doc chips open through the workspaces service's Host opener (OS default
+  // application) — the exact channel the chat view's own openFile uses. The
+  // promise is fire-and-forget: a Host-side failure surfaces there, never as
+  // an unhandled rejection inside the dock.
+  const openDoc = (abs: string): void => { void ctx.workspaces.openPath(abs) }
+
   ctx.slots.inject('conversation.input.dock', () => ctx.slots.register({
     name: 'conversation.input.dock',
     id: 'rdd-goal-tree',
     order: 30,
     locale: NS,
-  }, GoalTreeDock))
+  }, (props: GoalTreeDockProps) => <GoalTreeDock {...props} openDoc={openDoc} />))
 }

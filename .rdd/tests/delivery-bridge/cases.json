@@ -11,9 +11,10 @@
                         "rdd-engine/references/planner-guide.md"
                     ],
     "testCode":  [
-                     ".rdd/tests/delivery-bridge/delivery-bridge-verify.ps1"
+                     ".rdd/tests/delivery-bridge/delivery-bridge-verify.ps1",
+                     "rdd-engine/tests/test-phase-model.ps1"
                  ],
-    "lastChange":  "2026-09-20-planner-enhancements",
+    "lastChange":  "2026-09-23-delivery-phase-model",
     "cases":  [
                   {
                       "id":  "TC-B01",
@@ -888,11 +889,11 @@
                    },
                     {
                         "id":  "TC-B45",
-                        "title":  "rollback 守卫矩阵:pending/claimed 拒(REQUIRES_REPORTED)/缺 Reason 拒/链头无前一阶段拒(NO_PREVIOUS_STAGE 指引 reclaim)/根节点非映射拒/证据合格拒(REQUIRES_UNQUALIFIED 指引 settle)",
+                        "title":  "rollback 守卫矩阵(phase-model 显式目标接口):缺 -Phase 拒(SET_PHASE_REQUIRED)/坏枚举拒(PHASE_INVALID)/缺 -To 拒(MISSING_TO)/越白名单拒(PHASE_OWNER_MISMATCH)/pending·claimed 拒(REQUIRES_REPORTED)/缺 Reason 拒/根节点拒/证据合格拒(REQUIRES_UNQUALIFIED 指引 settle)/链头显式目标回退成功(父推导守卫 NO_PREVIOUS_STAGE 已移除)",
                         "type":  "negative",
                         "priority":  "P0",
                         "acceptance":  "SRB-AC-1",
-                        "codeRef":  ".rdd/tests/delivery-bridge/delivery-bridge-verify.ps1:1825",
+                        "codeRef":  ".rdd/tests/delivery-bridge/delivery-bridge-verify.ps1:1829",
                         "sourceChange":  "2026-09-20-planner-enhancements",
                         "status":  "active",
                         "crossFeature":  [
@@ -910,7 +911,7 @@
                     },
                     {
                         "id":  "TC-B46",
-                        "title":  "rollback 全链:QA 判不合格 → 单命令剪枝+兄弟挂接重建 DEV+reopen 路由回退+自动重推;三层一致;重做上下文进 node.task 与指针;重做闭环后链不变量保持",
+                        "title":  "rollback 全链(显式目标 -To/-Phase):QA 判不合格 → 单命令剪枝+兄弟挂接重建 DEV+set-route 原子回退(owners+phase 白名单重写+worker 残留清除)+自动重推;三层一致;重做上下文进 node.task 与指针;重做闭环后链不变量保持",
                         "type":  "positive",
                         "priority":  "P0",
                         "acceptance":  "SRB-AC-1/2/3",
@@ -1139,6 +1140,221 @@
                                         "断言载波 session.create 零增量、pushes 账零写入"
                                     ],
                           "expected":  "颁布时 trigger 含 NoPush、pushed=0、per-node pushes 账为空且 status 触碰后保持为零(session.create 零增量)——隔离承诺全生命周期成立。【缺陷史:defect F1 曾于 2026-09-22 首轮验证 FAIL(status 触碰真实推送 2 节点并写入 n4,n2 推送账,即 0923 事故机制);n13 重做轮改为 run 级 no_push 持久化属性 + Invoke-AutoDispatch 入口顶闸;2026-09-22 n14 复验 automode 8/8 全 PASS,本用例转绿(F1 销项)】"
-                      }
+                      },
+                      {
+                          "id":  "TC-B58",
+                          "title":  "set-route 白名单硬约束:跨阶段集无 -Phase 拒(SET_PHASE_REQUIRED)/显式 -Phase 下越白名单拒(PHASE_OWNER_MISMATCH)/拒绝后 task.json 零污染/显式原子切换合法/-Phase 切 VERIFY;legacy 无 phase 跨阶段集拒、歧义角色(QA)拒",
+                          "type":  "negative",
+                          "priority":  "P0",
+                          "acceptance":  "AC-1",
+                          "codeRef":  "rdd-engine/tests/test-phase-model.ps1:349",
+                          "sourceChange":  "2026-09-23-delivery-phase-model",
+                          "status":  "active",
+                          "crossFeature":  [
+                                               "task-claim"
+                                           ],
+                          "precondition":  "临时 git 仓库 fixture(pm-s10 带 phase,pm-s8 legacy 无 phase)",
+                          "steps":  [
+                                        "set-route -To CTO+DEV(无 -Phase)于 DESIGN 任务",
+                                        "set-route -Phase IMPL -To CTO+UX(CTO 越白名单)",
+                                        "复读 task.json 断言 owners/phase 未被污染",
+                                        "set-route -Phase VERIFY -To QA(合法原子切换)",
+                                        "legacy 任务 set-route -To CTO+DEV / -To QA(无 -Phase)"
+                                    ],
+                          "expected":  "10a SET_PHASE_REQUIRED;10b PHASE_OWNER_MISMATCH;10c owners=[CTO] phase=DESIGN 不变;10d owners=[QA] phase=VERIFY 持久化;10e PHASE_OWNER_MISMATCH(跨阶段零候选);10f SET_PHASE_REQUIRED(QA 跨 DESIGN/VERIFY 歧义)——白名单写入硬约束全分支成立"
+                      },
+                      {
+                          "id":  "TC-B59",
+                          "title":  "终态 phase=null 双面:deprecate 写面清空 phase;check 对 deprecated/completed 残留 phase 报 PHASE_LIFECYCLE_CONFLICT",
+                          "type":  "boundary",
+                          "priority":  "P0",
+                          "acceptance":  "AC-1",
+                          "codeRef":  "rdd-engine/tests/test-phase-model.ps1:371",
+                          "sourceChange":  "2026-09-23-delivery-phase-model",
+                          "status":  "active",
+                          "crossFeature":  [
+                                               "task-claim"
+                                           ],
+                          "precondition":  "fixture pm-s11(active CTO)+手写归档 pm-s11b(deprecated@DESIGN + completed@VERIFY 残留)",
+                          "steps":  [
+                                        "rdd-flow deprecate 后读 task.json",
+                                        "check 手写终态残留 phase 归档"
+                                    ],
+                          "expected":  "deprecate 后 lifecycle=deprecated 且 phase=null(写面不变量);check 对两类终态残留各报一条 PHASE_LIFECYCLE_CONFLICT(读面守卫)——schema 不变量双面闭环"
+                      },
+                      {
+                          "id":  "TC-B60",
+                          "title":  "rollback 显式 -Phase 必填(边界 E2):缺 -Phase → SET_PHASE_REQUIRED;补齐 -To/-Phase/Reason 后 pending 状态守卫(REQUIRES_REPORTED)照常生效",
+                          "type":  "negative",
+                          "priority":  "P0",
+                          "acceptance":  "E2",
+                          "codeRef":  "rdd-engine/tests/test-phase-model.ps1:397",
+                          "sourceChange":  "2026-09-23-delivery-phase-model",
+                          "status":  "active",
+                          "crossFeature":  [],
+                          "precondition":  "fixture pm-s13(promulgate -NoPush,pending 链头 n2)",
+                          "steps":  [
+                                        "rollback -To CTO+UX(缺 -Phase,带 Reason)",
+                                        "rollback -To QA -Phase DESIGN -Reason(参数齐全,pending 节点)"
+                                    ],
+                          "expected":  "缺 -Phase → SET_PHASE_REQUIRED(回退目标是规划者显式输入,父推导猜测不再适用);参数齐全时按守卫序继续 → ROLLBACK_REQUIRES_REPORTED——阶段回退歧义必须显式消解"
+                      },
+                      {
+                          "id":  "TC-B61",
+                          "title":  "show 读面透出规范化 phase:phase-aware 归档透出 VERIFY;legacy 归档 phase=null 保守降级不 crash",
+                          "type":  "positive",
+                          "priority":  "P1",
+                          "acceptance":  "AC-4/AC-8",
+                          "codeRef":  "rdd-engine/tests/test-phase-model.ps1:387",
+                          "sourceChange":  "2026-09-23-delivery-phase-model",
+                          "status":  "active",
+                          "crossFeature":  [
+                                               "task-claim"
+                                           ],
+                          "precondition":  "pm-s10(活跃 QA@VERIFY)与 pm-s8(legacy 无 phase)",
+                          "steps":  [
+                                        "rdd-flow show 于 phase-aware 归档,读 tasks[0].phase",
+                                        "rdd-flow show 于 legacy 归档,读 tasks[0].phase"
+                                    ],
+                          "expected":  "phase-aware 透出 VERIFY(消费方零推导);legacy 透出 null 且命令成功不 crash——读面规范化字段与保守降级双形态成立"
+                      },
+                  {
+                      "id": "TC-B62",
+                      "title": "并行汇聚:currentOwners=[CTO,UX] 建 2 链头 → CTO settle 只收窄不 graft → UX settle 才 graft 唯一 DEV(无树分裂);下游任务链头多锚依赖双上游头,单头 settle 保持阻塞",
+                      "type": "positive",
+                      "priority": "P0",
+                      "acceptance": "AC-2",
+                      "codeRef": "rdd-engine/tests/test-phase-model.ps1:151",
+                      "sourceChange": "2026-09-23-delivery-phase-model",
+                      "status": "active",
+                      "crossFeature": [
+                          "goal-tree"
+                      ],
+                      "precondition": "临时 git 仓库 fixture(pm-s2 并行双头;pm-s9 双任务多锚依赖),promulgate -NoPush",
+                      "steps": [
+                          "promulgate [CTO,UX],断言 CTO/UX 两链头节点互异",
+                          "CTO claim→report→settle,断言 next_stage_nodes=0 且 owners 收窄为 [UX]",
+                          "UX settle,断言 next_stage_nodes=1(唯一 DEV)且 DEV 挂最后 settle 的 UX 节点下",
+                          "S9:断言下游任务链头 depends_on 含两个上游链头;单头 settle 后 next 仍 blocked;双头终态后转 pending"
+                      ],
+                      "expected": "并行组两链头各建节点;CTO 先 settle 不触发 graft(剩余 owner 未清);UX 最后 settle 收敛出唯一 DEV 节点(父=UX 节点,无分裂双 DEV);依赖边多锚——下游仅当全部上游链头终态才解锁"
+                  },
+                  {
+                      "id": "TC-B63",
+                      "title": "阶段内串行:[CTO]+set-route 扩为 CTO+UX 保持 DESIGN → CTO settle 立即 graft UX(阶段内流转)",
+                      "type": "positive",
+                      "priority": "P0",
+                      "acceptance": "AC-3",
+                      "codeRef": "rdd-engine/tests/test-phase-model.ps1:180",
+                      "sourceChange": "2026-09-23-delivery-phase-model",
+                      "status": "active",
+                      "crossFeature": [
+                          "task-claim"
+                      ],
+                      "precondition": "fixture pm-s3(currentOwners=[CTO]),promulgate 后 set-route -To CTO+UX(无 -Phase,白名单内扩展)",
+                      "steps": [
+                          "set-route -To CTO+UX,断言 success 且 phase 仍 DESIGN",
+                          "CTO claim→report→settle",
+                          "断言 next_stage_nodes=1(UX 立即 graft)且 owners=[UX] phase=DESIGN"
+                      ],
+                      "expected": "阶段内扩展 owner 合法(⊆ PhaseRoles[DESIGN]);CTO settle 后 UX 节点立即出现(同阶段内下游流转,不等全组收敛)——顺序流转与并行汇聚双形态在同一阶段内共存"
+                  },
+                  {
+                      "id": "TC-B64",
+                      "title": "单 owner 全链行为一致:[CTO]→[DEV]→[QA]→complete 与阶段模型前行为逐字节等价(阶段切换路径/owners/终态 phase=null/check 干净)",
+                      "type": "positive",
+                      "priority": "P0",
+                      "acceptance": "AC-4",
+                      "codeRef": "rdd-engine/tests/test-phase-model.ps1:119",
+                      "sourceChange": "2026-09-23-delivery-phase-model",
+                      "status": "active",
+                      "crossFeature": [],
+                      "precondition": "fixture pm-s1(currentOwners=[CTO]),生产解释器(Windows PowerShell 5.1)全链驱动",
+                      "steps": [
+                          "promulgate→CTO settle,断言 flow_operation=set-route DESIGN->IMPL 且 owners=[DEV] phase=IMPL",
+                          "DEV settle,断言 owners=[QA] phase=VERIFY",
+                          "QA settle,断言 lifecycle=completed 且 phase=null",
+                          "rdd-flow check,断言 issueCount=0"
+                      ],
+                      "expected": "单角色链在阶段模型下逐环节等价推进:每阶段 settle 原子切换 owners+phase,终态 completed 携带 phase=null,check 零 issue——回归锚点成立"
+                  },
+                  {
+                      "id": "TC-B65",
+                      "title": "阶段回退:rollback -To CTO+UX -Phase DESIGN 剪枝 IMPL → 兄弟挂接重建双链头(parent=n1) → set-route 回 DESIGN → 重做闭环至 completed",
+                      "type": "positive",
+                      "priority": "P0",
+                      "acceptance": "AC-5",
+                      "codeRef": "rdd-engine/tests/test-phase-model.ps1:226",
+                      "sourceChange": "2026-09-23-delivery-phase-model",
+                      "status": "active",
+                      "crossFeature": [
+                          "goal-tree"
+                      ],
+                      "precondition": "复用 pm-s2 run:DEV 节点以不合格证据 report(缺 extras.verification)后 settle 被拒(SETTLE_EVIDENCE_REJECTED)",
+                      "steps": [
+                          "rollback -To CTO+UX -Phase DESIGN -Reason 设计缺陷回退",
+                          "断言 rebuilt_nodes=2 且两重建头 parent=n1(链头层兄弟挂接)",
+                          "断言 task.json owners=[CTO,UX] phase=DESIGN",
+                          "CTO/UX 重做 settle → 断言收敛回唯一 DEV(新 nodeId≠被剪枝节点)→ DEV/QA 闭环 → completed"
+                      ],
+                      "expected": "剪枝留审计;整组双头一次命令重建;flow 侧原子回退(owners+phase 重写);重做后树不变量保持且闭环可达——阶段级回退全链成立"
+                  },
+                  {
+                      "id": "TC-B66",
+                      "title": "阶段门禁双通道:promulgate 跨阶段集(无存量 phase)报 GROUP_DIVERGENT_NEXT(边界E1)/存量 phase 与 owners 冲突报 PHASE_OWNER_MISMATCH;check 对 [UX,DEV]@DESIGN 报 PHASE_OWNER_MISMATCH、legacy 无 phase 静默",
+                      "type": "negative",
+                      "priority": "P0",
+                      "acceptance": "AC-6",
+                      "codeRef": "rdd-engine/tests/test-phase-model.ps1:264",
+                      "sourceChange": "2026-09-23-delivery-phase-model",
+                      "status": "active",
+                      "crossFeature": [
+                          "task-claim"
+                      ],
+                      "precondition": "手写归档 pm-s6a([UX,DEV] 无 phase)/pm-s6b([CTO,UX] phase=IMPL)/pm-s6c([UX,DEV] phase=DESIGN)",
+                      "steps": [
+                          "promulgate pm-s6a,断言 GROUP_DIVERGENT_NEXT",
+                          "promulgate pm-s6b,断言 PHASE_OWNER_MISMATCH",
+                          "rdd-flow check pm-s6c,断言含 PHASE_OWNER_MISMATCH issue",
+                          "rdd-flow check pm-s6a(legacy),断言 issueCount=0"
+                      ],
+                      "expected": "建树门禁与读面校验双通道一致拦截跨阶段/越白名单状态;legacy 无 phase 保守静默不 crash——白名单硬约束的进入侧与存量侧双向成立"
+                  },
+                  {
+                      "id": "TC-B67",
+                      "title": "QA 双阶段:[CTO,UX,QA] 中 QA settle 只收窄不触发阶段切换(flow_operation=narrow);[QA] 单独 init 推断 VERIFY 且 settle 即 complete;VERIFY 期 QA 重入获得新节点(与 DESIGN 期 QA 节点互异)",
+                      "type": "positive",
+                      "priority": "P0",
+                      "acceptance": "AC-7",
+                      "codeRef": "rdd-engine/tests/test-phase-model.ps1:198",
+                      "sourceChange": "2026-09-23-delivery-phase-model",
+                      "status": "active",
+                      "crossFeature": [],
+                      "precondition": "fixture pm-s4(测试先行三头)与 pm-s7(独立 QA);QA 跨 DESIGN/VERIFY 双白名单的歧义消解验证",
+                      "steps": [
+                          "pm-s4:QA settle,断言 flow_operation=set-route narrow 且 owners=[CTO,UX] phase=DESIGN",
+                          "CTO/UX settle 至 IMPL→DEV settle,断言新 QA(verify) 节点≠设计期 QA 节点",
+                          "pm-s7:init 后断言 phase=VERIFY;QA settle 断言 lifecycle=completed"
+                      ],
+                      "expected": "QA 在 DESIGN=测试设计、在 VERIFY=验收执行,两身份节点独立;设计期 settle 只收窄 owners 不切阶段;独立 [QA] 任务直达 VERIFY 终态——歧义角色的阶段归属双形态正确"
+                  },
+                  {
+                      "id": "TC-B68",
+                      "title": "legacy 无 phase 降级:promulgate/settle(advance 老路径)/task.json 不隐式推断 phase 三面保守降级,行为与旧版一致",
+                      "type": "boundary",
+                      "priority": "P0",
+                      "acceptance": "AC-8",
+                      "codeRef": "rdd-engine/tests/test-phase-model.ps1:309",
+                      "sourceChange": "2026-09-23-delivery-phase-model",
+                      "status": "active",
+                      "crossFeature": [],
+                      "precondition": "手写归档 pm-s8(task 无 phase 字段,owners=[CTO])",
+                      "steps": [
+                          "promulgate pm-s8,断言 success(保守降级)",
+                          "读 task.json 断言 phase 保持 null(无隐式推断)",
+                          "CTO settle,断言 flow_operation=advance CTO->DEV(老路径)且 owners=[DEV] phase=null"
+                      ],
+                      "expected": "旧归档全程走 StageNext 线性链老路径;settle/check/show 均不 crash;phase 永不隐式写入(migrate 是唯一回填通道)——存量归档零迁移成本"
+                  }
                ]
 }

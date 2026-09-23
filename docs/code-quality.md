@@ -86,7 +86,7 @@ Agent 需要理解代码时，按场景选择探索手段，不要混用：
 - **不要**在无匹配后跳过注册：不注册的探索产物无法被后续会话命中，等于白做
 - **不要**用 `rdd-explore` subagent 做简单定位：它是可写 worker（fresh context 成本高），仅用于无匹配后的深度探索
 - **注册必须带 tags**：tags 是 LLM 判断命中/未命中的核心依据，走 `explore-store.cmd -Type register -Tags "..."` CLI（注册入热区，下一次检索立即可见）
-- **MCP 工具 `rdd_explore` / `rdd_explore_register` 已废弃删除**（与现行协议双重断裂：恒走 MISS 分支、注册缺 Tags 必然失败，且零存量用户）。OpenCode 的规范路径是 SKILL → shell CLI（`explore.cmd -Type search` 检索 / `explore-store.cmd -Type register` 注册）。旧版安装过 `.opencode/tools/rdd_explore.ts` 的项目：`coderrdd uninstall` 按清单清理，或手动删除该文件
+- **MCP 工具 `rdd_explore` / `rdd_explore_register` 已废弃删除**（与现行协议双重断裂：恒走 MISS 分支、注册缺 Tags 必然失败，且零存量用户）。OpenCode 的规范路径是 SKILL → shell CLI（`explore.cmd -Type search` 检索 / `explore-store.cmd -Type register` 注册）。旧版安装过 `.opencode/tools/rdd_explore.ts` 的项目：`coderdd uninstall` 按清单清理，或手动删除该文件
 
 ### 注册时的文件列表
 

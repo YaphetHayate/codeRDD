@@ -29,9 +29,10 @@ PM 归档（longTask 信号触发）→ start-role -Role PLANNER -TaskJson ...�
                   误启收到 start-role 拒绝 PLANNER_RUN_ACTIVE；
                   回调携带产物位置：citations=改动清单，full_report=主产物文档指针，
                   extras.verification=验证结果）
-  5. settle       流转：三查 → 树 settle → rdd-flow advance/complete → 自动 graft 下阶段节点
-                  → 尾部【自动推送】新解锁节点（依赖满足者）；三查不过即拒（不合格交付不流转）——
-                  同阶段重做走 reclaim，跨阶段回退走 rollback（剪枝+兄弟重建+reopen+自动重推）
+  5. settle       流转：三查 → 树 settle → rdd-flow set-route（阶段内收窄 / 末位汇聚切换
+                   -To PhaseRoles[下阶段] -Phase）或 complete → 收敛 graft 下一阶段链头
+                   → 尾部【自动推送】新解锁节点（依赖满足者）；三查不过即拒（不合格交付不流转）——
+                   同阶段重做走 reclaim，跨阶段回退走 rollback（剪枝+按 -To/-Phase 重建+set-route+自动重推）
   6. 循环 4-5；中断后任意新规划者会话 resume 续跑（status 触碰兜底补推漏推节点）
   7. conclude     结案：全部任务终态 → 以目标根为锚 → final-report + delivery-annex.md（含 rdd-flow check）
 ```
@@ -40,7 +41,7 @@ PM 归档（longTask 信号触发）→ start-role -Role PLANNER -TaskJson ...�
 
 **树形语义（目标根模型）**：根节点 = `type=goal` 的**目标根**——承载归档原始需求（overview.md 的 H1 标题 + 全文描述），不可认领（`GOAL_NODE_NOT_CLAIMABLE`）、不参与依赖（`DEP_GOAL_FORBIDDEN`）、conclude 终局锚点（全部直接子节点终态 ⇒ 根目标达成）。一级子节点 = PM 拆分的**子需求链头**（合一模型：链头即首阶段工作节点，`ref=<归档名>/<需求文档路径>` 绑定需求文档）；CTO→DEV→QA 阶段链在需求节点下随流转链式 graft（1 任务 : N 节点，映射落盘 bridge.json）。
 
-**阶段链模型**：任务生命周期跨角色，阶段推进链：`CTO → DEV → QA`；任务从 UX 起步时为 `UX → DEV → QA`。settle 一阶段节点后，下一阶段节点自动 graft 为**该节点的子节点**（链式 parent，无幽灵父节点）。rollback 跨阶段回退时，重建的前一阶段节点以**兄弟挂接**回到链头层（parent = 前一阶段节点的 parent）——链不变量与树深在多轮回退下保持。
+**阶段链模型（phase-model）**：任务路由带 `phase` 字段，阶段全序 `REQ → DESIGN → IMPL → VERIFY → 完成`，阶段内角色白名单并行（DESIGN = CTO∥UX∥QA，含测试先行；完整模型见 `references/phase-model.md`，rdd-flow 侧协议见 `task-routing.md`）。多 owner 任务在颁布时**每个角色各建一个链头节点**（挂目标根），并行分支各自独立工作；settle 阶段感知：阶段内收窄不 graft，**最后一个 owner settle 才整组切换**（`set-route -To PhaseRoles[下一阶段] -Phase`）并收敛 graft 下一阶段节点（挂最后 settle 节点之下，链式 parent，无幽灵父节点，每角色至多一个活跃节点——并行分支不分裂树）。rollback 显式 `-To/-Phase` 回退时，重建的角色组节点以**兄弟挂接**回到目标阶段的链头层（沿失败节点祖先上溯第一个目标阶段白名单内节点的 parent；无锚挂目标根）——链不变量与树深在多轮回退下保持；回退到 REQ（`-To PM -Phase REQ`）可达，PM 为合法链头角色。旧归档（phase=null）整链保守降级为原 `CTO→DEV→QA` 线性行为（逐字节一致）。展示面：status/resume/conclude 的阶段链用 `∥`（阶段内并行）与 `→`（阶段间）渲染，如 `CTO=n2(done) ∥ UX=n3(done) → DEV=n5(claimed)`。
 
 **任务级依赖**：promulgate 从各任务需求文档的「依赖关系」字段自动推导（"依赖需求 N" / "依赖 #N" → 依赖任务 N 的初始节点）；跨阶段/运行中的依赖维护用 `goal-tree deps add/remove`（机械 DAG 校验 + deps-log.jsonl 审计）。
 
@@ -58,14 +59,14 @@ PM 归档（longTask 信号触发）→ start-role -Role PLANNER -TaskJson ...�
 
 | 命令 | 形态 | 作用 |
 |------|------|------|
-| 颁布 | `delivery-bridge.cmd -Command promulgate -TaskJson <path> [-ReviewFile <path>] [-AutoMode [-RiskPolicy <path>]] [-NoPush] [-MaxRounds N] [-NodeWidth N] [-MaxNodes N] [-CreatedBy label] [-Session label]` | 读归档 → goal-tree start（目标根模式，原始需求=goal 根）+ round-start + 按任务×当前阶段 graft 需求链头（`ref=<归档名>/<需求文档>`）→ 写 bridge.json v2 → **自动推送全部无前置依赖节点**。可选 `-ReviewFile` 消费需求审查结论（硬约束 6）：驳回/合并任务不建节点、`depends_on_override` 整体替代正则推导、合并依赖重定向到并入方、驳回残留依赖硬拒 `REVIEW_EXCLUDED_DEP`；缺省时行为与无审查门完全一致。可选 `-AutoMode` 启用纯自动模式（见「纯自动模式」节；缺省关闭=行为逐字节不变），`-RiskPolicy` 整表覆盖默认分级表（R1 硬底强制保留）。可选 `-NoPush`：只建 run 不启动任何角色会话（引擎测试套件/事故演练隔离——不触真后端，跳过入 pushes 账 `trigger='promulgate (-NoPush)'`）。RunId 固定为 `deliver-<归档名>`。预算默认：rounds 12 / width max(4, 任务数) / nodes 任务数×5+6；重度返工 run 按回退预期调 `-MaxNodes`（每轮跨阶段回退净增 2 节点） |
+| 颁布 | `delivery-bridge.cmd -Command promulgate -TaskJson <path> [-ReviewFile <path>] [-AutoMode [-RiskPolicy <path>]] [-NoPush] [-MaxRounds N] [-NodeWidth N] [-MaxNodes N] [-CreatedBy label] [-Session label]` | 读归档 → goal-tree start（目标根模式，原始需求=goal 根）+ round-start + 按任务×初始角色组**每角色各 graft 一个链头**（phase-model 多链头：并行 `currentOwners` 不再丢工作；`ref=<归档名>/<需求文档>`，`depends_on` 指向上游任务**全部**链头——多锚点汇聚解锁）→ 写 bridge.json v2 → **自动推送全部无前置依赖节点**。阶段校验门：owner 集跨阶段 → `GROUP_DIVERGENT_NEXT`（第一版不支持 fan-out）；存量 phase 非法 → `PHASE_INVALID`/`PHASE_OWNER_MISMATCH`。可选 `-ReviewFile` 消费需求审查结论（硬约束 6）：驳回/合并任务不建节点、`depends_on_override` 整体替代正则推导、合并依赖重定向到并入方、驳回残留依赖硬拒 `REVIEW_EXCLUDED_DEP`；缺省时行为与无审查门完全一致。可选 `-AutoMode` 启用纯自动模式（见「纯自动模式」节；缺省关闭=行为逐字节不变），`-RiskPolicy` 整表覆盖默认分级表（R1 硬底强制保留）。可选 `-NoPush`：只建 run 不启动任何角色会话（引擎测试套件/事故演练隔离——不触真后端，跳过入 pushes 账 `trigger='promulgate (-NoPush)'`）。RunId 固定为 `deliver-<归档名>`。预算默认：rounds 12 / width max(4, 任务数) / nodes 任务数×5+6；重度返工 run 按回退预期调 `-MaxNodes`（每轮跨阶段回退按重建组规模净增节点） |
 | 调动 | `delivery-bridge.cmd -Command dispatch -RunId <id> -NodeId <n> [-DryRun]` | 手动单节点推送（异常处置 / pointer 类失败人工重推；正常流程由自动推送承担） |
-| 认领 | `delivery-bridge.cmd -Command claim -RunId <id> -NodeId <n> -Role <CTO/UX/DEV/QA>` | **被推送会话的第一动作**。双侧只读预检 → leaf claim → rdd-flow claim；冲突给确定性反馈 + 当前可领节点清单；goal 根报 `GOAL_NODE_NOT_CLAIMABLE`；纯自动模式 run 的响应额外携带 `auto_mode` 段（enabled + 分级表快照 + decide/escalate 协议指引，report_hint 注入先例；非自动 run 无此段） |
+| 认领 | `delivery-bridge.cmd -Command claim -RunId <id> -NodeId <n> -Role <PM/CTO/UX/DEV/QA>` | **被推送会话的第一动作**。双侧只读预检 → leaf claim → rdd-flow claim；冲突给确定性反馈 + 当前可领节点清单；goal 根报 `GOAL_NODE_NOT_CLAIMABLE`；PM 为 REQ 阶段合法链头角色（rollback -To PM 的重建节点可认领）；纯自动模式 run 的响应额外携带 `auto_mode` 段（enabled + 分级表快照 + decide/escalate 协议指引，report_hint 注入先例；非自动 run 无此段） |
 | 拍板 | `delivery-bridge.cmd -Command decide -RunId <id> -NodeId <n> -Kind auto\|resolution\|overturn -Checkpoint <名> -Decision <裁定/问题> [-Inputs ...] [-Basis ...] [-Risk ...] (-Kind auto 需 -RuleId <规则>；resolution/overturn 需 -RefEntry <条目id>)` | **worker 侧检查点决策留痕**（纯自动模式专用，否则 `AUTO_MODE_DISABLED`；须本 stage 的 claimed 节点，overturn 额外容忍 reported=未 settle 重做窗口）。`auto`=分级表代答（规则须 action=auto，R1 硬底永拒 `RULE_NOT_AUTO`，代答者 `auto/<规则>@<stage>`）；`resolution`=用户裁定回填关闭未决升级（`user@in-session`，重复关闭拒 `ESCALATION_ALREADY_RESOLVED`）；`overturn`=未 settle 期内推翻既有决策（auto/resolution/escalation 条目，run 级 ref 存在性校验）。追加进 decisions.jsonl（run `.lock` 内，读回校验） |
 | 升级 | `delivery-bridge.cmd -Command escalate -RunId <id> -NodeId <n> -Checkpoint <名> -Decision <呈用户的问题> [-RuleId <规则>] [-Inputs ...] [-Basis ...] [-Risk high]` | **高风险检查点升级**（纯自动模式专用，同上门禁）：写 open 升级条目（无人拍板，decider=null），worker 就地**等待**。dsh：插件 watcher 5s 扫描投递规划者 inbox（exactly-once，`decision <id>` 去重命名空间，送达即唤醒——`agent.send(msg,'next-turn',true)`，空闲规划者会话立即开轮消费）→ 规划者呈现用户 → `decide -Kind resolution` 回填；CLI/Plus：降级为 status/resume 可见 |
 | 回收 | `delivery-bridge.cmd -Command reclaim -RunId <id> -NodeId <n>` | 复合回收，两种模式：**dead-claim**（卡死 claimed：存活预检——alive 拒 `RECLAIM_TARGET_ALIVE`、unknown 未达 60min 阈值拒 `RECLAIM_UNPROVEN_DEAD`——通过后 leaf `-Steal` + rdd-flow `claim -Force` 入泊位 → **自动重推**）与 **rejected-delivery**（reported 但证据不合格：剪枝失败交付 + graft 替换节点（ref 重绑需求文档）+ 重映射 → **自动推送替换节点**，账本保留审计痕） |
-| 回退 | `delivery-bridge.cmd -Command rollback -RunId <id> -NodeId <失败节点> -Reason "<理由>"` | **跨阶段回退单命令**（与 settle 正向 / reclaim 同阶段构成三通道）：剪枝失败节点（prune reason 入 ledger 留审计：回退理由+操作者+证据问题清单）→ **兄弟挂接**重建前一阶段节点（parent=前一阶段节点的 parent；QA 证据问题+回退理由进新节点 task 的重做上下文）→ `rdd-flow reopen` 路由回退（owners 对齐，`Sync-TaskClaims` 自动清 worker 残留）→ **自动重推**重建节点。目标阶段机械单源推导（失败节点 parent 的 stage）；守卫 `ROLLBACK_REQUIRES_REPORTED` / `ROLLBACK_REQUIRES_UNQUALIFIED` / `ROLLBACK_NO_PREVIOUS_STAGE` / `TASK_NOT_ACTIVE`；prune→graft 崩溃窗口由剪枝签名幂等续跑守卫兜底（重跑同命令自动续 graft 步，不二次剪枝）。QA→DEV 为一等路径，DEV→CTO/UX 同一代码路径；返回值 `dependents_warning[]` 仅警示直接依赖边（不展开传递闭包，闭包经 `goal-tree deps list` 自查），不动其他任务节点 |
-| 流转 | `delivery-bridge.cmd -Command settle -RunId <id> -NodeId <n> [-Note ...]` | **task.json 流转的唯一通道**（见下方三查门禁）；settle 尾自动推送新解锁节点 |
+| 回退 | `delivery-bridge.cmd -Command rollback -RunId <id> -NodeId <失败节点> -To "<角色集>" -Phase <REQ/DESIGN/IMPL/VERIFY> -Reason "<理由>"` | **跨阶段回退单命令**（与 settle 正向 / reclaim 同阶段构成三通道）：剪枝失败节点（prune reason 入 ledger 留审计：回退目标+阶段+理由+操作者+证据问题清单）→ **兄弟挂接**按 `-To` 角色集逐角色重建节点（挂接锚=沿失败节点祖先上溯第一个落在目标阶段白名单内的节点之 parent——回到该阶段链头层；无锚则挂目标根；QA 证据问题+回退理由进新节点 task 的重做上下文）→ `rdd-flow set-route -To -Phase` 原子路由回退（owners+phase 白名单同步，`Sync-TaskClaims` 自动清 worker 残留）→ **自动重推**全部重建节点。回退目标由规划者**显式指定**（替代旧的 parent 机械推导；链头回退 REQ 可达）；守卫 `SET_PHASE_REQUIRED`（缺 -Phase）/ `PHASE_INVALID` / `PHASE_OWNER_MISMATCH`（-To 不 ⊆ PhaseRoles[-Phase]）/ `ROLLBACK_REQUIRES_REPORTED` / `ROLLBACK_REQUIRES_UNQUALIFIED` / `TASK_NOT_ACTIVE`；prune→graft 崩溃窗口由剪枝签名幂等续跑守卫兜底（重跑同命令自动续 graft 步，不二次剪枝，签名兼容新旧两代格式）。例：DEV 发现设计缺陷 → `rollback -NodeId <DEV节点> -To "CTO+UX" -Phase DESIGN`；回退需求阶段 → `-To "PM" -Phase REQ`。返回值 `dependents_warning[]` 仅警示直接依赖边（不展开传递闭包，闭包经 `goal-tree deps list` 自查），不动其他任务节点 |
+| 流转 | `delivery-bridge.cmd -Command settle -RunId <id> -NodeId <n> [-Note ...]` | **task.json 流转的唯一通道**（见下方三查门禁）。phase 感知（phase-model）：读 `phase` → 阶段内还有 owner 未 settle → `set-route` 收窄（不 graft，等待汇聚）；最后一个 owner settle → `set-route -To PhaseRoles[下一阶段] -Phase` 原子切换 + 收敛 graft 下一阶段全部链头（每角色至多一个活跃节点——并行分支不分裂树）；`VERIFY` 完成 → `complete`。phase=null（旧归档）保守降级走原 advance 路径（行为逐字节一致）。settle 尾自动推送新解锁节点 |
 | 全景 | `delivery-bridge.cmd -Command status -RunId <id>` | join 视图：树 census + 任务阶段 + 依赖阻塞 + 双侧死 claim + pending_sync 分歧（自动重试修复）+ pushes 推送账目 + 会话存活 + **会话花名册**（sessions：本体/派发/直交全量清单）+ **触碰兜底补推**（租约空闲时）+ 租约 |
 | 续跑 | `delivery-bridge.cmd -Command resume -RunId <id>` | 断点视图 + 恢复步骤清单（新规划者会话入口；本体会话自动入花名册） |
 | 结案 | `delivery-bridge.cmd -Command conclude -RunId <id> -Summary <结案摘要>` | 全任务终态校验 → goal-tree conclude（achieved，**锚=目标根**，根语义终局校验）→ 写 delivery-annex.md（根目标达成状态 + 每任务终态 + rdd-flow check 结果）→ 释放租约 |
@@ -123,7 +124,7 @@ worker 沿用 goal-tree 证据导向回调结构承载交付语义，核心零�
 | `full_report` | 主产物文档指针（设计文档 / 实现说明；桥接 run 内规范必填——回调消息据此呈现 Doc 行，规划者凭单条消息即可裁定。引擎结构校验不强制：漏带降级可接受，citations 仍含文档路径，三查不卡） |
 | `extras.verification` | 验证结果（lint/test/build 摘要；缺失即拒） |
 
-真实性判断由 **QA 阶段节点**承担：QA 会话的 citations = 验收证据（功能+质量双通过），QA 节点 settle 即任务 complete。QA 判不合格 → report 非 done verdict（失败清单写入回调 full_report/extras），规划者收到后二选一：**同阶段重做** `reclaim -NodeId`（问题在本阶段可修）或**跨阶段回退** `rollback -NodeId -Reason <理由>`（退回 DEV 重做：单命令完成剪枝+重建+路由回退+自动重推，见命令面板「回退」行）。
+真实性判断由 **QA 阶段节点**承担：QA 会话的 citations = 验收证据（功能+质量双通过），QA 节点 settle 即任务 complete。QA 判不合格 → report 非 done verdict（失败清单写入回调 full_report/extras），规划者收到后二选一：**同阶段重做** `reclaim -NodeId`（问题在本阶段可修）或**跨阶段回退** `rollback -NodeId -To <角色集> -Phase <阶段> -Reason <理由>`（如退回 DEV 重做：`-To "DEV" -Phase IMPL`；单命令完成剪枝+重建+路由回退+自动重推，见命令面板「回退」行）。
 
 **回调投递目标解析（dsh 后端）**：worker 回调投递给按「新鲜租约优先、planner.json 兜底」解析出的当前有效规划者——`planner-lease.json` 新鲜（30 分钟内，与 lease 命令 stale 阈值一致）且 holder 为 dsh 会话（`dsh-<sid>` 前缀）时投给该会话（Takeover 换手、续跑者拿租约后投递随之前指，修复断路）；否则回退 `state/planner.json` 记录的建 run 会话（误启的第二个规划者未持租约，回调不偏移；原规划者空闲存活时租约恰好 stale，回退目标正是它）。去重键（repo::run::entry）与投递目标无关，不会双投。CLI/Plus 后端无 watcher 实时投递（经 status/resume 拉取），不受影响。
 
@@ -165,13 +166,13 @@ worker 沿用 goal-tree 证据导向回调结构承载交付语义，核心零�
 | 回调收到完成、但用户已手动直交下游角色 | 属正常优先级裁决：用户显式直交指令优先执行，但 worker 的 leaf report 回调先行不可省（next_suggestion 注明直交指令）——照常三查裁定 settle（ledger 留痕可对账）；直交会话与树推送会话撞车由 `FLOW_CLAIM_CONFLICT` / `NODE_NOT_CLAIMABLE` 确定性反馈兜底 |
 | 同一节点第二个会话被唤起 | bridge claim 返回 `NODE_NOT_CLAIMABLE` + 认领者信息 + 可领清单，按清单改领即可 |
 | 节点被依赖阻塞 | `NODE_BLOCKED_BY_DEPS` 附阻塞源；等上游 settle（解锁后**自动推送**，无需手动 dispatch），或规划者调整依赖（deps remove） |
-| settle 报 `SETTLE_EVIDENCE_REJECTED` | `reclaim -NodeId`（rejected-delivery 模式：剪枝失败交付并建+**自动推送**替换节点——同阶段重做）或 `rollback -NodeId -Reason <理由>`（跨阶段回退：剪枝+重建前一阶段节点+reopen 路由回退+**自动重推**——退回 DEV 重做） |
+| settle 报 `SETTLE_EVIDENCE_REJECTED` | `reclaim -NodeId`（rejected-delivery 模式：剪枝失败交付并建+**自动推送**替换节点——同阶段重做）或 `rollback -NodeId -To <角色集> -Phase <阶段> -Reason <理由>`（跨阶段回退：剪枝+按 -To/-Phase 重建角色组+set-route 路由回退+**自动重推**——如 `-To "DEV" -Phase IMPL` 退回 DEV 重做） |
 | 树已 settle、flow 未流转 | `pending_sync` 自动记录；每次 status 自动重试修复，或手工补 |
 | 会话死在 claimed | `reclaim -NodeId`（dead-claim 模式，入泊位后**自动重推**，新会话第一动作 claim 自动接管） |
 | reclaim 报 `RECLAIM_TARGET_ALIVE` | 认领会话仍存活（agents 注册表证实）——不是回收对象；等它 report 或让该会话自行处置 |
 | reclaim 报 `RECLAIM_UNPROVEN_DEAD` | 存活无法证实（CLI/查证不可达）且 claim 未达 60min 阈值——宁等多收；达阈值后重试或换 dsh 会话执行 |
 | rollback 报 `ROLLBACK_REQUIRES_UNQUALIFIED` | 该节点证据合格——不该回退，settle 它即可 |
-| rollback 报 `ROLLBACK_NO_PREVIOUS_STAGE` | 失败节点是链头（无前一阶段可退）——同阶段重做走 reclaim |
+| rollback 报 `ROLLBACK_NO_PREVIOUS_STAGE` | 旧版错误（已由显式 -To/-Phase 目标取代）：回退目标不再从 parent 推导，链头回退 REQ 用 `-To "PM" -Phase REQ` 直接表达 |
 | rollback 报 `ROLLBACK_GRAFT_FAILED` | prune 已完成、graft 未成——**重跑同一条 rollback 命令**（剪枝签名幂等续跑守卫：自动从 graft 步续起，不二次剪枝） |
 | 推送失败（status 可见 pushes 账目） | `session-create` 类：status 触碰自动重试；`pointer` 类：人工 `dispatch -NodeId` 重推（防会话堆积） |
 | 双规划者误起 | 启动即被 start-role 前置校验拒绝（`PLANNER_RUN_ACTIVE`，附 run 信息与 `-RunId` 续跑指引；`-Force` 强启创建通道后命令级仍有 `LEASE_HELD` 防线，不产生第二个有效规划者）；确认原会话已死后 `lease -Takeover` 留痕接管 |

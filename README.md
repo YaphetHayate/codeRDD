@@ -26,7 +26,7 @@ SDD（Specification-Driven Development）驱动的开发工作流，围绕一个
 
 ### 基础设施
 
-- **[rdd-engine](./rdd-engine/)**：能力总线，提供代码探索和阶段流转能力
+- **[rdd-engine](./rdd-engine/)**：能力总线——代码探索缓存、阶段流转（`rdd-flow`），以及 goal-tree 目标树编排（`goal-tree` / `goal-tree-leaf` / `delivery-bridge`：规划者拆解目标为节点树、多 Worker 会话并行认领、回报裁定闭环，协议见 [goal-tree-guide.md](./rdd-engine/references/goal-tree-guide.md)）
 
 ---
 
@@ -38,7 +38,7 @@ SDD（Specification-Driven Development）驱动的开发工作流，围绕一个
 
 目标用户是**标准 DSH 用户**：一条命令装齐三组件（rdd-engine CLI → rdd-explore 插件 → 角色技能 + presets），并保证三件来自同一个 release。发布渠道为 GitHub Release（三 tarball 固定名 + `install-rdd.ps1` 统一安装器，不用 npm）。
 
-**前置**：Windows 10 1803+（自带 `tar.exe`）、PowerShell 5.1+、git、标准 DSH（`dsh` 与 `pnpm` 在 PATH）。
+**前置**：Windows 10 1803+（自带 `tar.exe`）、PowerShell 5.1+、git（可选，见[运行时依赖](#运行时依赖)）、标准 DSH（`dsh` 与 `pnpm` 在 PATH）。
 
 ```powershell
 # 一条命令（latest release：下载统一安装器并执行）
@@ -62,10 +62,11 @@ powershell -ExecutionPolicy Bypass -File install-rdd.ps1 -Remove           # 卸
 - **升级 / 卸载只动用户级落点**（`~\.rdd\engine`、`$DSH_HOME\skills` 与 `.agent-presets`、profile 依赖行），项目内 `.rdd/` 数据零触碰
 - **项目内旧数据兼容**：`task.json` v1、探索缓存（`.rdd/exploration/` 只读格式）、`goal-trees` 状态文件均向后兼容——用户级安装与其并存，互不改动
 - 组件级细节见下方各节与 [dsh/dsh-rdd-explore/README.md](./dsh/dsh-rdd-explore/README.md)
+- **可选：goal-tree 状态条插件**——仓库内还有第二个 DSH 插件 [dsh/rdd-goal-tree](./dsh/rdd-goal-tree/)（`@coderrdd/dsh-rdd-goal-tree`），把 goal-tree 运行状态渲染为 dsh 输入框上方的只读状态条，按会话角色分档（Worker 只看认领节点 / 规划者看全树），Worker 回调可自动唤醒规划者会话。**独立构建与分发，不在一体化 release 三组件内**：`node scripts/build-dsh-goal-tree.mjs` 产出 `dist/plugin/dsh-rdd-goal-tree.tgz`，`dsh plugin --profile web add dsh-rdd-goal-tree.tgz` 安装，详见 [dsh/rdd-goal-tree/README.md](./dsh/rdd-goal-tree/README.md)
 
 ### 方式一：源码安装（推荐）
 
-分两步：先在 codeRDD 仓根注册全局 `coderrdd` 命令（一次性），之后在任意目标项目里安装。
+分两步：先在 codeRDD 仓根注册全局 `coderdd` 命令（一次性），之后在任意目标项目里安装。
 
 **第 1 步：注册全局命令**（在 codeRDD 仓库根执行）
 
@@ -78,26 +79,26 @@ npm run register     # 依赖检查 -> 构建 -> npm link -> 自检，输出后�
 **第 2 步：安装到目标项目**（在任意目标项目根执行）
 
 ```bash
-coderrdd init .                                # 交互式：选择 AI 客户端与角色
-coderrdd init . --tools opencode,claude --yes  # 非交互（CI / 脚本）
-coderrdd init . --roles pm,cto,dev --yes       # 只装部分角色（engine 必装）
+coderdd init .                                # 交互式：选择 AI 客户端与角色
+coderdd init . --tools opencode,claude --yes  # 非交互（CI / 脚本）
+coderdd init . --roles pm,cto,dev --yes       # 只装部分角色（engine 必装）
 ```
 
 register 的行为与约定：
 
 - **改源码即时生效**：全局命令始终执行本仓 `dist/`，`npm run build` 后所有目标项目即用新版
-- **升级**：源仓 `git pull && npm run build` → 目标项目里 `coderrdd update .`
+- **升级**：源仓 `git pull && npm run build` → 目标项目里 `coderdd update .`
 - **移除全局命令**：仓根 `npm run unregister`
 - **源仓移动/重命名后链接失效**：回仓根重新 `npm run register`
-- 与 `npm i -g coderrdd` 占用同一命令槽位，后装者覆盖
-- PowerShell 若提示"无法加载脚本"：改用 `coderrdd.cmd` 或执行 `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned`
+- 与 `npm i -g coderdd` 占用同一命令槽位，后装者覆盖；历史命令名 `coderrdd` 保留为 bin 别名（等价 `coderdd`）
+- PowerShell 若提示"无法加载脚本"：改用 `coderdd.cmd` 或执行 `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned`
 
 ### 方式二：npm 安装（规划中）
 
 安装器已按 npm 包标准组织（`bin`/`files` 字段完备，`npm pack` 体积约 200 kB），待发布后即可：
 
 ```bash
-npm i -g coderrdd     # 或 npx coderrdd init .
+npm i -g coderdd     # 或 npx coderdd init .
 ```
 
 ### 备选：直接调用（不注册全局命令）
@@ -105,7 +106,7 @@ npm i -g coderrdd     # 或 npx coderrdd init .
 在 codeRDD 仓库根执行 `npm install && npm run build` 后：
 
 ```bash
-node /path/to/codeRDD/bin/coderrdd.js init .
+node /path/to/codeRDD/bin/coderdd.js init .
 ```
 
 ### 安装布局（唯一真实源 + 链接）
@@ -117,6 +118,7 @@ node /path/to/codeRDD/bin/coderrdd.js init .
 │                                    # OpenCode / ZCode / Codex / Warp 共享的中立发现路径
 ├── .opencode/                       # 仅 OpenCode 专属薄文件与配置
 │   ├── agent/rdd-explore.md
+│   ├── agent/ux-mockup-*.md         # UX mockup 子代理（装 ux 角色时由 sync-ux-subagents 同步管理）
 │   └── package.json                 # 合并（备份后追加，不覆盖）
 ├── .claude/skills/rdd-<role>        # junction/symlink（Claude Code 不读 .agents/）
 │   └── agents/rdd-explore.md
@@ -126,7 +128,7 @@ node /path/to/codeRDD/bin/coderrdd.js init .
 
 ZCode 的 skill 发现同样走 `.agents/skills/`（与 OpenCode 共享，无需单独链接）；`--tools zcode` 只负责安装 `.zcode/agents/rdd-explore.md` 子代理。
 
-Windows 下链接为 junction（无需管理员权限），macOS/Linux 为相对 symlink。`.rdd/` 下的 `changes/`、`handoff/` 等运行时数据由脚本自行创建，init 不会触碰；其中 `.rdd/exploration/` 为探索缓存运行时数据：`hot.json`（热区，新探索结果先落此，保留 7 天 / 容量 50 条，超期由 sweep 保底转正）+ `index.json`（持久层）+ `artifacts/`（配对产物）+ `search-config.json`（检索调参，可省，全字段有默认值）+ `vectors.json`（向量 sidecar，gitignore 的派生数据，可随时用 `explore-store.cmd -Type embed-backfill` 重建）。旧版安装过 OpenCode MCP 工具 `.opencode/tools/rdd_explore.ts` 的项目，该工具已废弃删除（与现行协议断裂且无人使用）：`coderrdd uninstall` 会按安装清单清理，或手动删除该文件。
+Windows 下链接为 junction（无需管理员权限），macOS/Linux 为相对 symlink。`.rdd/` 下的 `changes/`、`handoff/` 等运行时数据由脚本自行创建，init 不会触碰；其中 `.rdd/exploration/` 为探索缓存运行时数据：`hot.json`（热区，新探索结果先落此，保留 7 天 / 容量 50 条，超期由 sweep 保底转正）+ `index.json`（持久层）+ `artifacts/`（配对产物）+ `search-config.json`（检索调参，可省，全字段有默认值）+ `vectors.json`（向量 sidecar，gitignore 的派生数据，可随时用 `explore-store.cmd -Type embed-backfill` 重建）。旧版安装过 OpenCode MCP 工具 `.opencode/tools/rdd_explore.ts` 的项目，该工具已废弃删除（与现行协议断裂且无人使用）：`coderdd uninstall` 会按安装清单清理，或手动删除该文件。
 
 ### 冲突合并规则
 
@@ -142,8 +144,8 @@ Windows 下链接为 junction（无需管理员权限），macOS/Linux 为相对
 ### 更新与卸载
 
 ```bash
-coderrdd update .     # 按清单（.rdd/install.json）非交互更新受管理文件
-coderrdd uninstall .  # 删链接/薄文件/角色目录，还原合并配置；保留 .rdd 运行时数据
+coderdd update .     # 按清单（.rdd/install.json）非交互更新受管理文件
+coderdd uninstall .  # 删链接/薄文件/角色目录，还原合并配置；保留 .rdd 运行时数据
 ```
 
 ### init 参数
@@ -159,17 +161,17 @@ coderrdd uninstall .  # 删链接/薄文件/角色目录，还原合并配置；
 ### 运行时依赖
 
 - **Node.js 18+**（仅安装器需要）
-- **git**（rdd-engine 用 `git rev-parse` 定位仓库根）
+- **git**（可选——rdd-engine 用它精确定位项目根；缺失或目标非 git 仓时按五级定位链降级：`RDD_PROJECT_ROOT` → `git rev-parse` → `.git` 祖先 → `.rdd/install.json` 祖先 → cwd，非 git 项目全量可用。协议见 `rdd-engine/references/engine-location.md`）
 
 ### 旧版安装脚本（deprecated）
 
-`install.ps1` / `install.cmd` / `install.sh` 为旧版安装方式，安装布局与当前 CLI 不一致（角色目录平铺在项目根、仅适配 OpenCode），**不再维护**，请改用 `coderrdd init`。旧脚本安装过的项目可用 `install.ps1 -Target . -Uninstall` 清理后重新 init。
+`install.ps1` / `install.cmd` / `install.sh` 为旧版安装方式，安装布局与当前 CLI 不一致（角色目录平铺在项目根、仅适配 OpenCode），**不再维护**，请改用 `coderdd init`。旧脚本安装过的项目可用 `install.ps1 -Target . -Uninstall` 清理后重新 init。
 
 ### 引擎 CLI 独立安装（rdd-engine.tgz，免克隆 codeRDD）
 
-只需要 rdd-engine 命令行工具（角色技能已由其他渠道安装，或只想在任意项目里直接用流转 / 任务树 / 探索缓存 CLI）时，走独立分发通道：GitHub Release 提供固定名 `rdd-engine.tgz` 与配套安装器，**用户侧零 node/npm 依赖**。
+只需要 rdd-engine 命令行工具（角色技能已由其他渠道安装，或只想在任意项目里直接用流转 / goal-tree 目标树 / 探索缓存 CLI）时，走独立分发通道：GitHub Release 提供固定名 `rdd-engine.tgz` 与配套安装器，**用户侧零 node/npm 依赖**。
 
-**前置**：Windows 10 1803+（自带 `tar.exe`）、PowerShell 5.1+、git（引擎数据落点 `.rdd/changes|goal-trees` 由 git 仓库根推导，非 git 项目不可用——继承现状）。
+**前置**：Windows 10 1803+（自带 `tar.exe`）、PowerShell 5.1+（git 可选：缺失或非 git 项目按五级定位链降级，数据落点回退安装根/cwd，见[运行时依赖](#运行时依赖)）。
 
 ```powershell
 # 1) 从 GitHub Release 下载 rdd-engine.tgz 与 scripts/install-rdd-engine.ps1
@@ -199,7 +201,7 @@ powershell -ExecutionPolicy Bypass -File scripts\install-rdd-skills.ps1 -Tarball
 ```
 
 - **落点与生效**：skills → `$DSH_HOME\skills\rdd-*`（DSH user-dsh 发现层，watcher 热失效）；presets → `$DSH_HOME\.agent-presets\rdd-*`（user 信任层，发现每次调用重读）——**安装后无需重启 DSH**
-- **项目级优先**：项目 `.agents\skills\` 下的同名技能自动覆盖用户级同名技能（DSH 分层发现机制原生提供，零配置）；`coderrdd init` 装出的项目布局与用户级安装并存不冲突
+- **项目级优先**：项目 `.agents\skills\` 下的同名技能自动覆盖用户级同名技能（DSH 分层发现机制原生提供，零配置）；`coderdd init` 装出的项目布局与用户级安装并存不冲突
 - **装后自检**：① 引擎三级定位链探测（miss 时 WARN 并输出安装指引，不阻断）；② rdd-explore 插件缺失 WARN（rdd-* presets 的探索委派依赖该插件，未装则挂载 broken）——推荐先装引擎与插件（或直接走一体化安装）
 - **升级 / 降级**：对新（旧）版本 tarball 重跑安装器；分发前清落点 `rdd-*` 再拷，升级不留旧文件残留
 - **卸载**：`install-rdd-skills.ps1 -Remove`——删两落点 `rdd-*` 与 `~\.rdd\skills\manifest.json` 版本账本；项目内 `.rdd/` 数据零触碰
@@ -220,7 +222,7 @@ release tag 统一 `vX.Y.Z`（仓库主版本，起步 v1.0.0，`--tag` 覆盖�
 
 ## 使用方式
 
-角色通过 skills 激活（安装后位于各客户端的 skills 目录，如 `.opencode/skills/rdd-pm/`，实际内容在 `.rdd/skills/` 唯一真实源）。每个角色在自己的会话里工作；切换角色时**开新会话**以保证上下文纯净。
+角色通过 skills 激活（OpenCode / ZCode / Codex / Warp 经 `.agents/skills/`、Claude Code 经 `.claude/skills/` 发现，实际内容都在 `.rdd/skills/` 唯一真实源；用户级安装形态则位于 `$DSH_HOME\skills\rdd-*`）。每个角色在自己的会话里工作；切换角色时**开新会话**以保证上下文纯净。
 
 ### 角色入口命令
 
@@ -228,16 +230,20 @@ release tag 统一 `vX.Y.Z`（仓库主版本，起步 v1.0.0，`--tag` 覆盖�
 - `/rdd-cto` — 技术架构
 - `/rdd-ux` — 视觉/交互设计
 - `/rdd-dev` — 开发实现
-- `/rdd-qa` — 测试验证（待补）
-- `/rdd-eval` — 交付评价（待补）
-- `/rdd-pse` — 文档维护（待补）
+- `/rdd-qa` — 测试验证
+- `/rdd-eval` — 交付评价
+- `/rdd-pse` — 文档维护
 
 ### 角色切换流程
 
+上游角色完成产物归档后，按 transition-guide 的 4 步硬流程交接（命令均经引擎三级定位链定位 `$rdd`，此处以 `rdd-flow` / `start-role` 代指）：
+
 ```
-当前角色完成产物归档 → $rdd = $null; $t = $null; try { $t = git rev-parse --show-toplevel } catch { }; foreach ($c in @($env:RDD_ENGINE_HOME; if ($t) { (Get-ChildItem $t -Recurse -Directory -Depth 3 -Filter 'rdd-engine').FullName }; "$HOME\.rdd\engine\current")) { if ($c -and (Test-Path "$c\scripts\rdd-flow.cmd")) { $rdd = $c; break } }; if (-not $rdd) { throw "rdd-engine 未定位（三级定位链：RDD_ENGINE_HOME → 项目内 rdd-engine → ~\.rdd\engine\current 全 miss）。安装/排障：GitHub Release 下载 rdd-engine.tgz 后运行 scripts/install-rdd-engine.ps1；协议详见 rdd-engine/references/engine-location.md" }; & "$rdd\scripts\rdd-flow.cmd" -Command next 推荐下游 → 用户确认
-  → /new（Ctrl+X N）开新会话（清理上下文）
-  → 输入 /rdd-<下游角色> → 自动加载角色 SKILL + 最新交接包 → 干净进入
+rdd-flow advance（推进 task.json 路由到下游角色）
+  → rdd-flow next（展示可流转角色与任务数）→ 推荐目标角色，请用户确认
+  → start-role.cmd -Role <角色> -TaskId <n>
+      脚本按判据链（RDD_RUNTIME → DSH_WEB_URL → CLI）自动选后端：
+      Plus 自动建对话驱动目标角色 / DSH 自动建会话并投递交接指针 / CLI 自动开新终端窗口预填 /rdd-<角色> 入口
 ```
 
-> 角色切换必须开新会话：opencode 的 agent 无法在同会话内真正隔离上下文，"同会话宣布边界"无法阻止上游对话污染下游。详见 `rdd-engine/references/transition-guide.md`。
+> 角色切换必须开新会话：agent 无法在同会话内真正隔离上下文，上游长对话会污染下游——start-role 各后端都以新会话承载交接。协议细节见 `rdd-engine/references/transition-guide.md`。

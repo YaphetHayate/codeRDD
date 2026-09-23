@@ -18,6 +18,7 @@ param(
     [string]$CurrentOwners,
     [string]$To,
     [string]$From,
+    [string]$Phase,                 # REQ/DESIGN/IMPL/VERIFY (set-route phase switch/rollback target)
     [Alias("Path")]
     [string]$DesignPath,
     [string]$Reason,
@@ -33,10 +34,225 @@ param(
 $ErrorActionPreference = "Stop"
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 $OutputEncoding = [System.Text.Encoding]::UTF8
-# version 自检与安装器可能在任意目录（含非 git）运行；git 缺失不阻断 version 输出。
-# 2>$null 由 try/catch 兜底：PS5.1 下重定向原生 stderr + ErrorActionPreference=Stop 会抛 NativeCommandError
-$repoRoot = $null
-try { $repoRoot = git rev-parse --show-toplevel 2>$null } catch { }
+# 项目根走 Resolve-RepoRoot 五级定位链（git 可选，协议见 engine-location.md）。
+# version 命令不触碰 repoRoot，任意目录（含非 git）运行均不阻断（回归锚点）。
+# Resolve-RepoRoot - project-root location chain (git-optional; protocol source:
+# rdd-engine/references/engine-location.md, "Project-root location chain"). Fixed order:
+#   1. $env:RDD_PROJECT_ROOT          explicit override; invalid path -> fail-loud
+#   2. git rev-parse --show-toplevel  most accurate: worktree / submodule / GIT_DIR
+#   3. nearest .git ancestor          filesystem twin of (2) when git is missing or
+#                                     refuses the repo (dubious ownership)
+#   4. nearest .rdd/install.json ancestor  anchors non-git projects back onto their
+#                                     coderdd-init root when run from a subdirectory
+#   5. cwd                            final fallback - same rule as the dsh plugin's
+#                                     findRepoRoot (one mental model across the ecosystem)
+# (2)+(3) keep every existing git project byte-identical (regression anchor);
+# (4)+(5) only rescue trees where git says "not a repository".
+function Resolve-RepoRoot {
+    $envRoot = [string]$env:RDD_PROJECT_ROOT
+    if (-not [string]::IsNullOrWhiteSpace($envRoot)) {
+        if (Test-Path -LiteralPath $envRoot -PathType Container) { return $envRoot }
+        throw "RDD_PROJECT_ROOT does not exist: $envRoot"
+    }
+    $t = $null
+    # 2>$null must stay inside try/catch: under PS5.1, redirected native stderr
+    # plus $ErrorActionPreference=Stop raises NativeCommandError.
+    try { $t = git rev-parse --show-toplevel 2>$null } catch { }
+    if ($t) { return $t.Trim() }
+    $start = (Get-Location).ProviderPath
+    $dir = $start
+    for (;;) {
+        if (Test-Path -LiteralPath (Join-Path $dir ".git")) { return $dir }
+        $parent = Split-Path -Parent $dir
+        if (-not $parent -or $parent -eq $dir) { break }
+        $dir = $parent
+    }
+    $dir = $start
+    for (;;) {
+        if (Test-Path -LiteralPath (Join-Path $dir ".rdd/install.json")) { return $dir }
+        $parent = Split-Path -Parent $dir
+        if (-not $parent -or $parent -eq $dir) { break }
+        $dir = $parent
+    }
+    return $start
+}
+$repoRoot = Resolve-RepoRoot
+
+# === Phase routing model (references/phase-model.md — single authority) ===
+# A task's route advances through ordered phases; roles inside a phase are a
+# whitelist (parallel). Hard invariant: currentOwners ⊆ PhaseRoles[phase].
+# ⚠ synced with delivery-bridge.ps1's same-name constants — changes go to BOTH.
+$script:PhaseRoles = @{
+    "REQ"    = @("PM")
+    "DESIGN" = @("CTO", "UX", "QA")   # QA = test-case design (test-first)
+    "IMPL"   = @("DEV")
+    "VERIFY" = @("QA")                # QA = acceptance execution
+}
+$script:PhaseNext = @{ "REQ" = "DESIGN"; "DESIGN" = "IMPL"; "IMPL" = "VERIFY"; "VERIFY" = $null }
+$script:PhaseOrder = @("REQ", "DESIGN", "IMPL", "VERIFY")
+
+function Test-PhaseName {
+    param([string]$Name)
+    return ($script:PhaseOrder -contains $Name)
+}
+
+# Write-time phase initialization (init/add-task/reject/reopen): the LAST phase
+# (REQ→…→VERIFY) whose whitelist covers every owner. Single-owner sets map to
+# their canonical phase — ["QA"] -> VERIFY (a standalone QA task is acceptance
+# execution, per the phase-model acceptance list); phase-pure multi-role sets
+# are unique. "" when the set spans phases (cross-phase junk: callers reject it
+# or conservatively degrade phase to null — never silently guess).
+function Get-PhaseFromOwners {
+    param($Owners)
+    $hit = @()
+    foreach ($p in $script:PhaseOrder) {
+        $roles = @($script:PhaseRoles[$p])
+        $isCovered = $true
+        foreach ($o in @($Owners)) { if ($roles -notcontains $o) { $isCovered = $false; break } }
+        if ($isCovered) { $hit += $p }
+    }
+    if ($hit.Count -eq 0) { return "" }
+    return $hit[-1]
+}
+
+# Normalize a stored phase field to a real value or $null — absent key and
+# empty string both mean "no phase" (legacy archives simply lack it).
+function Get-PhaseOrNull {
+    param($Phase)
+    if ($null -ne $Phase -and ([string]$Phase) -ne "") { return [string]$Phase }
+    return $null
+}
+
+# Explicit -Phase validation shared by add-task / set-route: enum check first,
+# then the whitelist constraint (every owner must sit inside PhaseRoles[-Phase]).
+# $Flag names the CLI parameter in the mismatch message ("To"/"CurrentOwners")
+# and $Note appends caller-specific context, so historical messages stay verbatim.
+function Test-ExplicitPhase {
+    param([array]$Owners, [string]$Phase, [string]$Flag, [string]$Note = "")
+    if (-not (Test-PhaseName $Phase)) {
+        Write-ErrorResult "PHASE_INVALID" "-Phase '$Phase' not in $($script:PhaseOrder -join '/')" 1
+    }
+    $roles = @($script:PhaseRoles[$Phase])
+    foreach ($o in $Owners) {
+        if ($roles -notcontains $o) {
+            Write-ErrorResult "PHASE_OWNER_MISMATCH" "-$Flag [$($Owners -join '+')] not ⊆ PhaseRoles[$Phase] = [$($roles -join '+')]$Note" 1
+        }
+    }
+    return $Phase
+}
+
+# Phase-internal narrowing (set-route without -Phase): owners must stay inside
+# the current phase's whitelist; leaving it is a phase switch, which has to be
+# an explicit -Phase decision (the canonical next phase rides along as hint).
+function Test-PhaseInternalNarrowing {
+    param([array]$Owners, [string]$CurrentPhase)
+    $roles = @($script:PhaseRoles[$CurrentPhase])
+    foreach ($o in $Owners) {
+        if ($roles -notcontains $o) {
+            $nextHint = $script:PhaseNext[$CurrentPhase]
+            $hintText = if ($nextHint) { " (e.g. -Phase $nextHint)" } else { "" }
+            Write-ErrorResult "SET_PHASE_REQUIRED" "-To [$($Owners -join '+')] leaves phase '$CurrentPhase' (roles: [$($roles -join '+')]) — a phase switch/rollback must pass -Phase explicitly$hintText" 1
+        }
+    }
+}
+
+# Legacy task without a stored phase: conservative degrade — a unique covering
+# candidate still keeps phase=null (no hidden inference on set-route; migrate
+# is the designated filler), but cross-phase junk and ambiguous sets (QA spans
+# DESIGN/VERIFY) fail loud.
+function Get-LegacyRoutePhase {
+    param([array]$Owners)
+    $candidates = @()
+    foreach ($p in $script:PhaseOrder) {
+        $roles = @($script:PhaseRoles[$p])
+        $isCovered = $true
+        foreach ($o in $Owners) { if ($roles -notcontains $o) { $isCovered = $false; break } }
+        if ($isCovered) { $candidates += $p }
+    }
+    if ($candidates.Count -eq 0) {
+        Write-ErrorResult "PHASE_OWNER_MISMATCH" "-To [$($Owners -join '+')] spans multiple phases — whitelist model requires a single phase per task (see references/phase-model.md §3)" 1
+    }
+    if ($candidates.Count -gt 1) {
+        Write-ErrorResult "SET_PHASE_REQUIRED" "-To [$($Owners -join '+')] is ambiguous across phases [$($candidates -join ', ')] — pass -Phase explicitly (legacy task without stored phase)" 1
+    }
+    return $null
+}
+
+# Write-time initialization (add-task): derive the phase from the owner set;
+# spanning sets fail loud (single phase per task invariant).
+function Get-InitialPhaseFromOwners {
+    param([array]$Owners, [string]$Flag)
+    $phase = Get-PhaseFromOwners $Owners
+    if ($phase -eq "") {
+        Write-ErrorResult "PHASE_OWNER_MISMATCH" "-$Flag [$($Owners -join '+')] spans multiple phases — whitelist model requires a single phase per task (see references/phase-model.md §3)" 1
+    }
+    return $phase
+}
+
+# init-time per-task phase resolution (Invoke-Init): explicit input phase wins
+# (validated); absent -> write-time initialization (last covering phase; ["QA"]
+# -> VERIFY). Cross-phase owner sets are whitelist violations -> fail loud at
+# init, never silently stored. Terminal-lifecycle tasks carry phase=null by
+# schema invariant.
+function Get-InitialTaskPhase {
+    param($Task, [array]$Owners)
+    $lifecycle = if ($Task.lifecycle) { [string]$Task.lifecycle } else { "active" }
+    if ($lifecycle -in @("completed", "deprecated")) { return $null }
+    if ($null -ne $Task.phase -and ([string]$Task.phase) -ne "") {
+        $phase = [string]$Task.phase
+        if (-not (Test-PhaseName $phase)) { Write-ErrorResult "PHASE_INVALID" "task '$($Task.title)' carries phase '$phase' (expected one of: $($script:PhaseOrder -join ', '))" 1 }
+        $roles = @($script:PhaseRoles[$phase])
+        foreach ($o in $Owners) {
+            if ($roles -notcontains $o) { Write-ErrorResult "PHASE_OWNER_MISMATCH" "task '$($Task.title)' currentOwners [$($Owners -join '+')] not ⊆ PhaseRoles[$phase] = [$($roles -join '+')]" 1 }
+        }
+        return $phase
+    }
+    $phase = Get-PhaseFromOwners $Owners
+    if ($phase -eq "") { Write-ErrorResult "PHASE_OWNER_MISMATCH" "task '$($Task.title)' currentOwners [$($Owners -join '+')] spans multiple phases — whitelist model requires a single phase per task (see references/phase-model.md §3)" 1 }
+    return $phase
+}
+
+# check-time phase validation (Invoke-Check, references/phase-model.md §8):
+# phase=null on an ACTIVE task is the legacy conservative degrade — no issue,
+# never a crash (migrate is the designated one-shot filler). Whenever a phase
+# IS stored, the enum + whitelist + lifecycle invariants are enforced.
+# Returns the issue strings found (empty = clean).
+function Get-TaskPhaseIssues {
+    param($Task, [string]$TaskLabel, [array]$ValidRoles)
+    $found = @()
+    $phase = Get-PhaseOrNull $Task.phase
+    if ($null -eq $phase) { return @() }
+    if (-not (Test-PhaseName $phase)) {
+        $found += "${TaskLabel}: [PHASE_INVALID] phase '$phase' not in $($script:PhaseOrder -join '/')"
+    }
+    else {
+        $phaseRoles = @($script:PhaseRoles[$phase])
+        foreach ($o in @($Task.currentOwners)) {
+            if ($ValidRoles -contains $o -and $phaseRoles -notcontains $o) {
+                $found += "${TaskLabel}: [PHASE_OWNER_MISMATCH] currentOwners [$(@($Task.currentOwners) -join '+')] not ⊆ PhaseRoles[$phase] = [$($phaseRoles -join '+')]"
+                break
+            }
+        }
+    }
+    if (@("completed", "deprecated") -contains [string]$Task.lifecycle) {
+        $found += "${TaskLabel}: [PHASE_LIFECYCLE_CONFLICT] lifecycle='$($Task.lifecycle)' requires phase=null, got '$phase'"
+    }
+    return $found
+}
+
+# Write-time phase re-initialization for commands that wholesale-rewrite owners
+# (advance/reject): a task that already carries a phase re-derives it from the
+# resulting owner set (phase-pure results adopt their canonical phase, e.g.
+# ["QA"] -> VERIFY; spanning results degrade to null = legacy unconstrained);
+# a null-phase task (pre-phase archive) STAYS null — byte-identical legacy
+# chain (migrate is the one-shot filler).
+function Update-PhaseFromOwners {
+    param($CurrentPhase, $Owners)
+    if ($null -eq $CurrentPhase) { return $null }
+    $derivedPhase = Get-PhaseFromOwners $Owners
+    if ($derivedPhase -ne "") { return $derivedPhase }
+    return $null
+}
 
 function ConvertTo-PortableJson {
     param($Object, [int]$Depth = 6)
@@ -366,6 +582,29 @@ function Get-WorkerTimestamp {
     return $null
 }
 
+# tasks[] schema projection: emit ONLY the canonical fields (plus the normalized
+# phase) so stray runtime keys never leak into task.json on rewrite.
+function Convert-TaskToCleanEntry {
+    param($Task)
+    $designDocs = @()
+    if ($Task.designDocs) {
+        foreach ($d in $Task.designDocs) {
+            $designDocs += @{ path = $d.path; status = $d.status }
+        }
+    }
+    return @{
+        id            = $Task.id
+        title         = $Task.title
+        requirement   = $Task.requirement
+        currentOwners = @($Task.currentOwners)
+        phase         = Get-PhaseOrNull $Task.phase
+        designDocs    = $designDocs
+        currentWorker = @(Convert-CurrentWorkerToArray $Task.currentWorker)
+        remark        = $Task.remark
+        lifecycle     = $Task.lifecycle
+    }
+}
+
 function Write-TaskJson {
     param(
         [string]$ArchivePath,
@@ -379,22 +618,7 @@ function Write-TaskJson {
 
     $cleanTasks = @()
     foreach ($t in $Data.tasks) {
-        $designDocs = @()
-        if ($t.designDocs) {
-            foreach ($d in $t.designDocs) {
-                $designDocs += @{ path = $d.path; status = $d.status }
-            }
-        }
-        $cleanTasks += @{
-            id            = $t.id
-            title         = $t.title
-            requirement   = $t.requirement
-            currentOwners = @($t.currentOwners)
-            designDocs    = $designDocs
-            currentWorker = @(Convert-CurrentWorkerToArray $t.currentWorker)
-            remark        = $t.remark
-            lifecycle     = $t.lifecycle
-        }
+        $cleanTasks += Convert-TaskToCleanEntry $t
     }
 
     $payload = @{
@@ -461,6 +685,7 @@ function Convert-TasksToRows {
             "关联设计文档" = (Convert-DesignDocsToString $t.designDocs)
             "备注"         = if ($t.remark) { $t.remark } else { "-" }
             lifecycle     = $lifecycle
+            phase         = $(if ($null -ne $t.phase -and ([string]$t.phase) -ne "") { [string]$t.phase } else { $null })
             currentWorker = $worker
             running       = ($worker.Count -gt 0)
         }
@@ -618,6 +843,7 @@ function Resolve-TaskEntry {
         title       = $title
         workMode    = $workMode
         routeOwner  = Clean-Cell $Row."当前责任人"
+        phase       = $(if ($null -ne $Row.phase -and ([string]$Row.phase) -ne "") { [string]$Row.phase } else { $null })
         remark      = $remark
         requirement = $requirementSummary
         design      = $designSummary
@@ -777,6 +1003,7 @@ function Build-TaskBlock {
         requirement = Clean-Cell $Row."需求文件"
         design      = Clean-Cell $Row."关联设计文档"
         remark      = Clean-Cell $Row."备注"
+        phase       = $(if ($null -ne $Row.phase -and ([string]$Row.phase) -ne "") { [string]$Row.phase } else { $null })
     }
 }
 
@@ -1058,6 +1285,7 @@ function Convert-HandoffToMarkdown {
         $lines += "### $($task.title)"
         $lines += ""
         $lines += "- Work mode: ``$($task.workMode)``"
+        $lines += "- Phase: ``$(if ($task.phase) { $task.phase } else { 'null' })``"
         $lines += "- Requirement: ``$($task.requirement.path)``"
         if ($task.design) {
             $lines += "- Design: ``$($task.design.path)``"
@@ -1153,6 +1381,7 @@ function Convert-TaskDataToHashtable {
             title         = [string]$t.title
             requirement   = [string]$t.requirement
             currentOwners = @($t.currentOwners)
+            phase         = $(if ($null -ne $t.phase -and ([string]$t.phase) -ne "") { [string]$t.phase } else { $null })
             designDocs    = $designDocs
             currentWorker = @(Convert-CurrentWorkerToArray $t.currentWorker)
             remark        = if ($t.remark) { [string]$t.remark } else { "" }
@@ -1220,10 +1449,15 @@ function Invoke-Show {
     }
 
     # Raw task objects carry currentWorker as stored; attach the derived running boolean
-    # (absent field on legacy archives = idle) so consumers need zero derivation.
+    # (absent field on legacy archives = idle) plus the normalized phase (null on
+    # legacy archives — conservative degrade, see phase-model.md §11) so consumers
+    # need zero derivation.
     $tasks = @($tasks | ForEach-Object {
         $running = (@(Convert-CurrentWorkerToArray $_.currentWorker).Count -gt 0)
-        $_ | Add-Member -NotePropertyName running -NotePropertyValue $running -Force -PassThru
+        $phaseVal = $null
+        if ($_.PSObject.Properties["phase"] -and $null -ne $_.phase -and ([string]$_.phase) -ne "") { $phaseVal = [string]$_.phase }
+        $_ | Add-Member -NotePropertyName running -NotePropertyValue $running -Force -PassThru |
+            Add-Member -NotePropertyName phase -NotePropertyValue $phaseVal -Force -PassThru
     })
 
     return @{
@@ -1370,11 +1604,16 @@ function Invoke-Init {
         }
         $owners = @()
         if ($t.currentOwners) { $owners = @($t.currentOwners) }
+        # phase-model: explicit input phase wins (validated); absent -> write-time
+        # initialization (last covering phase; ["QA"] -> VERIFY); cross-phase owner
+        # sets fail loud; terminal lifecycle -> phase=null. Get-InitialTaskPhase.
+        $taskPhase = Get-InitialTaskPhase -Task $t -Owners $owners
         $cleanTasks += @{
             id            = $nextId
             title         = [string]$t.title
             requirement   = [string]$t.requirement
             currentOwners = $owners
+            phase         = $taskPhase
             designDocs    = $designDocs
             currentWorker = @(Convert-CurrentWorkerToArray $t.currentWorker)
             remark        = if ($t.remark) { [string]$t.remark } else { "" }
@@ -1413,12 +1652,23 @@ function Invoke-AddTask {
     $owners = Parse-OwnersString $CurrentOwners
     if ($owners.Count -eq 0) { Write-ErrorResult "INVALID_CURRENT_OWNERS" "-CurrentOwners parsed to empty array" 1 }
 
+    # phase-model: optional explicit -Phase (validated); absent -> write-time
+    # initialization from the owner set (["QA"] -> VERIFY). Cross-phase sets fail
+    # loud (whitelist hard constraint). Branch bodies live in the phase helpers.
+    if (-not [string]::IsNullOrWhiteSpace($Phase)) {
+        $taskPhase = Test-ExplicitPhase $owners $Phase "CurrentOwners"
+    }
+    else {
+        $taskPhase = Get-InitialPhaseFromOwners $owners "CurrentOwners"
+    }
+
     $newId = Get-NextTaskId -Tasks $data.tasks
     $data.tasks += @{
         id            = $newId
         title         = $Title
         requirement   = $Requirement
         currentOwners = $owners
+        phase         = $taskPhase
         designDocs    = @()
         currentWorker = @()
         remark        = if ($Remark) { $Remark } else { "" }
@@ -1434,6 +1684,7 @@ function Invoke-AddTask {
             taskId  = $newId
             title   = $Title
             owners  = $owners
+            phase   = $taskPhase
         }
     }
 }
@@ -1459,7 +1710,28 @@ function Invoke-SetRoute {
     $owners = Parse-OwnersString $To
     if ($owners.Count -eq 0) { Write-ErrorResult "INVALID_TO" "-To parsed to empty array" 1 }
 
+    # --- phase-model routing (references/phase-model.md §5.1) ---
+    # Explicit -Phase  : atomic phase switch/rollback — validate -To ⊆ PhaseRoles[-Phase].
+    # Absent -Phase    : phase-internal narrowing — validate -To ⊆ PhaseRoles[current phase];
+    #                    leaving the current whitelist means a phase switch -> SET_PHASE_REQUIRED.
+    # Legacy (phase=null): conservative degrade — no whitelist check, phase stays null
+    #                    (never inferred here; `migrate` is the designated filler), EXCEPT
+    #                    ambiguous sets (QA spans DESIGN/VERIFY) which demand -Phase.
+    # Codes, messages and check order live verbatim in the phase helpers above.
+    $curPhase = Get-PhaseOrNull $task.phase
+    if (-not [string]::IsNullOrWhiteSpace($Phase)) {
+        $newPhase = Test-ExplicitPhase $owners $Phase "To" " (whitelist hard constraint)"
+    }
+    elseif ($null -ne $curPhase) {
+        Test-PhaseInternalNarrowing $owners $curPhase
+        $newPhase = $curPhase
+    }
+    else {
+        $newPhase = Get-LegacyRoutePhase $owners
+    }
+
     $data.tasks[$taskIndex].currentOwners = $owners
+    $data.tasks[$taskIndex].phase = $newPhase
     if ($task.lifecycle -eq "completed") { $data.tasks[$taskIndex].lifecycle = "active" }
     Sync-TaskClaims -Tasks $data.tasks
 
@@ -1468,14 +1740,20 @@ function Invoke-SetRoute {
     return @{
         success = $true
         data    = @{
-            taskId       = $TaskId
+            taskId        = $TaskId
             currentOwners = $owners
-            lifecycle    = $data.tasks[$taskIndex].lifecycle
+            phase         = $newPhase
+            lifecycle     = $data.tasks[$taskIndex].lifecycle
         }
     }
 }
 
 # --- advance ---
+# DEPRECATED as the main routing path (phase-model.md §3 决策表): its single-role
+# replace can mint cross-phase intermediate states (["CTO","UX"] -From CTO -To DEV
+# -> ["UX","DEV"] violates the whitelist). Kept UNCHANGED for backward compatibility;
+# new routing goes through `set-route [-Phase]` (atomic whole-set replacement). The
+# stored phase is passed through untouched — check flags any resulting violation.
 
 function Invoke-Advance {
     param([string]$ArchivePath)
@@ -1504,6 +1782,10 @@ function Invoke-Advance {
     if ($newOwners -notcontains $To) { $newOwners += $To }
 
     $data.tasks[$taskIndex].currentOwners = $newOwners
+    # phase-model: keep the whitelist coherent on the legacy command (plain 4-step
+    # flows still route through advance). Same write-time re-derivation contract
+    # as reject — see Update-PhaseFromOwners above for the full decision record.
+    $data.tasks[$taskIndex].phase = Update-PhaseFromOwners (Get-PhaseOrNull $task.phase) $newOwners
     Sync-TaskClaims -Tasks $data.tasks
 
     Write-TaskJson -ArchivePath $ArchivePath -Data $data
@@ -1585,6 +1867,10 @@ function Invoke-Reject {
     if ($null -eq $task) { Write-ErrorResult "TASK_NOT_FOUND" "TaskId $TaskId not found" 1 }
 
     $data.tasks[$taskIndex].currentOwners = @($To)
+    # phase-model: owners are wholesale-rewritten here — re-derive phase from the
+    # target (write-time rule) so the whitelist invariant survives the rejection
+    # hop. Same contract as advance — see Update-PhaseFromOwners above.
+    $data.tasks[$taskIndex].phase = Update-PhaseFromOwners (Get-PhaseOrNull $task.phase) @($To)
     $rejectSummary = "$From 打回 $To：$Reason"
     if ([string]::IsNullOrWhiteSpace($task.remark) -or $task.remark -eq "-") {
         $data.tasks[$taskIndex].remark = $rejectSummary
@@ -1601,6 +1887,7 @@ function Invoke-Reject {
         data    = @{
             taskId       = $TaskId
             currentOwners = @($To)
+            phase        = $data.tasks[$taskIndex].phase
             rejectedBy   = $From
             rejectedTo   = $To
             remark       = $data.tasks[$taskIndex].remark
@@ -1623,11 +1910,13 @@ function Invoke-Complete {
     }
     if ($taskIndex -lt 0) { Write-ErrorResult "TASK_NOT_FOUND" "TaskId $TaskId not found" 1 }
 
+    # phase-model invariant: terminal lifecycle => phase=null (生死与推进正交).
     $data.tasks[$taskIndex].lifecycle = "completed"
+    $data.tasks[$taskIndex].phase = $null
     Sync-TaskClaims -Tasks $data.tasks
     Write-TaskJson -ArchivePath $ArchivePath -Data $data
 
-    return @{ success = $true; data = @{ taskId = $TaskId; lifecycle = "completed" } }
+    return @{ success = $true; data = @{ taskId = $TaskId; lifecycle = "completed"; phase = $null } }
 }
 
 function Invoke-Reopen {
@@ -1644,12 +1933,18 @@ function Invoke-Reopen {
     }
     if ($taskIndex -lt 0) { Write-ErrorResult "TASK_NOT_FOUND" "TaskId $TaskId not found" 1 }
 
+    $reopenOwners = Parse-OwnersString $To
+    # phase-model: reopen re-initializes phase from the target owner set (write-time
+    # rule — ["QA"] -> VERIFY); a spanning set degrades to null (legacy unconstrained)
+    # rather than blocking the recovery path.
+    $reopenPhase = Get-PhaseFromOwners $reopenOwners
     $data.tasks[$taskIndex].lifecycle = "active"
-    $data.tasks[$taskIndex].currentOwners = Parse-OwnersString $To
+    $data.tasks[$taskIndex].currentOwners = $reopenOwners
+    $data.tasks[$taskIndex].phase = $(if ($reopenPhase -ne "") { $reopenPhase } else { $null })
     Sync-TaskClaims -Tasks $data.tasks
     Write-TaskJson -ArchivePath $ArchivePath -Data $data
 
-    return @{ success = $true; data = @{ taskId = $TaskId; lifecycle = "active"; currentOwners = $data.tasks[$taskIndex].currentOwners } }
+    return @{ success = $true; data = @{ taskId = $TaskId; lifecycle = "active"; currentOwners = $data.tasks[$taskIndex].currentOwners; phase = $data.tasks[$taskIndex].phase } }
 }
 
 function Invoke-Deprecate {
@@ -1666,10 +1961,11 @@ function Invoke-Deprecate {
     if ($taskIndex -lt 0) { Write-ErrorResult "TASK_NOT_FOUND" "TaskId $TaskId not found" 1 }
 
     $data.tasks[$taskIndex].lifecycle = "deprecated"
+    $data.tasks[$taskIndex].phase = $null
     Sync-TaskClaims -Tasks $data.tasks
     Write-TaskJson -ArchivePath $ArchivePath -Data $data
 
-    return @{ success = $true; data = @{ taskId = $TaskId; lifecycle = "deprecated" } }
+    return @{ success = $true; data = @{ taskId = $TaskId; lifecycle = "deprecated"; phase = $null } }
 }
 
 # --- check ---
@@ -1712,6 +2008,11 @@ function Invoke-Check {
         if ($t.lifecycle -and $validLifecycle -notcontains $t.lifecycle) {
             $issues += "${taskLabel}: invalid lifecycle '$($t.lifecycle)' (expected one of: $($validLifecycle -join ', '))"
         }
+
+        # --- phase-model checks (references/phase-model.md §8) — Get-TaskPhaseIssues ---
+        # phase=null on an ACTIVE task is the legacy conservative degrade (no issue);
+        # whenever a phase IS stored, enum + whitelist + lifecycle invariants apply.
+        $issues += @(Get-TaskPhaseIssues -Task $t -TaskLabel $taskLabel -ValidRoles $validRoles)
 
         if ($t.designDocs) {
             foreach ($d in $t.designDocs) {
@@ -1841,11 +2142,16 @@ function Invoke-Migrate {
         $remarkValue = Clean-Cell $row."备注"
         if ($remarkValue -eq "-") { $remarkValue = "" }
 
+        # phase-model: write-time initialization for migrated rows (terminal rows
+        # carry null by invariant; a spanning set degrades to null, conservative).
+        $migPhase = ""
+        if ($lifecycle -eq "active") { $migPhase = Get-PhaseFromOwners $owners }
         $cleanTasks += @{
             id            = $nextId
             title         = Clean-Cell $row."需求"
             requirement   = Clean-Cell $row."需求文件"
             currentOwners = $owners
+            phase         = $(if ($migPhase -ne "") { $migPhase } else { $null })
             designDocs    = $designDocs
             currentWorker = @()
             remark        = $remarkValue

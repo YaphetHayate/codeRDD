@@ -1820,36 +1820,44 @@ function Suite-Roster {
 }
 
 # ============================================================
-# 套件:rollback — TC-B45 ~ TC-B48(2026-09-20-planner-enhancements)
+# 套件:rollback — TC-B45 ~ TC-B49(2026-09-20-planner-enhancements;2026-09-23-delivery-phase-model 接口适配:显式 -To/-Phase 目标取代父推导)
 # ============================================================
 
 function Suite-Rollback {
-    Write-Host "`n== suite: rollback (跨阶段回退单命令:守卫/全链/幂等续跑/他任务无扰) =="
+    Write-Host "`n== suite: rollback (跨阶段回退单命令:守卫/全链/幂等续跑/他任务无扰 — phase-model 显式目标接口) =="
 
-    Run-Tc "TC-B45" "rollback 守卫矩阵:pending/claimed 拒(REQUIRES_REPORTED)/缺 Reason 拒/链头无前一阶段拒(NO_PREVIOUS_STAGE 指引 reclaim)/根节点非映射拒/证据合格拒(REQUIRES_UNQUALIFIED 指引 settle)" "P0" "SRB-AC-1" {
+    Run-Tc "TC-B45" "rollback 守卫矩阵(phase-model 新接口):缺 -Phase 拒(SET_PHASE_REQUIRED)/坏枚举拒(PHASE_INVALID)/缺 -To 拒(MISSING_TO)/越白名单拒(PHASE_OWNER_MISMATCH)/pending/claimed 拒(REQUIRES_REPORTED)/缺 Reason 拒/根节点非映射拒/证据合格拒(REQUIRES_UNQUALIFIED 指引 settle)/链头显式目标回退成功(父推导守卫 NO_PREVIOUS_STAGE 已随显式目标模型移除)" "P0" "SRB-AC-1" {
         param($c)
         $fx = New-FixtureArchive "rb45"
         $null = TB @("-Command", "promulgate", "-TaskJson", (Join-Path $fx.dir "task.json"))
+        # 缺 -Phase:回退目标是规划者显式输入,不再父推导(2026-09-23 phase-model)
+        $w0 = TB @("-Command", "rollback", "-RunId", $fx.run_id, "-NodeId", "n2", "-To", "DEV", "-Reason", "x")
+        Assert $c ($w0.exit -eq 1 -and $w0.json.error.code -eq "SET_PHASE_REQUIRED") "缺 Phase 未拒: $($w0.text)"
+        # 坏 phase 枚举:拒
+        $w0b = TB @("-Command", "rollback", "-RunId", $fx.run_id, "-NodeId", "n2", "-To", "DEV", "-Phase", "BANANA", "-Reason", "x")
+        Assert $c ($w0b.exit -eq 1 -and $w0b.json.error.code -eq "PHASE_INVALID") "坏 phase 枚举未拒: $($w0b.text)"
+        # 缺 -To:拒(目标角色集必填)
+        $w0c = TB @("-Command", "rollback", "-RunId", $fx.run_id, "-NodeId", "n2", "-Phase", "IMPL", "-Reason", "x")
+        Assert $c ($w0c.exit -eq 1 -and $w0c.json.error.code -eq "MISSING_TO") "缺 To 未拒: $($w0c.text)"
+        # -To 越阶段白名单:CTO 不在 PhaseRoles[IMPL],白名单硬约束
+        $w0d = TB @("-Command", "rollback", "-RunId", $fx.run_id, "-NodeId", "n2", "-To", "CTO", "-Phase", "IMPL", "-Reason", "x")
+        Assert $c ($w0d.exit -eq 1 -and $w0d.json.error.code -eq "PHASE_OWNER_MISMATCH") "越白名单未拒: $($w0d.text)"
         # pending:未 report → 拒
-        $w1 = TB @("-Command", "rollback", "-RunId", $fx.run_id, "-NodeId", "n2", "-Reason", "x")
+        $w1 = TB @("-Command", "rollback", "-RunId", $fx.run_id, "-NodeId", "n2", "-To", "DEV", "-Phase", "IMPL", "-Reason", "x")
         Assert $c ($w1.exit -eq 1 -and $w1.json.error.code -eq "ROLLBACK_REQUIRES_REPORTED") "pending rollback 未拒: $($w1.text)"
         # claimed:仍拒(同阶段处置走 claim 等待或 reclaim)
         $null = TB @("-Command", "claim", "-RunId", $fx.run_id, "-NodeId", "n2", "-Role", "DEV")
-        $w2 = TB @("-Command", "rollback", "-RunId", $fx.run_id, "-NodeId", "n2", "-Reason", "x")
+        $w2 = TB @("-Command", "rollback", "-RunId", $fx.run_id, "-NodeId", "n2", "-To", "DEV", "-Phase", "IMPL", "-Reason", "x")
         Assert $c ($w2.exit -eq 1 -and $w2.json.error.code -eq "ROLLBACK_REQUIRES_REPORTED") "claimed rollback 未拒: $($w2.text)"
         # 缺 -Reason:拒(审计必填)
-        $w3 = TB @("-Command", "rollback", "-RunId", $fx.run_id, "-NodeId", "n2")
+        $w3 = TB @("-Command", "rollback", "-RunId", $fx.run_id, "-NodeId", "n2", "-To", "DEV", "-Phase", "IMPL")
         Assert $c ($w3.exit -eq 1 -and $w3.json.error.code -eq "MISSING_REASON") "缺 Reason 未拒: $($w3.text)"
-        # reported+不合格 但为链头(父=goal 根) → NO_PREVIOUS_STAGE 且指引同阶段 reclaim
+        # 根节点:非桥接映射(退出码 2 = 映射类错误)
+        $w5 = TB @("-Command", "rollback", "-RunId", $fx.run_id, "-NodeId", "n1", "-To", "DEV", "-Phase", "IMPL", "-Reason", "x")
+        Assert $c ($w5.exit -eq 2 -and $w5.json.error.code -eq "NODE_NOT_MAPPED") "根节点未拒: $($w5.text)"
+        # 证据合格 → REQUIRES_UNQUALIFIED(先 report 不合格使 reclaim 走 rejected-delivery 路径重建,再 report 合格)
         $cb = New-CallbackFile "n2" "failed" $true $true $true
         $null = TLeaf @("-Command", "report", "-RunId", $fx.run_id, "-Worker", "DEV", "-CallbackFile", $cb)
-        $w4 = TB @("-Command", "rollback", "-RunId", $fx.run_id, "-NodeId", "n2", "-Reason", "chain head")
-        Assert $c ($w4.exit -eq 1 -and $w4.json.error.code -eq "ROLLBACK_NO_PREVIOUS_STAGE") "链头回退未拒: $($w4.text)"
-        Assert $c ($w4.json.error.message.Contains("reclaim")) "NO_PREVIOUS_STAGE 未指引同阶段 reclaim"
-        # 根节点:非桥接映射(退出码 2 = 映射类错误)
-        $w5 = TB @("-Command", "rollback", "-RunId", $fx.run_id, "-NodeId", "n1", "-Reason", "x")
-        Assert $c ($w5.exit -eq 2 -and $w5.json.error.code -eq "NODE_NOT_MAPPED") "根节点未拒: $($w5.text)"
-        # 证据合格 → REQUIRES_UNQUALIFIED(经 reclaim 重建后再 report 合格)
         $rc = TB @("-Command", "reclaim", "-RunId", $fx.run_id, "-NodeId", "n2")
         Assert $c ($rc.exit -eq 0) "reclaim 重建失败: $($rc.text)"
         $bridge = Read-BridgeJson $fx.run_id
@@ -1857,13 +1865,25 @@ function Suite-Rollback {
         $null = TB @("-Command", "claim", "-RunId", $fx.run_id, "-NodeId", $newNode, "-Role", "DEV")
         $cb2 = New-CallbackFile $newNode "done" $true $true $true
         $null = TLeaf @("-Command", "report", "-RunId", $fx.run_id, "-Worker", "DEV", "-CallbackFile", $cb2)
-        $w6 = TB @("-Command", "rollback", "-RunId", $fx.run_id, "-NodeId", $newNode, "-Reason", "x")
+        $w6 = TB @("-Command", "rollback", "-RunId", $fx.run_id, "-NodeId", $newNode, "-To", "DEV", "-Phase", "IMPL", "-Reason", "x")
         Assert $c ($w6.exit -eq 1 -and $w6.json.error.code -eq "ROLLBACK_REQUIRES_UNQUALIFIED") "合格交付回退未拒: $($w6.text)"
         Assert $c ($w6.json.error.message.Contains("settle")) "REQUIRES_UNQUALIFIED 未指引 settle"
         # 守卫全程路由零变更
         $flow = TFlow @("-Command", "show", "-Archive", $fx.dir)
         $t1 = @($flow.json.data.tasks | Where-Object { $_.id -eq 1 })[0]
         Assert $c (@($t1.currentOwners) -contains "DEV") "守卫拒绝过程中路由被意外变更: $($t1.currentOwners -join '+')"
+        # 链头显式目标回退:独立 fixture 上 report 不合格后 -To CTO -Phase DESIGN 成功(NO_PREVIOUS_STAGE 父推导守卫已随显式目标模型移除)
+        $fx2 = New-FixtureArchive "rb45b"
+        $null = TB @("-Command", "promulgate", "-TaskJson", (Join-Path $fx2.dir "task.json"))
+        $null = TB @("-Command", "claim", "-RunId", $fx2.run_id, "-NodeId", "n2", "-Role", "DEV")
+        $cb3 = New-CallbackFile "n2" "failed" $true $true $true
+        $null = TLeaf @("-Command", "report", "-RunId", $fx2.run_id, "-Worker", "DEV", "-CallbackFile", $cb3)
+        $w7 = TB @("-Command", "rollback", "-RunId", $fx2.run_id, "-NodeId", "n2", "-To", "CTO", "-Phase", "DESIGN", "-Reason", "design rework")
+        Assert $c ($w7.exit -eq 0 -and $w7.json.success) "链头显式目标回退失败: $($w7.text)"
+        Assert $c (@($w7.json.data.rebuilt_nodes).Count -eq 1 -and [string]$w7.json.data.to_phase -eq "DESIGN") "链头回退重建异常: $($w7.text)"
+        $flow = TFlow @("-Command", "show", "-Archive", $fx2.dir)
+        $t1 = @($flow.json.data.tasks | Where-Object { $_.id -eq 1 })[0]
+        Assert $c ((@($t1.currentOwners) -join '+') -eq "CTO" -and [string]$t1.phase -eq "DESIGN") "链头回退后路由/phase 异常: $($t1.currentOwners -join '+')@$($t1.phase)"
     }
 
     Run-Tc "TC-B46" "rollback 全链:QA 判不合格 → 单命令剪枝+兄弟挂接重建 DEV+reopen 路由回退+自动重推;三层一致;重做上下文进 node.task 与指针消息;重做闭环后链不变量保持" "P0" "SRB-AC-1/2/3" {
@@ -1879,21 +1899,21 @@ function Suite-Rollback {
         $null = TB @("-Command", "claim", "-RunId", $fx.run_id, "-NodeId", $qaNode, "-Role", "QA")
         $cb = New-CallbackFile $qaNode "failed" $true $true $true
         $null = TLeaf @("-Command", "report", "-RunId", $fx.run_id, "-Worker", "QA", "-CallbackFile", $cb)
-        # 单命令回退
-        $r = TB @("-Command", "rollback", "-RunId", $fx.run_id, "-NodeId", $qaNode, "-Reason", "验收未过:功能门禁失败")
+        # 单命令回退(显式目标:回退到 IMPL 阶段的 DEV)
+        $r = TB @("-Command", "rollback", "-RunId", $fx.run_id, "-NodeId", $qaNode, "-To", "DEV", "-Phase", "IMPL", "-Reason", "验收未过:功能门禁失败")
         Assert $c ($r.exit -eq 0 -and $r.json.success) "rollback 失败: $($r.text)"
         $d = $r.json.data
         $rebuilt = [string]$d.rebuilt_node
-        Assert $c ($d.from_stage -eq "QA" -and $d.to_stage -eq "DEV") "阶段推导异常: $($d.from_stage)->$($d.to_stage)"
+        Assert $c ($d.from_stage -eq "QA" -and $d.to_stage -eq "DEV" -and [string]$d.to_phase -eq "IMPL") "阶段推导异常: $($d.from_stage)->$($d.to_stage)@$($d.to_phase)"
         Assert $c ($d.pruned_node -eq $qaNode -and $rebuilt -ne $qaNode -and $rebuilt -ne "") "节点标识异常"
         # 树层:失败 QA 节点 pruned+审计 reason;重建 DEV 节点 pending+兄弟挂接(父=前一阶段节点 n2 的父=goal 根 n1)
         $t = Read-RunTree $fx.run_id
         $old = $t.nodes | Where-Object id -eq $qaNode
         $new = $t.nodes | Where-Object id -eq $rebuilt
         Assert $c ([string]$old.status -eq "pruned") "失败 QA 节点未剪枝: $($old.status)"
-        Assert $c ([string]$old.pruned_reason -like "cross-stage rollback to DEV*") "剪枝审计 reason 异常: $($old.pruned_reason)"
+        Assert $c ([string]$old.pruned_reason -like "cross-stage rollback to DEV @ IMPL*") "剪枝审计 reason 异常: $($old.pruned_reason)"
         Assert $c ($old.pruned_reason.Contains("验收未过:功能门禁失败") -and $old.pruned_reason.Contains("verdict check")) "审计未含回退理由/证据问题"
-        Assert $c ($old.pruned_reason -match 'cross-stage rollback to DEV \(by [^)]+\)') "审计未含操作者(AC-3): $($old.pruned_reason)"
+        Assert $c ($old.pruned_reason -match 'cross-stage rollback to DEV @ IMPL \(by [^)]+\)') "审计未含操作者(AC-3): $($old.pruned_reason)"
         Assert $c ([string]$new.status -eq "pending") "重建节点非 pending: $($new.status)"
         Assert $c ([string]$new.parent -eq "n1") "兄弟挂接异常: parent=$($new.parent),期望 n1(goal 根)"
         Assert $c ([string]$new.role -eq "dev") "重建节点 role 异常: $($new.role)"
@@ -1903,6 +1923,7 @@ function Suite-Rollback {
         $flow = TFlow @("-Command", "show", "-Archive", $fx.dir)
         $t1 = @($flow.json.data.tasks | Where-Object { $_.id -eq 1 })[0]
         Assert $c ((@($t1.currentOwners) -contains "DEV") -and (-not (@($t1.currentOwners) -contains "QA"))) "路由未回退: $($t1.currentOwners -join '+')"
+        Assert $c ([string]$t1.phase -eq "IMPL") "回退后 phase 未随 set-route 原子回写: $($t1.phase)"
         Assert $c (@($t1.currentWorker).Count -eq 0) "QA worker 残留未清"
         Assert $c ([string]$t1.lifecycle -eq "active") "lifecycle 异常: $($t1.lifecycle)"
         # 桥层:映射回写新 DEV 节点
@@ -1940,10 +1961,10 @@ function Suite-Rollback {
         $cb = New-CallbackFile $qaNode "failed" $true $true $true
         $null = TLeaf @("-Command", "report", "-RunId", $fx.run_id, "-Worker", "QA", "-CallbackFile", $cb)
         # 模拟 prune 成功后、graft 前崩溃:手工 prune 带 rollback 签名
-        $sim = TRun @("-Command", "prune", "-RunId", $fx.run_id, "-NodeId", $qaNode, "-Reason", "cross-stage rollback to DEV (by test-crash-sim): simulated crash; evidence problems: verdict check: last_verdict is 'failed', expected 'done' (worker self-assessment incomplete)")
+        $sim = TRun @("-Command", "prune", "-RunId", $fx.run_id, "-NodeId", $qaNode, "-Reason", "cross-stage rollback to DEV @ IMPL (by test-crash-sim): simulated crash; evidence problems: verdict check: last_verdict is 'failed', expected 'done' (worker self-assessment incomplete)")
         Assert $c ($sim.exit -eq 0) "崩溃模拟 prune 失败: $($sim.text)"
         # 重跑同命令:签名识别 → 续 graft 步(若二次剪枝会 ALREADY_PRUNED 失败)
-        $r = TB @("-Command", "rollback", "-RunId", $fx.run_id, "-NodeId", $qaNode, "-Reason", "resume-after-crash")
+        $r = TB @("-Command", "rollback", "-RunId", $fx.run_id, "-NodeId", $qaNode, "-To", "DEV", "-Phase", "IMPL", "-Reason", "resume-after-crash")
         Assert $c ($r.exit -eq 0 -and $r.json.success) "幂等续跑失败: $($r.text)"
         Assert $c ($r.json.data.resumed -eq $true) "续跑标记缺失"
         $rebuilt = [string]$r.json.data.rebuilt_node
@@ -1959,7 +1980,7 @@ function Suite-Rollback {
         $bridge = Read-BridgeJson $fx.run_id
         Assert $c ([string]$bridge.tasks.'1'.stages.DEV -eq $rebuilt) "续跑后映射异常"
         # 完整回退已发生后的重跑:幂等(在建后继存在 → 不重复 graft)
-        $r2 = TB @("-Command", "rollback", "-RunId", $fx.run_id, "-NodeId", $qaNode, "-Reason", "second-rerun")
+        $r2 = TB @("-Command", "rollback", "-RunId", $fx.run_id, "-NodeId", $qaNode, "-To", "DEV", "-Phase", "IMPL", "-Reason", "second-rerun")
         Assert $c ($r2.exit -eq 0 -and $r2.json.success) "二次重跑失败: $($r2.text)"
         Assert $c ([string]$r2.json.data.rebuilt_node -eq $rebuilt) "二次重跑重建了额外节点: $($r2.json.data.rebuilt_node)"
         $t = Read-RunTree $fx.run_id
@@ -1982,7 +2003,7 @@ function Suite-Rollback {
         $null = TB @("-Command", "claim", "-RunId", $fx.run_id, "-NodeId", $qaNode, "-Role", "QA")
         $cb = New-CallbackFile $qaNode "failed" $true $true $true
         $null = TLeaf @("-Command", "report", "-RunId", $fx.run_id, "-Worker", "QA", "-CallbackFile", $cb)
-        $r = TB @("-Command", "rollback", "-RunId", $fx.run_id, "-NodeId", $qaNode, "-Reason", "affects T2")
+        $r = TB @("-Command", "rollback", "-RunId", $fx.run_id, "-NodeId", $qaNode, "-To", "DEV", "-Phase", "IMPL", "-Reason", "affects T2")
         Assert $c ($r.exit -eq 0 -and $r.json.success) "rollback 失败: $($r.text)"
         $d = $r.json.data
         # 直接依赖边警示:含 n3(带 task/stage/pushed 派生),且不动它
@@ -2019,7 +2040,7 @@ function Suite-Rollback {
         $tj = [System.IO.File]::ReadAllText($tjPath, [System.Text.Encoding]::UTF8) | ConvertFrom-Json
         (@($tj.tasks) | Where-Object { $_.id -eq 1 }).lifecycle = "completed"
         [System.IO.File]::WriteAllText($tjPath, ($tj | ConvertTo-Json -Depth 6), $Utf8NoBom)
-        $r = TB @("-Command", "rollback", "-RunId", $fx.run_id, "-NodeId", $qaNode, "-Reason", "post-run rework")
+        $r = TB @("-Command", "rollback", "-RunId", $fx.run_id, "-NodeId", $qaNode, "-To", "DEV", "-Phase", "IMPL", "-Reason", "post-run rework")
         Assert $c ($r.exit -eq 1 -and $r.json.error.code -eq "TASK_NOT_ACTIVE") "completed 任务回退未拒: $($r.text)"
         Assert $c ($r.json.error.message.Contains("reopen")) "TASK_NOT_ACTIVE 未指引既有 reopen 语义"
         # 零副作用:节点仍 reported(未被剪枝、未重建、路由未动)

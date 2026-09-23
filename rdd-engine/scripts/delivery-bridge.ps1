@@ -32,14 +32,17 @@
 #               are mechanically unreclaimable (RECLAIM_TARGET_ALIVE) — liveness via
 #               the dsh agents registry, time-threshold fallback for unknown
 #   settle      the ONLY forward task.json transition channel: three evidence
-#               checks -> tree settle -> flow advance/complete -> auto-graft next
-#               stage -> dependency-driven auto-push of newly unlocked nodes
-#   rollback    cross-stage reverse transition (planner-stage-rollback): prune the
-#               reported-but-unqualified node (ledger keeps the audit) ->
-#               sibling-graft a rebuilt previous-stage node (parent = the
-#               previous-stage node's parent) -> rdd-flow reopen -> auto re-push;
-#               with settle (forward) and reclaim (same-stage redo) this closes
-#               the three transition channels inside the bridge
+#               checks -> tree settle -> flow set-route (phase-internal narrowing
+#               keeps the phase; the phase's LAST settle switches atomically via
+#               -Phase) or complete -> convergence graft of the next phase heads
+#               -> dependency-driven auto-push of newly unlocked nodes; null-phase
+#               (legacy archive) tasks keep the byte-identical advance path
+#   rollback    cross-phase reverse transition (phase-model explicit target):
+#               prune the reported-but-unqualified node (ledger keeps the
+#               audit) -> sibling-graft ONE rebuilt node per -To role at the
+#               target phase's chain-head layer -> rdd-flow set-route -To/-Phase
+#               -> auto re-push; with settle (forward) and reclaim (same-stage
+#               redo) this closes the three transition channels inside the bridge
 #   status      joined view: tree census + task stages + dep blocking + dead claims +
 #               pending_sync repair + push ledger + session liveness + catch-up push
 #   resume      breakpoint view for a fresh Planner session
@@ -147,9 +150,11 @@ param(
     # settle
     [string]$Note,
 
-    # rollback (planner-stage-rollback)
+    # rollback (planner-stage-rollback / phase-model explicit target)
     [string]$Reason,              # rollback audit trail (required): lands in the
                                    # prune reason AND the rebuilt node's redo context
+    [string]$To,                  # rollback target role set ("CTO+UX") — required with -Phase
+    [string]$Phase,               # rollback target phase (REQ/DESIGN/IMPL/VERIFY) — required
 
     # conclude
     [string]$Summary,
@@ -169,7 +174,47 @@ param(
 $ErrorActionPreference = "Stop"
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 $OutputEncoding = [System.Text.Encoding]::UTF8
-$repoRoot = (git rev-parse --show-toplevel).Trim()
+# Resolve-RepoRoot - project-root location chain (git-optional; protocol source:
+# rdd-engine/references/engine-location.md, "Project-root location chain"). Fixed order:
+#   1. $env:RDD_PROJECT_ROOT          explicit override; invalid path -> fail-loud
+#   2. git rev-parse --show-toplevel  most accurate: worktree / submodule / GIT_DIR
+#   3. nearest .git ancestor          filesystem twin of (2) when git is missing or
+#                                     refuses the repo (dubious ownership)
+#   4. nearest .rdd/install.json ancestor  anchors non-git projects back onto their
+#                                     coderdd-init root when run from a subdirectory
+#   5. cwd                            final fallback - same rule as the dsh plugin's
+#                                     findRepoRoot (one mental model across the ecosystem)
+# (2)+(3) keep every existing git project byte-identical (regression anchor);
+# (4)+(5) only rescue trees where git says "not a repository".
+function Resolve-RepoRoot {
+    $envRoot = [string]$env:RDD_PROJECT_ROOT
+    if (-not [string]::IsNullOrWhiteSpace($envRoot)) {
+        if (Test-Path -LiteralPath $envRoot -PathType Container) { return $envRoot }
+        throw "RDD_PROJECT_ROOT does not exist: $envRoot"
+    }
+    $t = $null
+    # 2>$null must stay inside try/catch: under PS5.1, redirected native stderr
+    # plus $ErrorActionPreference=Stop raises NativeCommandError.
+    try { $t = git rev-parse --show-toplevel 2>$null } catch { }
+    if ($t) { return $t.Trim() }
+    $start = (Get-Location).ProviderPath
+    $dir = $start
+    for (;;) {
+        if (Test-Path -LiteralPath (Join-Path $dir ".git")) { return $dir }
+        $parent = Split-Path -Parent $dir
+        if (-not $parent -or $parent -eq $dir) { break }
+        $dir = $parent
+    }
+    $dir = $start
+    for (;;) {
+        if (Test-Path -LiteralPath (Join-Path $dir ".rdd/install.json")) { return $dir }
+        $parent = Split-Path -Parent $dir
+        if (-not $parent -or $parent -eq $dir) { break }
+        $dir = $parent
+    }
+    return $start
+}
+$repoRoot = Resolve-RepoRoot
 
 $script:Utf8NoBom = New-Object System.Text.UTF8Encoding($false)
 $script:GoalTreesRoot = Join-Path $repoRoot ".rdd/goal-trees"
@@ -178,8 +223,28 @@ $script:ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 # Stage model: a task's lifecycle crosses roles; each (task, stage) is one tree node.
 # Chain parent: cto -> dev -> qa are parent/child; ux grafts as its own chain head
 # when the task starts at UX (ux -> dev -> qa).
+# LEGACY (phase-model.md): StageOrder/StageNext now serve ONLY the conservative
+# degrade path for null-phase tasks (pre-phase archives). Phase-aware tasks route
+# through PhaseRoles/PhaseNext below.
 $script:StageOrder = @("CTO", "UX", "DEV", "QA")
 $script:StageNext = @{ "CTO" = "DEV"; "UX" = "DEV"; "DEV" = "QA"; "QA" = $null }
+
+# Phase routing model (references/phase-model.md — single authority). Phases are
+# totally ordered; roles inside a phase form a whitelist (parallel). A phase is
+# complete when every currentOwner has settled; only then does the task advance
+# (convergence graft). ⚠ synced with rdd-flow.ps1's same-name constants — changes
+# go to BOTH.
+$script:PhaseRoles = @{
+    "REQ"    = @("PM")
+    "DESIGN" = @("CTO", "UX", "QA")   # QA = test-case design (test-first)
+    "IMPL"   = @("DEV")
+    "VERIFY" = @("QA")                # QA = acceptance execution
+}
+$script:PhaseNext = @{ "REQ" = "DESIGN"; "DESIGN" = "IMPL"; "IMPL" = "VERIFY"; "VERIFY" = $null }
+$script:PhaseOrder = @("REQ", "DESIGN", "IMPL", "VERIFY")
+# every bridgeable role, in chain order (PM heads a REQ-phase chain; rollback -To PM
+# grafts a PM head, so claim/push/display must all accept PM)
+$script:RoleOrder = @("PM", "CTO", "UX", "DEV", "QA")
 
 # Worker roles a direct handoff can target (planner-session-roster
 # register-session validation): everything start-role accepts except PLANNER —
@@ -786,7 +851,7 @@ function Register-PlannerBody {
     param([string]$RunDir, [string]$RunIdText)
     if ([string]::IsNullOrWhiteSpace($env:DSH_SESSION_ID)) { return $null }
     $short = ConvertTo-RunShort $RunIdText
-    $title = $(if ($short) { "[PLANNER] $short" } else { "[PLANNER]" })
+    $title = $short
     $r = Add-RosterEntry -RunDir $RunDir -RunIdText $RunIdText -SessionId $env:DSH_SESSION_ID -Role "PLANNER" -Node $null -Label $null -Source "planner" -Title $title
     if ($r.ok) { return $r.entry }
     return $null
@@ -1239,15 +1304,67 @@ function Find-ArchiveTask {
     return $null
 }
 
-function Resolve-InitialStage {
-    # earliest pipeline role present in currentOwners; error when unresolved
+function Get-PhaseFromOwners {
+    # Bridge-local copy of rdd-flow's write-time initialization rule (pure function;
+    # the bridge never dot-sources engine internals — sync via the PhaseRoles
+    # constants' cross-reference). LAST covering phase: ["QA"] -> VERIFY (standalone
+    # QA task = acceptance execution); "" when the set spans phases.
+    param([string[]]$Owners)
+    $hit = @()
+    foreach ($p in $script:PhaseOrder) {
+        $roles = @($script:PhaseRoles[$p])
+        $isCovered = $true
+        foreach ($o in @($Owners)) { if ($roles -notcontains $o) { $isCovered = $false; break } }
+        if ($isCovered) { $hit += $p }
+    }
+    if ($hit.Count -eq 0) { return "" }
+    return $hit[-1]
+}
+
+function Resolve-InitialGroup {
+    # phase-model: return EVERY bridgeable owner (currentOwners ∩ RoleOrder, chain
+    # ordered) — parallel owners each get their own chain head at promulgate; the
+    # single-role Resolve-InitialStage silently dropped all but the first owner,
+    # losing that work. $null task.phase (legacy archive) is tolerated: the group is
+    # derived from owners alone and the phase stays null (conservative degrade).
     param($Task)
     $owners = @()
     if ($null -ne $Task.currentOwners) { $owners = @($Task.currentOwners) }
-    foreach ($stage in $script:StageOrder) {
-        if ($owners -contains $stage) { return $stage }
+    $group = @()
+    foreach ($role in $script:RoleOrder) {
+        if ($owners -contains $role -and $group -notcontains $role) { $group += $role }
     }
-    Write-ErrorResult "TASK_STAGE_UNRESOLVED" "Task $($Task.id) currentOwners=[$($owners -join '+')] contains no pipeline role (CTO/UX/DEV/QA); route the task first" 1
+    if ($group.Count -eq 0) {
+        Write-ErrorResult "TASK_STAGE_UNRESOLVED" "Task $($Task.id) currentOwners=[$($owners -join '+')] contains no bridgeable role (PM/CTO/UX/DEV/QA); route the task first" 1
+    }
+    return @($group)
+}
+
+function Resolve-TaskPhase {
+    # task.phase when valid; inferred (last covering phase) when absent; deterministic
+    # errors otherwise: PHASE_INVALID (junk enum) / GROUP_DIVERGENT_NEXT (owner set
+    # spans phases — the parallel group has no single phase to advance to; first
+    # version does not support fan-out).
+    param($Task, [string[]]$Group)
+    $stored = $null
+    if ($null -ne $Task.phase -and ([string]$Task.phase) -ne "") { $stored = [string]$Task.phase }
+    if ($null -ne $stored) {
+        if ($script:PhaseOrder -notcontains $stored) {
+            Write-ErrorResult "PHASE_INVALID" "Task $($Task.id) carries phase '$stored' not in $($script:PhaseOrder -join '/'); fix task.json (rdd-flow check) and re-promulgate" 2
+        }
+        $roles = @($script:PhaseRoles[$stored])
+        foreach ($g in $Group) {
+            if ($roles -notcontains $g) {
+                Write-ErrorResult "PHASE_OWNER_MISMATCH" "Task $($Task.id) currentOwners [$($Group -join '+')] not ⊆ PhaseRoles[$stored] = [$($roles -join '+')] (whitelist hard constraint); fix task.json and re-promulgate" 2
+            }
+        }
+        return $stored
+    }
+    $inferred = Get-PhaseFromOwners $Group
+    if ($inferred -eq "") {
+        Write-ErrorResult "GROUP_DIVERGENT_NEXT" "Task $($Task.id) currentOwners [$($Group -join '+')] spans multiple phases — the parallel group has no single next phase (fan-out unsupported in v1); split the task or fix its routing" 2
+    }
+    return $inferred
 }
 
 function Get-RequirementDepTaskIds {
@@ -1500,6 +1617,29 @@ function Invoke-GraftOne {
     return @{ ok = $true; node_id = [string]$r.json.data.grafted[0].id; text = $r.text }
 }
 
+function Get-DeferredEdgesForNode {
+    # Deferred review-edge stitching for ONE grafted chain-head node
+    # (Invoke-Promulgate step 3b): single-pass graft can only express deps on
+    # already-grafted nodes (task order); when the planner's override or a
+    # merge-redirect points at a task grafted LATER, the edge is re-added here
+    # via the public deps CLI (DAG-validated, deps-log audited) instead of
+    # silently vanishing. Returns the edges actually added.
+    param([string]$RunId, [int]$TaskId, [string]$NodeId, $ExplicitDeps, $GraftedDepNodes, $InitialNodesOfTask)
+    $edges = @()
+    foreach ($d in @($ExplicitDeps)) {
+        if (-not $InitialNodesOfTask.ContainsKey([int]$d)) { continue }
+        foreach ($on in @($InitialNodesOfTask[[int]$d])) {
+            if (@($GraftedDepNodes) -contains $on) { continue }
+            $r = Invoke-GoalTree @("-Command", "deps", "-DepAction", "add", "-RunId", $RunId, "-NodeId", $NodeId, "-On", $on)
+            if ($r.exit -ne 0 -or -not $r.json.success) {
+                Write-ErrorResult "PROMULGATE_DEP_FAILED" "deferred review dep stitch failed for task $TaskId -> task $d ($NodeId -> $on): $($r.text)" 3
+            }
+            $edges += @{ task_id = $TaskId; on_task_id = [int]$d; node = $NodeId; on = $on }
+        }
+    }
+    return $edges
+}
+
 # === Command: promulgate ===
 
 function Invoke-Promulgate {
@@ -1595,7 +1735,8 @@ function Invoke-Promulgate {
             $skippedReview += $taskId        # review-excluded tasks build no node, enter no bridge.tasks, never push
             continue
         }
-        $stage = Resolve-InitialStage $t
+        $group = @(Resolve-InitialGroup $t)
+        $null = Resolve-TaskPhase $t $group   # phase gate: PHASE_INVALID / PHASE_OWNER_MISMATCH / GROUP_DIVERGENT_NEXT
         $depIds = @(Get-RequirementDepTaskIds $archivePath $t $allIds)
         $isOverride = $false
         if ($verdictOf.Contains($taskId) -and $verdictOf[$taskId].Contains('depends_on_override')) {
@@ -1631,7 +1772,7 @@ function Invoke-Promulgate {
             }
             $depIds = @($resolved)
         }
-        $plan += @{ task = $t; stage = $stage; dep_ids = $depIds; explicit_deps = $explicitDeps }
+        $plan += @{ task = $t; group = $group; dep_ids = $depIds; explicit_deps = $explicitDeps }
     }
     if ($null -ne $review -and $plan.Count -eq 0) {
         Write-ErrorResult "REVIEW_FILE_INVALID" "the review excluded every deliverable task — nothing to promulgate" 2
@@ -1676,10 +1817,15 @@ function Invoke-Promulgate {
     $r = Invoke-GoalTree @("-Command", "round-start", "-RunId", $runId)
     if ($r.exit -ne 0 -or -not $r.json.success) { Write-ErrorResult "PROMULGATE_ROUND_FAILED" "round-start failed: $($r.text)" 3 }
 
-    # 3) graft one node per (task, initial stage) under the goal root; deps point at
-    #    dep tasks' initial nodes. The requirement chain heads (first-stage work
-    #    nodes, ref-bound to their requirement docs) ARE the goal root's children —
-    #    the "requirement node" layer and the first work node are one (decision 4).
+    # 3) graft one chain-head node per (task, initial group role) under the goal root;
+    #    deps point at EVERY chain head of each dep task (phase-model multi-anchor:
+    #    the dependent unlocks only when the whole upstream phase settles). The
+    #    requirement chain heads (first-stage work nodes, ref-bound to their
+    #    requirement docs) ARE the goal root's children — the "requirement node"
+    #    layer and the first work node are one (decision 4). Parallel owners each
+    #    get their own head (the old single-stage resolution dropped all but the
+    #    first owner's work); stages stay single-value per role key in bridge.tasks
+    #    so a parallel group never collides.
     $bridge = @{
         format_version  = 2
         run_id          = $runId
@@ -1694,13 +1840,13 @@ function Invoke-Promulgate {
         pending_sync    = @()
         pushes          = @{}
     }
-    $initialNodeOfTask = @{}
+    $initialNodesOfTask = @{}
     foreach ($p in $plan) {
         $t = $p.task
         $taskId = [int]$t.id
-        $stage = $p.stage
+        $group = @($p.group)
         $depNodes = @()
-        foreach ($d in $p.dep_ids) { if ($initialNodeOfTask.ContainsKey($d)) { $depNodes += $initialNodeOfTask[$d] } }
+        foreach ($d in $p.dep_ids) { if ($initialNodesOfTask.ContainsKey($d)) { $depNodes += @($initialNodesOfTask[$d]) } }
         # bookkeeping for the deferred review-edge stitching below (single-pass
         # graft can only express deps on already-grafted nodes)
         $p['grafted_dep_nodes'] = @($depNodes)
@@ -1708,29 +1854,31 @@ function Invoke-Promulgate {
         $reqRel = ([string]$t.requirement -replace '\\', '/')
         $designRels = @()
         foreach ($d in @(Convert-ToSafeArray $t.designDocs)) { $designRels += ([string]$d.path -replace '\\', '/') }
-        # goal-first node task text (dispatch-task-goal-anchoring): single
-        # authoritative producer — see New-NodeTaskText above
-        $taskText = New-NodeTaskText -Title ([string]$t.title) -Stage $stage -ReqRel $reqRel -DesignRels $designRels -RunId $runId
-
-        $graftItem = @{
-            title      = [string]$t.title
-            task       = $taskText
-            role       = $stage.ToLower()
-            ref        = "$archiveName/$reqRel"   # requirement-node ref ↔ the requirement doc (goal-tree-goal-root AC-1)
-        }
-        if ($depNodes.Count -gt 0) { $graftItem['depends_on'] = @($depNodes) }
-        $g = Invoke-GraftOne $runId "n1" $graftItem
-        if (-not $g.ok) { Write-ErrorResult "PROMULGATE_GRAFT_FAILED" "graft failed for task $taskId ($stage): $($g.text)" 3 }
-        $nodeId = $g.node_id
         $bridge.tasks["$taskId"] = @{
             title          = [string]$t.title
             requirement    = $reqRel
-            initial_stage  = $stage
+            initial_group  = @($group)
             dep_task_ids   = @($p.dep_ids)
             stages         = @{}
         }
-        Set-NodeTaskStage $bridge $nodeId $taskId $stage
-        $initialNodeOfTask[$taskId] = $nodeId
+        $initialNodesOfTask[$taskId] = @()
+        foreach ($role in $group) {
+            # goal-first node task text (dispatch-task-goal-anchoring): single
+            # authoritative producer — see New-NodeTaskText above
+            $taskText = New-NodeTaskText -Title ([string]$t.title) -Stage $role -ReqRel $reqRel -DesignRels $designRels -RunId $runId
+            $graftItem = @{
+                title      = [string]$t.title
+                task       = $taskText
+                role       = $role.ToLower()
+                ref        = "$archiveName/$reqRel"   # requirement-node ref ↔ the requirement doc (goal-tree-goal-root AC-1)
+            }
+            if ($depNodes.Count -gt 0) { $graftItem['depends_on'] = @($depNodes) }
+            $g = Invoke-GraftOne $runId "n1" $graftItem
+            if (-not $g.ok) { Write-ErrorResult "PROMULGATE_GRAFT_FAILED" "graft failed for task $taskId ($role): $($g.text)" 3 }
+            $nodeId = $g.node_id
+            Set-NodeTaskStage $bridge $nodeId $taskId $role
+            $initialNodesOfTask[$taskId] += $nodeId
+        }
     }
 
     # 3b) deferred review-edge stitching: single-pass graft can only express deps
@@ -1738,21 +1886,14 @@ function Invoke-Promulgate {
     #     merge-redirect points at a task grafted LATER, the edge is added here via
     #     the public deps CLI (DAG-validated, deps-log audited) instead of silently
     #     vanishing. Inferred (non-adjudicated) deps keep the legacy one-pass shape.
+    #     Per-node edge stitching lives in Get-DeferredEdgesForNode (nesting cap).
     $deferredEdges = @()
     if ($null -ne $review) {
         foreach ($p in $plan) {
             if (@($p['explicit_deps']).Count -eq 0) { continue }
-            $nodeId = $initialNodeOfTask[[int]$p.task.id]
             $have = @($p['grafted_dep_nodes'])
-            foreach ($d in @($p['explicit_deps'])) {
-                if (-not $initialNodeOfTask.ContainsKey([int]$d)) { continue }
-                $on = $initialNodeOfTask[[int]$d]
-                if ($have -contains $on) { continue }
-                $r = Invoke-GoalTree @("-Command", "deps", "-DepAction", "add", "-RunId", $runId, "-NodeId", $nodeId, "-On", $on)
-                if ($r.exit -ne 0 -or -not $r.json.success) {
-                    Write-ErrorResult "PROMULGATE_DEP_FAILED" "deferred review dep stitch failed for task $([int]$p.task.id) -> task $d ($nodeId -> $on): $($r.text)" 3
-                }
-                $deferredEdges += @{ task_id = [int]$p.task.id; on_task_id = [int]$d; node = $nodeId; on = $on }
+            foreach ($nodeId in @($initialNodesOfTask[[int]$p.task.id])) {
+                $deferredEdges += @(Get-DeferredEdgesForNode -RunId $runId -TaskId ([int]$p.task.id) -NodeId $nodeId -ExplicitDeps @($p['explicit_deps']) -GraftedDepNodes $have -InitialNodesOfTask $initialNodesOfTask)
             }
         }
     }
@@ -1862,7 +2003,7 @@ function Invoke-Promulgate {
             archive      = $archiveRel
             directory    = ".rdd/goal-trees/$runId"
             goal_root    = @{ node = "n1"; title = $goal.title; source = $goal.source }
-            tasks        = @($plan | ForEach-Object { @{ task_id = [int]$_.task.id; stage = $_.stage; node = $initialNodeOfTask[[int]$_.task.id]; dep_task_ids = @($_.dep_ids) } })
+            tasks        = @($plan | ForEach-Object { @{ task_id = [int]$_.task.id; stage = @($_.group)[0]; group = @($_.group); node = @($initialNodesOfTask[[int]$_.task.id])[0]; nodes = @($initialNodesOfTask[[int]$_.task.id]); dep_task_ids = @($_.dep_ids) } })
             skipped_deprecated = @($tasks | Where-Object { ([string]$_.lifecycle) -eq 'deprecated' } | ForEach-Object { [int]$_.id })
             skipped_review    = @($skippedReview)
             review       = $(if ($null -ne $review) {
@@ -1967,7 +2108,7 @@ function Invoke-BridgeClaim {
     $mapping = Get-NodeTaskStage $bridge $NodeId
     if ($null -eq $mapping) { Write-ErrorResult "NODE_NOT_MAPPED" "Node $NodeId is not in this run's bridge mapping" 2 }
     $stage = if ([string]::IsNullOrWhiteSpace($Role)) { $mapping.stage } else { $Role }
-    if ($script:StageOrder -notcontains $stage) { Write-ErrorResult "ROLE_INVALID" "-Role must be one of CTO/UX/DEV/QA" 1 }
+    if ($script:RoleOrder -notcontains $stage) { Write-ErrorResult "ROLE_INVALID" "-Role must be one of PM/CTO/UX/DEV/QA" 1 }
     $taskId = $mapping.task_id
 
     # --- precheck 1: tree side (read-only) ---
@@ -2240,20 +2381,54 @@ function Invoke-BridgeReclaim {
 # guard (a rerun recognizes its own prune signature and continues at the graft
 # step instead of pruning twice).
 # Decomposition (QA function-size gate, qa-ast-review <= 40 effective lines):
-# the command is an orchestrator over guard/step helpers — Get-RollbackContext
-# (probe + status dispatch), Resolve-RollbackReportedPlan / Resolve-
-# RollbackResumePlan (guards + plan), Invoke-RollbackPrune / Invoke-
-# RollbackRebuild / Invoke-RollbackFlowSide (prune -> graft -> reopen+push),
-# Get-RollbackDependents / New-RollbackNextStep (report assembly). Behavior is
-# identical to the pre-split single function (same codes/messages/order).
+# the command is an orchestrator over guard/step helpers — Test-RollbackTarget
+# (explicit target validation), Get-RollbackContext (probe + status dispatch),
+# Resolve-RollbackReportedPlan / Resolve-RollbackResumePlan (guards + plan),
+# Invoke-RollbackPrune / Invoke-RollbackRebuild / Invoke-RollbackFlowSide
+# (prune -> graft -> reopen+push), Get-RollbackDependents / New-Rollback-
+# NextStep (report assembly). Behavior is identical to the pre-split single
+# function (same codes/messages/order).
+
+# Explicit rollback target validation (phase-model §6): -Phase + -To are
+# planner input — enum check, role-set parse and the PhaseRoles whitelist all
+# run BEFORE any pruning. Returns the parsed, deduplicated target role set.
+function Test-RollbackTarget {
+    param([string]$To, [string]$Phase)
+    if ([string]::IsNullOrWhiteSpace($Phase)) {
+        Write-ErrorResult "SET_PHASE_REQUIRED" "-Phase is required: rollback targets are explicit planner input (e.g. rollback -To 'CTO+UX' -Phase DESIGN). The old parent-derived single-stage guess no longer applies." 1
+    }
+    if (-not ($script:PhaseOrder -contains $Phase)) {
+        Write-ErrorResult "PHASE_INVALID" "-Phase '$Phase' not in $($script:PhaseOrder -join '/')" 1
+    }
+    if ([string]::IsNullOrWhiteSpace($To)) {
+        Write-ErrorResult "MISSING_TO" "-To is required (the rollback target role set, e.g. 'CTO+UX'); must be ⊆ PhaseRoles[$Phase]" 1
+    }
+    $targetRoles = @()
+    foreach ($role in ($To -split '\+')) {
+        $r = $role.Trim()
+        if ([string]::IsNullOrWhiteSpace($r)) { continue }
+        if ($script:RoleOrder -notcontains $r) {
+            Write-ErrorResult "PHASE_OWNER_MISMATCH" "-To role '$r' is not a bridgeable role (PM/CTO/UX/DEV/QA)" 1
+        }
+        if ((@($script:PhaseRoles[$Phase]) -notcontains $r)) {
+            Write-ErrorResult "PHASE_OWNER_MISMATCH" "-To [$($To)] not ⊆ PhaseRoles[$Phase] = [$(@($script:PhaseRoles[$Phase]) -join '+')] (whitelist hard constraint)" 1
+        }
+        if ($targetRoles -notcontains $r) { $targetRoles += $r }
+    }
+    if ($targetRoles.Count -eq 0) {
+        Write-ErrorResult "MISSING_TO" "-To '$To' parsed to an empty role set" 1
+    }
+    return @($targetRoles)
+}
 
 function Get-RollbackContext {
     # probe + guard dispatch shared by the whole rollback chain: mapping ->
-    # leaf status -> archive task (same order as settle/reclaim), then the
-    # node-status dispatch resolves WHAT to roll back and TO WHICH stage into
-    # the plan fields (problems / target_stage / reason / resume). Guards call
-    # Write-ErrorResult, which exits the process — identical to the inline
-    # pre-split originals.
+    # leaf status -> archive task (same order as settle/reclaim) -> explicit
+    # target validation (Test-RollbackTarget), then the node-status dispatch
+    # resolves WHAT to roll back into the plan fields (problems / target_roles /
+    # target_phase / reason / resume). The rollback TARGET is explicit planner
+    # input (phase-model §6). Guards call Write-ErrorResult, which exits the
+    # process — identical to the inline pre-split originals.
     param([string]$RunDir, $Bridge)
     $mapping = Get-NodeTaskStage $Bridge $NodeId
     if ($null -eq $mapping) { Write-ErrorResult "NODE_NOT_MAPPED" "Node $NodeId is not in this run's bridge mapping" 2 }
@@ -2263,19 +2438,22 @@ function Get-RollbackContext {
     }
     $task = Find-ArchiveTask (Read-ArchiveTasks $Bridge.archive).tasks $mapping.task_id
     if ($null -eq $task) { Write-ErrorResult "TASK_NOT_FOUND" "TaskId $($mapping.task_id) not found in $($Bridge.archive)" 2 }
+    $targetRoles = Test-RollbackTarget $To $Phase
+
     $ctx = @{
         node = $leafStatus.json.data.node; task = $task
         task_id = $mapping.task_id; stage = $mapping.stage
-        resume = $false; reason = $Reason; problems = @(); target_stage = $null
+        target_roles = @($targetRoles); target_phase = $Phase
+        resume = $false; reason = $Reason; problems = @()
     }
     $nodeStatus = [string]$ctx.node.status
     if ($nodeStatus -eq "reported") {
         $plan = Resolve-RollbackReportedPlan $RunDir $Bridge $ctx.node $task
-        $ctx.problems = $plan.problems; $ctx.target_stage = $plan.target_stage
+        $ctx.problems = $plan.problems
     }
     elseif ($nodeStatus -eq "pruned") {
         $plan = Resolve-RollbackResumePlan $RunDir $ctx.node
-        $ctx.resume = $true; $ctx.target_stage = $plan.target_stage
+        $ctx.resume = $true
         $ctx.reason = $plan.reason; $ctx.problems = $plan.problems
     }
     elseif ($nodeStatus -in @("claimed", "pending")) {
@@ -2290,10 +2468,10 @@ function Get-RollbackContext {
 function Resolve-RollbackReportedPlan {
     # reported path: rollback only recovers failed deliveries — qualified ones
     # settle; the flow precheck before anything irreversible (same discipline as
-    # settle) restricts rollback to ACTIVE bridged tasks. Target-stage
-    # derivation is mechanical single-source: the failed node's parent IS the
-    # previous stage (chain invariant); an unmapped parent (goal root or
-    # foreign subtree) means there is no previous stage to roll back to.
+    # settle) restricts rollback to ACTIVE bridged tasks. The rollback TARGET
+    # comes from the explicit -To/-Phase args (validated in Get-RollbackContext);
+    # no parent-derived stage remains, so rolling a chain head back to REQ is
+    # now expressible.
     param([string]$RunDir, $Bridge, $Node, $Task)
     $problems = @(Test-SettleEvidence -RunDir $RunDir -Node $Node -NodeId $NodeId)
     if ($problems.Count -eq 0) {
@@ -2302,11 +2480,7 @@ function Resolve-RollbackReportedPlan {
     if (([string]$Task.lifecycle) -ne "active") {
         Write-ErrorResult "TASK_NOT_ACTIVE" "TaskId $($Task.id) lifecycle is '$($Task.lifecycle)'; rollback only covers ACTIVE bridged tasks — post-completion rework stays on the plain rdd-flow reopen semantics (out of scope)." 1
     }
-    $parentNode = Get-NodeTaskStage $Bridge ([string]$Node.parent)
-    if ([string]::IsNullOrWhiteSpace([string]$Node.parent) -or $null -eq $parentNode) {
-        Write-ErrorResult "ROLLBACK_NO_PREVIOUS_STAGE" "Node $NodeId is a chain head (parent '$($Node.parent)' is the goal root or not stage-mapped) — there is no previous stage to roll back to. For a same-stage redo use reclaim (delivery-bridge -Command reclaim -RunId $RunId -NodeId $NodeId)." 1
-    }
-    return @{ problems = $problems; target_stage = $parentNode.stage }
+    return @{ problems = $problems }
 }
 
 function Resolve-RollbackResumePlan {
@@ -2315,56 +2489,81 @@ function Resolve-RollbackResumePlan {
     # signature in the prune reason — the rerun continues at the graft step
     # (goal-tree would refuse a second prune with ALREADY_PRUNED anyway).
     # The original user reason + evidence problems are recovered from the
-    # signature so the rebuilt node's redo context matches a fresh run.
-    # (The leaf status view omits pruned_reason — slim serializer — so the
-    # reason falls back to the read-only state/tree.json probe.)
+    # signature so the rebuilt node's redo context matches a fresh run. The
+    # resume TARGET itself comes from the (mandatory) -To/-Phase args of the
+    # rerun command. (The leaf status view omits pruned_reason — slim
+    # serializer — so the reason falls back to the read-only state probe.)
+    # Both signature generations parse: the phase-model "CTO+UX @ DESIGN"
+    # form and the legacy single-stage "CTO (by …)" form.
     param([string]$RunDir, $Node)
     $pr = [string]$Node.pruned_reason
     if ([string]::IsNullOrWhiteSpace($pr)) { $pr = [string](Get-NodePruneReason $RunDir $NodeId) }
-    if (-not ($pr -match '^cross-stage rollback to (CTO|UX|DEV|QA) ')) {
+    if (-not ($pr -match '^cross-stage rollback to (?<target>[A-Z+]+)( @ (?<phase>REQ|DESIGN|IMPL|VERIFY))? ')) {
         Write-ErrorResult "ROLLBACK_REQUIRES_REPORTED" "Node $NodeId is pruned without a rollback signature; rollback only accepts reported nodes with unqualified evidence." 1
     }
-    $targetStage = $Matches[1]
     $reason = $Reason
     $problems = @()
-    if ($pr -match '^cross-stage rollback to (?:CTO|UX|DEV|QA) \(by [^)]*\): (?<reason>.*?); evidence problems: (?<probs>.*)$') {
+    if ($pr -match '^cross-stage rollback to (?<target>[A-Z+]+)( @ (?<phase>REQ|DESIGN|IMPL|VERIFY))? \(by [^)]*\): (?<reason>.*?); evidence problems: (?<probs>.*)$') {
         $reason = [string]$Matches['reason']
         $problems = @([string]$Matches['probs'] -split '; ')
     }
-    return @{ target_stage = $targetStage; reason = $reason; problems = $problems }
+    return @{ reason = $reason; problems = $problems }
 }
 
 function Invoke-RollbackPrune {
     # step 1: prune the failed delivery. A chain-tail leaf prunes without
     # cascade; the reason (user reason + operator + evidence problems) is
     # the ledger audit trail (acceptance 3), and the rollback signature it
-    # starts with is what the resume guard recognizes.
+    # starts with is what the resume guard recognizes (roles + phase in the
+    # phase-model format; legacy runs left the bare single-stage form).
     param([string]$RunDir, $Ctx, [string]$Holder)
-    $auditReason = "cross-stage rollback to $($Ctx.target_stage) (by $Holder): $($Ctx.reason); evidence problems: $(@($Ctx.problems) -join '; ')"
+    $auditReason = "cross-stage rollback to $(@($Ctx.target_roles) -join '+') @ $($Ctx.target_phase) (by $Holder): $($Ctx.reason); evidence problems: $(@($Ctx.problems) -join '; ')"
     $rp = Invoke-GoalTree @("-Command", "prune", "-RunId", $RunId, "-NodeId", $NodeId, "-Reason", $auditReason)
     if ($rp.exit -ne 0 -or $null -eq $rp.json -or -not $rp.json.success) {
         Write-ErrorResult "ROLLBACK_PRUNE_FAILED" "prune of the failed delivery failed (nothing rolled back): $($rp.text)" 1
     }
 }
 
+function Get-NodeParentSafe {
+    # rollback ancestor-walk primitive: a node's parent via leaf status, with
+    # every failure mode (non-zero exit, bad json, missing node) degrading to
+    # '' — walking past a missing/unreadable node must stop the walk, never
+    # abort the rollback. Shared by the anchor probe and the upward walk.
+    param([string]$RunId, [string]$ProbeId)
+    $ps = Invoke-GoalTreeLeaf @("-Command", "status", "-RunId", $RunId, "-NodeId", $ProbeId)
+    if ($ps.exit -ne 0 -or $null -eq $ps.json -or -not $ps.json.success -or $null -eq $ps.json.data.node) { return "" }
+    return [string]$ps.json.data.node.parent
+}
+
 function Resolve-RollbackGraftParent {
-    # step 2 prelude: the graft parent is the PREVIOUS-STAGE NODE's parent
-    # (the failed node's grandparent) — the rebuilt node becomes a sibling
-    # of the previous stage's chain head, so "every stage node's parent =
-    # the previous stage node" keeps holding for the live chain and
-    # multi-round rollbacks never deepen the tree.
-    param([string]$PrevStageNode)
-    $graftParent = $null
-    if (-not [string]::IsNullOrWhiteSpace($PrevStageNode)) {
-        $ps = Invoke-GoalTreeLeaf @("-Command", "status", "-RunId", $RunId, "-NodeId", $PrevStageNode)
-        if ($ps.exit -eq 0 -and $null -ne $ps.json -and $ps.json.success -and $null -ne $ps.json.data.node) {
-            $graftParent = [string]$ps.json.data.node.parent
+    # phase-model sibling anchor: walk up from the failed node's parent through
+    # same-task ancestors; the FIRST ancestor whose role sits in the TARGET
+    # phase's whitelist marks where that phase's nodes originally hung — graft
+    # the rebuilt group under ITS parent (sibling attach back to the chain-head
+    # layer). No such ancestor (e.g. rollback to REQ on a DESIGN-started task)
+    # -> the goal root: the rebuilt heads belong to the head layer by the
+    # promulgate invariant. QA matches both DESIGN and VERIFY whitelists, so a
+    # QA-design ancestor anchors a DESIGN rollback exactly like CTO/UX do.
+    # This preserves the legacy single-stage grandparent rule byte-for-byte
+    # (one-phase rollback always finds the parent's own phase at depth 1).
+    param([string]$RunDir, $Bridge, $Ctx)
+    $goalRoot = [string]$Bridge.goal_root
+    if ([string]::IsNullOrWhiteSpace($goalRoot)) { $goalRoot = "n1" }
+    $probe = [string]$Ctx.node.parent
+    for ($i = 0; $i -lt 12 -and -not [string]::IsNullOrWhiteSpace($probe); $i++) {
+        $m = Get-NodeTaskStage $Bridge $probe
+        $isSameTask = ($null -ne $m -and [int]$m.task_id -eq [int]$Ctx.task_id)
+        $isPhaseAnchor = ($isSameTask -and @($script:PhaseRoles[$Ctx.target_phase]) -contains $m.stage)
+        if ($isPhaseAnchor) {
+            $anchorParent = Get-NodeParentSafe $RunId $probe
+            if (-not [string]::IsNullOrWhiteSpace($anchorParent)) { return $anchorParent }
+            break
         }
+        $parent = Get-NodeParentSafe $RunId $probe
+        if ([string]::IsNullOrWhiteSpace($parent)) { break }
+        $probe = $parent
     }
-    if ([string]::IsNullOrWhiteSpace($graftParent)) {
-        Write-ErrorResult "ROLLBACK_NO_PREVIOUS_STAGE" "Cannot resolve the sibling-graft parent (previous-stage node '$PrevStageNode' has no readable parent). Rerun the same rollback command to resume from the graft step." 1
-    }
-    return $graftParent
+    return $goalRoot
 }
 
 function Find-RollbackExistingGraft {
@@ -2387,46 +2586,65 @@ function Find-RollbackExistingGraft {
 }
 
 function Invoke-RollbackRebuild {
-    # step 2: sibling-graft the rebuilt target-stage node (resume-aware — a
-    # rerun whose graft already landed adopts the in-flight successor).
+    # step 2: sibling-graft ONE rebuilt node per -To role (parallel group
+    # rebuilds in one command — acceptance: rollback -To "CTO+UX" -Phase
+    # DESIGN re-creates BOTH heads), resume-aware per role: a rerun whose
+    # graft step already landed adopts the in-flight successor.
     param([string]$RunDir, $Bridge, $Ctx)
-    $graftParent = Resolve-RollbackGraftParent ([string]$Ctx.node.parent)
-    $rebuiltNode = $null
-    if ($Ctx.resume) { $rebuiltNode = Find-RollbackExistingGraft $Bridge $Ctx.task_id $Ctx.target_stage }
-    if ($null -ne $rebuiltNode) { return @{ bridge = $Bridge; node_id = $rebuiltNode } }
+    $graftParent = Resolve-RollbackGraftParent $RunDir $Bridge $Ctx
     $redo = @{ from_stage = $Ctx.stage; reason = $Ctx.reason; problems = $Ctx.problems }
-    $g = Invoke-GraftNextStage $RunDir $Bridge $Ctx.task $graftParent $Ctx.target_stage -RedoContext $redo
-    if (-not $g.success) {
-        Write-ErrorResult "ROLLBACK_GRAFT_FAILED" "rebuilt $($Ctx.target_stage) node graft failed after prune (task $($Ctx.task_id) still routed at $($Ctx.stage); the prune already happened). RERUN THE SAME COMMAND — the rollback signature in the prune reason makes the rerun resume at the graft step without pruning twice. Error: $($g.error)" 1
+    $rebuiltNodes = @()
+    foreach ($role in @($Ctx.target_roles)) {
+        $rebuiltNode = $null
+        if ($Ctx.resume) { $rebuiltNode = Find-RollbackExistingGraft $Bridge $Ctx.task_id $role }
+        if ($null -ne $rebuiltNode) { $rebuiltNodes += $rebuiltNode; continue }
+        $g = Invoke-GraftNextStage $RunDir $Bridge $Ctx.task $graftParent $role -RedoContext $redo
+        if (-not $g.success) {
+            Write-ErrorResult "ROLLBACK_GRAFT_FAILED" "rebuilt $role node graft failed after prune (task $($Ctx.task_id) partially rebuilt: [$($rebuiltNodes -join '+')]; the prune already happened). RERUN THE SAME COMMAND — the rollback signature in the prune reason makes the rerun resume at the graft step without pruning twice. Error: $($g.error)" 1
+        }
+        $Bridge = $g.bridge
+        $rebuiltNodes += $g.node_id
     }
-    return @{ bridge = $g.bridge; node_id = $g.node_id }
+    return @{ bridge = $Bridge; node_ids = @($rebuiltNodes); node_id = @($rebuiltNodes)[0] }
 }
 
 function Invoke-RollbackFlowSide {
-    # steps 3+4: flow side — reopen routes the task back to the target stage
-    # (owners rewrite + Sync-TaskClaims drops the failed stage's worker
-    # residue); then the auto re-push reaches the never-pushed rebuilt node.
-    # A reopen half-failure lands in pending_sync (reopen op) which every
-    # status touch retries; the push is deferred until the repair succeeds
-    # (a worker pushed while owners are stale would hit ROLE_NOT_OWNER on
-    # its very first claim).
+    # steps 3+4: flow side — set-route with the explicit -To/-Phase routes the
+    # task back atomically (owners + phase whitelist rewrite + Sync-TaskClaims
+    # drops the failed stage's worker residue); then the auto re-push reaches
+    # the never-pushed rebuilt nodes. A set-route half-failure lands in
+    # pending_sync (set-route op + phase) which every status touch retries;
+    # the push is deferred until the repair succeeds (a worker pushed while
+    # owners are stale would hit ROLE_NOT_OWNER on its very first claim).
+    # Also warns when the task still carries LIVE nodes outside the rebuilt
+    # role set (parallel leftovers from the pre-rollback phase).
     param([string]$RunDir, $Bridge, $Ctx)
     $warnings = @()
-    $r3 = Invoke-RddFlow @("-Command", "reopen", "-TaskId", "$($Ctx.task_id)", "-To", $Ctx.target_stage, "-Archive", $Bridge.archive)
-    $reopenFailed = ($r3.exit -ne 0 -or $null -eq $r3.json -or -not $r3.json.success)
-    if ($reopenFailed) {
-        $warnings += "flow reopen failed after prune/graft — recorded as pending_sync (every status touch retries the repair, then the catch-up push fires): $($r3.text)"
-        $Bridge = Add-PendingSync $RunDir $Bridge $NodeId "reopen" $Ctx.stage $Ctx.target_stage ($r3.text)
+    $toJoined = @($Ctx.target_roles) -join '+'
+    $r3 = Invoke-RddFlow @("-Command", "set-route", "-TaskId", "$($Ctx.task_id)", "-To", $toJoined, "-Phase", [string]$Ctx.target_phase, "-Archive", $Bridge.archive)
+    $routeFailed = ($r3.exit -ne 0 -or $null -eq $r3.json -or -not $r3.json.success)
+    if ($routeFailed) {
+        $warnings += "flow set-route failed after prune/graft — recorded as pending_sync (every status touch retries the repair, then the catch-up push fires): $($r3.text)"
+        $Bridge = Add-PendingSync $RunDir $Bridge $NodeId "set-route" $Ctx.stage $toJoined ($r3.text) -PhaseArg ([string]$Ctx.target_phase)
+    }
+    else {
+        foreach ($role in @($script:RoleOrder)) {
+            if (@($Ctx.target_roles) -contains $role) { continue }
+            $live = Get-LiveStageNode -RunId $RunId -Bridge $Bridge -TaskId ([int]$Ctx.task_id) -Role $role
+            if ($null -ne $live) {
+                $warnings += "task $($Ctx.task_id) still has a live $role node ($live) outside the rollback target [$toJoined] — reclaim it if that work is now obsolete, or let it report/settle"
+            }
+        }
     }
     $push = @{ trigger = "rollback"; considered = 0; pushed = @(); skipped = @(); failed = @() }
-    if (-not $reopenFailed) {
+    if (-not $routeFailed) {
         $push = Invoke-AutoDispatch $RunDir $Bridge "rollback"
         $Bridge = $push.bridge
         foreach ($f in @($push.failed)) {
             $warnings += "auto-push failed for node $($f.node) (retry_class=$($f.retry_class)): session-create class auto-retries on the next trigger; pointer class needs manual dispatch. $($f.error)"
         }
     }
-    return @{ bridge = $Bridge; reopen_failed = $reopenFailed; push = $push; warnings = @($warnings) }
+    return @{ bridge = $Bridge; route_failed = $routeFailed; push = $push; warnings = @($warnings) }
 }
 
 function Get-RollbackDependents {
@@ -2462,18 +2680,18 @@ function Get-RollbackDependents {
 }
 
 function New-RollbackNextStep {
-    # next_step assembly over the flow-side outcome (reopen repair / push
+    # next_step assembly over the flow-side outcome (set-route repair / push
     # repair / pushed / awaits push) + the dependents count hint.
-    param($Flow, [string]$RebuiltNode, $TargetStage, [int]$DependentCount)
+    param($Flow, [string]$RebuiltNode, [string]$TargetJoined, [int]$DependentCount)
     $nextStep = ""
-    if ($Flow.reopen_failed) {
-        $nextStep = "reopen recorded as pending_sync — run status -RunId $RunId (the touch retries the repair, then the catch-up push picks up node $RebuiltNode)"
+    if ($Flow.route_failed) {
+        $nextStep = "set-route recorded as pending_sync — run status -RunId $RunId (the touch retries the repair, then the catch-up push picks up node $RebuiltNode)"
     }
     elseif (@($Flow.push.failed).Count -gt 0) {
         $nextStep = "repair failed pushes: session-create class auto-retries via status; pointer class → dispatch -NodeId <id> manually"
     }
     elseif (@($Flow.push.pushed) -contains $RebuiltNode) {
-        $nextStep = "rebuilt $TargetStage node $RebuiltNode auto-pushed — its worker session re-claims with -Role $TargetStage and redoes the work against the redo context in node.task"
+        $nextStep = "rebuilt [$TargetJoined] node $RebuiltNode auto-pushed — its worker session re-claims with -Role <role> and redoes the work against the redo context in node.task"
     }
     else {
         $nextStep = "rebuilt node $RebuiltNode awaits push — status touch or dispatch -NodeId $RebuiltNode"
@@ -2499,7 +2717,8 @@ function Invoke-BridgeRollback {
     $bridge = $flow.bridge
 
     $dependents = @(Get-RollbackDependents $bridge $NodeId)
-    $nextStep = New-RollbackNextStep $flow $rebuild.node_id $ctx.target_stage @($dependents).Count
+    $targetJoined = @($ctx.target_roles) -join '+'
+    $nextStep = New-RollbackNextStep $flow $rebuild.node_id $targetJoined @($dependents).Count
 
     return @{
         success = $true
@@ -2507,9 +2726,11 @@ function Invoke-BridgeRollback {
             run_id             = $RunId
             pruned_node        = $NodeId
             rebuilt_node       = $rebuild.node_id
+            rebuilt_nodes      = @($rebuild.node_ids)
             task_id            = $ctx.task_id
             from_stage         = $ctx.stage
-            to_stage           = $ctx.target_stage
+            to_stage           = $targetJoined
+            to_phase           = [string]$ctx.target_phase
             resumed            = $ctx.resume
             reason             = $ctx.reason
             auto_push          = @{ trigger = $flow.push.trigger; pushed = @($flow.push.pushed); failed = @($flow.push.failed); skipped = @($flow.push.skipped | ForEach-Object { "$($_.node):$($_.reason)" }) }
@@ -2565,6 +2786,126 @@ function Test-SettleEvidence {
 
 # === Command: settle (the ONLY task.json transition channel) ===
 
+function Invoke-FlowCompleteTail {
+    # terminal flow tail shared by the legacy and phase settle tails: complete
+    # the task in flow, with pending_sync fallback when the call fails after
+    # the already-irreversible tree settle. Returns @{ bridge; warnings }.
+    param([string]$RunDir, $Bridge, $Task, [string]$NodeId, [string]$Stage)
+    $taskId = [int]$Task.id
+    $r2 = Invoke-RddFlow @("-Command", "complete", "-TaskId", "$taskId", "-Archive", $Bridge.archive)
+    if ($r2.exit -ne 0 -or $null -eq $r2.json -or -not $r2.json.success) {
+        return @{ bridge = Add-PendingSync $RunDir $Bridge $NodeId "complete" $Stage $null ($r2.text); warnings = @("flow complete failed after tree settle — recorded as pending_sync: $($r2.text)") }
+    }
+    return @{ bridge = $Bridge; warnings = @() }
+}
+
+function Invoke-LegacySettleFlow {
+    # LEGACY null-phase flow tail — byte-identical pre-phase-model behavior
+    # (conservative degrade for old archives; new archives always carry phase):
+    # terminal stage -> flow complete; otherwise advance + single next-stage
+    # graft. Half-failures land in pending_sync. Returns the settle-tail shape
+    # @{ bridge; warnings; graftedNext; graftedNextNodes; flowOperation; taskLifecycle }.
+    # $NextStage stays untyped: a null (terminal stage) must survive binding as
+    # null — a [string] cast would turn it into "" and flip the advance/complete fork.
+    param([string]$RunDir, $Bridge, $Task, [string]$NodeId, [string]$Stage, $NextStage)
+    $taskId = [int]$Task.id
+    $res = @{ bridge = $Bridge; warnings = @(); graftedNext = $null; graftedNextNodes = @(); flowOperation = ""; taskLifecycle = "" }
+    if ($null -ne $NextStage) {
+        $r2 = Invoke-RddFlow @("-Command", "advance", "-TaskId", "$taskId", "-From", $Stage, "-To", $NextStage, "-Archive", $Bridge.archive)
+        if ($r2.exit -ne 0 -or $null -eq $r2.json -or -not $r2.json.success) {
+            $res.warnings += "flow advance failed after tree settle — recorded as pending_sync: $($r2.text)"
+            $res.bridge = Add-PendingSync $RunDir $Bridge $NodeId "advance" $Stage $NextStage ($r2.text)
+        }
+        else {
+            $g = Invoke-GraftNextStage $RunDir $Bridge $Task $NodeId $NextStage
+            if ($g.success) {
+                $res.bridge = $g.bridge
+                $res.graftedNext = $g.node_id
+            }
+            else {
+                $res.warnings += "next-stage graft failed (flow side already advanced): $($g.error)"
+            }
+        }
+    }
+    else {
+        $done = Invoke-FlowCompleteTail $RunDir $Bridge $Task $NodeId $Stage
+        $res.bridge = $done.bridge
+        $res.warnings += @($done.warnings)
+    }
+    $res.flowOperation = $(if ($null -eq $NextStage) { "complete" } else { "advance ${Stage}->${NextStage}" })
+    $res.taskLifecycle = $(if ($null -eq $NextStage) { "completed" } else { "active @ $NextStage" })
+    return $res
+}
+
+function Invoke-PhaseSwitchSettle {
+    # LAST settle of a non-terminal phase (phase-model.md §5.2): atomic
+    # set-route onto PhaseRoles[PhaseNext[phase]] + convergence graft of the
+    # next phase's heads. A failed switch lands in pending_sync WITH the target
+    # phase — retrying it as a plain narrowing would drift the whitelist.
+    param([string]$RunDir, $Bridge, $Task, [string]$NodeId, [string]$TaskPhase, [string]$NextPhase, [hashtable]$Res)
+    $taskId = [int]$Task.id
+    $nextOwners = @($script:PhaseRoles[$NextPhase])
+    $to = $nextOwners -join '+'
+    $r2 = Invoke-RddFlow @("-Command", "set-route", "-TaskId", "$taskId", "-To", $to, "-Phase", $NextPhase, "-Archive", $Bridge.archive)
+    if ($r2.exit -ne 0 -or $null -eq $r2.json -or -not $r2.json.success) {
+        $Res.warnings += "flow set-route phase switch failed after tree settle — recorded as pending_sync: $($r2.text)"
+        $Res.bridge = Add-PendingSync $RunDir $Bridge $NodeId "set-route" $TaskPhase $to ($r2.text) -PhaseArg $NextPhase
+    }
+    else {
+        $ens = Invoke-EnsureStageNodes $RunDir $Bridge $Task $NodeId $nextOwners
+        $Res.bridge = $ens.bridge
+        $Res.graftedNextNodes = @($ens.grafted)
+        foreach ($f in @($ens.failed)) {
+            $Res.warnings += "next-phase graft failed for role $($f.role) (flow side already switched to $NextPhase): $($f.error)"
+        }
+    }
+    $Res.flowOperation = "set-route ${TaskPhase}->${NextPhase} [$to]"
+    $Res.taskLifecycle = "active @ $NextPhase"
+    return $Res
+}
+
+function Invoke-PhaseSettleFlow {
+    # PHASE MODE flow tail (phase-model.md §5.2): owners narrowing keeps the
+    # phase and only fills MISSING live nodes (serial CTO->UX inside DESIGN);
+    # the LAST settle of the phase switches atomically to
+    # PhaseRoles[PhaseNext[phase]] and grafts the next phase's heads
+    # (convergence — no per-branch fan-out, no tree split). Same return shape
+    # as Invoke-LegacySettleFlow.
+    param([string]$RunDir, $Bridge, $Task, [string]$NodeId, [string]$Stage, $Owners, [string]$TaskPhase)
+    $taskId = [int]$Task.id
+    $owners = @($Owners)
+    $res = @{ bridge = $Bridge; warnings = @(); graftedNext = $null; graftedNextNodes = @(); flowOperation = ""; taskLifecycle = "active @ $TaskPhase" }
+    $remaining = @($owners | Where-Object { $_ -ne $Stage })
+    if ($remaining.Count -gt 0) {
+        $to = $remaining -join '+'
+        $r2 = Invoke-RddFlow @("-Command", "set-route", "-TaskId", "$taskId", "-To", $to, "-Archive", $Bridge.archive)
+        if ($r2.exit -ne 0 -or $null -eq $r2.json -or -not $r2.json.success) {
+            $res.warnings += "flow set-route narrowing failed after tree settle — recorded as pending_sync: $($r2.text)"
+            $res.bridge = Add-PendingSync $RunDir $Bridge $NodeId "set-route" $TaskPhase $to ($r2.text)
+        }
+        else {
+            $ens = Invoke-EnsureStageNodes $RunDir $Bridge $Task $NodeId $remaining
+            $res.bridge = $ens.bridge
+            $res.graftedNextNodes = @($ens.grafted)
+            foreach ($f in @($ens.failed)) {
+                $res.warnings += "convergence graft failed for role $($f.role) (flow side already narrowed to [$to]): $($f.error)"
+            }
+        }
+        $res.flowOperation = "set-route narrow [$($owners -join '+')] -> [$to] @ $TaskPhase"
+        return $res
+    }
+    $nextPhase = $script:PhaseNext[$TaskPhase]
+    if ($null -eq $nextPhase) {
+        $done = Invoke-FlowCompleteTail $RunDir $Bridge $Task $NodeId $Stage
+        $res.bridge = $done.bridge
+        $res.warnings += @($done.warnings)
+        $res.flowOperation = "complete"
+        $res.taskLifecycle = "completed"
+        return $res
+    }
+    return Invoke-PhaseSwitchSettle $RunDir $Bridge $Task $NodeId $TaskPhase $nextPhase $res
+}
+
 function Invoke-BridgeSettle {
     $runDir = Get-BridgeRunDir $RunId
     $bridge = Require-Bridge $runDir
@@ -2594,16 +2935,29 @@ function Invoke-BridgeSettle {
         Write-ErrorResult "SETTLE_EVIDENCE_REJECTED" "Unqualified delivery — task.json NOT transitioned. Disposition: reclaim the node (delivery-bridge -Command reclaim -RunId $RunId -NodeId $NodeId), have the worker fix the delivery, then report again; or re-dispatch. Problems: $($problems -join '; ')" 1
     }
 
-    # --- flow-side prechecks (avoid the settle->advance half-failure window) ---
+    # --- flow-side prechecks (avoid the settle->set-route half-failure window) ---
     $flow = Read-ArchiveTasks $bridge.archive
     $task = Find-ArchiveTask $flow.tasks $taskId
     if ($null -eq $task) { Write-ErrorResult "TASK_NOT_FOUND" "TaskId $taskId not found in $($bridge.archive)" 2 }
     if (([string]$task.lifecycle) -ne "active") {
         Write-ErrorResult "TASK_NOT_ACTIVE" "TaskId $taskId lifecycle is '$($task.lifecycle)'; nothing to advance." 1
     }
-    if ($null -ne $nextStage) {
-        $owners = @()
-        if ($null -ne $task.currentOwners) { $owners = @($task.currentOwners) }
+    $owners = @()
+    if ($null -ne $task.currentOwners) { $owners = @($task.currentOwners) }
+    # phase-model: a stored phase routes through set-route (every phase-mode settle
+    # writes flow state), so the owner membership precheck applies unconditionally;
+    # legacy null-phase keeps the old nextStage-gated precheck byte-for-byte.
+    $taskPhase = $null
+    if ($null -ne $task.phase -and ([string]$task.phase) -ne "") { $taskPhase = [string]$task.phase }
+    if ($null -ne $taskPhase) {
+        if ($script:PhaseOrder -notcontains $taskPhase) {
+            Write-ErrorResult "PHASE_INVALID" "TaskId $taskId carries phase '$taskPhase' not in $($script:PhaseOrder -join '/') — fix task.json (rdd-flow check) before settling" 1
+        }
+        if ($owners -notcontains $stage) {
+            Write-ErrorResult "FLOW_ADVANCE_WOULD_FAIL" "Precheck: '$stage' is not in currentOwners of TaskId $taskId ([$($owners -join '+')]) — the phase-side set-route would mis-narrow. Fix routing or use rdd-flow set-route first." 1
+        }
+    }
+    elseif ($null -ne $nextStage) {
         if ($owners -notcontains $stage) {
             Write-ErrorResult "FLOW_ADVANCE_WOULD_FAIL" "Precheck: '$stage' is not in currentOwners of TaskId $taskId ([$($owners -join '+')]) — advance would fail. Fix routing or use rdd-flow set-route first." 1
         }
@@ -2620,33 +2974,29 @@ function Invoke-BridgeSettle {
     # --- flow transition + chained next-stage graft; half-failures land in pending_sync ---
     $warnings = @()
     $graftedNext = $null
-    if ($null -eq $nextStage) {
-        $r2 = Invoke-RddFlow @("-Command", "complete", "-TaskId", "$taskId", "-Archive", $bridge.archive)
-        if ($r2.exit -ne 0 -or $null -eq $r2.json -or -not $r2.json.success) {
-            $warnings += "flow complete failed after tree settle — recorded as pending_sync: $($r2.text)"
-            $bridge = Add-PendingSync $runDir $bridge $NodeId "complete" $stage $null ($r2.text)
-        }
+    $graftedNextNodes = @()
+    if ($null -eq $taskPhase) {
+        # LEGACY null-phase task: conservative degrade — byte-identical pre-phase
+        # behavior (StageNext chain + single graft). New archives always carry phase.
+        $tail = Invoke-LegacySettleFlow $runDir $bridge $task $NodeId $stage $nextStage
     }
     else {
-        $r2 = Invoke-RddFlow @("-Command", "advance", "-TaskId", "$taskId", "-From", $stage, "-To", $nextStage, "-Archive", $bridge.archive)
-        if ($r2.exit -ne 0 -or $null -eq $r2.json -or -not $r2.json.success) {
-            $warnings += "flow advance failed after tree settle — recorded as pending_sync: $($r2.text)"
-            $bridge = Add-PendingSync $runDir $bridge $NodeId "advance" $stage $nextStage ($r2.text)
-        }
-        else {
-            $g = Invoke-GraftNextStage $runDir $bridge $task $NodeId $nextStage
-            if ($g.success) {
-                $bridge = $g.bridge
-                $graftedNext = $g.node_id
-            }
-            else {
-                $warnings += "next-stage graft failed (flow side already advanced): $($g.error)"
-            }
-        }
+        # PHASE MODE (phase-model.md §5.2). Owners narrowing keeps the phase and only
+        # fills MISSING live nodes (serial CTO->UX inside DESIGN); the LAST settle of
+        # the phase switches atomically to PhaseRoles[PhaseNext[phase]] and grafts the
+        # next phase's heads (convergence — no per-branch fan-out, no tree split).
+        $tail = Invoke-PhaseSettleFlow $runDir $bridge $task $NodeId $stage $owners $taskPhase
     }
+    $bridge = $tail.bridge
+    $warnings += @($tail.warnings)
+    $graftedNext = $tail.graftedNext
+    $graftedNextNodes = @($tail.graftedNextNodes)
+    if (@($graftedNextNodes).Count -gt 0) { $graftedNext = @($graftedNextNodes)[0] }
+    $flowOperation = $tail.flowOperation
+    $taskLifecycle = $tail.taskLifecycle
 
     # --- dependency-driven unlock push (goal-tree-goal-root): settling this node may
-    #     unlock other tasks' nodes (and grafted this task's own next stage) — push
+    #     unlock other tasks' nodes (and grafted this task's own next phase) — push
     #     every newly unlocked node automatically; push failures are isolated data.
     $push = Invoke-AutoDispatch $runDir $bridge "settle"
     $bridge = $push.bridge
@@ -2657,22 +3007,24 @@ function Invoke-BridgeSettle {
     return @{
         success = $true
         data    = @{
-            run_id         = $RunId
-            node_id        = $NodeId
-            task_id        = $taskId
-            stage_settled  = $stage
-            flow_operation = $(if ($null -eq $nextStage) { "complete" } else { "advance ${stage}->${nextStage}" })
+            run_id          = $RunId
+            node_id         = $NodeId
+            task_id         = $taskId
+            stage_settled   = $stage
+            phase           = $(if ($null -ne $taskPhase) { $taskPhase } else { $null })
+            flow_operation  = $flowOperation
             next_stage_node = $graftedNext
-            task_lifecycle = $(if ($null -eq $nextStage) { "completed" } else { "active @ $nextStage" })
-            auto_push      = @{ trigger = $push.trigger; pushed = @($push.pushed); failed = @($push.failed); skipped = @($push.skipped | ForEach-Object { "$($_.node):$($_.reason)" }) }
-            warnings       = $warnings
-            next_step      = $(if ($push.failed.Count -gt 0) { "repair failed pushes: session-create class auto-retries via status; pointer class → dispatch -NodeId <id> manually" } elseif ($null -eq $nextStage) { "task $taskId reached terminal state" } else { "unlocked nodes pushed automatically (see auto_push); failures retry via status touch" })
+            next_stage_nodes = @($graftedNextNodes)
+            task_lifecycle  = $taskLifecycle
+            auto_push       = @{ trigger = $push.trigger; pushed = @($push.pushed); failed = @($push.failed); skipped = @($push.skipped | ForEach-Object { "$($_.node):$($_.reason)" }) }
+            warnings        = $warnings
+            next_step       = $(if ($push.failed.Count -gt 0) { "repair failed pushes: session-create class auto-retries via status; pointer class → dispatch -NodeId <id> manually" } elseif ($taskLifecycle -eq "completed") { "task $taskId reached terminal state" } else { "unlocked nodes pushed automatically (see auto_push); failures retry via status touch" })
         }
     }
 }
 
 function Add-PendingSync {
-    param([string]$RunDir, $Bridge, [string]$NodeId, [string]$Op, [string]$From, $To, [string]$Error)
+    param([string]$RunDir, $Bridge, [string]$NodeId, [string]$Op, [string]$From, $To, [string]$Error, [string]$PhaseArg = $null)
     $entry = [ordered]@{
         node   = $NodeId
         op     = $Op
@@ -2681,6 +3033,9 @@ function Add-PendingSync {
         error  = $Error
         at     = Get-UtcNowIso
     }
+    # phase-model: set-route repairs need the target phase for the retry (a phase
+    # switch recorded without it would retry as a narrowing and drift the whitelist)
+    if (-not [string]::IsNullOrWhiteSpace($PhaseArg)) { $entry['phase'] = $PhaseArg }
     $pending = @(Convert-ToSafeArray $Bridge.pending_sync)
     $pending += ,$entry
     $Bridge.pending_sync = $pending
@@ -2700,6 +3055,7 @@ function Add-PendingSync {
 # node.task 不截断（全文永远在树视图/claim 输出里）；仅 brief 段受长度上限约束。
 
 $script:StageDuty = @{
+    PM  = "需求分析与拆解"
     CTO = "技术方向设计"
     UX  = "交互与体验设计"
     DEV = "编码实现"
@@ -2759,7 +3115,7 @@ function Get-NodeTaskBrief {
 
     if ([string]::IsNullOrWhiteSpace($NodeTask)) { return "" }
     if ($NodeTask.StartsWith("Execute TaskId")) { return "" }
-    if ($NodeTask -notmatch '^目标：完成「(?<title>.+?)」的 (?<stage>CTO|UX|DEV|QA) 阶段(?<duty>（[^）]*）)?。') { return "" }
+    if ($NodeTask -notmatch '^目标：完成「(?<title>.+?)」的 (?<stage>PM|CTO|UX|DEV|QA) 阶段(?<duty>（[^）]*）)?。') { return "" }
 
     $title = [string]$Matches['title']
     if ($title.Length -gt 60) { $title = $title.Substring(0, 60) + "…" }
@@ -2811,7 +3167,7 @@ function Get-NodeTaskSummary {
 
     if ([string]::IsNullOrWhiteSpace($NodeTask)) { return "" }
     if ($NodeTask.StartsWith("Execute TaskId")) { return "" }
-    if ($NodeTask -notmatch '^目标：完成「(?<title>.+?)」的 (?<stage>CTO|UX|DEV|QA) 阶段(?<duty>（[^）]*）)?。') { return "" }
+    if ($NodeTask -notmatch '^目标：完成「(?<title>.+?)」的 (?<stage>PM|CTO|UX|DEV|QA) 阶段(?<duty>（[^）]*）)?。') { return "" }
 
     $title = [string]$Matches['title']
     if ($title.Length -gt 60) { $title = $title.Substring(0, 60) + "…" }
@@ -2860,6 +3216,50 @@ function Invoke-GraftNextStage {
     return @{ success = $true; bridge = $Bridge; node_id = $nodeId }
 }
 
+function Get-LiveStageNode {
+    # phase-model: the bridge's current (task, role) node when it exists AND sits in
+    # a live (non-terminal) state; $null otherwise (absent / done / pruned / missing).
+    # A done node for a re-entering role (QA design -> QA verify) does NOT count —
+    # the whitelist overwrite in bridge.tasks keeps only the latest node per role.
+    param([string]$RunId, $Bridge, [int]$TaskId, [string]$Role)
+    $existing = $null
+    if ($Bridge.tasks.Contains("$TaskId")) {
+        $bTask = $Bridge.tasks["$TaskId"]
+        if ($bTask.Contains('stages') -and $null -ne $bTask['stages'] -and $bTask['stages'].Contains($Role)) {
+            $existing = [string]$bTask['stages'][$Role]
+        }
+    }
+    if ($null -eq $existing) { return $null }
+    $node = Get-NodeFromTree (Get-TreeStatusView $RunId) $existing
+    $status = if ($node) { [string]$node.status } else { "missing" }
+    if ($status -in @("pending", "claimed", "reported")) { return $existing }
+    return $null
+}
+
+function Invoke-EnsureStageNodes {
+    # phase-model convergence graft: after a settle-side set-route, guarantee every
+    # CURRENT owner role has a live (non-terminal) node — graft the missing ones
+    # under the just-settled node (chain parent). Parallel heads built at promulgate
+    # are live already -> no graft -> NO TREE SPLIT (the single-graft-per-role rule
+    # is what keeps two parallel branches from each grafting their own DEV). Roles
+    # added to the owner set mid-flow (serial CTO -> UX inside DESIGN) and re-entering
+    # roles whose previous node went terminal (QA design -> QA verify) get their
+    # fresh node HERE, exactly once, from the settling node. Returns
+    # @{ bridge; grafted = @(); failed = @() }.
+    param([string]$RunDir, $Bridge, $Task, [string]$ParentNodeId, [string[]]$Roles)
+    $taskId = [int]$Task.id
+    $grafted = @()
+    $failed = @()
+    foreach ($role in @($Roles)) {
+        $live = Get-LiveStageNode -RunId ([string]$Bridge.run_id) -Bridge $Bridge -TaskId $taskId -Role $role
+        if ($null -ne $live) { continue }
+        $g = Invoke-GraftNextStage $RunDir $Bridge $Task $ParentNodeId $role
+        if ($g.success) { $Bridge = $g.bridge; $grafted += $g.node_id }
+        else { $failed += @{ role = $role; error = $g.error } }
+    }
+    return @{ bridge = $Bridge; grafted = @($grafted); failed = @($failed) }
+}
+
 # === Command: status / resume ===
 
 function Repair-PendingSync {
@@ -2872,6 +3272,17 @@ function Repair-PendingSync {
         $r = $null
         if ([string]$e.op -eq "complete") {
             $r = Invoke-RddFlow @("-Command", "complete", "-TaskId", "$taskId", "-Archive", $Bridge.archive)
+        }
+        elseif ([string]$e.op -eq "set-route") {
+            # phase-model settle/rollback half-failure: the tree side moved (settled
+            # / pruned + rebuilt) but the flow set-route did not land — retry it,
+            # WITH the recorded phase when the original was a phase switch (a
+            # phaseless retry would narrow against the wrong whitelist)
+            $retryArgs = @("-Command", "set-route", "-TaskId", "$taskId", "-To", [string]$e.to, "-Archive", $Bridge.archive)
+            if ($null -ne $e.phase -and ([string]$e.phase) -ne "") {
+                $retryArgs += @("-Phase", [string]$e.phase)
+            }
+            $r = Invoke-RddFlow $retryArgs
         }
         elseif ([string]$e.op -eq "reopen") {
             # rollback half-failure (planner-stage-rollback): the tree side moved
@@ -2895,6 +3306,51 @@ function Repair-PendingSync {
     return @{ bridge = $Bridge; repaired = $repaired; remaining = $remaining }
 }
 
+function Get-RolePhase {
+    # phase-model display lookup: a role's phase. Non-QA roles map through the
+    # PhaseRoles whitelist (first hit in PhaseOrder). QA sits in BOTH the DESIGN
+    # and VERIFY whitelists, so its row is dated by context — once DEV has a
+    # record (or the task's phase reached IMPL/VERIFY) the QA row belongs to
+    # VERIFY, else to DESIGN. Unknown roles degrade to '?'.
+    param([string]$Role, [bool]$HasImpl, [string]$TaskPhase)
+    if ($Role -eq "QA") {
+        if ($HasImpl -or $TaskPhase -in @("IMPL", "VERIFY")) { return "VERIFY" }
+        return "DESIGN"
+    }
+    foreach ($p in $script:PhaseOrder) {
+        if (@($script:PhaseRoles[$p]) -contains $Role) { return $p }
+    }
+    return "?"
+}
+
+function Format-StageChain {
+    # phase-model display: render a task's recorded (role -> node) stages as a
+    # phase chain — roles of the same phase joined "∥" (parallel group), phases
+    # joined "→". Get-RolePhase dates each row (QA design-vs-verify; unknown
+    # roles fall back '?'). bridge.tasks keeps ONE node per role key
+    # (phase-model §4.2), so a task that crossed QA twice displays the latest
+    # node — by design.
+    param($StagesMap, $TreeData, [string]$TaskPhase)
+    if ($null -eq $StagesMap) { return "-" }
+    $present = @()
+    foreach ($role in $script:RoleOrder) {
+        if ($StagesMap.Contains($role)) { $present += $role }
+    }
+    if ($present.Count -eq 0) { return "-" }
+    $hasImpl = $StagesMap.Contains("DEV")
+    $groups = [ordered]@{}
+    foreach ($role in $present) {
+        $ph = Get-RolePhase $role $hasImpl $TaskPhase
+        if (-not $groups.Contains($ph)) { $groups[$ph] = @() }
+        $nodeId = [string]$StagesMap[$role]
+        $node = Get-NodeFromTree $TreeData $nodeId
+        $groups[$ph] += "$role=$nodeId($(if ($node) { [string]$node.status } else { 'missing' }))"
+    }
+    $parts = @()
+    foreach ($ph in @($groups.Keys)) { $parts += (@($groups[$ph]) -join ' ∥ ') }
+    return ($parts -join ' → ')
+}
+
 function Get-BridgeOverview {
     # joined view shared by status and resume
     param([string]$RunDir, $Bridge)
@@ -2909,12 +3365,13 @@ function Get-BridgeOverview {
     foreach ($t in $flow.tasks) {
         $taskId = [int]$t.id
         $stages = @()
+        $stageChain = "-"
         $bTask = $null
         if ($Bridge.tasks.Contains("$taskId")) { $bTask = $Bridge.tasks["$taskId"] }
         if ($null -ne $bTask) {
             $bStages = $bTask['stages']
             if ($null -eq $bStages) { $bStages = @{} }
-            foreach ($stage in @($script:StageOrder)) {
+            foreach ($stage in @($script:RoleOrder)) {
                 if (-not $bStages.Contains($stage)) { continue }
                 $nodeId = [string]$bStages[$stage]
                 $node = Get-NodeFromTree $treeData $nodeId
@@ -2924,6 +3381,9 @@ function Get-BridgeOverview {
                     status = $(if ($node) { [string]$node.status } else { "missing" })
                 }
             }
+            $taskPhase = [string]$t.phase
+            if ([string]::IsNullOrEmpty($taskPhase)) { $taskPhase = $null }
+            $stageChain = Format-StageChain $bStages $treeData $(if ($null -ne $taskPhase) { $taskPhase } else { "" })
         }
         $workers = @()
         foreach ($w in @(Convert-ToSafeArray $t.currentWorker)) {
@@ -2933,13 +3393,17 @@ function Get-BridgeOverview {
         }
         $owners = @()
         if ($null -ne $t.currentOwners) { $owners = @($t.currentOwners) }
+        $taskRowPhase = $null
+        if ($null -ne $t.phase -and ([string]$t.phase) -ne "") { $taskRowPhase = [string]$t.phase }
         $taskRows += @{
             task_id        = $taskId
             title          = [string]$t.title
             lifecycle      = [string]$t.lifecycle
             current_owners = $owners
+            phase          = $taskRowPhase
             flow_workers   = $workers
             stages         = $stages
+            stage_chain    = $stageChain
         }
     }
 
@@ -2997,7 +3461,7 @@ function Get-BridgeOverview {
                 node        = $rid
                 problems    = $probs
                 same_stage  = "delivery-bridge.cmd -Command reclaim -RunId $RunId -NodeId $rid"
-                cross_stage = "delivery-bridge.cmd -Command rollback -RunId $RunId -NodeId $rid -Reason <why>"
+                cross_stage = "delivery-bridge.cmd -Command rollback -RunId $RunId -NodeId $rid -To <roles> -Phase <REQ|DESIGN|IMPL|VERIFY> -Reason <why>"
             }
         }
     }
@@ -3166,7 +3630,7 @@ function Invoke-BridgeResume {
             $steps += "Reported node awaiting settle: $id — run 'delivery-bridge.cmd -Command settle -RunId $RunId -NodeId $id' (three evidence checks gate the transition)."
         }
         if (@($view.flagged_deliveries).Count -gt 0) {
-            $steps += "Unqualified reported delivery(ies) (settle will refuse): $(@($view.flagged_deliveries | ForEach-Object { $_.node }) -join ', ') — 'delivery-bridge.cmd -Command rollback -RunId $RunId -NodeId <id> -Reason <why>' (send the task one stage back) or 'delivery-bridge.cmd -Command reclaim -RunId $RunId -NodeId <id>' (redo the same stage)."
+            $steps += "Unqualified reported delivery(ies) (settle will refuse): $(@($view.flagged_deliveries | ForEach-Object { $_.node }) -join ', ') — 'delivery-bridge.cmd -Command rollback -RunId $RunId -NodeId <id> -To <roles> -Phase <REQ|DESIGN|IMPL|VERIFY> -Reason <why>' (explicit cross-phase rollback target) or 'delivery-bridge.cmd -Command reclaim -RunId $RunId -NodeId <id>' (redo the same stage)."
         }
         if ($view.claimable.Count -gt 0) {
             $steps += "Dispatch sessions for claimable nodes: [$($view.claimable -join ', ')] — 'delivery-bridge.cmd -Command dispatch -RunId $RunId -NodeId <id>'."
@@ -3351,14 +3815,11 @@ function Invoke-BridgeConclude {
         if ($Bridge.tasks.Contains("$taskId")) {
             $bStages = $Bridge.tasks["$taskId"]['stages']
             if ($null -ne $bStages) {
-                $parts = @()
-                foreach ($stage in @($script:StageOrder)) {
-                    if (-not $bStages.Contains($stage)) { continue }
-                    $nodeId = [string]$bStages[$stage]
-                    $node = Get-NodeFromTree $treeData $nodeId
-                    $parts += "$stage=$nodeId($(if ($node) { $node.status } else { 'missing' }))"
-                }
-                if ($parts.Count -gt 0) { $chain = $parts -join ' → ' }
+                # phase-model display: parallel group "∥", phases "→" (Format-
+                # StageChain iterates RoleOrder — PM heads included)
+                $cPhase = [string]$t.phase
+                if ([string]::IsNullOrEmpty($cPhase)) { $cPhase = "" }
+                $chain = Format-StageChain $bStages $treeData $cPhase
             }
         }
         # review-gate annotations (planner-requirement-review): merged tasks carry

@@ -529,5 +529,5 @@ tags 是**双重资产**：既是调用方 LLM 的阅读语言，又直接进入
 
 ## 平台差异与废弃记录
 
-- **OpenCode MCP 工具已废弃**：`.opencode/tools/rdd_explore.ts`（rdd_explore / rdd_explore_register）与现行协议双重断裂（恒走 MISS 分支、注册缺 Tags 必然失败）且零存量用户，已删除。OpenCode 的规范路径是 SKILL → shell CLI（`explore.cmd -Type search` / `explore-store.cmd -Type register`）。旧版安装过该工具的项目可用 `coderrdd uninstall` 按清单清理，或手动删除 `.opencode/tools/rdd_explore.ts`。
+- **OpenCode MCP 工具已废弃**：`.opencode/tools/rdd_explore.ts`（rdd_explore / rdd_explore_register）与现行协议双重断裂（恒走 MISS 分支、注册缺 Tags 必然失败）且零存量用户，已删除。OpenCode 的规范路径是 SKILL → shell CLI（`explore.cmd -Type search` / `explore-store.cmd -Type register`）。旧版安装过该工具的项目可用 `coderdd uninstall` 按清单清理，或手动删除 `.opencode/tools/rdd_explore.ts`。
 - **协议双实现冻结契约**：本指南描述的 hot.json / index.json 双索引格式与检索精度公式（F1–F8、search-config.json、vectors.json）同时由 dsh 插件（`@coderrdd/dsh-rdd-explore`，DSH 探索链路：只读 worker 结构化返回 → harness 代写产物并注册）镜像实现，两侧必须同步修改（回归防线：插件 `tests/search-ranking.mjs` 的 PS/TS 双侧一致性断言）。

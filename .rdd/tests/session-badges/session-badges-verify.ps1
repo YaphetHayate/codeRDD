@@ -87,19 +87,19 @@ Assert-Case 'GATE-PARSE' 'PS 5.1 Parser::ParseInput 零语法错误（生产入�
 }
 
 # ---------- 生成端：DryRun 四形态（AC-1/AC-2/AC-3 + 回归锚点） ----------
-Assert-Case 'TC-S01' 'AC-1 PLANNER 会话：rdd:planner+rdd:run 徽章替代 [PLANNER] 文本前缀，标题=纯简述' {
+Assert-Case 'TC-S01' 'AC-1 PLANNER 会话：rdd:planner 单枚徽章替代 [PLANNER] 文本前缀，标题=纯简述（用户裁定 2026-09-22：run 名不占行首）' {
     $text, $code = Invoke-DryRun @('-Role', 'PLANNER', '-TaskJson', $taskJson, '-Force', '-TaskSummary', '交付编排简述')
     Assert-True ($code -eq 0) "exit=$code"
-    Assert-True ($text -match [regex]::Escape('badges=[{"kind":"rdd:planner"},{"kind":"rdd:run","label":"planner-enhancements"}]')) 'PLANNER 徽章数组不符（期望 rdd:planner + rdd:run(planner-enhancements)）'
+    Assert-True ($text -match [regex]::Escape('badges=[{"kind":"rdd:planner"}]')) 'PLANNER 徽章数组不符（期望仅 rdd:planner 单枚）'
     Assert-True ($text -match 'title=交付编排简述（user') 'PLANNER 标题非纯简述'
     Assert-True ($text -notmatch '\[PLANNER\]') '标题通道仍残留 [PLANNER] 文本前缀'
 }
 
-Assert-Case 'TC-S02' 'AC-2 桥接 worker：T#·阶段·n# 以 run/task/stage/node 四枚结构徽章承载' {
+Assert-Case 'TC-S02' 'AC-2 桥接 worker：阶段/任务/节点 以 stage/task/node 三枚徽章承载（角色胶囊置首，rdd:run 长名芯片按用户裁定移除）' {
     $text, $code = Invoke-DryRun @('-Role', 'QA', '-TaskId', '3', '-TaskJson', $taskJson, '-GoalTreeRun', 'deliver-2026-09-20-planner-enhancements', '-GoalTreeNode', 'n12', '-TaskSummary', '徽章化需求 QA')
     Assert-True ($code -eq 0) "exit=$code"
-    $expect = 'badges=[{"kind":"rdd:run","label":"planner-enhancements"},{"kind":"rdd:task","label":"T3"},{"kind":"rdd:stage","label":"QA"},{"kind":"rdd:node","label":"n12"}]'
-    Assert-True ($text -match [regex]::Escape($expect)) 'worker 徽章数组不符（期望 run/task/stage/node 四枚）'
+    $expect = 'badges=[{"kind":"rdd:stage","label":"QA"},{"kind":"rdd:task","label":"T3"},{"kind":"rdd:node","label":"n12"}]'
+    Assert-True ($text -match [regex]::Escape($expect)) 'worker 徽章数组不符（期望 stage/task/node 三枚、角色置首）'
     Assert-True ($text -notmatch 'T3·QA·n12') '结构标记仍走纯文本标题形态'
 }
 

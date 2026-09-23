@@ -26,7 +26,7 @@ for (const role of roleDirs) {
 }
 
 // 2. 构建产物
-for (const f of ['dist/cli/index.js', 'bin/coderrdd.js', 'LICENSE']) {
+for (const f of ['dist/cli/index.js', 'bin/coderdd.js', 'LICENSE']) {
   if (!fs.existsSync(path.join(ROOT, f))) {
     console.error(`✗ 缺失 ${f}`);
     failed = true;

@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * 源码安装模式注册器：把当前源码仓注册为全局 `coderrdd` 命令（npm link）。
+ * 源码安装模式注册器：把当前源码仓注册为全局 `coderdd` 命令（npm link）。
  *
  * 用法（在 codeRDD 仓根）：
  *   npm run register      # 依赖检查 -> npm install（按需）-> 构建 -> npm link -> 自检
@@ -9,7 +9,9 @@
  * 说明：
  * - link 后全局命令始终执行本仓的 dist/，改源码后 `npm run build` 即生效；
  * - 源仓目录移动/重命名会使全局链接失效，回仓根重新 `npm run register`；
- * - 与 `npm i -g coderrdd` 占用同一命令槽位，后装者覆盖。
+ * - 与 `npm i -g coderdd` 占用同一命令槽位，后装者覆盖；
+ * - 历史命令名 `coderrdd` 已更名（用户裁定 2026-09-22）：bin 仍保留 coderrdd 别名，
+ *   本注册器会顺手清理旧名残留的全局 shim，避免幽灵命令。
  */
 const { spawnSync } = require('child_process');
 const fs = require('fs');
@@ -38,7 +40,7 @@ function run(cmdLine) {
 function captureRun(cmdLine) {
   const os = require('os');
   const devnull = IS_WIN ? '2>NUL' : '2>/dev/null';
-  const tmp = path.join(os.tmpdir(), `coderrdd-reg-${Date.now()}-${process.pid}.txt`);
+  const tmp = path.join(os.tmpdir(), `coderdd-reg-${Date.now()}-${process.pid}.txt`);
   const r = spawnSync(`${cmdLine} > "${tmp}" ${devnull}`, { cwd: ROOT, stdio: 'ignore', shell: true });
   let out = '';
   try {
@@ -94,6 +96,25 @@ if (ls.status === 0) {
 
 // 5. 注册全局命令（--ignore-scripts：第 3 步已构建并校验过 dist，跳过 link 时
 //    prepare 钩子的重复构建；也避免受限环境下 npm 生命周期脚本的管道捕获问题）
+// 5a. 先清理旧命令名（coderrdd）残留的全局 shim：更名前生成的 coderrdd /
+//     coderrdd.cmd / coderrdd.ps1 会让 npm link 对同名 bin 报 EEXIST，
+//     也会遗留成幽灵命令，故必须在 link 之前移除。
+const prefix0 = captureRun('npm config get prefix');
+if (prefix0.status !== 0) fail('无法获取 npm 全局 prefix');
+const binDir0 = (prefix0.stdout || '').trim();
+const legacyShims = IS_WIN
+  ? ['coderrdd.cmd', 'coderrdd', 'coderrdd.ps1'].map((n) => path.join(binDir0, n))
+  : [path.join(binDir0, 'bin', 'coderrdd')];
+for (const legacy of legacyShims) {
+  try {
+    if (fs.existsSync(legacy)) {
+      fs.rmSync(legacy, { force: true });
+      console.log(`  已清理旧命令残留 shim: ${legacy}`);
+    }
+  } catch {
+    /* 清理失败不阻断注册 */
+  }
+}
 step('npm link');
 if (run('npm link --ignore-scripts').status !== 0) fail('npm link 失败');
 
@@ -102,26 +123,27 @@ step('自检');
 const prefix = captureRun('npm config get prefix');
 if (prefix.status !== 0) fail('无法获取 npm 全局 prefix');
 const binDir = (prefix.stdout || '').trim();
-const shim = IS_WIN ? path.join(binDir, 'coderrdd.cmd') : path.join(binDir, 'bin', 'coderrdd');
+const shim = IS_WIN ? path.join(binDir, 'coderdd.cmd') : path.join(binDir, 'bin', 'coderdd');
 const probe = captureRun(`"${shim}" --version`);
 const got = (probe.stdout || '').trim();
 if (probe.status !== 0 || got !== PKG.version) {
-  fail(`自检不通过: coderrdd --version 输出 "${got}"，期望 "${PKG.version}"（status=${probe.status}, shim=${shim}）`);
+  fail(`自检不通过: coderdd --version 输出 "${got}"，期望 "${PKG.version}"（status=${probe.status}, shim=${shim}）`);
 }
-console.log(`  coderrdd --version -> ${got} ✓`);
+console.log(`  coderdd --version -> ${got} ✓`);
 console.log(`  全局命令位置: ${binDir}`);
 
 console.log(`
 注册完成！接下来在任意目标项目里：
 
-  coderrdd init .                                # 交互式：选择 AI 客户端与角色
-  coderrdd init . --tools opencode,claude --yes  # 非交互（CI / 脚本）
-  coderrdd update .                              # 更新已安装项目
-  coderrdd uninstall .                           # 卸载（保留 .rdd 运行时数据）
+  coderdd init .                                # 交互式：选择 AI 客户端与角色
+  coderdd init . --tools opencode,claude --yes  # 非交互（CI / 脚本）
+  coderdd update .                              # 更新已安装项目
+  coderdd uninstall .                           # 卸载（保留 .rdd 运行时数据）
 
 提示：
-- 升级：源仓 git pull && npm run build，目标项目里 coderrdd update .
+- 升级：源仓 git pull && npm run build，目标项目里 coderdd update .
 - 移除全局命令: npm run unregister（在本仓根）
 - 源仓移动/重命名后链接失效，回仓根重新 npm run register
-- PowerShell 若提示"无法加载脚本"，改用 coderrdd.cmd 或执行
+- 历史命令名 coderrdd 仍可用（bin 别名，等价 coderdd）
+- PowerShell 若提示"无法加载脚本"，改用 coderdd.cmd 或执行
   Set-ExecutionPolicy -Scope CurrentUser RemoteSigned`);

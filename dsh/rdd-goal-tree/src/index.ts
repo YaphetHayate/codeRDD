@@ -91,7 +91,9 @@ async function serve(req: IncomingMessage, res: ServerResponse, config: Config, 
   try {
     const repoRoot = config.repoRoot !== undefined ? resolve(config.repoRoot) : findRepoRoot(cwd)
     learnRoot(repoRoot)
-    const { runs } = await aggregateGoalTrees(join(repoRoot, '.rdd', 'goal-trees'))
+    // repoRoot passed explicitly so doc-pointer resolution (node-doc-links)
+    // never depends on the two-level-parent derivation.
+    const { runs } = await aggregateGoalTrees(join(repoRoot, '.rdd', 'goal-trees'), repoRoot)
     send(200, { repoRoot, runs })
   } catch (error) {
     send(500, { error: error instanceof Error ? error.message : String(error) })

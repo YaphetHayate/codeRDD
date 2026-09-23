@@ -48,7 +48,7 @@ if (-not $rdd) { throw "rdd-engine 未定位（……见单行版全文……）
 
 三级候选全 miss 时，snippet 以 `throw` 中止并输出可操作指引（安装通道 + 本协议文档路径），**绝不静默返回空值**——空值会把排障成本转嫁给后续每一条 `& "$rdd\scripts\..."` 调用。看到该错误时按序排查：
 
-1. **已在 codeRDD 仓内 / 已 `coderrdd init` 的项目**：确认在 git 仓库内运行（引擎数据落点依赖 git，见「边界」）；
+1. **已在 codeRDD 仓内 / 已 `coderdd init` 的项目**：确认在 git 仓库内运行（引擎**定位**候选② 依赖 git toplevel 搜索 `rdd-engine`；数据落点已不依赖 git，见「项目根定位链」）；
 2. **独立安装**：从 GitHub Release（codeRDD 仓库）下载 `rdd-engine.tgz` 与 `scripts/install-rdd-engine.ps1`，运行安装器落到 `~\.rdd\engine\`（详见 codeRDD README「引擎 CLI 独立安装」）；
 3. **junction 不可用的特殊 profile**（OneDrive 重定向 / 漫游等）：`setx RDD_ENGINE_HOME "<具体版本目录>"`（如 `C:\Users\<u>\.rdd\engine\1.0.0`），候选① 即命中；
 4. **版本诊断**：命中后可用 `& "$rdd\scripts\rdd-flow.cmd" -Command version` 输出 `version` + `engineRoot` 自检。
@@ -67,6 +67,24 @@ if (-not $rdd) { throw "rdd-engine 未定位（……见单行版全文……）
 - 卸载：删除 `~\.rdd\engine\`（含 `current` junction 与 `manifest.json`）。
 - PATH shim（`-AddToPath`）仅为人类终端便利，opt-in：PATH 变更对已运行会话不生效，技能定位一律走文件系统定位链（确定性）。
 
+## 项目根定位链（repoRoot / 数据落点）
+
+> **定位**：rdd-engine 数据面（`.rdd/changes|goal-trees|labs|exploration`）的项目根解析协议单源。与上文「三级定位链」正交：那条链回答"引擎在哪"，本链回答"数据落在哪"。
+
+数据面脚本（explore / explore-store / goal-tree / goal-tree-leaf / delivery-bridge / rdd-flow / start-role / sync-ux-subagents 共 8 个）统一以 `Resolve-RepoRoot` 定位项目根，链序固定：
+
+| 级 | 候选 | 说明 |
+|----|------|------|
+| ① | `$env:RDD_PROJECT_ROOT` | 显式覆盖，最高优先级；指向不存在的目录 → **fail-loud**（防笔误静默漂移）。定位同 `RDD_ENGINE_HOME` 哲学：人工排障 / 启动器注入的逃生门，**安装器永不自动写入**——用户级持久环境变量是全局单值，会把其他项目的解析整体劫持到错误根上 |
+| ② | `git rev-parse --show-toplevel` | git 可用且在仓内 → 最准：worktree / submodule / `GIT_DIR` 语义全部继承 |
+| ③ | 最近 `.git` 祖先 | ② 的纯文件系统孪生：git 二进制缺失、或 dubious-ownership 拒绝时兜底；`.git` 为文件（worktree/submodule 形态）同样命中 |
+| ④ | 最近 `.rdd/install.json` 祖先 | 非 git 项目的锚点：`coderdd init` 写下的安装清单即"此目录为 RDD 项目根"的声明；从子目录运行时自动回到安装根 |
+| ⑤ | 回退 cwd | 最后兜底——与 dsh 插件 `findRepoRoot` 同规则（生态一种心智模型；插件实现为其 ③+⑤ 子集） |
+
+**链序约束**：②③ 在前，保证所有现存 git 项目的根解析**逐字节不变**（回归锚点，含"init 装进大仓子目录、数据落外层根"的历史形态——不迁移）；④⑤ 只救援 git 说"不是仓库"的树，那里此前是直接报错，不存在回归面。
+
+**维护规则**：`Resolve-RepoRoot` 为冻结镜像（与 hot-zone 常量同款约定），8 个脚本逐字复制；`tests/test-repo-root-fallback.ps1` 校验镜像一致性（全等 + 每脚本 `git rev-parse` 恰好出现一次）。链序 / 判据 / 失败语义任何变更只改本文 + 函数模板，再机械同步。
+
 ## 向后兼容声明
 
 - **codeRDD 开发流**：仓内 `rdd-engine/` 由候选② 命中，开发形态 = 分发形态（原地 `npm pack` 成包），零行为变化。
@@ -76,6 +94,6 @@ if (-not $rdd) { throw "rdd-engine 未定位（……见单行版全文……）
 ## 边界与适用范围
 
 - **仅 Windows**（本期验收）：`.cmd` 包装器 + junction；pwsh 跨平台预留后续评估。
-- **git 必需**：引擎数据落点（`.rdd/changes|goal-trees|labs`）全部由 git-root 推导，非 git 项目 CLI 不可用（继承现状，README 已声明）。
+- **git 可选**：引擎数据落点（`.rdd/changes|goal-trees|labs|exploration`）按「项目根定位链」解析——git 仓内走 `git rev-parse`（与历史行为逐字节一致）；无 git / 非 git 项目依次回退 `.git` 祖先 → `.rdd/install.json` 祖先 → cwd，CLI 全量可用；`RDD_PROJECT_ROOT` 可显式覆盖（安装器不代写）。
 - **start-role**：Plus 后端（`RDD_RUNTIME=app`）仅定制环境生效；标准 DSH 环境无此变量，脚本内建自动降级 CLI 后端，交接主载体是 handoff/start 输出——随包分发，零改动。
 - **sync-ux-subagents**：opencode 流专用；标准 DSH 环境惰性（不调用即无影响）——随包分发，零改动。

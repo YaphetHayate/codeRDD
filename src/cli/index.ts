@@ -7,7 +7,7 @@ import { runUninstall } from '../core/uninstall';
 const program = new Command();
 
 program
-  .name('coderrdd')
+  .name('coderdd')
   .description('RDD 工作流安装器：skills 安装到 .rdd/ 作为唯一真实源，并将 AI 客户端目录链接到它')
   .version(VERSION);
 

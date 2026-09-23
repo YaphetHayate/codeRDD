@@ -16,7 +16,47 @@
  */
 
 import { readdir, readFile, stat, writeFile } from 'node:fs/promises'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
+
+/**
+ * One clickable document pointer projected for the worker's structured rows
+ * (node-doc-links): `rel` is the archive-relative spelling exactly as it
+ * appears inside the node's task text (what the worker reads), `abs` is the
+ * resolved absolute path under `.rdd/changes/archive/<归档名>/` (what the
+ * browser half feeds `ctx.workspaces.openPath`), and `exists` is a host-side
+ * stat so a not-yet-produced design doc (designDocs[].status=pending) renders
+ * as a disabled chip instead of a dead link.
+ */
+export interface GoalTreeDocLink {
+  rel: string
+  abs: string
+  exists: boolean
+}
+
+/**
+ * The structured decomposition of a bridge node's synthesized task text
+ * (delivery-bridge.ps1 `New-NodeTaskText` — the sole authoritative producer).
+ * The worker strip renders these as dedicated slots instead of one blob;
+ * null on every non-matching task (plain goal-tree runs, legacy shapes) —
+ * the client then falls back to the plain single-line rendering.
+ */
+export interface GoalTreeNodeDocs {
+  /** The goal sentence: 完成「<标题>」的 <阶段> 阶段（<阶段职责>）。 */
+  goal: string
+  stage: string
+  /** Stage duty incl. its parens (（编码实现）); null when the template omitted it. */
+  duty: string | null
+  requirement: GoalTreeDocLink | null
+  designs: GoalTreeDocLink[]
+  /**
+   * UX visual mockups enumerated from the archive's design/mockups/ directory
+   * (ux-mockup-links): final.html, the gallery page, and the direction
+   * artifacts (*.html / *.png). Unlike designs these never ride the task text
+   * (UX registers only the spec .md in designDocs) — the host lists the
+   * conventional directory instead. Empty when the archive carries none.
+   */
+  mockups: GoalTreeDocLink[]
+}
 
 /** One tree node projected for the strip (depth is computed from the parent chain). */
 export interface GoalTreeNodeView {
@@ -25,6 +65,12 @@ export interface GoalTreeNodeView {
   title: string
   /** The node's task text (what a worker session executes); null when absent. */
   task: string | null
+  /**
+   * Structured decomposition of `task` when it carries the bridge template
+   * (goal sentence + doc pointers); null on every other shape (legacy runs,
+   * plain goal-tree tasks) — additive, never breaks the plain rendering.
+   */
+  docs: GoalTreeNodeDocs | null
   /**
    * Engine node type passthrough: 'goal' marks the original-requirement root
    * (unclaimable conclude anchor — rendered distinctly, excluded from the
@@ -250,13 +296,144 @@ function depthOf(id: string, parentOf: ReadonlyMap<string, string | null>): numb
   return Math.max(0, depth - 1)
 }
 
+// --- Structured node-task decomposition (node-doc-links) -----------------------
+//
+// The bridge synthesizes a bridge node's task text through the frozen template
+// in delivery-bridge.ps1's New-NodeTaskText (sole authoritative producer):
+//   目标：完成「<标题>」的 <阶段> 阶段（<职责>）。需求文档：<rel>[；设计文档：<rel>、<rel>…][；归档：<归档名>]。…
+// The parser below mirrors that template exactly (the same regexes the engine
+// side's Get-NodeTaskBrief uses to re-extract segments). Any non-matching text
+// — plain goal-tree tasks, legacy shapes, the pre-template "Execute TaskId…"
+// English signature — returns null: zero-injection degradation, the strip
+// keeps rendering the raw task line.
+
+/** Bridge task head: the goal sentence with title, stage, and stage duty. */
+const BRIDGE_TASK_HEAD = /^目标：完成「(?<title>.+?)」的 (?<stage>CTO|UX|DEV|QA) 阶段(?<duty>（[^）]*）)?。/
+/** One `；`-delimited pointer segment (需求文档 / 设计文档 / 归档). */
+const bridgeSegment = (name: string): RegExp => new RegExp(`${name}：(?<v>[^；。]+)`)
+
+/** The pure parse product: doc pointers are archive-relative, pre-resolution. */
+export interface ParsedNodeTask {
+  goal: string
+  stage: string
+  duty: string | null
+  reqRel: string | null
+  designRels: string[]
+  archiveName: string | null
+}
+
+/**
+ * Decompose a bridge node's task text into its structured segments. Pure and
+ * total: every non-matching input (null/empty/free text) returns null.
+ * @param task - the node's task text verbatim from state/tree.json.
+ */
+export function parseNodeTask(task: string | null): ParsedNodeTask | null {
+  if (task === null || task === '') return null
+  if (task.startsWith('Execute TaskId')) return null // legacy pre-template signature
+  const head = BRIDGE_TASK_HEAD.exec(task)
+  if (head?.groups === undefined) return null
+  const title = head.groups.title ?? ''
+  const stage = head.groups.stage
+  const duty = head.groups.duty ?? null
+  const req = bridgeSegment('需求文档').exec(task)?.groups?.v?.trim()
+  const designs = bridgeSegment('设计文档').exec(task)?.groups?.v
+  const archive = bridgeSegment('归档').exec(task)?.groups?.v?.trim()
+  return {
+    goal: `完成「${title}」的 ${stage} 阶段${duty ?? ''}。`,
+    stage,
+    duty,
+    reqRel: req === undefined || req === '' ? null : req,
+    designRels: designs === undefined
+      ? []
+      : designs.split('、').map(d => d.trim()).filter(d => d !== ''),
+    archiveName: archive === undefined || archive === '' ? null : archive,
+  }
+}
+
+/**
+ * Resolve one archive-relative doc pointer into a wire link: absolute path
+ * under the run's archive root plus a host-side existence stat. Never throws —
+ * an unreadable path simply reports exists:false.
+ */
+async function toDocLink(archiveRoot: string, rel: string): Promise<GoalTreeDocLink> {
+  const abs = join(archiveRoot, ...rel.split('/'))
+  const exists = await stat(abs).then(() => true, () => false)
+  return { rel, abs, exists }
+}
+
+// --- UX mockup enumeration (ux-mockup-links) ----------------------------------
+//
+// The UX role's Phase 2.5 artifacts (rdd-ux references/mockup-generation.md)
+// land in the task archive's design/mockups/ directory by convention:
+// final.html (the finalized mockup — DEV's primary visual reference),
+// index.html (the gallery page copied from the fixed template), direction
+// artifacts (*.html / *.png), and images/ (image-source references). Only the
+// spec .md is registered in task.json designDocs, so the mockups never appear
+// in the node's task text — the host enumerates the conventional directory
+// instead and the worker view renders the links as an extra chip row. Read-only
+// and convention-based: a missing directory simply yields no chips.
+
+/** Visual-artifact extensions surfaced from design/mockups/. */
+const MOCKUP_EXTS = new Set(['.html', '.png'])
+/** Display priority: the finalized mockup first, then the gallery page. */
+const MOCKUP_PRIORITY = ['final.html', 'index.html']
+/** Chip budget per node — priority files first, then the name-sorted rest. */
+const MOCKUP_CAP = 8
+/** Walk guard: directory entries visited per archive (pathological dirs). */
+const MOCKUP_WALK_CAP = 256
+
+/** Lower-cased extension of one file name ('' when bare). */
+function extOf(name: string): string {
+  const dot = name.lastIndexOf('.')
+  return dot === -1 ? '' : name.slice(dot).toLowerCase()
+}
+
+/**
+ * Enumerate one task archive's UX mockups — visual artifacts only
+ * (manifest.json is the gallery's data source, not something to open).
+ * Deterministic order: final.html, index.html, then the name-sorted rest,
+ * capped at {@link MOCKUP_CAP}. Never throws: a missing or unreadable
+ * design/mockups/ directory yields [].
+ * @param archiveRoot - absolute path of `.rdd/changes/archive/<归档名>`.
+ */
+async function listMockupLinks(archiveRoot: string): Promise<GoalTreeDocLink[]> {
+  const root = join(archiveRoot, 'design', 'mockups')
+  const found: { rel: string; abs: string }[] = []
+  const walk = async (dir: string, prefix: string, depth: number): Promise<void> => {
+    const dirents = await readdir(dir, { withFileTypes: true }).catch(() => null)
+    if (dirents === null) return
+    for (const dirent of dirents) {
+      if (found.length >= MOCKUP_WALK_CAP) return
+      if (dirent.name.startsWith('.')) continue
+      if (dirent.isDirectory()) {
+        if (depth + 1 > 2) continue // mockups/ + images/ is the whole convention
+        await walk(join(dir, dirent.name), `${prefix}${dirent.name}/`, depth + 1)
+      } else if (dirent.isFile() && MOCKUP_EXTS.has(extOf(dirent.name))) {
+        found.push({ rel: `design/mockups/${prefix}${dirent.name}`, abs: join(dir, dirent.name) })
+      }
+    }
+  }
+  await walk(root, '', 0)
+  const rank = (rel: string): number => {
+    const parts = rel.split('/')
+    const index = MOCKUP_PRIORITY.indexOf(parts[parts.length - 1] ?? '')
+    return index === -1 ? MOCKUP_PRIORITY.length : index
+  }
+  found.sort((a, b) => rank(a.rel) - rank(b.rel) || a.rel.localeCompare(b.rel))
+  return found.slice(0, MOCKUP_CAP).map(f => ({ rel: f.rel, abs: f.abs, exists: true }))
+}
+
 /**
  * Aggregate every run directory under the goal-trees root.
  * @param rootDir - absolute path of `<repoRoot>/.rdd/goal-trees`.
+ * @param repoRootOverride - explicit repository root for doc-pointer
+ * resolution (node-doc-links); defaults to the two-level parent of rootDir,
+ * which is exactly `<repoRoot>` for the standard `.rdd/goal-trees` layout.
  * @returns runs sorted running-first then most recently updated; empty when the
  * directory is missing (a project with no goal-tree activity).
  */
-export async function aggregateGoalTrees(rootDir: string): Promise<{ runs: GoalTreeRunView[] }> {
+export async function aggregateGoalTrees(rootDir: string, repoRootOverride?: string): Promise<{ runs: GoalTreeRunView[] }> {
+  const repoRoot = repoRootOverride !== undefined ? repoRootOverride : dirname(dirname(rootDir))
   const dirents = await readdir(rootDir, { withFileTypes: true }).catch(() => null)
   if (dirents === null) return { runs: [] } // no .rdd/goal-trees at all: nothing to show
 
@@ -267,6 +444,7 @@ export async function aggregateGoalTrees(rootDir: string): Promise<{ runs: GoalT
 
     const manifest = await readJson(join(runDir, 'manifest.json'))
     if (manifest === undefined) continue // not a run directory
+    const runId = str(manifest.run_id) ?? dirent.name
 
     const tree = await readJson(join(runDir, 'state', 'tree.json'))
     const rawNodes = Array.isArray(tree?.nodes) ? (tree?.nodes as Record<string, unknown>[]) : []
@@ -303,6 +481,17 @@ export async function aggregateGoalTrees(rootDir: string): Promise<{ runs: GoalT
       parentOf.set(id, typeof node.parent === 'string' ? node.parent : null)
     }
     const nodes: GoalTreeNodeView[] = []
+    // ux-mockup-links: one enumeration per archive per aggregate call — a
+    // task's whole stage chain (UX→DEV→QA nodes) shares one archiveRoot, so
+    // the directory walk happens once and every sibling node reuses the links.
+    const mockupsByArchive = new Map<string, GoalTreeDocLink[]>()
+    const mockupsFor = async (archiveRoot: string): Promise<GoalTreeDocLink[]> => {
+      const cached = mockupsByArchive.get(archiveRoot)
+      if (cached !== undefined) return cached
+      const links = await listMockupLinks(archiveRoot)
+      mockupsByArchive.set(archiveRoot, links)
+      return links
+    }
     for (const node of rawNodes) {
       const id = typeof node.id === 'string' ? node.id : null
       if (id === null) continue
@@ -322,11 +511,32 @@ export async function aggregateGoalTrees(rootDir: string): Promise<{ runs: GoalT
         ? (node.depends_on as unknown[]).filter((d): d is string => typeof d === 'string' && known.has(d) && d !== id)
         : []
       const confidenceRaw = node.last_confidence
+      const task = str(node.task)
+      // node-doc-links: decompose a bridge-shaped task into structured slots
+      // (goal sentence + doc pointers). Archive root resolution prefers the
+      // template's own 归档 segment, falling back to the frozen deliver-<archive>
+      // run-id convention; every non-bridge task parses to null (no rows, no
+      // stats — the plain rendering is the zero-degradation path).
+      let docs: GoalTreeNodeDocs | null = null
+      const parsed = parseNodeTask(task)
+      if (parsed !== null) {
+        const archiveName = parsed.archiveName ?? runId.replace(/^deliver-/, '')
+        const archiveRoot = join(repoRoot, '.rdd', 'changes', 'archive', archiveName)
+        docs = {
+          goal: parsed.goal,
+          stage: parsed.stage,
+          duty: parsed.duty,
+          requirement: parsed.reqRel !== null ? await toDocLink(archiveRoot, parsed.reqRel) : null,
+          designs: await Promise.all(parsed.designRels.map(rel => toDocLink(archiveRoot, rel))),
+          mockups: await mockupsFor(archiveRoot),
+        }
+      }
       nodes.push({
         id,
         parent: parentOf.get(id) ?? null,
         title: typeof node.title === 'string' ? node.title : id,
-        task: str(node.task),
+        task,
+        docs,
         type,
         status,
         claimedBy: str(node.claimed_by),
@@ -350,7 +560,7 @@ export async function aggregateGoalTrees(rootDir: string): Promise<{ runs: GoalT
     const budget = (manifest.budget ?? {}) as Record<string, unknown>
     const concluded = (manifest.concluded ?? null) as Record<string, unknown> | null
     runs.push({
-      runId: str(manifest.run_id) ?? dirent.name,
+      runId,
       state: str(manifest.state) ?? 'running',
       goal: str(manifest.goal) ?? '',
       outcome: concluded === null ? null : str(concluded.outcome),

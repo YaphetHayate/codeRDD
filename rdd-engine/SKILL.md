@@ -149,7 +149,7 @@ $rdd = $null; $t = $null; try { $t = git rev-parse --show-toplevel } catch { }; 
 | `-TaskJson` | 否 | 自动发现 | 显式指定 task.json 路径（不传则取 `.rdd/changes/archive/` 最新归档） |
 | `-Handoff` | 否 | — | 传入交接包文件路径，启用 Handoff 模式（覆盖 TaskId） |
 | `-EmployeeId` | 仅 Plus | — | Plus 模式必填，目标角色对应的员工 UUID |
-| `-Project` | 否 | git root | 项目根，非 git 环境必须显式指定 |
+| `-Project` | 否 | 定位链自动解析 | 项目根显式覆盖（默认五级链：`RDD_PROJECT_ROOT` → git → `.git` 祖先 → `.rdd/install.json` 祖先 → cwd，非 git 环境无需显式指定；见 `rdd-engine/references/engine-location.md`） |
 | `-PlusUrl` | 否 | `http://127.0.0.1:8000` | Plus 后端地址 |
 | `-DshUrl` | 否 | `$env:DSH_WEB_URL` | dsh 后端地址（Web GUI `/api` 载波基地址） |
 | `-DryRun` | 否 | — | 只打印将执行的命令，不实际交接 |

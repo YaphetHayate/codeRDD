@@ -41,6 +41,9 @@ const checkMode = process.argv.includes('--check')
 /** rdd-engine/ 目录中存在但有意不进引擎 tarball 的文件（skill 正文经技能通道分发，非引擎产物）。 */
 const EXCLUSIONS = new Set(['SKILL.md'])
 
+/** 有意不进引擎 tarball 的目录前缀：tests/ 为开发期验收套件（package.json files 只装 scripts/+references/）。 */
+const EXCLUDED_PREFIXES = ['tests/']
+
 /** 旧定位 snippet 的特征前缀（已被三级定位链取代，源码中出现即失败）。 */
 const LEGACY_SNIPPET = "$rdd = (Get-ChildItem (git rev-parse --show-toplevel)"
 
@@ -134,6 +137,7 @@ try {
   const diskFiles = walkFiles(engineDir)
   for (const f of diskFiles) {
     if (EXCLUSIONS.has(f)) continue
+    if (EXCLUDED_PREFIXES.some(p => f.startsWith(p))) continue
     if (!tarMembers.includes(f)) fail(`rdd-engine/ 目录文件未进 tarball（补 package.json files 或确认排除项）: ${f}`)
   }
   for (const m of tarMembers) {

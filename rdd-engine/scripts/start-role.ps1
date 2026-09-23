@@ -61,15 +61,53 @@ function Write-Step { param([string]$Message); Write-Host "[*] $Message" -Foregr
 function Write-Ok   { param([string]$Message); Write-Host "[+] $Message" -ForegroundColor Green }
 function Write-Err  { param([string]$Message); Write-Host "[x] $Message" -ForegroundColor Red; exit 1 }
 
+# Resolve-RepoRoot - project-root location chain (git-optional; protocol source:
+# rdd-engine/references/engine-location.md, "Project-root location chain"). Fixed order:
+#   1. $env:RDD_PROJECT_ROOT          explicit override; invalid path -> fail-loud
+#   2. git rev-parse --show-toplevel  most accurate: worktree / submodule / GIT_DIR
+#   3. nearest .git ancestor          filesystem twin of (2) when git is missing or
+#                                     refuses the repo (dubious ownership)
+#   4. nearest .rdd/install.json ancestor  anchors non-git projects back onto their
+#                                     coderdd-init root when run from a subdirectory
+#   5. cwd                            final fallback - same rule as the dsh plugin's
+#                                     findRepoRoot (one mental model across the ecosystem)
+# (2)+(3) keep every existing git project byte-identical (regression anchor);
+# (4)+(5) only rescue trees where git says "not a repository".
+function Resolve-RepoRoot {
+    $envRoot = [string]$env:RDD_PROJECT_ROOT
+    if (-not [string]::IsNullOrWhiteSpace($envRoot)) {
+        if (Test-Path -LiteralPath $envRoot -PathType Container) { return $envRoot }
+        throw "RDD_PROJECT_ROOT does not exist: $envRoot"
+    }
+    $t = $null
+    # 2>$null must stay inside try/catch: under PS5.1, redirected native stderr
+    # plus $ErrorActionPreference=Stop raises NativeCommandError.
+    try { $t = git rev-parse --show-toplevel 2>$null } catch { }
+    if ($t) { return $t.Trim() }
+    $start = (Get-Location).ProviderPath
+    $dir = $start
+    for (;;) {
+        if (Test-Path -LiteralPath (Join-Path $dir ".git")) { return $dir }
+        $parent = Split-Path -Parent $dir
+        if (-not $parent -or $parent -eq $dir) { break }
+        $dir = $parent
+    }
+    $dir = $start
+    for (;;) {
+        if (Test-Path -LiteralPath (Join-Path $dir ".rdd/install.json")) { return $dir }
+        $parent = Split-Path -Parent $dir
+        if (-not $parent -or $parent -eq $dir) { break }
+        $dir = $parent
+    }
+    return $start
+}
+
 function Resolve-ProjectRoot {
     if ($Project) {
         if (-not (Test-Path -LiteralPath $Project -PathType Container)) { Write-Err "项目根不存在: $Project" }
         return (Resolve-Path -LiteralPath $Project).Path
     }
-    $root = $null
-    try { $root = (git rev-parse --show-toplevel 2>$null) } catch { }
-    if (-not $root) { Write-Err "不在 git 仓库内，请用 -Project 指定项目根" }
-    return $root.Trim()
+    return (Resolve-RepoRoot)
 }
 
 function Find-OpencodeExecutable {
@@ -250,7 +288,7 @@ function Get-SessionTitle {
     # — the pointer message is the SAME for every dispatch, so auto titles
     # would collapse the whole run into identical sidebar entries). Shapes, in
     # priority order:
-    #   PLANNER body     "[PLANNER] <run短名>"
+    #   PLANNER body     "<run短名>"（PLANNER 身份由徽章承载——见 Get-SessionBadges）
     #   bridge dispatch  "[<run短名>] T<#>·<角色>·<节点>"   (-GoalTreeRun shape)
     #   off-tree direct  "[直交] <标签>·<角色>"            (-Handoff / -SessionLabel)
     # Returns "" for the unmarked plain handoff (no goal-tree marker, no
@@ -261,7 +299,7 @@ function Get-SessionTitle {
     if ($Role -eq "PLANNER") {
         $short = Get-RunShortName
         if (-not $short) { return "" }
-        return "[PLANNER] $short"
+        return $short
     }
     if (-not [string]::IsNullOrWhiteSpace($GoalTreeRun)) {
         $short = ConvertTo-RunShortName $GoalTreeRun
@@ -296,24 +334,22 @@ function Get-SessionBadges {
     # parameter). Mirrors Get-SessionTitle's three shapes, one badge per
     # structural fact — open kind vocabulary, rdd:* namespace consumed by the
     # DSH workspace-row renderer (unknown kinds degrade to a generic chip):
-    #   PLANNER body     rdd:planner + rdd:run(<run短名>)
-    #   bridge dispatch  rdd:run(<run短名>) + rdd:task(T#) + rdd:stage(<阶段>) [+ rdd:node(<节点>)]
+    #   PLANNER body     rdd:planner(<PLANNER>)（仅此一枚，PLANNER 身份进徽章内；
+    #                    run 名不占行首——用户裁定 2026-09-22）
+    #   bridge dispatch  rdd:stage(<阶段>) + rdd:task(T#) [+ rdd:node(<节点>)]（角色胶囊置首，
+    #                    rdd:run 长名芯片按用户裁定移除，避免遮挡标题）
     #   off-tree direct  rdd:direct(<标签>) + rdd:role(<角色>)
     # Returns @() for the unmarked plain handoff — zero badges, zero setBadges
     # calls, behavior byte-for-byte identical to the pre-feature output
     # (regression anchor, same contract as Get-SessionTitle's "" return).
     $badges = @()
     if ($Role -eq "PLANNER") {
-        $badges += @{ kind = "rdd:planner" }
-        $short = Get-RunShortName
-        if ($short) { $badges += @{ kind = "rdd:run"; label = $short } }
+        $badges += @{ kind = "rdd:planner"; label = "PLANNER" }
         return $badges
     }
     if (-not [string]::IsNullOrWhiteSpace($GoalTreeRun)) {
-        $short = ConvertTo-RunShortName $GoalTreeRun
-        if ($short) { $badges += @{ kind = "rdd:run"; label = $short } }
-        if ($TaskId -ge 1) { $badges += @{ kind = "rdd:task"; label = "T$TaskId" } }
         $badges += @{ kind = "rdd:stage"; label = $Role }
+        if ($TaskId -ge 1) { $badges += @{ kind = "rdd:task"; label = "T$TaskId" } }
         if (-not [string]::IsNullOrWhiteSpace($GoalTreeNode)) { $badges += @{ kind = "rdd:node"; label = $GoalTreeNode } }
         return $badges
     }

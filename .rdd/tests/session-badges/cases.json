@@ -18,7 +18,7 @@
   "cases": [
     {
       "id": "TC-S01",
-      "title": "PLANNER 会话以 rdd:planner+rdd:run 徽章标识，替代 [PLANNER] 文本前缀",
+      "title": "PLANNER 会话以 rdd:planner 单枚徽章标识，替代 [PLANNER] 文本前缀（用户裁定 2026-09-22：移除 rdd:run 长名芯片）",
       "type": "positive",
       "priority": "P0",
       "acceptance": "AC-1",
@@ -28,11 +28,11 @@
       "crossFeature": ["role-handoff"],
       "precondition": "codeRDD 仓库内存在归档 task.json；dsh 后端 DryRun 可用",
       "steps": ["start-role -Role PLANNER -TaskSummary <简述> -DryRun", "断言 setBadges payload 与 rename 标题"],
-      "expected": "badges=[rdd:planner, rdd:run(run短名)] 两枚；标题=纯简述；输出无 [PLANNER] 文本残留"
+      "expected": "badges=[rdd:planner] 单枚；标题=纯简述；输出无 [PLANNER] 文本残留"
     },
     {
       "id": "TC-S02",
-      "title": "桥接 worker 的 T#·阶段·n# 以 run/task/stage/node 四枚结构徽章承载",
+      "title": "桥接 worker 的阶段/任务/节点以 stage/task/node 三枚徽章承载（角色胶囊置首）",
       "type": "positive",
       "priority": "P0",
       "acceptance": "AC-2",
@@ -42,7 +42,7 @@
       "crossFeature": ["role-handoff", "delivery-bridge"],
       "precondition": "同 TC-S01",
       "steps": ["start-role -Role QA -TaskId 3 -GoalTreeRun <run> -GoalTreeNode n12 -TaskSummary <简述> -DryRun"],
-      "expected": "badges 四枚 JSON 精确匹配（run/task/stage/node）；输出无 T3·QA·n12 纯文本标题形态"
+      "expected": "badges 三枚 JSON 精确匹配（stage/task/node，角色置首，rdd:run 已按用户裁定移除）；输出无 T3·QA·n12 纯文本标题形态"
     },
     {
       "id": "TC-S03",

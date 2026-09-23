@@ -7,6 +7,27 @@
 
 **只读边界**：不触碰 goal-tree 的任何写原语（锁/账本/审计由规划者会话的 CLI 独占）；无 run、加载中、cwd 缺失一律渲染空。`@deepseek-ai/*` 导入中仅 `@deepseek-ai/dsh-llm`（`createUserMessage`）与 `@deepseek-ai/dsh-agent`（agents 注册表服务）是运行时依赖，其余 type-only——两者均为 DSH 核心包，经 profile 的 hoisted store 解析。
 
+## Worker 结构化文档行（v0.4.0，node-doc-links）
+
+桥接 run 节点的 `node.task` 由引擎 `New-NodeTaskText` 冻结模板合成（目标句 + 需求/设计文档指针 + 归档名）。宿主半边按同一模板把它**结构化分解**（`parseNodeTask`，与引擎侧 `Get-NodeTaskBrief` 同款正则）并 join 出绝对路径与存在性（`.rdd/changes/archive/<归档名>/` 下 stat），经 wire 的 `nodes[].docs` 透出：
+
+```json
+{ "goal": "完成「…」的 DEV 阶段（编码实现）。", "stage": "DEV", "duty": "（编码实现）",
+  "requirement": { "rel": "requirements/x.md", "abs": "D:\\…\\requirements\\x.md", "exists": true },
+  "designs": [ { "rel": "design/x-cto.md", "abs": "…", "exists": true },
+               { "rel": "design/x-qa.md",  "abs": "…", "exists": false } ] }
+```
+
+Worker 视图据此渲染**三个独立展示位**——目标句、需求文档、设计文档；文档为可点 chip，点击经 `ctx.workspaces.openPath`（浏览器半边新增 `inject ['workspaces']`）用**宿主 OS 默认应用**打开——与 DSH 会话内文件路径（工具行 / 产物文件）同一通道。未产出的设计文档（`designDocs[].status=pending`，归档下无此文件）渲染为虚线灰 chip 标注“未产出”，不可点。**零退化契约**：任何不匹配模板的 task（普通 goal-tree run、legacy 形态、旧英文签名）`docs` 为 null，Worker 视图回落原有单行任务文本，行为不变。仅升级插件即可（引擎侧零改动——解析的是既有落盘文本）。
+
+## UX 视觉稿行（v0.5.0，ux-mockup-links）
+
+UX 的 Phase 2.5 视觉稿落盘在任务归档的约定目录 `design/mockups/`（`final.html` 定稿 / `index.html` 对比页 / 方向探索素材 / `images/` 参考图），**不注册** task.json designDocs（那里只有规格 `.md`），因此从不在 node.task 文本里。宿主半边在聚合时**按约定枚举**该目录（`listMockupLinks`，`ux-mockup-links`）：只收视觉产物扩展名 `.html` / `.png`（`manifest.json` 是对比页数据源，不收），确定性排序（`final.html` → `index.html` → 其余按名序），每节点 chip 上限 8、目录遍历护栏 256 条，经 wire 的 `nodes[].docs.mockups` 透出；同一归档每次聚合只枚举一次（阶段链 UX→DEV→QA 节点共享缓存）。
+
+Worker 视图在需求/设计文档行之后渲染**「视觉稿」行**（可换行 chip 容器）——chip 点击同样经 `ctx.workspaces.openPath` 打开：`.html` 视觉稿用默认浏览器直接渲染，`.png` 用系统看图器。**零退化契约**沿用：归档无 `design/mockups/` 目录 → `mockups: []` → 不渲染该行；非桥接节点 `docs` 为 null，行为与 v0.4.0 逐字节一致。引擎侧零改动（枚举的是 UX 既有落盘约定）。
+
+> **v0.5.1（头部溢出修复）**：卡片头部行的 `id · 任务标题`（`.rdgt-run`）与轮次/runId 等元信息（`.rdgt-meta`）原为 `flex:none` 不可收缩、无省略号——长任务标题或长 runId 会把内容顶出卡片圆角框。两者改为 `flex:0 1 auto` + `min-width:0` + 单行省略号：空间不足时按需截断（完整任务文本仍在头部悬停 tooltip 里），不再溢出。
+
 ## 会话绑定与视图（v0.3.0，按会话角色收敛）
 
 引擎在 dsh 环境里额外写两个**增量 sidecar**（文件仍是唯一权威）：

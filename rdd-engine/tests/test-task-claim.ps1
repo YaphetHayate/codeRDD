@@ -163,9 +163,12 @@ try {
     Assert-True ($r.json.data.task.workMode -eq 'requirement-guided') 'A5 QA claim info skips design (independence)'
 
     # ===== A5c: set-route linkage =====
-    $r = Invoke-Flow @('-Command', 'set-route', '-Archive', $ArchiveRel, '-TaskId', '1', '-To', 'PM')
+    # phase-model: task 1 sits at phase=VERIFY (advance DEV->QA re-initialized it);
+    # routing to PM is a cross-PHASE switch (VERIFY -> REQ) and demands -Phase.
+    $r = Invoke-Flow @('-Command', 'set-route', '-Archive', $ArchiveRel, '-TaskId', '1', '-To', 'PM', '-Phase', 'REQ')
     $t1 = Find-Task (Read-Tasks) 1
     Assert-True ($r.json.success -eq $true -and @($t1.currentWorker).Count -eq 0) 'A5 set-route clears claims of removed owners'
+    Assert-True ([string]$t1.phase -eq 'REQ') 'A5 set-route -Phase switches phase atomically'
 
     # ===== guards =====
     $r = Invoke-Flow @('-Command', 'claim', '-Archive', $ArchiveRel, '-Role', 'QA', '-TaskId', '1')
