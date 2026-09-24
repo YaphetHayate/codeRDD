@@ -118,6 +118,21 @@
       "deprecatedCount": 0,
       "lastUpdated": "2026-09-22",
       "lastChange": "2026-09-20-planner-enhancements"
+    },
+    {
+      "feature": "code-metrics",
+      "relatedCode": [
+        "rdd-engine/scripts/code-metrics.ps1",
+        "rdd-engine/scripts/code-metrics.cmd"
+      ],
+      "testCode": [
+        "rdd-engine/tests/test-code-metrics.ps1",
+        ".rdd/tests/code-metrics/qa-metric-verify.ps1"
+      ],
+      "activeCount": 12,
+      "deprecatedCount": 0,
+      "lastUpdated": "2026-09-24",
+      "lastChange": "2026-09-24-qa-metric-tooling"
     }
   ]
 }

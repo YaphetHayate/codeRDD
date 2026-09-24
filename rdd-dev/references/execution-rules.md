@@ -11,6 +11,7 @@
 | Lint | 项目有 lint 配置时执行 | 必须修复，不能标记完成 |
 | TypeCheck | 项目有 typecheck 配置时执行 | 必须修复，不能标记完成 |
 | 相关模块测试 | 项目有测试框架时执行 | 必须修复，不能标记完成 |
+| 代码度量 | PowerShell 变更必跑：三级定位链调用 `code-metrics.cmd -Command scan`（定位链见 `rdd-engine/references/capability-manifest.md`），退出码 0 才算过；项目无 lint/typecheck 配置时，该工具的 AST 解析兼作语法检查兜底 | 必须修复，不能标记完成 |
 | 冒烟检查 | 单任务完成后执行轻量验证 | 必须修复，不能标记完成 |
 
 项目没有配置对应工具时，跳过该检查项。

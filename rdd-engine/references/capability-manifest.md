@@ -18,6 +18,7 @@
 | 树节点消费与回写（消费面） | `goal-tree-leaf.cmd` | `$rdd = $null; $t = $null; try { $t = git rev-parse --show-toplevel } catch { }; foreach ($c in @($env:RDD_ENGINE_HOME; if ($t) { (Get-ChildItem $t -Recurse -Directory -Depth 3 -Filter 'rdd-engine').FullName }; "$HOME\.rdd\engine\current")) { if ($c -and (Test-Path "$c\scripts\rdd-flow.cmd")) { $rdd = $c; break } }; if (-not $rdd) { throw "rdd-engine 未定位（三级定位链：RDD_ENGINE_HOME → 项目内 rdd-engine → ~\.rdd\engine\current 全 miss）。安装/排障：GitHub Release 下载 rdd-engine.tgz 后运行 scripts/install-rdd-engine.ps1；协议详见 rdd-engine/references/engine-location.md" }; & "$rdd\scripts\goal-tree-leaf.cmd" -Command next -RunId <id>` | goal-tree 的子代理 worker 认领叶子节点并结构化回写结果 |
 | 节点依赖管理 | `goal-tree.cmd -Command deps` | `$rdd = ...同上定位链...; & "$rdd\scripts\goal-tree.cmd" -Command deps -DepAction add -RunId <id> -NodeId <n> -On <m>` | 树内节点声明/解除依赖（DAG 机械校验 + 认领门禁 + 审计）；规划者 编排跨角色依赖场景 |
 | 交付编排桥接（规划者） | `delivery-bridge.cmd` | `$rdd = ...同上定位链...; & "$rdd\scripts\delivery-bridge.cmd" -Command promulgate -TaskJson <归档 task.json>` | PM 归档较重时启动 规划者 接管整批交付：颁布节点（任务×阶段）→ 调动角色会话 → settle 唯一流转通道 → 结案报告。协议见 `planner-guide.md` |
+| 代码度量（客观指标） | `code-metrics.cmd -Command scan` | `$rdd = ...同上定位链...; & "$rdd\scripts\code-metrics.cmd" -Command scan [-Base <ref>] [-Files <清单>] [-MaxFunctionLines 50] [-MaxNestingDepth 5]` | QA 验证模式硬性项 #4/#5（函数行数/嵌套深度）确定性检查、DEV 自测前置拦截（本期 PowerShell） |
 
 ---
 
@@ -137,6 +138,24 @@ $rdd = $null; $t = $null; try { $t = git rev-parse --show-toplevel } catch { }; 
 | `version` | `$rdd = $null; $t = $null; try { $t = git rev-parse --show-toplevel } catch { }; foreach ($c in @($env:RDD_ENGINE_HOME; if ($t) { (Get-ChildItem $t -Recurse -Directory -Depth 3 -Filter 'rdd-engine').FullName }; "$HOME\.rdd\engine\current")) { if ($c -and (Test-Path "$c\scripts\rdd-flow.cmd")) { $rdd = $c; break } }; if (-not $rdd) { throw "rdd-engine 未定位（三级定位链：RDD_ENGINE_HOME → 项目内 rdd-engine → ~\.rdd\engine\current 全 miss）。安装/排障：GitHub Release 下载 rdd-engine.tgz 后运行 scripts/install-rdd-engine.ps1；协议详见 rdd-engine/references/engine-location.md" }; & "$rdd\scripts\rdd-flow.cmd" -Command version` | 输出引擎版本 + `engineRoot`（来自 `package.json`；无需 git 仓库，安装自检/诊断用） |
 
 > 完整规则见 `rdd-engine/references/handoff-guide.md`
+
+---
+
+## 代码度量（code-metrics.ps1）
+
+将 QA 硬性项 #4（函数净行数）/ #5（嵌套深度）由 LLM 人工审查改为确定性工具执行；DEV 自测前置运行同一工具，在进入 QA 前拦截违规（设计归档：`2026-09-24-qa-metric-tooling`）。QA 与 DEV 双角色共用，口径单源。
+
+```powershell
+$rdd = $null; $t = $null; try { $t = git rev-parse --show-toplevel } catch { }; foreach ($c in @($env:RDD_ENGINE_HOME; if ($t) { (Get-ChildItem $t -Recurse -Directory -Depth 3 -Filter 'rdd-engine').FullName }; "$HOME\.rdd\engine\current")) { if ($c -and (Test-Path "$c\scripts\rdd-flow.cmd")) { $rdd = $c; break } }; if (-not $rdd) { throw "rdd-engine 未定位（三级定位链：RDD_ENGINE_HOME → 项目内 rdd-engine → ~/.rdd/engine/current 全 miss）。安装/排障：GitHub Release 下载 rdd-engine.tgz 后运行 scripts/install-rdd-engine.ps1；协议详见 rdd-engine/references/engine-location.md" }
+& "$rdd\scripts\code-metrics.cmd" -Command scan -Base HEAD
+```
+
+- **能力**：一趟完成变更范围判定（git diff + 未跟踪 .ps1；Base 版本与工作区**逐函数文本对比**判定「本次触及」，历史未触及函数只入备忘不判违规）→ 行数/嵌套度量 → 统一格式报告
+- **口径**（三轮 QA 报告实战口径固化）：净代码行 = AST 函数体扣除注释与空行；嵌套深度 = if/for/foreach/while（含 else 分支参与链路）祖先链计数、顶层记第 1 层、违规为 >5 层（switch 不计，do 族归 while 族）；默认阈值 50 行 / 5 层（`docs/code-quality.md §1` 单源，参数可覆盖）
+- **输出**：纯文本双区——违规区（`文件:行号 | 函数名 | 条款 #4/#5 | 现值 | HEAD 基线如 27->70 | 链路径如 if@L2836 -> if@L2874`）+ 备忘区；排序稳定（路径→起始行→条款），同一输入逐字节一致
+- **退化**：无 git / Base 不可得时要求显式 `-Files`，报告标注「无基线」（全部函数视为本次触及）；AST 解析失败即报（兼作 .ps1 无 lint/build 配置时的 #1 语法兜底）
+- **退出码**：`0=无违规 / 1=存在硬性违规 / 2=运行错误`
+- 验收测试：`rdd-engine/tests/test-code-metrics.ps1`（48 断言，临时 git 仓库 + 固定基准样本 `tests/fixtures/code-metrics/`）
 
 ---
 

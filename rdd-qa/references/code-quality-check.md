@@ -57,15 +57,28 @@ QA 审查的是**代码**，不是设计文档。`design/` 目录仍然是禁区
 | 1 | 编译/构建失败 | 客观 | 运行 `npm run build` 或项目对应构建命令 |
 | 2 | Lint 报错（有配置时） | 客观 | 运行项目 lint 命令 |
 | 3 | TypeCheck 报错（有配置时） | 客观 | 运行项目 typecheck 命令 |
-| 4 | 函数 > 40 行（不含注释、空行） | `code-quality.md §1` | 扫描 diff 涉及的函数 |
-| 5 | if/for/while 嵌套 > 3 层 | `code-quality.md §1` | 扫描 diff 涉及的控制流 |
+| 4 | 函数 > 50 行（不含注释、空行） | `code-quality.md §1` | `code-metrics.cmd -Command scan`（三级定位链调用，见下「代码度量工具」；违规区输出可直接引用进驳回书） |
+| 5 | if/for/while 嵌套 > 5 层 | `code-quality.md §1` | `code-metrics.cmd -Command scan`（同上；输出含最深嵌套链路径，如 `if@L2836 -> if@L2874 -> …`） |
 | 6 | 重复逻辑 ≥ 2 次未抽取为函数 | `code-quality.md §1` | 人工审查 diff |
 | 7 | 命名违规（无意义缩写 a/b/tmp/data/obj/item、拼音、布尔值无 is/has/should/can 前缀、集合非复数或无 List/Map 后缀） | `code-quality.md §2` | 人工审查 diff 中新增/修改的标识符 |
 | 8 | 本次变更**新引入**循环依赖 / 跨层直接访问（UI 直接查数据库、业务层直接操作 DOM 等） | `code-quality.md §4` | 分析 diff 中的 import/依赖关系 |
 
 > 第 8 项只针对**新引入**的违规。历史遗留的循环依赖不在 QA 驳回范围（属 CTO 系统性评估 + PM 重构需求范畴），记录到软性备忘即可。
 
-**项目无对应工具配置时**（无 lint/typecheck/build 配置）：#1~#3 自动跳过，#4~#8 仍由人工审查。
+**项目无对应工具配置时**（无 lint/typecheck/build 配置）：#1~#3 自动跳过（.ps1 项目由 code-metrics 的 AST 解析兜底 #1 语法检查，解析失败即报）；#4/#5 仍由 code-metrics 执行（引擎 CLI，不依赖项目配置）；#6~#8 仍由人工审查。
+
+### 代码度量工具（#4/#5 的确定性执行）
+
+`code-metrics.cmd -Command scan` 一趟完成变更范围判定（git diff + 未跟踪 .ps1，Base 版本与工作区逐函数文本对比判定「本次触及」）、行数/嵌套度量与报告：
+
+```powershell
+$rdd = $null; $t = $null; try { $t = git rev-parse --show-toplevel } catch { }; foreach ($c in @($env:RDD_ENGINE_HOME; if ($t) { (Get-ChildItem $t -Recurse -Directory -Depth 3 -Filter 'rdd-engine').FullName }; "$HOME\.rdd\engine\current")) { if ($c -and (Test-Path "$c\scripts\rdd-flow.cmd")) { $rdd = $c; break } }; if (-not $rdd) { throw "rdd-engine 未定位（三级定位链：RDD_ENGINE_HOME → 项目内 rdd-engine → ~/.rdd/engine/current 全 miss）。安装/排障：GitHub Release 下载 rdd-engine.tgz 后运行 scripts/install-rdd-engine.ps1；协议详见 rdd-engine/references/engine-location.md" }; & "$rdd\scripts\code-metrics.cmd" -Command scan
+```
+
+- 参数：`-Base <ref>`（默认 HEAD，可传 merge-base/HEAD~N/分支名）/ `-Files <清单>`（显式覆盖，无 git 时的逃生口，报告标注「无基线」）/ `-MaxFunctionLines 50` / `-MaxNestingDepth 5`（阈值以 `docs/code-quality.md §1` 为唯一来源，默认已对齐）
+- 退出码：`0=无违规 / 1=存在硬性违规 / 2=运行错误`
+- 输出双区：违规区（本次触及且超限：`文件:行号 | 函数名 | 违反条款 #4/#5 | 现值 | HEAD 基线如 27->70 | 嵌套链路径`）+ 备忘区（历史未触及的超限函数，**不计违规**，转入软性备忘）；同一输入逐字节一致，驳回书直接引用
+- 口径：净代码行 = AST 函数体扣除注释与空行；嵌套深度 = if/for/foreach/while 控制流祖先链计数、顶层记第 1 层；本期仅覆盖 PowerShell
 
 ### 软性只报告清单
 
@@ -88,19 +101,21 @@ QA 审查的是**代码**，不是设计文档。`design/` 目录仍然是禁区
 
 1. 确定本次变更范围（git diff --name-only）
 2. 运行客观检查（#1~#3）→ 任一失败直接进驳回流程
-3. 人工审查 diff（#4~#8）→ 逐项核对 code-quality.md 的量化规则
-4. 主观坏味道扫描（A~E）→ 记录备忘，不阻塞
-5. 汇总到测试报告
+3. 运行代码度量（#4/#5）：code-metrics.cmd -Command scan → 退出码 1 直接进驳回流程，
+   违规区输出即驳回理由（可定位格式：文件:行号 | 函数名 | 条款 | 现值 | HEAD 基线 | 链路径）；
+   备忘区（历史未触及的超限函数）转入软性备忘，不驳回
+4. 人工审查 diff（#6~#8）→ 逐项核对 code-quality.md 的量化规则
+5. 主观坏味道扫描（A~E）→ 记录备忘，不阻塞
+6. 汇总到测试报告
 ```
 
 ### 客观检查优先
 
-先跑 #1~#3（编译/lint/typecheck），这些是 DEV 自测环节的子集。若客观项就挂了，说明 DEV 自测不到位，无需再花精力做人工审查——直接 reopen 并在驳回理由里写明"自测未通过"。
+先跑 #1~#3（编译/lint/typecheck）与 #4/#5（code-metrics 代码度量），这些是 DEV 自测环节的子集。若客观项就挂了，说明 DEV 自测不到位，无需再花精力做人工审查——直接 reopen 并在驳回理由里写明"自测未通过"。
 
 ### 人工审查聚焦 diff
 
-#4~#8 只看本次变更新增/修改的代码，不评判未触碰的历史代码。审查重点：
-- 新增/修改的函数是否超长、嵌套过深
+#6~#8 只看本次变更新增/修改的代码，不评判未触碰的历史代码。审查重点：
 - 新增的标识符命名是否合规
 - diff 中是否有可抽取的重复模式
 - 新增的 import 是否构成新循环依赖、是否跨层
@@ -130,8 +145,8 @@ QA 审查的是**代码**，不是设计文档。`design/` 目录仍然是禁区
 │ 构建              │ ✅ 通过  │                                       │
 │ Lint             │ ❌ 失败  │ src/user.ts:42 no-unused-var           │
 │ TypeCheck        │ ✅ 通过  │                                       │
-│ 函数长度 ≤40 行    │ ❌ 违规  │ src/order.ts:createOrder() 58 行       │
-│ 嵌套 ≤3 层        │ ✅ 合规  │                                       │
+│ 函数长度 ≤50 行    │ ❌ 违规  │ code-metrics #4: src/order.ps1:L12 createOrder 58 行（27->58） │
+│ 嵌套 ≤5 层        │ ✅ 合规  │ code-metrics: 0 项违规（备忘 1 项：历史遗留，非本次触及）      │
 │ 重复逻辑抽取       │ ✅ 合规  │                                       │
 │ 命名规范          │ ✅ 合规  │                                       │
 │ 新引入循环依赖     │ ✅ 合规  │                                       │
@@ -162,7 +177,7 @@ QA 审查的是**代码**，不是设计文档。`design/` 目录仍然是禁区
 
 驳回理由：
 - [客观项] Lint 失败：src/user.ts:42 no-unused-var
-- [量化项] src/order.ts:createOrder() 58 行，超过 40 行上限
+- [量化项] code-metrics #4 函数行数：src/order.ps1:L12 createOrder 58 行（HEAD 27->58），超过 50 行上限
 
 DEV 修复后重新进入 QA 验证。
 ```
@@ -172,7 +187,7 @@ DEV 修复后重新进入 QA 验证。
 每条硬性驳回必须包含：
 - **文件路径 + 行号**（或 lint/typecheck 的原始输出）
 - **违反的规则**（引用 `docs/code-quality.md` 的具体章节）
-- **期望状态**（如"函数应 ≤40 行"或"lint 零 error"）
+- **期望状态**（如"函数应 ≤50 行（净代码行）"或"lint 零 error"）
 
 模糊的"代码不够好""可读性差"不是合格驳回理由。
 
