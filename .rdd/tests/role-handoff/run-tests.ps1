@@ -959,13 +959,34 @@ function Test-LongTaskDeprecatedAndAllDone {
 }
 
 function Test-LongTaskLegacyTaskMd {
+    # 兼容层退役（2026-09-24-multi-owner-route-parsing 决策①C）：task.md 回退已删除，
+    # task.md-only 归档读侧 fail-loud（TASK_JSON_NOT_FOUND）；migrate 为唯一存量迁移通道（P1 应对）。
     $legacy = Invoke-FlowNext -ArchiveName 'lt-legacy' -Tag "t114a"
     $legacySingle = Invoke-FlowNext -ArchiveName 'lt-legacy-single' -Tag "t114b"
-    $lt = $legacy.json.data.longTask
-    Assert-All "TC-114" "legacy task.md 回退:行无 lifecycle 缺省 active,已完成行视为 completed" @(
-        @{ name = "legacy 多需求归档触发(缺省 active)"; ok = ($legacy.json.data.longTask.triggered -eq $true); actual = "triggered=$($lt.triggered)" }
+
+    # migrate 一次性迁移后读侧照常（「已完成」行经 lifecycle=completed 计数）
+    $migOut = Join-Path $WorkDir "t114mig.out.txt"
+    $migErr = Join-Path $WorkDir "t114mig.err.txt"
+    $prevEap = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    Push-Location -LiteralPath $FlowProjectRoot
+    try {
+        & powershell -NoProfile -ExecutionPolicy Bypass -File $FlowScriptPath -Command migrate -Archive ".rdd/changes/archive/lt-legacy" 1> $migOut 2> $migErr
+        $migCode = $LASTEXITCODE
+    }
+    finally {
+        Pop-Location
+        $ErrorActionPreference = $prevEap
+    }
+    $migrated = Invoke-FlowNext -ArchiveName 'lt-legacy' -Tag "t114c"
+    $lt = $migrated.json.data.longTask
+    Assert-All "TC-114" "task.md 回退退役:task.md-only 归档 fail-loud;migrate 后保持 lifecycle 计数语义" @(
+        @{ name = "task.md-only 多需求归档 next fail-loud(不再回退解析)"; ok = ($legacy.exit -ne 0 -and $legacy.stdout -match 'TASK_JSON_NOT_FOUND'); actual = "exit=$($legacy.exit); $($legacy.stdout)" }
+        @{ name = "task.md-only 单需求归档同样 fail-loud"; ok = ($legacySingle.exit -ne 0 -and $legacySingle.stdout -match 'TASK_JSON_NOT_FOUND'); actual = "exit=$($legacySingle.exit); $($legacySingle.stdout)" }
+        @{ name = "migrate 一次成功(task.md -> task.json,唯一存量迁移通道)"; ok = ($migCode -eq 0); actual = "exit=$migCode" }
+        @{ name = "迁移后多需求归档触发(缺省 active)"; ok = ($migrated.json.data.longTask.triggered -eq $true); actual = "triggered=$($lt.triggered)" }
         @{ name = "已完成行不计 active(total=3 / active=2)"; ok = ($lt.totalTaskCount -eq 3 -and $lt.activeTaskCount -eq 2); actual = "total=$($lt.totalTaskCount) active=$($lt.activeTaskCount)" }
-        @{ name = "legacy 单需求归档不触发"; ok = ($legacySingle.json.data.longTask.triggered -eq $false); actual = "triggered=$($legacySingle.json.data.longTask.triggered)" }
+        @{ name = "已完成行计 completedCount=1(lifecycle 直接判定)"; ok = ($migrated.json.data.completedCount -eq 1); actual = "completedCount=$($migrated.json.data.completedCount)" }
     )
 }
 

@@ -17,7 +17,7 @@
     "scripts/install-rdd-skills.ps1"
   ],
   "testCode": [".rdd/tests/role-handoff/run-tests.ps1"],
-  "lastChange": "2026-09-20-planner-session-roster",
+  "lastChange": "2026-09-24-multi-owner-route-parsing",
   "cases": [
     {
       "id": "TC-005",
@@ -371,7 +371,7 @@
     },
     {
       "id": "TC-114",
-      "title": "legacy task.md 回退：无 lifecycle 行缺省 active，「已完成」行视为 completed",
+      "title": "task.md 回退退役：task.md-only 归档读侧 fail-loud，migrate 后保持 lifecycle 计数语义",
       "type": "boundary",
       "priority": "P2",
       "acceptance": "LT-AC-1",
@@ -380,8 +380,8 @@
       "status": "active",
       "crossFeature": [],
       "precondition": "夹具归档仅含 task.md（无 task.json），表格行无 lifecycle 字段",
-      "steps": ["对多需求与单需求两个 legacy 夹具分别运行 rdd-flow next"],
-      "expected": "多需求 legacy 归档触发（缺省 active）；「已完成」责任人行计入 total 不计入 active（total=3/active=2）；单需求 legacy 归档不触发——legacy 归档与 task.json 归档保持同一计数语义"
+      "steps": ["对多需求与单需求两个 legacy 夹具分别运行 rdd-flow next（断言 fail-loud）", "对多需求夹具运行 rdd-flow migrate 后再运行 rdd-flow next"],
+      "expected": "task.md-only 归档 next/handoff 读侧 fail-loud（error.code=TASK_JSON_NOT_FOUND，不再回退解析 task.md——兼容层退役，2026-09-24-multi-owner-route-parsing 决策①C）；migrate 一次成功后读侧照常：「已完成」行经 lifecycle=completed 计入 total 不计 active（total=3/active=2）且 completedCount=1——legacy 归档经 migrate 与 task.json 归档保持同一计数语义（P1 应对：存量归档先 migrate）"
     },
     {
       "id": "TC-115",
@@ -494,6 +494,132 @@
       "precondition": "Plus DryRun 传 -EmployeeId；CLI 分支依赖宿主 opencode（缺失记 SKIP 同 TC-020 口径）；dsh DryRun 需 DSH_WEB_URL 在场",
       "steps": ["Plus/CLI 各以 -SessionLabel DryRun", "dsh 后端无标记 -DryRun（TaskId 模式）", "dsh 后端直交形态 -Handoff+-SessionLabel -DryRun"],
       "expected": "Plus/CLI exit 0 且输出零 session.rename 痕迹（无 dsh 会话概念跳过且不报错）；无标记 DryRun RPC 3 = session.prompt（legacy 逐字节锚）；直交 DryRun RPC 3 = session.rename、RPC 4 = session.prompt 且载荷含 [直交] bb-lbl·QA（AC-5/AC-6）"
+    },
+    {
+      "id": "TC-123",
+      "title": "next 多责任人任务双块扇出：[\"CTO\",\"UX\"] 同时进 CTO/UX 角色块（各块同 TaskId）且零 Unknown 告警",
+      "type": "positive",
+      "priority": "P0",
+      "acceptance": "MO-AC-1",
+      "codeRef": "rdd-engine/tests/test-multi-owner-routing-qa.ps1:144",
+      "sourceChange": "2026-09-24-multi-owner-route-parsing",
+      "status": "active",
+      "crossFeature": ["task-claim"],
+      "precondition": "夹具归档仅 1 条 currentOwners=[\"CTO\",\"UX\"] 任务（单任务令 longTask 不触发，断言面干净）",
+      "steps": ["rdd-flow next -Format json", "解析 data.roles 与 data.warnings"],
+      "expected": "exit 0；roles 含 CTO 与 UX 两块且均含该任务（各块指向同一 TaskId=1、各计一次）；command/skill 保持单角色形态；warnings 无「Unknown 当前责任人」——责任人集合不再被当单个角色名精确匹配"
+    },
+    {
+      "id": "TC-124",
+      "title": "next markdown 渲染面：### CTO / ### UX 双块各列一次任务、零告警",
+      "type": "boundary",
+      "priority": "P1",
+      "acceptance": "MO-AC-1",
+      "codeRef": "rdd-engine/tests/test-multi-owner-routing-qa.ps1:159",
+      "sourceChange": "2026-09-24-multi-owner-route-parsing",
+      "status": "active",
+      "crossFeature": [],
+      "precondition": "同 TC-123 夹具",
+      "steps": ["rdd-flow next -Format markdown", "断言章节与标题出现次数"],
+      "expected": "输出含 ### CTO 与 ### UX 两节；任务标题全文恰出现 2 次（每块一次）；无 Unknown 字样——JSON 面之外的输出契约同步扇出"
+    },
+    {
+      "id": "TC-125",
+      "title": "start/handoff/validate 双成员均解出多责任人任务；非成员按 currentOwner=CTO+UX 忽略",
+      "type": "positive",
+      "priority": "P0",
+      "acceptance": "MO-AC-2",
+      "codeRef": "rdd-engine/tests/test-multi-owner-routing-qa.ps1:169",
+      "sourceChange": "2026-09-24-multi-owner-route-parsing",
+      "status": "active",
+      "crossFeature": ["task-claim"],
+      "precondition": "同 TC-123 夹具",
+      "steps": ["对 CTO 与 UX 分别运行 handoff/start/validate", "对非成员 DEV 运行 handoff 读 tasks 与 ignored"],
+      "expected": "CTO/UX：handoff.tasks 与 start 的 handoff.tasks 均含任务 id=1，validate taskCount=1（不再整判 ignored）；DEV：tasks 为空且 ignored.reason=currentOwner=CTO+UX 仅保留在非成员面——并行路由交接不断链"
+    },
+    {
+      "id": "TC-126",
+      "title": "回归锚：单责任人/deprecated 行输出不变、completed 行按 lifecycle 忽略且 completedCount 不变",
+      "type": "boundary",
+      "priority": "P0",
+      "acceptance": "MO-AC-3",
+      "codeRef": "rdd-engine/tests/test-multi-owner-routing-qa.ps1:192",
+      "sourceChange": "2026-09-24-multi-owner-route-parsing",
+      "status": "active",
+      "crossFeature": [],
+      "precondition": "夹具含单责任人 active、lifecycle=completed、lifecycle=deprecated 三行",
+      "steps": ["handoff -DEV 核对 tasks/ignored", "next 核对 completedCount 与角色块成员"],
+      "expected": "handoff -DEV 含 active 与 deprecated 任务、ignored 含唯一 currentOwner=已完成；next completedCount=1 且 completed 任务不入任何块——单责任人行（含已完成/deprecated）行为与改造前一致"
+    },
+    {
+      "id": "TC-127",
+      "title": "init 输入形状非法 fail-loud：包装对象 TASKS_SHAPE_INVALID、缺关键字段 TASK_MISSING_FIELD 且零落盘",
+      "type": "negative",
+      "priority": "P1",
+      "acceptance": "MO-AC-4",
+      "codeRef": "rdd-engine/tests/test-multi-owner-routing-qa.ps1:209",
+      "sourceChange": "2026-09-24-multi-owner-route-parsing",
+      "status": "active",
+      "crossFeature": [],
+      "precondition": "干净夹具目录",
+      "steps": ["init -TasksFile 传 {\"tasks\":[...]} 包装对象", "再传元素缺 currentOwners 的数组", "各断言错误码与 task.json 不存在"],
+      "expected": "两种输入均 exit 1：包装对象报 TASKS_SHAPE_INVALID、缺字段报 TASK_MISSING_FIELD 且指明条目与字段；task.json 均不生成——不再静默生成空任务/空 owner 行"
+    },
+    {
+      "id": "TC-128",
+      "title": "add-task -Remark 生效并落 task.json remark（多责任人拆分同场保持）",
+      "type": "positive",
+      "priority": "P1",
+      "acceptance": "MO-AC-5",
+      "codeRef": "rdd-engine/tests/test-multi-owner-routing-qa.ps1:225",
+      "sourceChange": "2026-09-24-multi-owner-route-parsing",
+      "status": "active",
+      "crossFeature": [],
+      "precondition": "已有 task.json 的夹具归档",
+      "steps": ["add-task -Title ... -Remark \"QA 复验备注落库\" -CurrentOwners CTO+UX", "读 task.json 新任务"],
+      "expected": "add-task exit 0；新增任务 remark 等于传入值（-Remark 参数真实生效）；CTO+UX 拆分为 [\"CTO\",\"UX\"]"
+    },
+    {
+      "id": "TC-129",
+      "title": "legacy task.md 手写 CTO+UX 单元格适用同一拆分语义：读侧 fail-loud（口径锚）+ migrate 后双块扇出",
+      "type": "boundary",
+      "priority": "P1",
+      "acceptance": "MO-EDGE-1",
+      "codeRef": "rdd-engine/tests/test-multi-owner-routing-qa.ps1:245",
+      "sourceChange": "2026-09-24-multi-owner-route-parsing",
+      "status": "active",
+      "crossFeature": [],
+      "precondition": "task.md-only legacy 归档，路由表「当前责任人」单元格手写 CTO+UX（2026-09-24 用户裁定口径：读侧兼容层退役，migrate 为唯一存量通道）",
+      "steps": ["直接 next/handoff（断言 fail-loud TASK_JSON_NOT_FOUND）", "migrate 一次后断言 currentOwners 拆分为数组", "再 next/handoff 断言双块扇出"],
+      "expected": "读侧 fail-loud（TASK_JSON_NOT_FOUND，不回退解析 task.md）；migrate 后 CTO+UX 拆为 [\"CTO\",\"UX\"]，next 双块均含该任务、handoff -UX 可见——需求边界「legacy 行适用同样的多责任人拆分语义」在 migrate 通道成立"
+    },
+    {
+      "id": "TC-130",
+      "title": "多责任人任务上串行收窄与整组切换语义不变：set-route 缺省阶段内收窄 / -To ... -Phase 原子整组切换",
+      "type": "boundary",
+      "priority": "P1",
+      "acceptance": "MO-EDGE-2",
+      "codeRef": "rdd-engine/tests/test-multi-owner-routing-qa.ps1:278",
+      "sourceChange": "2026-09-24-multi-owner-route-parsing",
+      "status": "active",
+      "crossFeature": ["task-claim"],
+      "precondition": "夹具含 [\"CTO\",\"UX\"] 与 [\"CTO\"] 两条任务（phase 由 init 推断为 DESIGN）",
+      "steps": ["set-route -TaskId 1 -To UX 并核对 task.json 与 next", "set-route -TaskId 1 -To CTO+UX -Phase DESIGN 并核对", "set-route -TaskId 2 -To UX（[\"CTO\"]→[\"UX\"] 字面串行收窄）"],
+      "expected": "收窄后 owners=[UX] 且 next 仅 UX 块含任务；整组切换 owners+phase 原子落库（[CTO,UX]@DESIGN）且双块恢复；字面串行收窄照常——三条 set-route 语义与改造前一致"
+    },
+    {
+      "id": "TC-131",
+      "title": "真正的未知成员仍按单角色名告警且不铸块，合法成员照常扇出",
+      "type": "negative",
+      "priority": "P1",
+      "acceptance": "MO-EDGE-3",
+      "codeRef": "rdd-engine/tests/test-multi-owner-routing-qa.ps1:300",
+      "sourceChange": "2026-09-24-multi-owner-route-parsing",
+      "status": "active",
+      "crossFeature": [],
+      "precondition": "手写 task.json，currentOwners=[\"CTO\",\"XX\"]",
+      "steps": ["rdd-flow next", "断言 CTO 块、warnings 与 XX 块缺失"],
+      "expected": "CTO 块照常含任务；warnings 含 Unknown 'XX'（逐成员粒度、一坏一警）；无 XX 块；任何告警都不把合法责任人集合当单角色名"
     }
   ]
 }

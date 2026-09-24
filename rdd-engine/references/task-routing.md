@@ -160,6 +160,8 @@
 
 `-Tasks` 接收 tasks 数组的内联 JSON 字符串。中文内容通过 cmd 传参有编码风险，建议改用 `-TasksFile` 指向 JSON 文件（UTF-8 无 BOM）。PM 归档时一次性写入全部任务。每条 task 无需填 `id`（CLI 自动编号）和 `generatedAt`（CLI 自动写入），但须提供 `title`/`requirement`/`currentOwners`，可选 `designDocs`/`remark`/`phase`。
 
+**输入形状 fail-loud**：顶层必须是 tasks 数组（`{"tasks":[...]}` 包装对象报 `TASKS_SHAPE_INVALID`）；元素必须是 task 对象且 `title`/`requirement`/`currentOwners` 齐全非空（缺失或为空报 `TASK_MISSING_FIELD`，指明条目与字段）。全部校验通过才落盘，不再静默生成空任务/空 owner 行。
+
 **phase 初始化规则（写时一次）**：输入显式带 `phase` 时校验后采用（枚举 + 白名单双重校验，非法即 `PHASE_INVALID`/`PHASE_OWNER_MISMATCH` 拒绝）；缺省时按 owner 集合推断——取**最后一个**覆盖全部 owner 的阶段（单角色集合映射到规范阶段：`["QA"]` → `VERIFY`，即单独 QA 任务 = 验收执行；`["CTO","UX"]` → `DESIGN`）。跨阶段 owner 集合（如 `["UX","DEV"]`）直接拒绝（白名单硬约束，不静默存储）。
 
 示例 `-TasksFile`（推荐，避免中文编码问题）：
@@ -189,7 +191,7 @@
 & "$rdd\scripts\rdd-flow.cmd" -Command add-task -Archive ".rdd/changes/archive/<name>" -Title "标题" -Requirement "requirements/x.md" -CurrentOwners "DEV"
 ```
 
-向已有 task.json 追加一条。`-CurrentOwners` 多角色用 `+` 连接（如 `CTO+UX`），CLI 自动转为数组。
+向已有 task.json 追加一条。`-CurrentOwners` 多角色用 `+` 连接（如 `CTO+UX`），CLI 自动转为数组。可选 `-Remark "<备注>"` 写入任务 `remark`（并行标注、备注等自由文本）。
 
 #### `set-route` — 覆盖路由（阶段白名单语义）
 
@@ -428,6 +430,6 @@ currentOwners = ["CTO", "UX"]，CTO 已认领：
 
 ## 历史兼容
 
-- **旧归档（有 task.md 无 task.json）**：`rdd-flow.ps1` 读不到 task.json 时回退解析 task.md 路由总览（legacy path），各命令仍可工作
-- **迁移工具**：`migrate -Archive <path>` 可将旧 task.md 转为 task.json（处理存量归档，一次性）
+- **旧归档（有 task.md 无 task.json）**：读侧（`next`/`start`/`handoff`/`validate`/`claim`）只读 task.json，缺失即 fail-loud（`TASK_JSON_NOT_FOUND`），**不再回退解析 task.md**。存量旧归档先 `migrate` 一次性迁移后再读
+- **迁移工具**：`migrate -Archive <path>` 可将旧 task.md 转为 task.json（处理存量归档，一次性，**唯一存量迁移通道**）
 - 旧 task.md 的「角色参与计划」章节、✅⬜ 状态表一律忽略，路由信息统一从 `currentOwners` 派生

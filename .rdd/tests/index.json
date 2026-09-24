@@ -94,16 +94,21 @@
       "feature": "role-handoff",
       "relatedCode": [
         "rdd-engine/scripts/start-role.ps1",
+        "rdd-engine/scripts/rdd-flow.ps1",
         "rdd-engine/references/transition-guide.md",
         "rdd-engine/SKILL.md",
         "scripts/build-dsh-presets.mjs",
         "scripts/install-rdd-skills.ps1"
       ],
-      "testCode": [".rdd/tests/role-handoff/run-tests.ps1"],
-      "activeCount": 34,
+      "testCode": [
+        ".rdd/tests/role-handoff/run-tests.ps1",
+        "rdd-engine/tests/test-multi-owner-routing.ps1",
+        "rdd-engine/tests/test-multi-owner-routing-qa.ps1"
+      ],
+      "activeCount": 43,
       "deprecatedCount": 0,
-      "lastUpdated": "2026-09-20",
-      "lastChange": "2026-09-20-planner-session-roster"
+      "lastUpdated": "2026-09-24",
+      "lastChange": "2026-09-24-multi-owner-route-parsing"
     },
     {
       "feature": "session-badges",

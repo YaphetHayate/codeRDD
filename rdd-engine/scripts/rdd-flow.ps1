@@ -16,6 +16,7 @@ param(
     [string]$Title,
     [string]$Requirement,
     [string]$CurrentOwners,
+    [string]$Remark,
     [string]$To,
     [string]$From,
     [string]$Phase,                 # REQ/DESIGN/IMPL/VERIFY (set-route phase switch/rollback target)
@@ -104,11 +105,20 @@ function Test-PhaseName {
 # or conservatively degrade phase to null — never silently guess).
 function Get-PhaseFromOwners {
     param($Owners)
+    $list = @()
+    foreach ($o in @($Owners)) {
+        if ($null -ne $o -and -not [string]::IsNullOrWhiteSpace([string]$o)) { $list += [string]$o }
+    }
+    # Empty owner set is rejected outright: it is "covered" by every phase whitelist,
+    # which used to silently mint phase=VERIFY for garbage input (the empty-set hole).
+    if ($list.Count -eq 0) {
+        Write-ErrorResult "PHASE_OWNER_MISMATCH" "cannot derive a phase from an empty owner set (the empty set would cover every phase whitelist)" 1
+    }
     $hit = @()
     foreach ($p in $script:PhaseOrder) {
         $roles = @($script:PhaseRoles[$p])
         $isCovered = $true
-        foreach ($o in @($Owners)) { if ($roles -notcontains $o) { $isCovered = $false; break } }
+        foreach ($o in $list) { if ($roles -notcontains $o) { $isCovered = $false; break } }
         if ($isCovered) { $hit += $p }
     }
     if ($hit.Count -eq 0) { return "" }
@@ -266,10 +276,13 @@ function Write-ErrorResult {
         [int]$ExitCode = 1
     )
 
-    ConvertTo-PortableJson @{
+    # Write the payload straight to STDOUT instead of the output pipeline: a caller that
+    # invokes the emitting command inside an expression (@(...) capture) would swallow the
+    # payload before `exit` lands. Fail-loud must stay visible at ANY call depth.
+    [Console]::Out.WriteLine((ConvertTo-PortableJson @{
         success = $false
         error   = @{ code = $Code; message = $Message }
-    } -Depth 3
+    } -Depth 3))
     exit $ExitCode
 }
 
@@ -336,6 +349,8 @@ function Clean-Cell {
     return ($Value -replace [regex]::Escape('`'), "" -replace '<br\s*/?>', " " -replace '\s+', " ").Trim()
 }
 
+# Markdown route-table parser — kept ONLY for `migrate`'s one-shot task.md -> task.json
+# conversion. The read side (next/start/handoff/validate/claim) never parses rows again.
 function Parse-MarkdownTable {
     param(
         [string[]]$Lines,
@@ -635,14 +650,9 @@ function Write-TaskJson {
     )
 }
 
-function Convert-OwnersArrayToString {
-    param([array]$Owners)
-    if ($Owners -and $Owners.Count -gt 0) {
-        return ($Owners -join "+")
-    }
-    return ""
-}
-
+# Display projection for the `design` field of a task block (structured designDocs
+# array -> readable "a.md + b.md (待产出)" string). Presentation only — routing and
+# eligibility consume the array itself.
 function Convert-DesignDocsToString {
     param([array]$DesignDocs)
     if (-not $DesignDocs -or $DesignDocs.Count -eq 0) { return "-" }
@@ -656,41 +666,6 @@ function Convert-DesignDocsToString {
         }
     }
     return ($parts -join " + ")
-}
-
-# Convert task.json tasks into the same row format produced by Parse-MarkdownTable,
-# so the entire existing pipeline (Resolve-TaskRow, Build-Handoff, etc.) works unchanged.
-function Convert-TasksToRows {
-    param($Tasks)
-
-    $rows = @()
-    foreach ($t in $Tasks) {
-        $lifecycle = if ($t.lifecycle) { $t.lifecycle } else { "active" }
-        $owners = if ($lifecycle -eq "completed") {
-            "已完成"
-        }
-        elseif ($lifecycle -eq "deprecated") {
-            (Convert-OwnersArrayToString $t.currentOwners)
-        }
-        else {
-            (Convert-OwnersArrayToString $t.currentOwners)
-        }
-
-        $worker = @(Convert-CurrentWorkerToArray $t.currentWorker)
-        $rows += [pscustomobject]@{
-            TaskId        = $t.id
-            "需求"         = $t.title
-            "需求文件"     = $t.requirement
-            "当前责任人"   = $owners
-            "关联设计文档" = (Convert-DesignDocsToString $t.designDocs)
-            "备注"         = if ($t.remark) { $t.remark } else { "-" }
-            lifecycle     = $lifecycle
-            phase         = $(if ($null -ne $t.phase -and ([string]$t.phase) -ne "") { [string]$t.phase } else { $null })
-            currentWorker = $worker
-            running       = ($worker.Count -gt 0)
-        }
-    }
-    return $rows
 }
 
 # === Handoff building blocks ===
@@ -750,20 +725,20 @@ function Get-DesignSummary {
 }
 
 # Shared single-task assembly pipeline (requirement/design summaries, workMode, involvedFiles,
-# currentWorker + running passthrough). No owner gate here: handoff (Resolve-TaskRow) treats
-# non-owner rows as ignored, while claim (Invoke-Claim) has its own ROLE_NOT_OWNER guard and
-# must keep assembling info for parallel-owner tasks (currentOwners=["CTO","UX"] etc.).
+# currentWorker + running passthrough). Consumes the structured task object directly (no row
+# projection). No owner gate here: handoff (Resolve-TaskForRole) treats non-owner tasks as
+# ignored, while claim (Invoke-Claim) has its own ROLE_NOT_OWNER guard and must keep assembling
+# info for parallel-owner tasks (currentOwners=["CTO","UX"] etc.).
 function Resolve-TaskEntry {
     param(
-        $Row,
+        $Task,
         [string]$ArchivePath,
         [string]$TargetRole
     )
 
-    $requirementCell = Clean-Cell $Row."需求文件"
-    $designCell = Clean-Cell $Row."关联设计文档"
-    $title = Clean-Cell $Row."需求"
-    $remark = Clean-Cell $Row."备注"
+    $requirementCell = Clean-Cell ([string]$Task.requirement)
+    $title = Clean-Cell ([string]$Task.title)
+    $remark = if ($Task.remark) { Clean-Cell ([string]$Task.remark) } else { "-" }
 
     $requirementPath = Resolve-ArchiveFile -ArchivePath $ArchivePath -CellValue $requirementCell
     if ($null -eq $requirementPath -or -not (Test-Path -LiteralPath $requirementPath -PathType Leaf)) {
@@ -777,96 +752,128 @@ function Resolve-TaskEntry {
         return @{ outcome = "ignored"; entry = @{ requirement = (Get-RelativePath $requirementPath); reason = $eligibility.reason } }
     }
 
-    # The design cell may list several docs joined with " + " (task.json designDocs array,
-    # or the markdown table convention). Resolve EVERY part; a cell resolved as one path
-    # would never match a multi-doc listing and break claim/handoff for such rows.
-    $designParts = @()
-    if ($designCell -and $designCell -ne "-") {
-        foreach ($part in ($designCell -split '\s*\+\s*')) {
-            $p = $part.Trim()
-            if ($p) { $designParts += $p }
-        }
+    # designDocs is a structured array — resolve EVERY listed doc directly (no cell
+    # flattening/splitting). A listed doc that does not resolve to a file stays a
+    # missing part and blocks DEV below.
+    $designs = Resolve-DesignDocPaths -Task $Task -ArchivePath $ArchivePath
+
+    if ($TargetRole -eq "DEV" -and $designs.missing.Count -gt 0) {
+        return @{ outcome = "warning"; entry = "Design file not found for row '$title': $($designs.missing -join ' + ')" }
     }
 
-    $designPaths = @()
-    $missingDesignParts = @()
-    foreach ($part in $designParts) {
-        $resolvedPath = Resolve-ArchiveFile -ArchivePath $ArchivePath -CellValue $part
-        if ($null -ne $resolvedPath -and (Test-Path -LiteralPath $resolvedPath -PathType Leaf)) {
-            $designPaths += $resolvedPath
-        }
-        else {
-            $missingDesignParts += $part
-        }
-    }
-
-    $designSummary = $null
-    $workMode = "requirement-guided"
-    $involvedFiles = @()
-
-    if ($TargetRole -eq "DEV" -and $missingDesignParts.Count -gt 0) {
-        return @{ outcome = "warning"; entry = "Design file not found for row '$title': $($missingDesignParts -join ' + ')" }
-    }
-
-    if ($TargetRole -ne "QA" -and $designPaths.Count -gt 0) {
-        $designContents = @()
-        $mergedMockups = @()
-        foreach ($dp in $designPaths) {
-            $designContent = Read-TextFile $dp
-            $designFlow = Get-FlowControl $designContent
-            $eligibility = Test-DocEligible -FlowControl $designFlow -TargetRole $TargetRole -Label "design"
-            if (-not $eligibility.eligible) {
-                return @{ outcome = "ignored"; entry = @{ requirement = (Get-RelativePath $requirementPath); design = (Get-RelativePath $dp); reason = $eligibility.reason } }
-            }
-            $designContents += $designContent
-            foreach ($f in @(Get-InvolvedFiles $designContent)) {
-                if ($involvedFiles -notcontains $f) { $involvedFiles += $f }
-            }
-            foreach ($m in @(Get-MockupPaths $designContent)) {
-                if ($mergedMockups -notcontains $m) { $mergedMockups += $m }
-            }
-        }
-        $workMode = "design-guided"
-        # Sections are extracted over the concatenated docs so content that only lives in a
-        # secondary doc (e.g. 风险提示 in a *-decisions.md) still surfaces; the per-doc scans
-        # above keep involvedFiles/mockups a union instead of first-match-only.
-        $designSummary = Get-DesignSummary -DesignPath $designPaths[0] -Content (($designContents -join "`n`n"))
-        $designSummary.path = (@($designPaths | ForEach-Object { Get-RelativePath $_ }) -join " + ")
-        $designSummary.mockups = @($mergedMockups)
+    $context = Get-TaskDesignContext -DesignPaths $designs.paths -TargetRole $TargetRole -RequirementPath $requirementPath
+    if ($context.outcome -eq "ignored") {
+        return @{ outcome = "ignored"; entry = $context.entry }
     }
 
     $requirementSummary = Get-RequirementSummary -RequirementPath $requirementPath -Content $requirementContent
-    $worker = @(Convert-CurrentWorkerToArray $Row.currentWorker)
+    $worker = @(Convert-CurrentWorkerToArray $Task.currentWorker)
 
     return @{ outcome = "task"; entry = @{
-        id          = if ($null -ne $Row.TaskId) { [int]$Row.TaskId } else { 0 }
+        id          = if ($null -ne $Task.id) { [int]$Task.id } else { 0 }
         title       = $title
-        workMode    = $workMode
-        routeOwner  = Clean-Cell $Row."当前责任人"
-        phase       = $(if ($null -ne $Row.phase -and ([string]$Row.phase) -ne "") { [string]$Row.phase } else { $null })
+        workMode    = $context.workMode
+        routeOwner  = ((@($Task.currentOwners) | ForEach-Object { [string]$_ }) -join "+")
+        phase       = $(if ($null -ne $Task.phase -and ([string]$Task.phase) -ne "") { [string]$Task.phase } else { $null })
         remark      = $remark
         requirement = $requirementSummary
-        design      = $designSummary
-        involvedFiles = @($involvedFiles)
+        design      = $context.designSummary
+        involvedFiles = @($context.involvedFiles)
         currentWorker = $worker
         running       = ($worker.Count -gt 0)
     }}
 }
 
-function Resolve-TaskRow {
+# Resolve the structured designDocs array against the archive: every listed doc resolves
+# to a real file or stays in `missing` (the caller decides what a missing part means per
+# role). Pure resolution — no eligibility or summary work here.
+function Resolve-DesignDocPaths {
+    param($Task, [string]$ArchivePath)
+
+    $paths = @()
+    $missing = @()
+    foreach ($d in @($Task.designDocs)) {
+        if ($null -eq $d) { continue }
+        $part = Clean-Cell ([string]$d.path)
+        if (-not $part -or $part -eq "-") { continue }
+        $resolvedPath = Resolve-ArchiveFile -ArchivePath $ArchivePath -CellValue $part
+        if ($null -ne $resolvedPath -and (Test-Path -LiteralPath $resolvedPath -PathType Leaf)) {
+            $paths += $resolvedPath
+        }
+        else {
+            $missing += $part
+        }
+    }
+    return @{ paths = $paths; missing = $missing }
+}
+
+# Build the design-side context (summary, workMode, involvedFiles) for one task. Each
+# listed design doc passes its own eligibility gate; a rejected doc yields
+# outcome=ignored with the reason entry. QA never reads design docs (independence), and
+# a task without design docs stays requirement-guided.
+function Get-TaskDesignContext {
+    param($DesignPaths, [string]$TargetRole, [string]$RequirementPath)
+
+    $context = @{ outcome = "ok"; entry = $null; designSummary = $null; workMode = "requirement-guided"; involvedFiles = @() }
+    if ($TargetRole -eq "QA" -or @($DesignPaths).Count -eq 0) { return $context }
+
+    $designContents = @()
+    $mergedMockups = @()
+    foreach ($dp in @($DesignPaths)) {
+        $designContent = Read-TextFile $dp
+        $designFlow = Get-FlowControl $designContent
+        $eligibility = Test-DocEligible -FlowControl $designFlow -TargetRole $TargetRole -Label "design"
+        if (-not $eligibility.eligible) {
+            $context.outcome = "ignored"
+            $context.entry = @{ requirement = (Get-RelativePath $RequirementPath); design = (Get-RelativePath $dp); reason = $eligibility.reason }
+            return $context
+        }
+        $designContents += $designContent
+        foreach ($f in @(Get-InvolvedFiles $designContent)) {
+            if ($context.involvedFiles -notcontains $f) { $context.involvedFiles += $f }
+        }
+        foreach ($m in @(Get-MockupPaths $designContent)) {
+            if ($mergedMockups -notcontains $m) { $mergedMockups += $m }
+        }
+    }
+    $context.workMode = "design-guided"
+    # Sections are extracted over the concatenated docs so content that only lives in a
+    # secondary doc (e.g. 风险提示 in a *-decisions.md) still surfaces; the per-doc scans
+    # above keep involvedFiles/mockups a union instead of first-match-only.
+    $designSummary = Get-DesignSummary -DesignPath (@($DesignPaths)[0]) -Content (($designContents -join "`n`n"))
+    $designSummary.path = (@(@($DesignPaths) | ForEach-Object { Get-RelativePath $_ }) -join " + ")
+    $designSummary.mockups = @($mergedMockups)
+    $context.designSummary = $designSummary
+    return $context
+}
+
+# Role gate over the structured task: currentOwners ARRAY membership (same semantics as
+# show/claim). Multi-owner tasks fan out — every member role resolves the same task, so a
+# parallel route (["CTO","UX"]) hands the task to BOTH CTO and UX. lifecycle=completed is
+# decided by the lifecycle field itself (no legacy marker-string mapping): completed tasks
+# are ignored for every role with the historical "currentOwner=已完成" reason (regression
+# anchor — single-owner / completed / deprecated output stays byte-identical).
+function Resolve-TaskForRole {
     param(
-        $Row,
+        $Task,
         [string]$ArchivePath,
         [string]$TargetRole
     )
 
-    $routeOwner = Clean-Cell $Row."当前责任人"
+    $requirementCell = Clean-Cell ([string]$Task.requirement)
+    $owners = @(@($Task.currentOwners) | ForEach-Object { [string]$_ })
+    $lifecycle = if ($Task.lifecycle) { [string]$Task.lifecycle } else { "active" }
 
-    if ($routeOwner -ne $TargetRole) {
-        return @{ outcome = "ignored"; entry = @{ requirement = (Clean-Cell $Row."需求文件"); reason = "currentOwner=$routeOwner" } }
+    if ($lifecycle -eq "completed") {
+        return @{ outcome = "ignored"; entry = @{ requirement = $requirementCell; reason = "currentOwner=已完成" } }
     }
 
-    return (Resolve-TaskEntry -Row $Row -ArchivePath $ArchivePath -TargetRole $TargetRole)
+    if ($owners -notcontains $TargetRole) {
+        $routeOwner = ($owners -join "+")
+        return @{ outcome = "ignored"; entry = @{ requirement = $requirementCell; reason = "currentOwner=$routeOwner" } }
+    }
+
+    return (Resolve-TaskEntry -Task $Task -ArchivePath $ArchivePath -TargetRole $TargetRole)
 }
 
 function Build-Handoff {
@@ -875,14 +882,14 @@ function Build-Handoff {
         [string]$TargetRole
     )
 
-    $route = Get-RouteRows -ArchivePath $ArchivePath
+    $route = Get-RouteTasks -ArchivePath $ArchivePath
 
     $tasks = @()
     $ignored = @()
     $warnings = @()
 
-    foreach ($row in $route.rows) {
-        $result = Resolve-TaskRow -Row $row -ArchivePath $ArchivePath -TargetRole $TargetRole
+    foreach ($task in $route.tasks) {
+        $result = Resolve-TaskForRole -Task $task -ArchivePath $ArchivePath -TargetRole $TargetRole
         switch ($result.outcome) {
             "task"    { $tasks += $result.entry }
             "ignored" { $ignored += $result.entry }
@@ -944,143 +951,155 @@ function Get-RoleCommand {
     return "/rdd-$($TargetRole.ToLower())"
 }
 
-function Get-RouteRows {
+# Route source = task.json ONLY (the row projection and the task.md fallback are retired).
+# Read side never parses markdown rows again; a task.md-only legacy archive must run
+# `migrate` once first — missing task.json fails loud instead of silently degrading.
+function Get-RouteTasks {
     param([string]$ArchivePath)
 
-    # Primary: task.json
     $jsonPath = Get-TaskJsonPath $ArchivePath
-    if (Test-Path -LiteralPath $jsonPath -PathType Leaf) {
-        $data = Read-TaskJson -ArchivePath $ArchivePath
-        if ($null -ne $data -and $data.tasks) {
-            return @{
-                taskPath = $jsonPath
-                rows     = @(Convert-TasksToRows -Tasks $data.tasks)
-            }
-        }
+    if (-not (Test-Path -LiteralPath $jsonPath -PathType Leaf)) {
+        Write-ErrorResult "TASK_JSON_NOT_FOUND" "task.json not found in archive: $ArchivePath. Run 'migrate' (task.md-only legacy archive) or 'init' first." 2
     }
 
-    # Legacy fallback: task.md
-    $taskPath = Get-TaskMdPath $ArchivePath
-    if (-not (Test-Path -LiteralPath $taskPath -PathType Leaf)) {
-        Write-ErrorResult "TASK_NOT_FOUND" "Neither task.json nor task.md found in archive: $ArchivePath" 2
-    }
-
-    $taskContent = Read-TextFile $taskPath
-    $rows = Parse-MarkdownTable -Lines ($taskContent -split "\r?\n") -RequiredHeader "当前责任人"
-    if ($rows.Count -eq 0) {
-        Write-ErrorResult "ROUTE_TABLE_NOT_FOUND" "No route overview table with 当前责任人 was found in task.md" 2
-    }
+    $data = Read-TaskJson -ArchivePath $ArchivePath
+    $tasks = @()
+    if ($null -ne $data -and $null -ne $data.tasks) { $tasks = @($data.tasks) }
 
     return @{
-        taskPath = $taskPath
-        rows     = $rows
+        taskPath = $jsonPath
+        tasks    = $tasks
     }
 }
 
-# Long-task signal counting basis for one route row (planner-takeover).
-# task.json rows carry an explicit lifecycle (Convert-TasksToRows passthrough);
-# legacy task.md rows have none — default to active, with closed rows
-# (当前责任人 = 已完成) mapped to completed so legacy archives keep task.json
-# counting semantics (done rows count toward the whole-delivery total, never active).
-function Get-RowLifecycle {
-    param($Row)
+# Long-task signal counting basis for one task (planner-takeover).
+# task.json carries an explicit lifecycle (absent field on older files = active);
+# terminal state comes from the lifecycle field itself — the read path no longer
+# maps legacy marker strings (已完成) to lifecycle.
+function Get-TaskLifecycle {
+    param($Task)
 
-    if ($Row.PSObject.Properties["lifecycle"] -and -not [string]::IsNullOrWhiteSpace([string]$Row.lifecycle)) {
-        return ([string]$Row.lifecycle).Trim()
+    if ($null -ne $Task.lifecycle -and -not [string]::IsNullOrWhiteSpace([string]$Task.lifecycle)) {
+        return ([string]$Task.lifecycle).Trim()
     }
-    if ((Clean-Cell $Row."当前责任人") -ieq "已完成") { return "completed" }
     return "active"
 }
 
 # Task-block projection shared by the long-task signal list and the per-role
 # candidate blocks (single mapping source — docs/code-quality.md §1: extract, never duplicate).
 function Build-TaskBlock {
-    param($Row)
+    param($Task)
 
     return [pscustomobject]@{
-        id          = if ($null -ne $Row.TaskId) { [int]$Row.TaskId } else { 0 }
-        title       = Clean-Cell $Row."需求"
-        requirement = Clean-Cell $Row."需求文件"
-        design      = Clean-Cell $Row."关联设计文档"
-        remark      = Clean-Cell $Row."备注"
-        phase       = $(if ($null -ne $Row.phase -and ([string]$Row.phase) -ne "") { [string]$Row.phase } else { $null })
+        id          = if ($null -ne $Task.id) { [int]$Task.id } else { 0 }
+        title       = Clean-Cell ([string]$Task.title)
+        requirement = Clean-Cell ([string]$Task.requirement)
+        design      = Clean-Cell (Convert-DesignDocsToString @($Task.designDocs))
+        remark      = if ($Task.remark) { Clean-Cell ([string]$Task.remark) } else { "-" }
+        phase       = $(if ($null -ne $Task.phase -and ([string]$Task.phase) -ne "") { [string]$Task.phase } else { $null })
     }
+}
+
+# Long-task signal (planner-takeover, optional suggestion): one original requirement
+# split into >=2 non-deprecated sub-requirements with at least one still active.
+# Whole-delivery semantics: completed sub-requirements keep counting (the delivery
+# bar is the final goal), so the signal never fades as parts finish; fully closed
+# archives have no takeover target and do not trigger. Computed fresh per call — no state.
+function Get-LongTaskSignal {
+    param($Tasks)
+
+    $threshold = 2
+    $total = 0
+    $active = 0
+    $activeTaskBlocks = New-Object System.Collections.Generic.List[object]
+    foreach ($task in @($Tasks)) {
+        $lifecycle = Get-TaskLifecycle $task
+        if ($lifecycle -eq "deprecated") { continue }
+        $total++
+        if ($lifecycle -eq "active") {
+            $active++
+            $activeTaskBlocks.Add((Build-TaskBlock $task))
+        }
+    }
+    $triggered = ($total -ge $threshold -and $active -ge 1)
+    $reason = if ($triggered) {
+        "该原始需求被拆分为 $total 条子需求（$active 条进行中），属长程任务，建议交规划者（PLANNER）接管整批交付。确认后执行 ``start-role.cmd -Role PLANNER -TaskJson <task.json>``；不采纳则按 4 步硬流程逐条交接，行为不变。"
+    }
+    else {
+        "非 deprecated 子需求 $total 条 / 进行中 $active 条，未达长程任务阈值 $threshold 或无进行中子需求，不触发规划者接管建议"
+    }
+    return @{ triggered = $triggered; total = $total; active = $active; threshold = $threshold; reason = $reason; activeBlocks = $activeTaskBlocks }
+}
+
+# Bucket routable tasks into per-role candidate blocks — one bucket per owner MEMBER of
+# the currentOwners array (same membership semantics as show/claim): a multi-owner task
+# lands in EVERY member's role block (each block is keyed by a single role, so
+# Get-RoleCommand/Get-RoleSkillPath stay valid). lifecycle=completed is the closed marker
+# (lifecycle field decides — no legacy "已完成" string mapping on the read side) and only
+# feeds completedCount; a genuinely unknown member still warns — one warning per bad member.
+function Build-RoleTaskMap {
+    param($Tasks, [array]$ValidRoles)
+
+    $roleMap = @{}
+    $warnings = @()
+    $completedCount = 0
+    foreach ($task in @($Tasks)) {
+        $title = Clean-Cell ([string]$task.title)
+
+        if ((Get-TaskLifecycle $task) -eq "completed") {
+            $completedCount++
+            continue
+        }
+
+        $owners = @()
+        foreach ($o in @($task.currentOwners)) {
+            $name = Clean-Cell ([string]$o)
+            if ($name -and $name -ne "-") { $owners += $name }
+        }
+        if ($owners.Count -eq 0) {
+            $warnings += "Route row has no 当前责任人: $title"
+            continue
+        }
+
+        foreach ($owner in $owners) {
+            if ($ValidRoles -notcontains $owner) {
+                $warnings += "Unknown 当前责任人 '$owner' in row '$title' (expected one of: $($ValidRoles -join ', '), 已完成)"
+                continue
+            }
+
+            if (-not $roleMap.ContainsKey($owner)) {
+                $roleMap[$owner] = New-Object System.Collections.Generic.List[object]
+            }
+
+            $roleMap[$owner].Add((Build-TaskBlock $task))
+        }
+    }
+    return @{ roleMap = $roleMap; warnings = $warnings; completedCount = $completedCount }
 }
 
 function Build-NextFlow {
     param([string]$ArchivePath)
 
-    $route = Get-RouteRows -ArchivePath $ArchivePath
-    $roleMap = @{}
-    $warnings = @()
-
+    $route = Get-RouteTasks -ArchivePath $ArchivePath
     $validRoles = @("PM", "CTO", "UX", "DEV", "QA")
-    $completedCount = 0
 
-    # Long-task signal (planner-takeover, optional suggestion): one original requirement
-    # split into >=2 non-deprecated sub-requirements with at least one still active.
-    # Whole-delivery semantics: completed sub-requirements keep counting (the delivery
-    # bar is the final goal), so the signal never fades as parts finish; fully closed
-    # archives have no takeover target and do not trigger. Computed fresh per call — no state.
-    $longTaskThreshold = 2
-    $longTaskTotal = 0
-    $longTaskActive = 0
-    $activeTaskBlocks = New-Object System.Collections.Generic.List[object]
-    foreach ($row in $route.rows) {
-        $lifecycle = Get-RowLifecycle $row
-        if ($lifecycle -eq "deprecated") { continue }
-        $longTaskTotal++
-        if ($lifecycle -eq "active") {
-            $longTaskActive++
-            $activeTaskBlocks.Add((Build-TaskBlock $row))
-        }
-    }
-    $longTaskTriggered = ($longTaskTotal -ge $longTaskThreshold -and $longTaskActive -ge 1)
-    $longTaskReason = if ($longTaskTriggered) {
-        "该原始需求被拆分为 $longTaskTotal 条子需求（$longTaskActive 条进行中），属长程任务，建议交规划者（PLANNER）接管整批交付。确认后执行 ``start-role.cmd -Role PLANNER -TaskJson <task.json>``；不采纳则按 4 步硬流程逐条交接，行为不变。"
-    }
-    else {
-        "非 deprecated 子需求 $longTaskTotal 条 / 进行中 $longTaskActive 条，未达长程任务阈值 $longTaskThreshold 或无进行中子需求，不触发规划者接管建议"
-    }
-
-    foreach ($row in $route.rows) {
-        $owner = Clean-Cell $row."当前责任人"
-        if ([string]::IsNullOrWhiteSpace($owner) -or $owner -eq "-") {
-            $warnings += "Route row has no 当前责任人: $(Clean-Cell $row."需求")"
-            continue
-        }
-
-        if ($owner -ieq "已完成") {
-            $completedCount++
-            continue
-        }
-
-        if ($validRoles -notcontains $owner) {
-            $warnings += "Unknown 当前责任人 '$owner' in row '$(Clean-Cell $row."需求")' (expected one of: $($validRoles -join ', '), 已完成)"
-            continue
-        }
-
-        if (-not $roleMap.ContainsKey($owner)) {
-            $roleMap[$owner] = New-Object System.Collections.Generic.List[object]
-        }
-
-        $roleMap[$owner].Add((Build-TaskBlock $row))
-    }
+    $signal = Get-LongTaskSignal -Tasks $route.tasks
+    $grouped = Build-RoleTaskMap -Tasks $route.tasks -ValidRoles $validRoles
 
     $roles = @()
-    foreach ($owner in $roleMap.Keys) {
+    foreach ($owner in $grouped.roleMap.Keys) {
         $roles += [pscustomobject]@{
             role = $owner
             command = (Get-RoleCommand $owner)
             skill = (Get-RoleSkillPath $owner)
-            taskCount = $roleMap[$owner].Count
-            tasks = @($roleMap[$owner].ToArray())
+            taskCount = $grouped.roleMap[$owner].Count
+            tasks = @($grouped.roleMap[$owner].ToArray())
         }
     }
 
     $roles = @($roles | Sort-Object role)
 
-    if ($longTaskTriggered) {
+    if ($signal.triggered) {
         # Dedicated PLANNER candidate block — deliberately NOT built via
         # Get-RoleCommand/Get-RoleSkillPath: those generic maps serve per-task
         # handoff semantics (start/handoff), while planner takeover is a whole-archive
@@ -1090,8 +1109,8 @@ function Build-NextFlow {
             role = "PLANNER"
             command = "start-role.cmd -Role PLANNER -TaskJson <task.json>"
             skill = "rdd-engine/references/planner-guide.md"
-            taskCount = $longTaskActive
-            tasks = @($activeTaskBlocks.ToArray())
+            taskCount = $signal.active
+            tasks = @($signal.activeBlocks.ToArray())
             note = "整批接管建议（可选，用户确认后才接管）：PLANNER 以归档为整体接管交付，promulgate 仍按 currentOwners 建阶段节点；TaskJson 指针即本输出 taskTracker 字段。不采纳则按 4 步硬流程逐条交接，行为不变。若本会话是桥接 run 的 worker（入口消息带 goal-tree-run 标记），本块不适用——完成即回调规划者，勿启动 PLANNER。"
         }
         $roles = @($plannerBlock) + @($roles)
@@ -1105,15 +1124,15 @@ function Build-NextFlow {
             taskTracker = (Get-RelativePath $route.taskPath)
             generatedAt = (Get-Date).ToString("s")
             roles = $roles
-            completedCount = $completedCount
+            completedCount = $grouped.completedCount
             longTask = @{
-                triggered = $longTaskTriggered
-                totalTaskCount = $longTaskTotal
-                activeTaskCount = $longTaskActive
-                threshold = $longTaskThreshold
-                reason = $longTaskReason
+                triggered = $signal.triggered
+                totalTaskCount = $signal.total
+                activeTaskCount = $signal.active
+                threshold = $signal.threshold
+                reason = $signal.reason
             }
-            warnings = $warnings
+            warnings = $grouped.warnings
             usage = "Choose a role, then /new to open a new session and run /rdd-<role> (auto-loads skill + handoff). Preview packet here: rdd-engine/scripts/rdd-flow.cmd -Command start -Role <ROLE> -Archive `"$((Get-RelativePath $ArchivePath))`""
         }
     }
@@ -1480,6 +1499,27 @@ function Invoke-Show {
 #   -Force               -> overwrite this role's timestamp (preempt; no history kept)
 # Task info reuses the Resolve-TaskEntry pipeline, so claiming yields the start context
 # (requirement summary, workMode, involvedFiles) in the same payload.
+# Read-judge-write the claim merge for one role (pure Data mutation, no I/O): a same-role
+# entry without -AllowPreempt yields a conflict and keeps every entry untouched; otherwise
+# this role's entry is (re)stamped onto the task object (same reference the caller persists).
+function Set-TaskClaimEntry {
+    param($Task, [array]$Entries, [string]$RoleKey, [string]$ClaimedAt, [bool]$AllowPreempt)
+
+    $existingTime = Get-WorkerTimestamp -Entries $Entries -RoleKey $RoleKey
+    if ($null -ne $existingTime -and -not $AllowPreempt) {
+        return @{ claimed = $false; conflict = @{ role = $RoleKey; claimedAt = $existingTime }; entries = $Entries }
+    }
+    $kept = @()
+    foreach ($e in $Entries) {
+        $isTarget = $false
+        foreach ($k in @($e.Keys)) { if ($k -eq $RoleKey) { $isTarget = $true } }
+        if (-not $isTarget) { $kept += $e }
+    }
+    $kept += @{ "$RoleKey" = $ClaimedAt }
+    $Task.currentWorker = $kept
+    return @{ claimed = $true; conflict = $null; entries = $kept }
+}
+
 function Invoke-Claim {
     param([string]$ArchivePath)
 
@@ -1487,11 +1527,7 @@ function Invoke-Claim {
     if ($null -eq $data) { Write-ErrorResult "TASK_JSON_NOT_FOUND" "task.json not found. Use 'init' first." 1 }
     if ($TaskId -lt 1)   { Write-ErrorResult "MISSING_TASK_ID" "-TaskId is required" 1 }
 
-    $task = $null
-    $taskIndex = -1
-    for ($i = 0; $i -lt $data.tasks.Count; $i++) {
-        if ([int]$data.tasks[$i].id -eq $TaskId) { $task = $data.tasks[$i]; $taskIndex = $i; break }
-    }
+    $task = Find-TaskById -Tasks $data.tasks -Id $TaskId
     if ($null -eq $task) { Write-ErrorResult "TASK_NOT_FOUND" "TaskId $TaskId not found" 1 }
 
     $lifecycle = if ($task.lifecycle) { $task.lifecycle } else { "active" }
@@ -1506,45 +1542,21 @@ function Invoke-Claim {
 
     # Doc-side gate + task info via the shared assembly pipeline. Deprecated docs or docs
     # with a pending rejection are not startable -> TASK_NOT_CLAIMABLE.
-    $route = Get-RouteRows -ArchivePath $ArchivePath
-    $row = $null
-    foreach ($r in $route.rows) {
-        if ($null -ne $r.TaskId -and [int]$r.TaskId -eq $TaskId) { $row = $r; break }
-    }
-    if ($null -eq $row) { Write-ErrorResult "TASK_NOT_FOUND" "TaskId $TaskId not found in route rows" 1 }
+    $route = Get-RouteTasks -ArchivePath $ArchivePath
+    $routeTask = Find-TaskById -Tasks $route.tasks -Id $TaskId
+    if ($null -eq $routeTask) { Write-ErrorResult "TASK_NOT_FOUND" "TaskId $TaskId not found in route tasks" 1 }
 
-    $resolved = Resolve-TaskEntry -Row $row -ArchivePath $ArchivePath -TargetRole $Role
+    $resolved = Resolve-TaskEntry -Task $routeTask -ArchivePath $ArchivePath -TargetRole $Role
     if ($resolved.outcome -ne "task") {
         Write-ErrorResult "TASK_NOT_CLAIMABLE" "TaskId $TaskId cannot be claimed: $($resolved.entry)" 1
     }
 
     $entries = @(Convert-CurrentWorkerToArray $task.currentWorker)
-    $claimedAt = (Get-Date).ToString("s")
-    $existingTime = Get-WorkerTimestamp -Entries $entries -RoleKey $Role
-
-    $claimed = $false
-    $conflict = $null
-    $finalEntries = $entries
-
-    if ($null -ne $existingTime -and -not $Force) {
-        $conflict = @{ role = $Role; claimedAt = $existingTime }
-    }
-    else {
-        $kept = @()
-        foreach ($e in $entries) {
-            $isTarget = $false
-            foreach ($k in @($e.Keys)) { if ($k -eq $Role) { $isTarget = $true } }
-            if (-not $isTarget) { $kept += $e }
-        }
-        $kept += @{ "$Role" = $claimedAt }
-        $data.tasks[$taskIndex].currentWorker = $kept
-        Write-TaskJson -ArchivePath $ArchivePath -Data $data
-        $claimed = $true
-        $finalEntries = $kept
-    }
+    $claim = Set-TaskClaimEntry -Task $task -Entries $entries -RoleKey $Role -ClaimedAt ((Get-Date).ToString("s")) -AllowPreempt ([bool]$Force)
+    if ($claim.claimed) { Write-TaskJson -ArchivePath $ArchivePath -Data $data }
 
     # Reflect post-operation claim state on the task entry (mechanical passthrough).
-    $finalWorker = @(Convert-CurrentWorkerToArray $finalEntries)
+    $finalWorker = @(Convert-CurrentWorkerToArray $claim.entries)
     $resolved.entry.currentWorker = $finalWorker
     $resolved.entry.running = ($finalWorker.Count -gt 0)
 
@@ -1554,9 +1566,9 @@ function Invoke-Claim {
             type          = "rdd-task-claim"
             taskId        = $TaskId
             role          = $Role
-            claimed       = $claimed
+            claimed       = $claim.claimed
             forced        = [bool]$Force
-            conflict      = $conflict
+            conflict      = $claim.conflict
             currentWorker = $finalWorker
             running       = ($finalWorker.Count -gt 0)
             task          = $resolved.entry
@@ -1566,36 +1578,57 @@ function Invoke-Claim {
 
 # --- init ---
 
-function Invoke-Init {
-    param([string]$ArchivePath)
+# Shape + per-entry gate for init input (fail loud): the input MUST be a top-level JSON
+# array of task objects and every entry must carry non-empty title/requirement/currentOwners.
+# Validate EVERYTHING up front — the caller writes nothing unless the whole input passes, so
+# malformed input can no longer silently produce empty tasks / empty-owner rows.
+function ConvertFrom-InitTasksJson {
+    param([string]$TasksJson)
 
-    if (Test-TaskJsonExists -ArchivePath $ArchivePath) {
-        Write-ErrorResult "TASK_JSON_EXISTS" "task.json already exists. Use 'add-task' to append, or delete it first." 1
+    # Shape gate: the input MUST be a top-level JSON array of task objects. A wrapper object
+    # ({"tasks": [...]}) or a bare scalar used to slip through as one garbage task — fail loud.
+    if (-not $TasksJson.Trim().StartsWith("[")) {
+        Write-ErrorResult "TASKS_SHAPE_INVALID" "tasks JSON must be a top-level array of task objects (e.g. [{...},{...}]); a wrapper object like {`"tasks`":[...]} is not accepted" 1
     }
-
-    $tasksJson = $null
-    if (-not [string]::IsNullOrWhiteSpace($TasksFile)) {
-        $filePath = $TasksFile
-        if (-not [System.IO.Path]::IsPathRooted($filePath)) { $filePath = Join-Path $repoRoot $filePath }
-        if (-not (Test-Path -LiteralPath $filePath -PathType Leaf)) {
-            Write-ErrorResult "TASKS_FILE_NOT_FOUND" "Tasks file not found: $filePath" 1
-        }
-        $tasksJson = [System.IO.File]::ReadAllText($filePath, [System.Text.Encoding]::UTF8)
-    }
-    else {
-        $tasksJson = $Tasks
-    }
-    if ([string]::IsNullOrWhiteSpace($tasksJson)) {
-        Write-ErrorResult "MISSING_TASKS" "-Tasks (inline JSON) or -TasksFile (file path) is required" 1
-    }
-
     # NOTE: Do NOT wrap ConvertFrom-Json in @() — PS 5.1 merges array elements when piped through @().
-    $inputTasks = ConvertFrom-Json $tasksJson
-    if ($inputTasks -isnot [array]) { $inputTasks = @($inputTasks) }
+    $inputTasks = ConvertFrom-Json $TasksJson
+    if ($null -eq $inputTasks) { $inputTasks = @() }                    # '[]' parses to $null under PS 5.1
+    elseif ($inputTasks -isnot [array]) { $inputTasks = @($inputTasks) } # single-element array unwraps in some hosts
+
+    for ($i = 0; $i -lt $inputTasks.Count; $i++) {
+        $t = $inputTasks[$i]
+        if ($null -eq $t -or $t -is [string] -or $t -is [System.ValueType]) {
+            Write-ErrorResult "TASKS_SHAPE_INVALID" "tasks[$i] must be a task object (got: $(if ($null -eq $t) { 'null' } else { $t.GetType().Name }))" 1
+        }
+        foreach ($field in @("title", "requirement", "currentOwners")) {
+            if ($null -eq $t.PSObject.Properties[$field]) {
+                Write-ErrorResult "TASK_MISSING_FIELD" "tasks[$i] is missing required field '$field'" 1
+            }
+        }
+        if ([string]::IsNullOrWhiteSpace([string]$t.title)) {
+            Write-ErrorResult "TASK_MISSING_FIELD" "tasks[$i] field 'title' must be a non-empty string" 1
+        }
+        if ([string]::IsNullOrWhiteSpace([string]$t.requirement)) {
+            Write-ErrorResult "TASK_MISSING_FIELD" "tasks[$i] field 'requirement' must be a non-empty path" 1
+        }
+        $ownerCount = 0
+        foreach ($o in @($t.currentOwners)) {
+            if ($null -ne $o -and -not [string]::IsNullOrWhiteSpace([string]$o)) { $ownerCount++ }
+        }
+        if ($ownerCount -eq 0) {
+            Write-ErrorResult "TASK_MISSING_FIELD" "tasks[$i] field 'currentOwners' must be a non-empty array" 1
+        }
+    }
+    return $inputTasks
+}
+
+# Normalize validated init input into the persisted task schema (ids assigned in order).
+function ConvertTo-CleanInitTasks {
+    param($InputTasks)
 
     $cleanTasks = @()
     $nextId = 1
-    foreach ($t in $inputTasks) {
+    foreach ($t in @($InputTasks)) {
         $designDocs = @()
         if ($t.designDocs) {
             foreach ($d in $t.designDocs) {
@@ -1621,6 +1654,34 @@ function Invoke-Init {
         }
         $nextId++
     }
+    return $cleanTasks
+}
+
+function Invoke-Init {
+    param([string]$ArchivePath)
+
+    if (Test-TaskJsonExists -ArchivePath $ArchivePath) {
+        Write-ErrorResult "TASK_JSON_EXISTS" "task.json already exists. Use 'add-task' to append, or delete it first." 1
+    }
+
+    $tasksJson = $null
+    if (-not [string]::IsNullOrWhiteSpace($TasksFile)) {
+        $filePath = $TasksFile
+        if (-not [System.IO.Path]::IsPathRooted($filePath)) { $filePath = Join-Path $repoRoot $filePath }
+        if (-not (Test-Path -LiteralPath $filePath -PathType Leaf)) {
+            Write-ErrorResult "TASKS_FILE_NOT_FOUND" "Tasks file not found: $filePath" 1
+        }
+        $tasksJson = [System.IO.File]::ReadAllText($filePath, [System.Text.Encoding]::UTF8)
+    }
+    else {
+        $tasksJson = $Tasks
+    }
+    if ([string]::IsNullOrWhiteSpace($tasksJson)) {
+        Write-ErrorResult "MISSING_TASKS" "-Tasks (inline JSON) or -TasksFile (file path) is required" 1
+    }
+
+    $inputTasks = @(ConvertFrom-InitTasksJson -TasksJson $tasksJson)
+    $cleanTasks = @(ConvertTo-CleanInitTasks -InputTasks $inputTasks)
 
     $archiveName = Split-Path $ArchivePath -Leaf
     $data = @{ version = 1; archive = $archiveName; tasks = $cleanTasks }

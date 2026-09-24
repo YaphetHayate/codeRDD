@@ -59,7 +59,7 @@ $rdd = $null; $t = $null; try { $t = git rev-parse --show-toplevel } catch { }; 
 
 ## 交接包内容
 
-脚本读取目标归档目录的 task.json（无 task.json 时回退解析 task.md），只纳入 `currentOwners` 含目标角色的行。
+脚本读取目标归档目录的 task.json（缺失即 fail-loud；task.md-only 旧归档先 `migrate`），只纳入 `currentOwners` 含目标角色的任务——多责任人任务（如 `["CTO","UX"]`）对每个成员角色均可见。
 
 ### 归档目录结构
 

@@ -38,7 +38,7 @@ worker 探索完成后调用，校验摘要/完整记录配对、计算文件 SH
 
 ### handoff — 阶段交接包
 
-通过 `rdd-flow.ps1` 读取归档目录的 task.json（无 task.json 时回退 task.md），按目标角色筛选最小上下文，生成 handoff packet。下游角色优先读取交接包，不默认继承上游长对话或扫描整个归档。
+通过 `rdd-flow.ps1` 读取归档目录的 task.json（缺失即 fail-loud；task.md-only 旧归档先 `migrate`），按目标角色筛选最小上下文，生成 handoff packet。下游角色优先读取交接包，不默认继承上游长对话或扫描整个归档。
 
 ## CLI 调用方式
 
