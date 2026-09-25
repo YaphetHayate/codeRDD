@@ -102,15 +102,109 @@ function Invoke-EngineCli {
     if ($text) { try { $json = $text | ConvertFrom-Json } catch { $json = $null } }
     return @{ exit = $exitCode; text = $text; json = $json }
 }
+function Get-FixturePlanDeps {
+    # long-task-planning fixture helper (split out of New-FixturePlanFile to
+    # stay inside the 50-line function gate): task dependency map derived from
+    # the requirement 依赖关系 fields (mirrors Get-RequirementDepTaskIds) plus
+    # any -ReviewFile depends_on_override / merge redirects (mirrors
+    # Resolve-ReviewPlan).
+    param([string]$ArchDir, [string]$ReviewFilePath = $null)
+    $taskObj = [System.IO.File]::ReadAllText((Join-Path $ArchDir "task.json"), [System.Text.Encoding]::UTF8) | ConvertFrom-Json
+    $tasks = @($taskObj.tasks)
+    $allIds = @($tasks | ForEach-Object { [int]$_.id })
+    $deps = @{}
+    foreach ($t in $tasks) {
+        $tid = [int]$t.id; $d = @()
+        $reqAbs = Join-Path $ArchDir (([string]$t.requirement) -replace '/', '\')
+        if (Test-Path -LiteralPath $reqAbs -PathType Leaf) {
+            $content = [System.IO.File]::ReadAllText($reqAbs, [System.Text.Encoding]::UTF8)
+            $m = [regex]::Match($content, '(?m)^\s*-\s*\*\*依赖关系\*\*[：:]\s*(.+?)\s*$')
+            if ($m.Success) {
+                foreach ($mm in [regex]::Matches($m.Groups[1].Value, '(?:需求|#)\s*(\d+)')) {
+                    $n = [int]$mm.Groups[1].Value
+                    if (($n -ne $tid) -and ($allIds -contains $n) -and ($d -notcontains $n)) { $d += $n }
+                }
+            }
+        }
+        $deps[$tid] = @($d)
+    }
+    if ($ReviewFilePath -and (Test-Path -LiteralPath $ReviewFilePath -PathType Leaf)) {
+        try {
+            $rv = [System.IO.File]::ReadAllText($ReviewFilePath, [System.Text.Encoding]::UTF8) | ConvertFrom-Json
+            foreach ($v in @($rv.verdicts)) {
+                $tid = [int]$v.task_id
+                if ($null -ne $v.depends_on_override) {
+                    $deps[$tid] = @(@($v.depends_on_override) | ForEach-Object { [int]$_ })
+                }
+                if (([string]$v.verdict) -eq 'tree_adjudicated' -and $null -ne $v.merged_into_task_id) {
+                    $target = [int]$v.merged_into_task_id
+                    foreach ($k in @($deps.Keys)) {
+                        $deps[$k] = @(@($deps[$k]) | ForEach-Object { if (([int]$_) -eq $tid) { $target } else { [int]$_ } })
+                    }
+                }
+            }
+        } catch { }
+    }
+    return @{ ids = $allIds; deps = $deps }
+}
+
+function New-FixturePlanFile {
+    # long-task-planning: derive a valid staged plan for a fixture archive and
+    # overwrite plan.json. Single stage (stage-order check vacuous) and Kahn
+    # topological batches (batch order follows the DAG).
+    param([string]$ArchDir, [string]$ReviewFilePath = $null)
+    $fd = Get-FixturePlanDeps $ArchDir $ReviewFilePath
+    $allIds = @($fd.ids); $deps = $fd.deps
+    $batches = @()
+    $pending = @($allIds | Sort-Object)
+    while ($pending.Count -gt 0) {
+        $layer = @($pending | Where-Object {
+            $t = [int]$_
+            @(@($deps[$t]) | Where-Object { $pending -contains [int]$_ }).Count -eq 0
+        })
+        if ($layer.Count -eq 0) { $layer = @($pending) }
+        $batches += ,@($layer | Sort-Object)
+        $pending = @($pending | Where-Object { $layer -notcontains [int]$_ })
+    }
+    $idsJson = '[' + (($allIds | Sort-Object) -join ', ') + ']'
+    $batchesJson = '[' + (($batches | ForEach-Object { '[' + ($_ -join ', ') + ']' }) -join ', ') + ']'
+    $planJson = @"
+{
+    "planned_at": "2026-09-25T00:00:00Z",
+    "planner": "qa-verify",
+    "stages": [
+        {
+            "id": "S1",
+            "goal": "夹具整批交付",
+            "milestone": "夹具落位",
+            "task_ids": $idsJson,
+            "batches": $batchesJson,
+            "acceptance_point": {
+                "criteria_items": ["smoke: fixture slice runs"],
+                "slice": "runnable single-command slice"
+            }
+        }
+    ],
+    "risks": []
+}
+"@
+    [System.IO.File]::WriteAllText((Join-Path $ArchDir "plan.json"), $planJson, $Utf8NoBom)
+}
+
 function TB   {
     param([string[]]$A)
-    # long-task-planning: promulgate is a hard gate without -PlanFile; every
-    # fixture ships a companion plan.json (New-FixtureArchive) and each call
-    # names its fixture via -TaskJson, so inject -PlanFile here mechanically.
+    # long-task-planning: promulgate is a hard gate without -PlanFile; generate
+    # the companion plan.json from the fixture (honoring any -ReviewFile) and
+    # inject it mechanically for every promulgate call.
     if ($A -contains "promulgate" -and $A -notcontains "-PlanFile") {
         $ti = [array]::IndexOf($A, "-TaskJson")
         if ($ti -ge 0 -and ($ti + 1) -lt $A.Count) {
-            $plan = Join-Path (Split-Path -Parent $A[$ti + 1]) "plan.json"
+            $dir = Split-Path -Parent $A[$ti + 1]
+            $ri = [array]::IndexOf($A, "-ReviewFile")
+            $rvPath = $null
+            if ($ri -ge 0 -and ($ri + 1) -lt $A.Count) { $rvPath = $A[$ri + 1] }
+            try { New-FixturePlanFile $dir $rvPath } catch { }
+            $plan = Join-Path $dir "plan.json"
             if (Test-Path -LiteralPath $plan) { $A = @($A) + @("-PlanFile", $plan) }
         }
     }

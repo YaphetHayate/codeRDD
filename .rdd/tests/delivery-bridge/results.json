@@ -1,10 +1,10 @@
 {
     "verifier":  "delivery-bridge-verify.ps1",
     "suite":  "all",
-    "ranAt":  "2026-09-25T03:54:31Z",
+    "ranAt":  "2026-09-25T12:47:02Z",
     "total":  56,
-    "passed":  46,
-    "failed":  10,
+    "passed":  52,
+    "failed":  4,
     "warned":  0,
     "results":  [
                     {
@@ -232,16 +232,9 @@
                         "title":  "审查门 happy path:pass/override 清空/合并(已 deprecate)/驳回(已 reject)/依赖重定向 + 审计三载体 + 不阻断其余交付",
                         "priority":  "P0",
                         "acceptance":  "RR-AC-1/RR-AC-2",
-                        "status":  "FAIL",
+                        "status":  "PASS",
                         "fails":  [
-                                      "promulgate 失败: {\"error\":{\"code\":\"PLAN_MISSING\",\"message\":\"promulgate requires -PlanFile \\u003cstaged plan\\u003e (long-task-planning: 阶段目标/里程碑/集成验收点/任务依赖排序/可并行批次). Produce the PlanFile first — see planner-guide「长程规划与滚动追踪」.\"},\"success\":false}",
-                                      "颁布任务数 1, 期望 3",
-                                      "颁布任务集异常: ",
-                                      "skipped_review=, 期望 4",
-                                      "skipped_deprecated=, 期望 3",
-                                      "t2 override 未清空依赖",
-                                      "t5 未重定向到 #1: ",
-                                      "EXCEPTION: Exception calling \"ReadAllText\" with \"2\" argument(s): \"Could not find a part of the path \u0027D:\\YaphetHayate\\projects\\codeRDD\\.rdd\\goal-trees\\deliver-2099-12-31-qa-fixture-rv1-qa-bridge-20260925-113943-25944\\state\\tree.json\u0027.\""
+
                                   ]
                     },
                     {
@@ -249,10 +242,9 @@
                         "title":  "延后缝合:override 指向后位任务 → goal-tree deps add 补边 + deps-log 审计 + 新边阻塞推送",
                         "priority":  "P1",
                         "acceptance":  "RR-AC-2",
-                        "status":  "FAIL",
+                        "status":  "PASS",
                         "fails":  [
-                                      "promulgate 失败: {\"error\":{\"code\":\"PLAN_MISSING\",\"message\":\"promulgate requires -PlanFile \\u003cstaged plan\\u003e (long-task-planning: 阶段目标/里程碑/集成验收点/任务依赖排序/可并行批次). Produce the PlanFile first — see planner-guide「长程规划与滚动追踪」.\"},\"success\":false}",
-                                      "EXCEPTION: Exception calling \"ReadAllText\" with \"2\" argument(s): \"Could not find a part of the path \u0027D:\\YaphetHayate\\projects\\codeRDD\\.rdd\\goal-trees\\deliver-2099-12-31-qa-fixture-rv2-qa-bridge-20260925-113943-25944\\state\\tree.json\u0027.\""
+
                                   ]
                     },
                     {
@@ -260,16 +252,9 @@
                         "title":  "错误码三枚(REVIEW_FILE_INVALID/REVIEW_TASK_NOT_FOUND/REVIEW_EXCLUDED_DEP)×7 场景确定性拒绝;错误均发生在建树前,无 run 目录残留",
                         "priority":  "P0",
                         "acceptance":  "RR-AC-1",
-                        "status":  "FAIL",
+                        "status":  "PASS",
                         "fails":  [
-                                      "pass+merged 未拒: {\"error\":{\"code\":\"PLAN_MISSING\",\"message\":\"promulgate requires -PlanFile \\u003cstaged plan\\u003e (long-task-planning: 阶段目标/里程碑/集成验收点/任务依赖排序/可并行批次). Produce the PlanFile first — see planner-guide「长程规划与滚动追踪」.\"},\"success\":false}",
-                                      "未知 task 未拒: {\"error\":{\"code\":\"PLAN_MISSING\",\"message\":\"promulgate requires -PlanFile \\u003cstaged plan\\u003e (long-task-planning: 阶段目标/里程碑/集成验收点/任务依赖排序/可并行批次). Produce the PlanFile first — see planner-guide「长程规划与滚动追踪」.\"},\"success\":false}",
-                                      "悬空依赖未硬拒: {\"error\":{\"code\":\"PLAN_MISSING\",\"message\":\"promulgate requires -PlanFile \\u003cstaged plan\\u003e (long-task-planning: 阶段目标/里程碑/集成验收点/任务依赖排序/可并行批次). Produce the PlanFile first — see planner-guide「长程规划与滚动追踪」.\"},\"success\":false}",
-                                      "硬拒消息未指向依赖方: promulgate requires -PlanFile \u003cstaged plan\u003e (long-task-planning: 阶段目标/里程碑/集成验收点/任务依赖排序/可并行批次). Produce the PlanFile first — see planner-guide「长程规划与滚动追踪」.",
-                                      "重复 verdict 未拒: {\"error\":{\"code\":\"PLAN_MISSING\",\"message\":\"promulgate requires -PlanFile \\u003cstaged plan\\u003e (long-task-planning: 阶段目标/里程碑/集成验收点/任务依赖排序/可并行批次). Produce the PlanFile first — see planner-guide「长程规划与滚动追踪」.\"},\"success\":false}",
-                                      "坏 JSON 未拒: {\"error\":{\"code\":\"PLAN_MISSING\",\"message\":\"promulgate requires -PlanFile \\u003cstaged plan\\u003e (long-task-planning: 阶段目标/里程碑/集成验收点/任务依赖排序/可并行批次). Produce the PlanFile first — see planner-guide「长程规划与滚动追踪」.\"},\"success\":false}",
-                                      "deprecated 上 reject 未拒: {\"error\":{\"code\":\"PLAN_MISSING\",\"message\":\"promulgate requires -PlanFile \\u003cstaged plan\\u003e (long-task-planning: 阶段目标/里程碑/集成验收点/任务依赖排序/可并行批次). Produce the PlanFile first — see planner-guide「长程规划与滚动追踪」.\"},\"success\":false}",
-                                      "合并目标不存活未拒: {\"error\":{\"code\":\"PLAN_MISSING\",\"message\":\"promulgate requires -PlanFile \\u003cstaged plan\\u003e (long-task-planning: 阶段目标/里程碑/集成验收点/任务依赖排序/可并行批次). Produce the PlanFile first — see planner-guide「长程规划与滚动追踪」.\"},\"success\":false}"
+
                                   ]
                     },
                     {
@@ -277,10 +262,9 @@
                         "title":  "部分达成结案:驳回任务 active@PM 豁免 DELIVERY_INCOMPLETE 门禁(豁免严格限定 reject_return 集);annex 如实呈现部分达成与注记",
                         "priority":  "P0",
                         "acceptance":  "RR-AC-3",
-                        "status":  "FAIL",
+                        "status":  "PASS",
                         "fails":  [
-                                      "promulgate 失败: {\"error\":{\"code\":\"PLAN_MISSING\",\"message\":\"promulgate requires -PlanFile \\u003cstaged plan\\u003e (long-task-planning: 阶段目标/里程碑/集成验收点/任务依赖排序/可并行批次). Produce the PlanFile first — see planner-guide「长程规划与滚动追踪」.\"},\"success\":false}",
-                                      "EXCEPTION: Cannot index into a null array."
+
                                   ]
                     },
                     {
@@ -288,11 +272,9 @@
                         "title":  "缺省回归:无 -ReviewFile 时 review=null、bridge 无 review 段、无 review.md、既有依赖推导不变(缺省路径与无审查门行为零变化)",
                         "priority":  "P0",
                         "acceptance":  "REG",
-                        "status":  "FAIL",
+                        "status":  "PASS",
                         "fails":  [
-                                      "promulgate 失败: {\"error\":{\"code\":\"PLAN_MISSING\",\"message\":\"promulgate requires -PlanFile \\u003cstaged plan\\u003e (long-task-planning: 阶段目标/里程碑/集成验收点/任务依赖排序/可并行批次). Produce the PlanFile first — see planner-guide「长程规划与滚动追踪」.\"},\"success\":false}",
-                                      "缺省路径 skipped_review 非空",
-                                      "EXCEPTION: Exception calling \"ReadAllText\" with \"2\" argument(s): \"Could not find a part of the path \u0027D:\\YaphetHayate\\projects\\codeRDD\\.rdd\\goal-trees\\deliver-2099-12-31-qa-fixture-rv5-qa-bridge-20260925-113943-25944\\bridge.json\u0027.\""
+
                                   ]
                     },
                     {
@@ -342,9 +324,7 @@
                         "acceptance":  "TGA-AC-1/TGA-AC-2",
                         "status":  "FAIL",
                         "fails":  [
-                                      "goaltrees.ts 视图映射不再是纯透传(单源假设被破坏)",
-                                      "promulgate(设计文档形态) 失败: {\"error\":{\"code\":\"PLAN_MISSING\",\"message\":\"promulgate requires -PlanFile \\u003cstaged plan\\u003e (long-task-planning: 阶段目标/里程碑/集成验收点/任务依赖排序/可并行批次). Produce the PlanFile first — see planner-guide「长程规划与滚动追踪」.\"},\"success\":false}",
-                                      "EXCEPTION: Cannot index into a null array."
+                                      "goaltrees.ts 视图映射不再是纯透传(单源假设被破坏)"
                                   ]
                     },
                     {
@@ -372,10 +352,9 @@
                         "title":  "长度边界:标题\u003e60 截断加…;node.task 全文永不截断;brief 超 240 硬截断(239+…);设计文档段 node.task 保留/brief 剔除",
                         "priority":  "P1",
                         "acceptance":  "TGA-AC-1",
-                        "status":  "FAIL",
+                        "status":  "PASS",
                         "fails":  [
-                                      "promulgate 失败: {\"error\":{\"code\":\"PLAN_MISSING\",\"message\":\"promulgate requires -PlanFile \\u003cstaged plan\\u003e (long-task-planning: 阶段目标/里程碑/集成验收点/任务依赖排序/可并行批次). Produce the PlanFile first — see planner-guide「长程规划与滚动追踪」.\"},\"success\":false}",
-                                      "EXCEPTION: Cannot index into a null array."
+
                                   ]
                     },
                     {
@@ -396,7 +375,7 @@
                         "status":  "FAIL",
                         "fails":  [
                                       "rename 调用数 0,期望 2(n2/n4 各一次,planner 本体不经 start-role 改名)",
-                                      "标题形态异常: n2=0/n4=0,期望各 1([qa-fixture-rs38-qa-bridge-20260925-113943-25944] T1·DEV·n2 / [qa-fixture-rs38-qa-bridge-20260925-113943-25944] T3·CTO·n4)",
+                                      "标题形态异常: n2=0/n4=0,期望各 1([qa-fixture-rs38-qa-bridge-20260925-203123-17544] T1·DEV·n2 / [qa-fixture-rs38-qa-bridge-20260925-203123-17544] T3·CTO·n4)",
                                       "rename sessionId 应各归不同会话: n2= n4=(期望互异且来自 seq 回包,不耦合推送顺序)"
                                   ]
                     },
@@ -407,7 +386,7 @@
                         "acceptance":  "PSR-AC-3",
                         "status":  "FAIL",
                         "fails":  [
-                                      "planner 行 title=qa-fixture-rs39-qa-bridge-20260925-113943-25944,期望 [PLANNER] qa-fixture-rs39-qa-bridge-20260925-113943-25944"
+                                      "planner 行 title=qa-fixture-rs39-qa-bridge-20260925-203123-17544,期望 [PLANNER] qa-fixture-rs39-qa-bridge-20260925-203123-17544"
                                   ]
                     },
                     {
@@ -457,7 +436,7 @@
                         "acceptance":  "PSR-AC-5",
                         "status":  "FAIL",
                         "fails":  [
-                                      "带标记 DryRun 应预览 rename(RPC 3)+prompt(RPC 4): [DRYRUN] 模式:    dsh backend (http://127.0.0.1:64994)\r\n[DRYRUN] 项目根:  D:/YaphetHayate/projects/codeRDD\r\n[DRYRUN] preset:  rdd-qa（经 agentPreset.list 预检存在性）\r\n[DRYRUN] RPC 1:   POST http://127.0.0.1:64994/api/workspace.create\r\n[DRYRUN] payload: path=D:/YaphetHayate/projects/codeRDD（resolve-or-create，realpath 规范化）\r\n[DRYRUN] RPC 2:   POST http://127.0.0.1:64994/api/session.create\r\n[DRYRUN] payload: workspaceId=\u003cRPC 1 返回\u003e agentPreset=rdd-qa（入账 workspace，侧栏进项目文件夹）\r\n[DRYRUN] RPC 3:   POST http://127.0.0.1:64994/api/session.setBadges\r\n[DRYRUN] payload: sessionId=\u003cRPC 2 返回\u003e badges=[{\"kind\":\"rdd:task\",\"label\":\"T1\"},{\"kind\":\"rdd:node\",\"label\":\"n2\"}]（rdd:* 结构芯片：值链/▶ 直交标记；角色胶囊由 preset 派生，不经此 RPC）\r\n[DRYRUN] RPC 4:   POST http://127.0.0.1:64994/api/session.rename\r\n[DRYRUN] payload: sessionId=\u003cRPC 2 返回\u003e title=[gt-probe] T1·QA·n2（user 源钉住标题；失败降级警告不阻断）\r\n[DRYRUN] RPC 5:   POST http://127.0.0.1:64994/api/session.prompt\r\n[DRYRUN] payload: sessionId=\u003cRPC 2 返回\u003e mode=queue text=请处理 .rdd/tmp/delivery-bridge-verify/qa-bridge-20260925-113943-25944/2099-12-31-qa-fixture-rs44-qa-bridge-20260925-113943-25944/ 下的需求。 goal-tree-run=deliver-2099-12-31-gt-probe node=n2"
+                                      "带标记 DryRun 应预览 rename(RPC 3)+prompt(RPC 4): [DRYRUN] 模式:    dsh backend (http://127.0.0.1:54753)\r\n[DRYRUN] 项目根:  D:/YaphetHayate/projects/codeRDD\r\n[DRYRUN] preset:  rdd-qa（经 agentPreset.list 预检存在性）\r\n[DRYRUN] RPC 1:   POST http://127.0.0.1:54753/api/workspace.create\r\n[DRYRUN] payload: path=D:/YaphetHayate/projects/codeRDD（resolve-or-create，realpath 规范化）\r\n[DRYRUN] RPC 2:   POST http://127.0.0.1:54753/api/session.create\r\n[DRYRUN] payload: workspaceId=\u003cRPC 1 返回\u003e agentPreset=rdd-qa（入账 workspace，侧栏进项目文件夹）\r\n[DRYRUN] RPC 3:   POST http://127.0.0.1:54753/api/session.setBadges\r\n[DRYRUN] payload: sessionId=\u003cRPC 2 返回\u003e badges=[{\"kind\":\"rdd:task\",\"label\":\"T1\"},{\"kind\":\"rdd:node\",\"label\":\"n2\"}]（rdd:* 结构芯片：值链/▶ 直交标记；角色胶囊由 preset 派生，不经此 RPC）\r\n[DRYRUN] RPC 4:   POST http://127.0.0.1:54753/api/session.rename\r\n[DRYRUN] payload: sessionId=\u003cRPC 2 返回\u003e title=[gt-probe] T1·QA·n2（user 源钉住标题；失败降级警告不阻断）\r\n[DRYRUN] RPC 5:   POST http://127.0.0.1:54753/api/session.prompt\r\n[DRYRUN] payload: sessionId=\u003cRPC 2 返回\u003e mode=queue text=请处理 .rdd/tmp/delivery-bridge-verify/qa-bridge-20260925-203123-17544/2099-12-31-qa-fixture-rs44-qa-bridge-20260925-203123-17544/ 下的需求。 goal-tree-run=deliver-2099-12-31-gt-probe node=n2"
                                   ]
                     },
                     {

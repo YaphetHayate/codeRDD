@@ -19,6 +19,9 @@
 #       对账 + status 读面 + replan 风险滚动修正（risks_changed / revision 事件）不误伤已过验收
 #   L12 (QA 补充) AC-3 集成验收点透出: R1 判据锚 criteria_ref + 可运行切片 slice + 判据子集
 #       透传至 stage acceptance claim；判据锚必填/必缺双向边界
+#   L13 (F6 回归) 失效回收: 失效波 prune 旧验收点节点（pruned_reason 审计留痕）+ re-graft
+#       复用 goal-root 子位——多轮失效波不累积子位，[整体验收] graft 不再 WIDTH_EXCEEDED，
+#       末阶段复用 R1 终局链节点同守「≤1 活跃子位」不变量，run 可收口
 # Runs the production interpreters (Windows PowerShell 5.1) against a throwaway git repo.
 # Exit code 0 = all green.
 
@@ -78,6 +81,11 @@ function Read-PlanLog { param([string]$RunId)
         }
     }
     return $entries
+}
+function Get-RootActiveChildren { param([string]$RunId, [string]$RootId)
+    # active goal-root children (pruned excluded — goal-tree graft counts the
+    # same way toward node_width): the F6 slot-accumulation probe.
+    @(Read-TreeNodes $RunId | Where-Object { [string]$_.parent -eq $RootId -and [string]$_.status -ne 'pruned' })
 }
 
 # overview blocks (acceptance criteria carrier fixtures)
@@ -450,6 +458,88 @@ try {
     $r = Invoke-Bridge @('-Command', 'promulgate', '-TaskJson', ($arch12c + '/task.json'), '-PlanFile', $pf12c, '-NoPush')
     Assert-True ($r.json.success -eq $false -and $r.json.error.code -eq 'PLAN_FILE_INVALID' -and $r.json.error.message -match 'must be omitted') 'L12 无整体验收判据时带 criteria_ref -> PLAN_FILE_INVALID' ($r.raw)
     Assert-True (-not (Test-Path (Join-Path $Work '.rdd/goal-trees/deliver-lp-l12b')) -and -not (Test-Path (Join-Path $Work '.rdd/goal-trees/deliver-lp-l12c'))) 'L12 判据锚不匹配零 run 残留'
+
+    # ================= L13 (F6 回归) : 失效波重 graft 不累积 goal-root 子位 =================
+    # 失效回收语义：失效波 prune 旧验收点节点（审计留痕）→ re-graft 复用子位。宽度预算
+    # heads+2+(K-1)=5 无需计入失效波上界：多轮回退后 [整体验收] graft 仍能落位、run 可收口。
+    $arch13 = New-Archive 'lp-l13' '[{"title":"L13-1","requirement":"requirements/t1.md","currentOwners":["QA"],"designDocs":[]},{"title":"L13-2","requirement":"requirements/t2.md","currentOwners":["QA"],"designDocs":[]}]' $Script:CriteriaBlock
+    $pf13 = Write-TestPlan (Join-Path $Work 'lp-l13-plan.json') @(@{ id = 'S1'; tasks = @(1); slice = 'v1 slice' }, @{ id = 'S2'; tasks = @(2) }) @{} 'smoke: core flow works' 'requirements/overview.md#整体验收判据'
+    $r = Invoke-Bridge @('-Command', 'promulgate', '-TaskJson', ($arch13 + '/task.json'), '-PlanFile', $pf13, '-NoPush')
+    Assert-True ($r.json.success -eq $true -and [int]$r.json.data.budget.node_width -eq 5) 'L13 promulgate ok（criteria 模式，宽度预算 5）' ($r.raw)
+    $b = Read-BridgeJson 'deliver-lp-l13'
+    $root13 = [string]$b.goal_root
+    $u1 = [string]$b.tasks.'1'.stages.QA; $u2 = [string]$b.tasks.'2'.stages.QA
+    Do-Deliver 'deliver-lp-l13' $u1 'QA' "$arch13/requirements/t1.md"
+    $null = Do-Settle 'deliver-lp-l13' $u1
+    $b = Read-BridgeJson 'deliver-lp-l13'
+    $wa1 = [string]$b.plan.stages[0].acceptance_point.node
+    Assert-True ($wa1 -ne '') 'L13 [集成验收·S1] v1 grafted'
+    $baseChildren = @(Get-RootActiveChildren 'deliver-lp-l13' $root13).Count
+    Assert-True ($baseChildren -eq 3) 'L13 基线活跃子位 = 3（2 链头 + 1 验收点）' ("count=$baseChildren")
+    Do-Deliver 'deliver-lp-l13' $wa1 'QA' "$arch13/requirements/t1.md"
+    $null = Do-Settle 'deliver-lp-l13' $wa1
+    $b = Read-BridgeJson 'deliver-lp-l13'
+    Assert-True ([string]$b.plan.stages[0].acceptance_point.status -eq 'passed') 'L13 S1 acceptance passed before wave'
+    # ---- wave #1: replan over changed stage content -> invalidate + reclaim ----
+    $pf13b = Write-TestPlan (Join-Path $Work 'lp-l13-rev2.json') @(@{ id = 'S1'; tasks = @(1); slice = 'v2 slice（实证切片改版）' }, @{ id = 'S2'; tasks = @(2) }) @{} 'smoke: core flow works' 'requirements/overview.md#整体验收判据'
+    $r = Invoke-Bridge @('-Command', 'replan', '-RunId', 'deliver-lp-l13', '-PlanFile', $pf13b, '-Reason', 'L13 验收切片改版（失效波 #1）')
+    Assert-True ($r.json.success -eq $true) 'L13 replan wave #1 ok' ($r.raw)
+    $nWa1 = Find-TreeNode 'deliver-lp-l13' $wa1
+    Assert-True ($null -ne $nWa1 -and [string]$nWa1.status -eq 'pruned' -and [string]$nWa1.pruned_reason -match 'acceptance invalidated: S1') 'L13 失效波回收旧验收点节点（pruned_reason 审计留痕）' ("status=$($nWa1.status) reason=$($nWa1.pruned_reason)")
+    $log13 = Read-PlanLog 'deliver-lp-l13'
+    Assert-True (@($log13 | Where-Object { [string]$_.kind -eq 'deviation' -and [string]$_.event -eq 'acceptance_invalidated' -and [string]$_.node -eq $wa1 }).Count -ge 1) 'L13 plan-log acceptance_invalidated 指向被回收节点'
+    $null = Invoke-Bridge @('-Command', 'status', '-RunId', 'deliver-lp-l13')
+    $b = Read-BridgeJson 'deliver-lp-l13'
+    $wa2 = [string]$b.plan.stages[0].acceptance_point.node
+    Assert-True ($wa2 -ne '' -and $wa2 -ne $wa1) 'L13 re-graft 产生新验收点节点' ("v1=$wa1 v2=$wa2")
+    $after1 = @(Get-RootActiveChildren 'deliver-lp-l13' $root13).Count
+    Assert-True ($after1 -eq $baseChildren) 'L13 失效波重 graft 不累积子位（活跃 goal-root 子位数不变）' ("base=$baseChildren after=$after1")
+    Do-Deliver 'deliver-lp-l13' $wa2 'QA' "$arch13/requirements/t1.md"
+    $null = Do-Settle 'deliver-lp-l13' $wa2
+    $b = Read-BridgeJson 'deliver-lp-l13'
+    Assert-True ([string]$b.plan.stages[0].acceptance_point.status -eq 'passed') 'L13 wave #1 后再验收 passed（闸门重开）'
+    # ---- wave #2: 多轮回退无上界——第二轮失效波同样只占 1 子位 ----
+    $pf13c = Write-TestPlan (Join-Path $Work 'lp-l13-rev3.json') @(@{ id = 'S1'; tasks = @(1); slice = 'v3 slice（切片再改版）' }, @{ id = 'S2'; tasks = @(2) }) @{} 'smoke: core flow works' 'requirements/overview.md#整体验收判据'
+    $r = Invoke-Bridge @('-Command', 'replan', '-RunId', 'deliver-lp-l13', '-PlanFile', $pf13c, '-Reason', 'L13 验收切片再改版（失效波 #2）')
+    Assert-True ($r.json.success -eq $true) 'L13 replan wave #2 ok' ($r.raw)
+    $nWa2 = Find-TreeNode 'deliver-lp-l13' $wa2
+    Assert-True ($null -ne $nWa2 -and [string]$nWa2.status -eq 'pruned') 'L13 第二轮失效波同样回收旧节点' ("status=$($nWa2.status)")
+    $null = Invoke-Bridge @('-Command', 'status', '-RunId', 'deliver-lp-l13')
+    $b = Read-BridgeJson 'deliver-lp-l13'
+    $wa3 = [string]$b.plan.stages[0].acceptance_point.node
+    $after2 = @(Get-RootActiveChildren 'deliver-lp-l13' $root13).Count
+    Assert-True ($wa3 -ne '' -and $wa3 -ne $wa2 -and $after2 -eq $baseChildren) 'L13 多轮回退后仍不累积子位（第三节点复用子位）' ("v2=$wa2 v3=$wa3 base=$baseChildren after=$after2")
+    Do-Deliver 'deliver-lp-l13' $wa3 'QA' "$arch13/requirements/t1.md"
+    $null = Do-Settle 'deliver-lp-l13' $wa3
+    # ---- R1 终局链：修复前 [整体验收] graft 恒 WIDTH_EXCEEDED 的断点 ----
+    Do-Deliver 'deliver-lp-l13' $u2 'QA' "$arch13/requirements/t2.md"
+    $null = Do-Settle 'deliver-lp-l13' $u2
+    $b = Read-BridgeJson 'deliver-lp-l13'
+    $i13 = [string]$b.acceptance.integrate_node
+    Assert-True ($i13 -ne '') 'L13 [集成/联调] grafted after all tasks terminal'
+    Write-AcceptanceReport $arch13 '通过'
+    Do-Deliver 'deliver-lp-l13' $i13 'DEV' "$arch13/tests/integration-acceptance.md"
+    $null = Do-Settle 'deliver-lp-l13' $i13
+    $b = Read-BridgeJson 'deliver-lp-l13'
+    $a13 = [string]$b.acceptance.accept_node
+    Assert-True ($a13 -ne '') 'L13 [整体验收] graft 落位（F6 断点：修复前恒 WIDTH_EXCEEDED）' ("accept=$a13")
+    Do-Deliver 'deliver-lp-l13' $a13 'QA' "$arch13/tests/integration-acceptance.md"
+    $null = Do-Settle 'deliver-lp-l13' $a13
+    $b = Read-BridgeJson 'deliver-lp-l13'
+    Assert-True ([string]$b.plan.stages[1].acceptance_point.status -eq 'passed' -and [string]$b.plan.stages[1].acceptance_point.node -eq $a13) 'L13 末阶段验收点绑定 R1 终局链节点（复用）' ("node=$($b.plan.stages[1].acceptance_point.node)")
+    # ---- 末阶段复用 R1 终局链节点：失效波同样不累积、不误伤共享节点 ----
+    $pf13d = Write-TestPlan (Join-Path $Work 'lp-l13-rev4.json') @(@{ id = 'S1'; tasks = @(1); slice = 'v3 slice（切片再改版）' }, @{ id = 'S2'; tasks = @(2); slice = 'demo 全场景走查清单（末阶段切片改版）' }) @{} 'smoke: core flow works' 'requirements/overview.md#整体验收判据'
+    $r = Invoke-Bridge @('-Command', 'replan', '-RunId', 'deliver-lp-l13', '-PlanFile', $pf13d, '-Reason', 'L13 末阶段验收切片修订（失效波 #3，波及终局链绑定）')
+    Assert-True ($r.json.success -eq $true) 'L13 replan wave #3 ok（末阶段验收点失效）' ($r.raw)
+    $nA13 = Find-TreeNode 'deliver-lp-l13' $a13
+    Assert-True ($null -ne $nA13 -and [string]$nA13.status -ne 'pruned' -and [string]$nA13.pruned_reason -eq '') 'L13 末阶段失效波不 prune R1 终局链节点（复用而非回收）' ("status=$($nA13.status) reason=$($nA13.pruned_reason)")
+    $null = Invoke-Bridge @('-Command', 'status', '-RunId', 'deliver-lp-l13')
+    $b = Read-BridgeJson 'deliver-lp-l13'
+    $after3 = @(Get-RootActiveChildren 'deliver-lp-l13' $root13).Count
+    Assert-True ([string]$b.plan.stages[1].acceptance_point.status -eq 'passed' -and [string]$b.plan.stages[1].acceptance_point.node -eq $a13) 'L13 末阶段失效波后再绑定复用同一 R1 节点（不占新子位）' ("node=$($b.plan.stages[1].acceptance_point.node) status=$($b.plan.stages[1].acceptance_point.status)")
+    Assert-True ($after3 -eq $baseChildren + 2) 'L13 末阶段失效波后子位仍不累积（5 活跃 = 预算）' ("base=$baseChildren after=$after3")
+    $r = Invoke-Bridge @('-Command', 'conclude', '-RunId', 'deliver-lp-l13', '-Summary', 'L13 失效回收后 run 可收口')
+    Assert-True ($r.json.success -eq $true -and $r.json.data.outcome -eq 'achieved') 'L13 conclude achieved（失效波后 run 可收口）' ($r.raw)
 }
 finally {
     Pop-Location

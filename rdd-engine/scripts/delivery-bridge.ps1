@@ -2592,24 +2592,61 @@ function Get-StageAcceptanceNodeInfo {
     return $null
 }
 
+function Remove-InvalidatedAcceptanceNode {
+    # 失效回收 (F6): an invalidation wave unbinds an acceptance point — its old
+    # [集成验收·S<k>] node must give the goal-root child slot back (goal-tree
+    # counts only ACTIVE children toward node_width), otherwise every re-graft
+    # stacks one more slot and the [整体验收] graft turns WIDTH_EXCEEDED forever.
+    # The R1 terminal-chain nodes ([集成/联调]/[整体验收]) are REUSED by the final
+    # stage acceptance point (末阶段复用 R1 终局链的节点) and are never reclaimed
+    # here — reuse keeps that stage at ≤1 active slot without touching the chain.
+    # Audit: pruned_reason stays on the node ("acceptance invalidated: <stage>").
+    # Missing / already-pruned = slot already free (idempotent); any other prune
+    # failure is a hard, rerun-safe error (nothing is unbound before reclaim).
+    param($Bridge, [string]$NodeId, [string]$StageId)
+    if ([string]::IsNullOrWhiteSpace($NodeId)) { return }
+    $a = Get-AcceptanceSection $Bridge
+    if ($null -ne $a) {
+        if ($NodeId -eq [string]$a['integrate_node'] -or $NodeId -eq [string]$a['accept_node']) { return }
+    }
+    $rp = Invoke-GoalTree @("-Command", "prune", "-RunId", ([string]$Bridge.run_id), "-NodeId", $NodeId, "-Reason", "acceptance invalidated: $StageId")
+    if ($rp.exit -eq 0 -and $null -ne $rp.json -and $rp.json.success) { return }
+    $code = ""
+    if ($null -ne $rp.json -and $null -ne $rp.json.error) { $code = [string]$rp.json.error.code }
+    if ($code -eq "ALREADY_PRUNED" -or $code -eq "NODE_NOT_FOUND") { return }
+    Write-ErrorResult "INVALIDATION_PRUNE_FAILED" "invalidation wave could not reclaim stale acceptance node $NodeId (stage $StageId): $($rp.text)" 1
+}
+
 function Reset-PlanStageAcceptance {
     # invalidation wave (防闸门虚开): the touched task's stage and every later
     # stage roll their acceptance point back to planned (node unbound; a later
     # re-verification re-grafts a fresh node). Records acceptance_invalidated.
+    # The unbound node is reclaimed BEFORE the rollback (失效回收, F6): prune
+    # frees its goal-root child slot so the re-graft REUSES the slot instead of
+    # stacking one more (「每非末段验收点 ≤1 活跃 goal-root 子位」不变量).
     param([string]$RunDir, $Bridge, [int]$TaskId, [string]$Trigger, [string]$ReasonText)
     $p = Get-PlanSection $Bridge
     if ($null -eq $p) { return $false }
     $st = Get-PlanStageOfTask $p $TaskId
     if ($null -eq $st) { return $false }
     $reached = $false; $hit = $false
+    $wave = @()
     foreach ($other in @($p['stages'])) {
         if (([string]$other['id']) -eq ([string]$st['id'])) { $reached = $true }
         if (-not $reached) { continue }
         $ap = $other['acceptance_point']
         if (([string]$ap['status']) -eq 'planned') { continue }
+        $wave += ,$other
+    }
+    foreach ($other in @($wave)) {
+        Remove-InvalidatedAcceptanceNode $Bridge ([string]$other['acceptance_point']['node']) ([string]$other['id'])
+    }
+    foreach ($other in @($wave)) {
+        $ap = $other['acceptance_point']
+        $oldNode = [string]$ap['node']
         $ap['status'] = 'planned'; $ap['node'] = $null
         $hit = $true
-        $null = Add-PlanEvent $RunDir 'deviation' 'acceptance_invalidated' $null $TaskId ([string]$other['id']) @{ trigger = $Trigger; reason = $ReasonText }
+        $null = Add-PlanEvent $RunDir 'deviation' 'acceptance_invalidated' $oldNode $TaskId ([string]$other['id']) @{ trigger = $Trigger; reason = $ReasonText }
     }
     if ($hit) { Write-BridgeFile $RunDir $Bridge | Out-Null }
     return $hit
@@ -2772,7 +2809,11 @@ function Merge-PlanRevision {
             $st['acceptance_point']['node'] = $old['acceptance_point']['node']
         }
         elseif (-not $contentSame -and ([string]$old['acceptance_point']['status']) -ne 'planned') {
-            $null = Add-PlanEvent $RunDir 'deviation' 'acceptance_invalidated' $null $null $sid @{ trigger = 'replan'; reason = "stage content changed after acceptance" }
+            # 失效回收 (F6): the invalidated stage's old acceptance node is
+            # reclaimed before the new plan section lands — its goal-root child
+            # slot goes back to the budget and the re-graft reuses it.
+            Remove-InvalidatedAcceptanceNode $Bridge ([string]$old['acceptance_point']['node']) $sid
+            $null = Add-PlanEvent $RunDir 'deviation' 'acceptance_invalidated' ([string]$old['acceptance_point']['node']) $null $sid @{ trigger = 'replan'; reason = "stage content changed after acceptance" }
         }
     }
     $Bridge['plan'] = $newSec
@@ -3515,6 +3556,55 @@ function Invoke-Promulgate {
 
 # === Command: dispatch ===
 
+# dispatch 三道门守卫（Invoke-Dispatch 函数行数整改的纯拆分：零语义变更，门序、
+# 错误码、返回结构均不动）。门序保持：(b) 阶段闸门 -> (c) 冲突门 -> (a) 任务目标锚定。
+#   (a) 任务目标锚定  Get-DispatchTaskAnchorArgs  (dispatch-task-goal-anchoring)
+#   (b) 阶段闸门      Assert-DispatchStageGate    (Assert-PlanGateOpen 的 dispatch 包装)
+#   (c) 冲突门        Assert-DispatchConflictGate (Test-ConflictHold 的 dispatch 包装)
+
+function Get-DispatchTaskAnchorArgs {
+    # task brief (dispatch-task-goal-anchoring): the tree status view carries
+    # ids only for pending nodes, so the brief source is the per-node leaf
+    # status probe (full node incl. task). Empty brief (legacy-format nodes,
+    # read failures) -> arg omitted -> zero injection. session-list-badges:
+    # workspace-row summary rides -TaskSummary (title channel); zero-injection
+    # contract identical to the brief above. Returns the full start-role arg
+    # array (-TaskBrief/-TaskSummary appended only when non-empty).
+    param([string]$RunIdText, [string]$NodeId, $Bridge, $Mapping)
+    $nodeTaskText = Get-NodeTaskText -RunId $RunIdText -NodeId $NodeId
+    $brief = Get-NodeTaskBrief -NodeTask $nodeTaskText -NodeId $NodeId
+    $summary = Get-NodeTaskSummary -NodeTask $nodeTaskText
+    $startArgs = @("-Role", $Mapping.stage, "-TaskId", "$($Mapping.task_id)", "-TaskJson", (Join-Path $Bridge.archive "task.json"), "-GoalTreeRun", $RunIdText, "-GoalTreeNode", $NodeId)
+    if ($brief) { $startArgs += @("-TaskBrief", $brief) }
+    if ($summary) { $startArgs += @("-TaskSummary", $summary) }
+    return $startArgs
+}
+
+function Assert-DispatchStageGate {
+    # stage gate (long-task-planning, 不设 Force 旁路): manual dispatch obeys
+    # the same gate as auto-push — deterministic NODE_BLOCKED_BY_GATE feedback.
+    param($Bridge, $Mapping)
+    Assert-PlanGateOpen $Bridge ([int]$Mapping.task_id)
+}
+
+function Assert-DispatchConflictGate {
+    # parallel-coordination conflict gate (same discipline as the R3 stage gate
+    # above: manual dispatch must not push a node INTO an unresolved conflict —
+    # that would be the 「默默二选一」 the registry exists to prevent).
+    param([string]$RunIdText, [string]$NodeId, $Bridge, [string]$RunDir, $TreeData)
+    $conflictStatusOf = @{}
+    foreach ($bucket in @('pending', 'claimed', 'reported', 'done', 'pruned')) {
+        foreach ($n in @(Convert-ToSafeArray $TreeData.nodes.$bucket)) {
+            $bId = if ($n -is [string]) { $n } else { [string]$n.id }
+            if ($bId) { $conflictStatusOf[$bId] = $bucket }
+        }
+    }
+    $hold = Test-ConflictHold -NodeId $NodeId -Bridge $Bridge -RunDir $RunDir -StatusOf $conflictStatusOf
+    if ($null -ne $hold) {
+        Write-ErrorResult "NODE_HELD_BY_CONFLICT" "node $NodeId is held by conflict $($hold.conflict) ($($hold.reason)) — resolve first: delivery-bridge.cmd -Command conflict -RunId $RunIdText -Action resolve -ConflictId $($hold.conflict) -Ruling '<结论>' [-Serialize <早者节点>]" 1
+    }
+}
+
 function Invoke-Dispatch {
     $runDir = Get-BridgeRunDir $RunId
     $bridge = Require-Bridge $runDir
@@ -3532,36 +3622,14 @@ function Invoke-Dispatch {
     if ($nodeStatus -in @("done", "pruned", "missing")) {
         Write-ErrorResult "NODE_NOT_DISPATCHABLE" "Node $NodeId is '$nodeStatus'; dispatch targets open work only." 1
     }
-    # stage gate (long-task-planning, 不设 Force 旁路): manual dispatch obeys
-    # the same gate as auto-push — deterministic NODE_BLOCKED_BY_GATE feedback.
-    Assert-PlanGateOpen $bridge ([int]$mapping.task_id)
-    # parallel-coordination conflict gate (same discipline as the R3 stage gate
-    # above: manual dispatch must not push a node INTO an unresolved conflict —
-    # that would be the 「默默二选一」 the registry exists to prevent).
-    $conflictStatusOf = @{}
-    foreach ($bucket in @('pending', 'claimed', 'reported', 'done', 'pruned')) {
-        foreach ($n in @(Convert-ToSafeArray $treeData.nodes.$bucket)) {
-            $bId = if ($n -is [string]) { $n } else { [string]$n.id }
-            if ($bId) { $conflictStatusOf[$bId] = $bucket }
-        }
-    }
-    $hold = Test-ConflictHold -NodeId $NodeId -Bridge $bridge -RunDir $runDir -StatusOf $conflictStatusOf
-    if ($null -ne $hold) {
-        Write-ErrorResult "NODE_HELD_BY_CONFLICT" "node $NodeId is held by conflict $($hold.conflict) ($($hold.reason)) — resolve first: delivery-bridge.cmd -Command conflict -RunId $RunId -Action resolve -ConflictId $($hold.conflict) -Ruling '<结论>' [-Serialize <早者节点>]" 1
-    }
+    # 三道门守卫（guard 函数见本节顶部；门序保持：阶段闸门 -> 冲突门 -> 任务目标锚定）
+    Assert-DispatchStageGate $bridge $mapping
+    Assert-DispatchConflictGate -RunIdText $RunId -NodeId $NodeId -Bridge $bridge -RunDir $runDir -TreeData $treeData
 
-    # task brief (dispatch-task-goal-anchoring): the tree status view above
-    # carries ids only for pending nodes, so the brief source is the per-node
-    # leaf status probe (full node incl. task). Empty brief (legacy-format
-    # nodes, read failures) → arg omitted → zero injection.
-    $nodeTaskText = Get-NodeTaskText -RunId $RunId -NodeId $NodeId
-    $brief = Get-NodeTaskBrief -NodeTask $nodeTaskText -NodeId $NodeId
-    # session-list-badges: workspace-row summary rides -TaskSummary (title
-    # channel); zero-injection contract identical to the brief above.
-    $summary = Get-NodeTaskSummary -NodeTask $nodeTaskText
-    $startArgs = @("-Role", $mapping.stage, "-TaskId", "$($mapping.task_id)", "-TaskJson", (Join-Path $bridge.archive "task.json"), "-GoalTreeRun", $RunId, "-GoalTreeNode", $NodeId)
-    if ($brief) { $startArgs += @("-TaskBrief", $brief) }
-    if ($summary) { $startArgs += @("-TaskSummary", $summary) }
+    # 任务目标锚定（dispatch-task-goal-anchoring）：brief/摘要均自 PERSISTED
+    # node.task 派生，空则不注入（与旧消息逐字节一致）；
+    # 细节见 Get-DispatchTaskAnchorArgs。
+    $startArgs = Get-DispatchTaskAnchorArgs -RunIdText $RunId -NodeId $NodeId -Bridge $bridge -Mapping $mapping
     $r = Invoke-StartRole ($startArgs + $(if ($DryRun) { @("-DryRun") } else { @() }))
     # a real (non-dry-run) dispatch IS a push: record it in the ledger — the
     # manual path is the designated resolution for pointer-class failures, and
