@@ -14,7 +14,8 @@
                      ".rdd/tests/delivery-bridge/delivery-bridge-verify.ps1",
                      "rdd-engine/tests/test-phase-model.ps1",
                      "rdd-engine/tests/test-bridge-acceptance.ps1",
-                     "rdd-engine/tests/test-bridge-conflicts.ps1"
+                     "rdd-engine/tests/test-bridge-conflicts.ps1",
+                     "rdd-engine/tests/test-long-task-planning.ps1"
                  ],
     "lastChange":  "2026-09-24-long-task-integrated-delivery",
     "cases":  [
@@ -1564,7 +1565,7 @@
                   {
                       "id": "TC-B80",
                       "title": "推送门文件冲突预防:变更地图精确路径重叠于并发 DEV 节点 → 自动登记 file 冲突(detected_by=change-map-scan)并 hold 双节点,推送零尝试;手动 dispatch 同门 NODE_HELD_BY_CONFLICT",
-                      "type": "normal",
+                      "type": "boundary",
                       "priority": "P1",
                       "acceptance": "PC-AC-2",
                       "codeRef": "rdd-engine/tests/test-bridge-conflicts.ps1:1",
@@ -1583,7 +1584,7 @@
                   {
                       "id": "TC-B81",
                       "title": "冲突消解串行化:resolve -Serialize <早者> 组合 goal-tree deps add,晚者 depends_on 早者,早者 settle 后晚者自动推送解锁",
-                      "type": "normal",
+                      "type": "positive",
                       "priority": "P1",
                       "acceptance": "PC-AC-2",
                       "codeRef": "rdd-engine/tests/test-bridge-conflicts.ps1:1",
@@ -1653,6 +1654,327 @@
                           "dispatch -DryRun 第三节点断言非 NODE_HELD_BY_CONFLICT"
                       ],
                       "expected": "冲突治理严格限定涉事范围;无冲突任务流转不被裹挟阻塞(需求边界与异常)"
+                  },
+                  {
+                      "id": "TC-B85",
+                      "title": "长程任务建树前计划产物硬门:promulgate 缺 -PlanFile → PLAN_MISSING 且零 run 残留",
+                      "type": "negative",
+                      "priority": "P0",
+                      "acceptance": "LP-AC-1",
+                      "codeRef": "rdd-engine/tests/test-long-task-planning.ps1:183",
+                      "sourceChange": "2026-09-24-long-task-integrated-delivery",
+                      "status": "active",
+                      "crossFeature": [],
+                      "precondition": "lp-l1 夹具:2 任务归档(显式声明无整体验收判据)",
+                      "steps": [
+                          "delivery-bridge promulgate -TaskJson <fixture>/task.json（不带 -PlanFile）",
+                          "断言 error.code = PLAN_MISSING",
+                          "断言 .rdd/goal-trees/deliver-lp-l1 目录不存在"
+                      ],
+                      "expected": "长程任务执行前必须产出分阶段计划;硬门拒绝且不产生任何 run 残留(可检验:计划产物)"
+                  },
+                  {
+                      "id": "TC-B86",
+                      "title": "计划要素 schema 确定性校验:acceptance_point 缺 slice → PLAN_FILE_INVALID 且零残留",
+                      "type": "negative",
+                      "priority": "P0",
+                      "acceptance": "LP-AC-1",
+                      "codeRef": "rdd-engine/tests/test-long-task-planning.ps1:189",
+                      "sourceChange": "2026-09-24-long-task-integrated-delivery",
+                      "status": "active",
+                      "crossFeature": [],
+                      "precondition": "lp-l2 夹具:PlanFile 的 acceptance_point 只有 criteria_items 无 slice",
+                      "steps": [
+                          "promulgate -PlanFile <残缺计划>",
+                          "断言 error.code = PLAN_FILE_INVALID（确定性 schema 错误）",
+                          "断言零 run 残留"
+                      ],
+                      "expected": "要素缺失在建树前确定性报错;不静默补齐、不留半成品 run"
+                  },
+                  {
+                      "id": "TC-B87",
+                      "title": "任务依赖排序硬约束:依赖任务被排到下游阶段之后 → PLAN_ORDER_INVALID",
+                      "type": "boundary",
+                      "priority": "P0",
+                      "acceptance": "LP-AC-1",
+                      "codeRef": "rdd-engine/tests/test-long-task-planning.ps1:196",
+                      "sourceChange": "2026-09-24-long-task-integrated-delivery",
+                      "status": "active",
+                      "crossFeature": ["goal-tree"],
+                      "precondition": "lp-l3 夹具:任务 2 依赖任务 1,计划却把 2 排 S1、1 排 S2",
+                      "steps": [
+                          "promulgate -PlanFile <乱序计划>",
+                          "断言 error.code = PLAN_ORDER_INVALID 且信息指明依赖对",
+                          "断言零 run 残留"
+                      ],
+                      "expected": "计划的依赖排序不得与 goal-tree DAG 相矛盾;DAG 是顺序唯一权威,矛盾即拒"
+                  },
+                  {
+                      "id": "TC-B88",
+                      "title": "可并行批次硬约束:同一批次内存在依赖边 → PLAN_BATCH_INVALID",
+                      "type": "boundary",
+                      "priority": "P0",
+                      "acceptance": "LP-AC-1",
+                      "codeRef": "rdd-engine/tests/test-long-task-planning.ps1:203",
+                      "sourceChange": "2026-09-24-long-task-integrated-delivery",
+                      "status": "active",
+                      "crossFeature": ["parallel-coordination"],
+                      "precondition": "lp-l4 夹具:同阶段内任务 2 依赖任务 1,却同置一个 batches 条目",
+                      "steps": [
+                          "promulgate -PlanFile <批内含依赖边的计划>",
+                          "断言 error.code = PLAN_BATCH_INVALID"
+                      ],
+                      "expected": "可并行批次是 R2 的消费口;批内必须无依赖边,否则并发执行会互相踩踏"
+                  },
+                  {
+                      "id": "TC-B89",
+                      "title": "要素齐全逐槽位边界:milestone 缺失 / goal 空串 / batches 空 / criteria_items 空 均 → PLAN_FILE_INVALID + 零残留",
+                      "type": "negative",
+                      "priority": "P1",
+                      "acceptance": "LP-AC-1",
+                      "codeRef": "rdd-engine/tests/test-long-task-planning.ps1:376",
+                      "sourceChange": "2026-09-24-long-task-integrated-delivery",
+                      "status": "active",
+                      "crossFeature": [],
+                      "precondition": "lp-l10 夹具:单任务归档;四份各缺一个要素槽位的 PlanFile",
+                      "steps": [
+                          "逐份 promulgate,分别断言 PLAN_FILE_INVALID 与对应字段提示",
+                          "四案全部拒后断言 deliver-lp-l10 目录不存在"
+                      ],
+                      "expected": "「要素齐全」=阶段目标/里程碑/集成验收点/任务依赖排序/可并行批次逐项非空;逐槽位独立成案、全部拒绝后零残留"
+                  },
+                  {
+                      "id": "TC-B90",
+                      "title": "计划产物回显与预算公式:width/max_nodes 随阶段数 K 递增(K=1→4/16、K=2→5/17、K=3→7/23)",
+                      "type": "positive",
+                      "priority": "P1",
+                      "acceptance": "LP-AC-1",
+                      "codeRef": "rdd-engine/tests/test-long-task-planning.ps1:210",
+                      "sourceChange": "2026-09-24-long-task-integrated-delivery",
+                      "status": "active",
+                      "crossFeature": ["goal-tree"],
+                      "precondition": "lp-l5a/b/c 夹具:分别 1/2/3 阶段计划",
+                      "steps": [
+                          "分别 promulgate 并断言 budget.node_width 与 budget.max_nodes",
+                          "断言响应 plan 段 revision=1 且阶段数与计划一致"
+                      ],
+                      "expected": "计划产物被机器消费且可检验;建树预算按阶段数补偿,不因分阶段而炸预算"
+                  },
+                  {
+                      "id": "TC-B91",
+                      "title": "跨会话进度/风险记录载体:risks 落 plan 段 + plan-log 事件与计划段跨进程读回对账一致",
+                      "type": "positive",
+                      "priority": "P0",
+                      "acceptance": "LP-AC-2",
+                      "codeRef": "rdd-engine/tests/test-long-task-planning.ps1:398",
+                      "sourceChange": "2026-09-24-long-task-integrated-delivery",
+                      "status": "active",
+                      "crossFeature": [],
+                      "precondition": "lp-l11 夹具:2 阶段计划带 2 条风险(P1 延期/P3 环境);每条 CLI 调用都是独立 powershell 进程",
+                      "steps": [
+                          "promulgate 断言响应与 bridge.json plan 段各带 2 条风险",
+                          "跑完 S1 任务与集成验收点后,从磁盘重读 plan-log.jsonl",
+                          "断言每条事件的 stage 都在计划阶段集合内、acceptance_passed 与 plan 段状态一致",
+                          "status 断言 risks 与 plan-log 指针在读面透出"
+                      ],
+                      "expected": "跨会话后进度与风险记录仍在且与计划对齐(可检验:计划/记录载体一致)"
+                  },
+                  {
+                      "id": "TC-B92",
+                      "title": "滚动修正唯一入口 replan:-Reason 必填,产出 revision 递增 + 结构化 changes[] + plan-log 单条 revision 事件",
+                      "type": "positive",
+                      "priority": "P0",
+                      "acceptance": "LP-AC-2",
+                      "codeRef": "rdd-engine/tests/test-long-task-planning.ps1:318",
+                      "sourceChange": "2026-09-24-long-task-integrated-delivery",
+                      "status": "active",
+                      "crossFeature": [],
+                      "precondition": "lp-l8 夹具:2 阶段计划,修订版改写 S1 阶段目标",
+                      "steps": [
+                          "replan -PlanFile <修订版> -Reason <偏差>",
+                          "断言 revision=2 且 changes[] 含 stage_changed 行",
+                          "断言 plan-log 恰有 1 条 revision/replan 事件且 detail.revision=2",
+                          "断言 bridge.json plan 段 revision 同步到 2"
+                      ],
+                      "expected": "后续安排被滚动修正且留下可检验的修正记录;计划随执行演进而非一次性静态文档"
+                  },
+                  {
+                      "id": "TC-B93",
+                      "title": "replan 守卫:无 -Reason → MISSING_REASON;conclude 后 replan → REPLAN_NOT_ACTIVE",
+                      "type": "negative",
+                      "priority": "P1",
+                      "acceptance": "LP-AC-2",
+                      "codeRef": "rdd-engine/tests/test-long-task-planning.ps1:318",
+                      "sourceChange": "2026-09-24-long-task-integrated-delivery",
+                      "status": "active",
+                      "crossFeature": [],
+                      "precondition": "lp-l8 / lp-l6 夹具",
+                      "steps": [
+                          "replan 不带 -Reason,断言 MISSING_REASON",
+                          "对已 conclude 的 run 再 replan,断言 REPLAN_NOT_ACTIVE"
+                      ],
+                      "expected": "修正必须说明偏差缘由;无活动计划可修时明确拒绝,不产生幽灵 revision"
+                  },
+                  {
+                      "id": "TC-B94",
+                      "title": "风险清单滚动修正:changes[] 记 risks_changed,且不误伤已 passed 的集成验收点",
+                      "type": "boundary",
+                      "priority": "P1",
+                      "acceptance": "LP-AC-2",
+                      "codeRef": "rdd-engine/tests/test-long-task-planning.ps1:398",
+                      "sourceChange": "2026-09-24-long-task-integrated-delivery",
+                      "status": "active",
+                      "crossFeature": [],
+                      "precondition": "lp-l11 夹具:S1 集成验收点已 passed,修订版仅替换风险清单",
+                      "steps": [
+                          "replan 替换 risks",
+                          "断言 changes[] 恰有 1 条 risks_changed",
+                          "断言 S1 acceptance_point 仍为 passed"
+                      ],
+                      "expected": "风险记录可滚动修正;与验收内容无关的修正不触发验收失效,避免无谓重验"
+                  },
+                  {
+                      "id": "TC-B95",
+                      "title": "偏差记账:被拒交付经 reclaim 回收并记 plan-log deviation/reclaim 事件",
+                      "type": "positive",
+                      "priority": "P2",
+                      "acceptance": "LP-AC-2",
+                      "codeRef": "rdd-engine/tests/test-long-task-planning.ps1:335",
+                      "sourceChange": "2026-09-24-long-task-integrated-delivery",
+                      "status": "active",
+                      "crossFeature": [],
+                      "precondition": "lp-l9 夹具:交付回调缺 extras.verification(不合格交付)",
+                      "steps": [
+                          "settle 断言 SETTLE_EVIDENCE_REJECTED",
+                          "reclaim 断言 mode=rejected-delivery",
+                          "断言 plan-log 出现 kind=deviation / event=reclaim"
+                      ],
+                      "expected": "任务失败这类偏差被跨会话记账,供后续安排滚动修正参考"
+                  },
+                  {
+                      "id": "TC-B96",
+                      "title": "防闸门虚开:replan 改动已过验收内容 → acceptance_invalidated + 状态重置 + 阶段闸门重闭",
+                      "type": "boundary",
+                      "priority": "P0",
+                      "acceptance": "LP-AC-2",
+                      "codeRef": "rdd-engine/tests/test-long-task-planning.ps1:335",
+                      "sourceChange": "2026-09-24-long-task-integrated-delivery",
+                      "status": "active",
+                      "crossFeature": [],
+                      "precondition": "lp-l9b 夹具:S1 集成验收点已 passed,修订版改写 S1 的可运行切片",
+                      "steps": [
+                          "replan 提交改写验收内容的修订版",
+                          "断言 acceptance_point 不再是 passed 且旧验收节点解绑/换新",
+                          "断言 plan-log 记 acceptance_invalidated(trigger=replan)",
+                          "断言下游 S2 任务 claim 被 NODE_BLOCKED_BY_GATE 拦下"
+                      ],
+                      "expected": "范围变化触发滚动修正后,已过的验收结论不得继续背书旧内容;闸门不得虚开"
+                  },
+                  {
+                      "id": "TC-B97",
+                      "title": "阶段末集成验收点生命周期:阶段任务全终态 → graft [集成验收·S<k>] → claim 携带 stage_acceptance 上下文 → settle → passed + plan-log acceptance_passed",
+                      "type": "positive",
+                      "priority": "P0",
+                      "acceptance": "LP-AC-3",
+                      "codeRef": "rdd-engine/tests/test-long-task-planning.ps1:227",
+                      "sourceChange": "2026-09-24-long-task-integrated-delivery",
+                      "status": "active",
+                      "crossFeature": ["goal-tree"],
+                      "precondition": "lp-l6 夹具:2 阶段计划,S1 含 1 任务",
+                      "steps": [
+                          "settle S1 任务后断言 acceptance_point.status 由 planned → grafted 且带节点",
+                          "断言该节点是 QA 角色的树级工作节点",
+                          "claim 断言 tree_level=true 且 acceptance.kind=stage_acceptance/stage_id=S1/判据子集非空",
+                          "report + settle 后断言 status=passed 且 plan-log 记 acceptance_passed"
+                      ],
+                      "expected": "每个阶段末尾的集成验收点真实执行,不是纸面占位(可检验:计划产物上的状态迁移)"
+                  },
+                  {
+                      "id": "TC-B98",
+                      "title": "阶段闸门:下游阶段任务在验收点通过前 claim → NODE_BLOCKED_BY_GATE,通过后放行",
+                      "type": "boundary",
+                      "priority": "P0",
+                      "acceptance": "LP-AC-3",
+                      "codeRef": "rdd-engine/tests/test-long-task-planning.ps1:227",
+                      "sourceChange": "2026-09-24-long-task-integrated-delivery",
+                      "status": "active",
+                      "crossFeature": [],
+                      "precondition": "lp-l6 夹具:2 阶段,S2 任务尚未解锁",
+                      "steps": [
+                          "S1 验收点未过时 claim S2 任务,断言 NODE_BLOCKED_BY_GATE 且信息指明 S1",
+                          "S1 验收点 settle 通过后再次 claim,断言成功"
+                      ],
+                      "expected": "阶段验收点是真实闸门;未过验收不得推进下一阶段,通过后自然放行"
+                  },
+                  {
+                      "id": "TC-B99",
+                      "title": "集成验收点判据锚与可运行切片透传:claim 携带 criteria_ref(整体验收判据锚)/criteria_items/slice",
+                      "type": "positive",
+                      "priority": "P0",
+                      "acceptance": "LP-AC-3",
+                      "codeRef": "rdd-engine/tests/test-long-task-planning.ps1:430",
+                      "sourceChange": "2026-09-24-long-task-integrated-delivery",
+                      "status": "active",
+                      "crossFeature": ["goal-tree"],
+                      "precondition": "lp-l12 夹具:带整体验收判据的归档 + criteria_ref 锚定的 2 阶段计划,S1 slice=「demo 单命令整体切片(S1)」",
+                      "steps": [
+                          "promulgate 断言 plan 段阶段 acceptance_point.criteria_ref 等于判据锚",
+                          "claim 集成验收节点,断言 acceptance.criteria_ref / slice / criteria_items 与计划一致"
+                      ],
+                      "expected": "集成验收点的内容判据引用 R1 整体验收判据,并明确要实证的可运行整体切片,验收者拿到即知核什么、跑什么"
+                  },
+                  {
+                      "id": "TC-B100",
+                      "title": "判据锚双向边界:存在整体验收判据时 criteria_ref 必填、无判据时必须缺省,违者 PLAN_FILE_INVALID 且零残留",
+                      "type": "boundary",
+                      "priority": "P1",
+                      "acceptance": "LP-AC-3",
+                      "codeRef": "rdd-engine/tests/test-long-task-planning.ps1:430",
+                      "sourceChange": "2026-09-24-long-task-integrated-delivery",
+                      "status": "active",
+                      "crossFeature": [],
+                      "precondition": "lp-l12b(有判据缺锚)/lp-l12c(无判据带锚)两份夹具",
+                      "steps": [
+                          "分别 promulgate,断言 PLAN_FILE_INVALID 与「required」/「must be omitted」提示",
+                          "断言两个 run 目录均不存在"
+                      ],
+                      "expected": "判据锚单源且不许漂移:有判据必须引用同一锚,无判据不许伪造引用"
+                  },
+                  {
+                      "id": "TC-B101",
+                      "title": "STAGE_ACCEPTANCE_PENDING 独立阶梯:整体验收 §3 通过但阶段验收点未闭 → conclude 拒绝,闭合后 achieved",
+                      "type": "negative",
+                      "priority": "P0",
+                      "acceptance": "LP-AC-3",
+                      "codeRef": "rdd-engine/tests/test-long-task-planning.ps1:277",
+                      "sourceChange": "2026-09-24-long-task-integrated-delivery",
+                      "status": "active",
+                      "crossFeature": ["delivery-bridge"],
+                      "precondition": "lp-l6b 夹具:带整体验收判据的归档,走完 R1 验收链但整体验收节点先交付不 settle",
+                      "steps": [
+                          "conclude 断言 STAGE_ACCEPTANCE_PENDING(与 ACCEPTANCE_* 阶梯区分)",
+                          "settle 整体验收节点后断言末阶段 acceptance_point=passed",
+                          "再 conclude 断言 outcome=achieved"
+                      ],
+                      "expected": "阶段集成验收点与整体验收是两道独立闸门;任一未闭都不得宣布达成,防结论虚高"
+                  },
+                  {
+                      "id": "TC-B102",
+                      "title": "末阶段复用 R1 整体验收链 + annex「计划完成度」区:阶段目标/里程碑/完成度/验收结论可人读收口",
+                      "type": "positive",
+                      "priority": "P1",
+                      "acceptance": "LP-AC-3",
+                      "codeRef": "rdd-engine/tests/test-long-task-planning.ps1:277",
+                      "sourceChange": "2026-09-24-long-task-integrated-delivery",
+                      "status": "active",
+                      "crossFeature": ["goal-tree"],
+                      "precondition": "lp-l6 / lp-l6b 夹具跑至 conclude",
+                      "steps": [
+                          "无整体验收判据的 run:断言末阶段 acceptance_point 自动 passed",
+                          "有判据的 run:断言末阶段绑定 R1 整体验收节点后 passed",
+                          "断言 delivery-annex.md 含「计划完成度」与阶段结论,有判据时另含「整体验收结论」"
+                      ],
+                      "expected": "计划完成度与验收结论落人读载体,计划的演进与收口可核对"
                   }
                ]
 }

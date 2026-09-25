@@ -57,9 +57,10 @@
         ".rdd/tests/delivery-bridge/delivery-bridge-verify.ps1",
         "rdd-engine/tests/test-phase-model.ps1",
         "rdd-engine/tests/test-bridge-acceptance.ps1",
-        "rdd-engine/tests/test-bridge-conflicts.ps1"
+        "rdd-engine/tests/test-bridge-conflicts.ps1",
+        "rdd-engine/tests/test-long-task-planning.ps1"
       ],
-      "activeCount": 84,
+      "activeCount": 102,
       "deprecatedCount": 0,
       "lastUpdated": "2026-09-25",
       "lastChange": "2026-09-24-long-task-integrated-delivery"
