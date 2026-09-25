@@ -12,6 +12,12 @@
 #               anchor) -> requirement chain-head nodes (ref-bound to their
 #               requirement docs) -> stage chains; then AUTO-PUSH every node
 #               with no unsatisfied dependency (no manual dispatch, no gate).
+#               Mandatory -PlanFile (long-task-planning hard gate PLAN_MISSING):
+#               the staged plan (stage goals/milestones + task_ids + parallel
+#               batches + per-stage acceptance point + risks) is validated
+#               against the DAG and injected as bridge.json's plan section
+#               (PLAN_FILE_INVALID / PLAN_ORDER_INVALID / PLAN_BATCH_INVALID
+#               reject contradictions; the DAG stays the dependency authority).
 #               Optional -ReviewFile (requirement review gate, planner-guide
 #               hard constraint 6): merged/rejected tasks graft no node,
 #               depends_on_override wholesale-replaces regex inference, merged
@@ -66,6 +72,13 @@
 #               table routes to humans (prohibition-class / unmatched / worker
 #               judgment) lands as an open entry; dsh watcher delivers it to
 #               the Planner inbox, CLI/Plus see it via status/resume
+#   replan      long-task-planning rolling correction (the ONLY correction
+#               channel): -PlanFile <revised plan> -Reason <deviation> ->
+#               DAG-fit validation -> structured changes[] diff -> plan-log
+#               `revision` event (append-only, no snapshots) -> bridge plan
+#               section replaced (revision+1) -> unlock set recomputed
+#               (auto-push tail). NODE_BLOCKED_BY_GATE is released by moving
+#               the stalled task's stage here — never by a Force bypass
 #
 # Run artifacts (inside the goal-tree run dir, gitignored):
 #   bridge.json           authoritative node<->TaskId mapping (v2: + goal_root anchor
@@ -91,6 +104,15 @@
 #                         auto / escalation / resolution / overturn entries,
 #                         open-escalation view derived by ref_entry join — the
 #                         ledger is never rewritten
+#   plan-log.jsonl        append-only long-task plan event ledger (long-task-
+#                         planning, the cross-session progress/risk/deviation/
+#                         revision carrier): P<n> entries, appended inside the
+#                         run .lock with read-back finish, bad lines quarantined
+#                         to plan-log.jsonl.corrupt (ledger paradigm)
+#                         + bridge.json `plan` section (machine-readable current
+#                         plan state: stages / batches / acceptance_point status;
+#                         plan = the -PlanFile carrier is validated and injected
+#                         at promulgate, rolled forward by replan only)
 #
 # Hard constraint: "不合格交付不得流转" — settle enforces the three evidence checks
 # (verdict=done / citations non-empty and real paths / extras.verification non-empty)
@@ -99,15 +121,24 @@
 
 [CmdletBinding()]
 param(
-    [ValidateSet("promulgate", "dispatch", "claim", "reclaim", "rollback", "settle", "status", "resume", "conclude", "lease", "register-session", "decide", "escalate")]
+    [ValidateSet("promulgate", "dispatch", "claim", "reclaim", "rollback", "settle", "status", "resume", "conclude", "lease", "register-session", "decide", "escalate", "replan", "conflict")]
     [string]$Command = "status",
 
     [string]$RunId,
 
-    # promulgate
+    # promulgate / replan
     [string]$TaskJson,
+    [string]$PlanFile,            # staged plan (long-task-planning): the plan
+                                   # carrier consumed at promulgate (mandatory —
+                                   # PLAN_MISSING hard gate) and replaced by the
+                                   # replan rolling-correction channel (-Reason
+                                   # records the deviation it answers)
     [string]$ReviewFile,          # optional requirement-review verdicts (planner
                                    # session product; planner-guide hard constraint 6)
+    [string]$ConventionsFile,     # 架构/风格约定载体 (parallel-coordination): review
+                                   # 步产出的约定文档;DESIGN 并行链头 ≥2 时必填
+                                   # (CONVENTIONS_MISSING,零残留),DESIGN 链头 node.task
+                                   # 注入「架构约定:<path>」
     [switch]$AutoMode,            # pure-auto-mode opt-in (planner-auto-mode): snapshot
                                    # the risk-grading table into bridge.json auto_mode;
                                    # default off = byte-identical legacy behavior
@@ -166,6 +197,22 @@ param(
 
     # dispatch
     [switch]$DryRun,
+
+    # conflict (parallel-coordination 并行协作冲突治理):动作仅 open|resolve;
+    # 上报/挂起为条目状态属性(经 open -ConflictId 更新 -ConflictStatus)
+    [ValidateSet("open", "resolve")]
+    [string]$Action,              # conflict command action
+    [string]$ConflictId,          # registry id C<n> (resolve / state-attribute update)
+    [ValidateSet("design", "file")]
+    [string]$ConflictKind,        # conflict kind for a new entry (design | file)
+    [string]$Nodes,               # comma-separated node ids (new entry)
+    [string]$Files,               # comma-separated repo-root-relative paths (kind=file)
+    [string]$Ruling,              # 调和一致结论 / 用户裁决 (resolve)
+    [string]$Serialize,           # 串行化早者节点 (resolve: 晚者 depends_on 早者)
+    [ValidateSet("open", "escalated", "suspended")]
+    [string]$ConflictStatus,      # 状态属性 (open→escalated|suspended)
+    [string]$Escalation,          # 呈用户裁决的问题 (escalated 上报记录)
+    [string]$DetectedBy,          # change-map-scan | planner (default planner)
 
     [int]$LeaseStaleMinutes = 30,
     [int]$DeadClaimMinutes = 60
@@ -286,7 +333,10 @@ function Convert-PSObjectToHashtable {
     if ($Value -is [array]) {
         $arr = @()
         foreach ($v in $Value) { $arr += ,(Convert-PSObjectToHashtable $v) }
-        return $arr
+        # comma-wrap: a bare `return @()` unrolls to AutomationNull, which
+        # ConvertTo-Json renders as {} — that corrupted empty dep_task_ids on
+        # every bridge rewrite and later crashed int casts on read.
+        return ,$arr
     }
     return $Value
 }
@@ -376,8 +426,19 @@ function Read-Bridge {
     }
     if (-not $h.Contains('tasks') -or $null -eq $h['tasks']) { $h['tasks'] = @{} }
     if (-not $h.Contains('nodes') -or $null -eq $h['nodes']) { $h['nodes'] = @{} }
-    if (-not $h.Contains('pending_sync') -or $null -eq $h['pending_sync']) { $h['pending_sync'] = @() }
+    if (-not $h.Contains('pending_sync') -or $null -eq $h['pending_sync'] -or $h['pending_sync'] -is [System.Collections.IDictionary]) { $h['pending_sync'] = @() }
     if (-not $h.Contains('pushes') -or $null -eq $h['pushes']) { $h['pushes'] = @{} }
+    # read-side normalization: bridges written before the comma-return fix may
+    # carry empty array slots as {} / null (AutomationNull serialization) —
+    # repair the known array fields so downstream int casts cannot crash.
+    foreach ($tk in @($h['tasks'].Keys)) {
+        $entry = $h['tasks'][$tk]
+        if ($null -eq $entry -or -not ($entry -is [System.Collections.IDictionary])) { continue }
+        foreach ($arrKey in @('dep_task_ids', 'nodes')) {
+            $raw = $entry[$arrKey]
+            if ($null -eq $raw -or $raw -is [System.Collections.IDictionary]) { $entry[$arrKey] = @() }
+        }
+    }
     return $h
 }
 
@@ -1043,29 +1104,48 @@ function Get-PushFailureClass {
     return "session-create"
 }
 
-function Invoke-AutoDispatch {
-    # THE auto-push function (goal-tree-goal-root). Push = the same start-role
-    # delivery chain the manual dispatch command uses. No concurrency cap
-    # (decision 3: idempotent pushes, PM splits are small); per-node try/catch so
-    # one failure never blocks the rest; per-node accounting in bridge.json v2.
-    # Returns @{ trigger; considered; pushed; skipped; failed; bridge } — failures
-    # are data, never exceptions (callers embed them in their own output).
-    param([string]$RunDir, $Bridge, [string]$Trigger)
-    # Run-level isolation gate (bridge.json no_push, set by promulgate -NoPush):
-    # every auto-dispatch trigger funnels through here, so one upfront check
-    # makes an isolated run provably zero-backend for its whole lifetime — the
-    # 0923 incident mechanism was exactly a later trigger (the status touch)
-    # re-deriving never-pushed nodes as candidates and really pushing them
-    # (QA F1). The manual dispatch command stays open: an explicit human action
-    # is the designated isolation override.
-    if (Test-PropPresent $Bridge 'no_push' -and $Bridge['no_push'] -eq $true) {
-        return @{ trigger = "$Trigger (no_push)"; considered = 0; pushed = @(); skipped = @(); failed = @(); bridge = $Bridge; no_push = $true }
+function Get-PushCandidates {
+    # Pushable node descriptors: bridge-mapped delivery nodes + tree-level
+    # acceptance nodes (overall-delivery chain, no TaskId). One unified
+    # candidate list so the push loop sees both shapes through one gate.
+    param($Bridge)
+    $list = @()
+    foreach ($nodeId in @($Bridge.nodes.Keys)) {
+        $mapping = Get-NodeTaskStage $Bridge $nodeId
+        if ($null -eq $mapping) { continue }
+        $list += @{ node = [string]$nodeId; stage = [string]$mapping.stage; task_id = [int]$mapping.task_id; tree_level = $false }
     }
-    $result = @{ trigger = $Trigger; considered = 0; pushed = @(); skipped = @(); failed = @() }
-    $treeData = Get-TreeStatusView $Bridge.run_id
-    # whole-tree status/depends maps: unlock is computed HERE, not via the leaf next
-    # view alone — parked (reclaim) nodes are status=claimed and never appear in
-    # next's pending list, yet they are exactly the recycle-then-repush targets.
+    $a = Get-AcceptanceSection $Bridge
+    if ($null -ne $a -and ([string]$a['status']) -eq 'grafted') {
+        foreach ($spec in @($script:AcceptanceChainSpecs)) {
+            $nid = [string]$a[$spec.node_key]
+            if (-not $nid) { continue }
+            $role = [string]$spec.role
+            if ((Test-PropPresent $a $spec.role_key) -and $a[$spec.role_key]) { $role = [string]$a[$spec.role_key] }
+            $list += @{ node = $nid; stage = $role; task_id = 0; tree_level = $true }
+        }
+    }
+    # stage acceptance nodes (long-task-planning): a grafted [集成验收·S<k>]
+    # rides the same push path as the R1 chain nodes (tree-level, no TaskId).
+    $p = Get-PlanSection $Bridge
+    if ($null -ne $p) {
+        foreach ($st in @($p['stages'])) {
+            $ap = $st['acceptance_point']
+            if (([string]$ap['status']) -eq 'grafted' -and -not [string]::IsNullOrWhiteSpace([string]$ap['node'])) {
+                $list += @{ node = [string]$ap['node']; stage = "QA"; task_id = 0; tree_level = $true }
+            }
+        }
+    }
+    return $list
+}
+
+function Get-PushStatusMap {
+    # whole-tree status/depends maps: unlock is computed HERE, not via the leaf
+    # next view alone — parked (reclaim) nodes are status=claimed and never
+    # appear in next's pending list, yet they are exactly the recycle-then-
+    # repush targets. Returns @{ status; depends }.
+    param([string]$RunIdText)
+    $treeData = Get-TreeStatusView $RunIdText
     $statusOf = @{}
     $dependsOf = @{}
     foreach ($bucket in @("pending", "done", "pruned")) {
@@ -1081,112 +1161,186 @@ function Invoke-AutoDispatch {
         $statusOf[$rid] = "reported"
         if ($n -isnot [string]) { $dependsOf[$rid] = @(Convert-ToSafeArray $n.depends_on) }
     }
-    $nx = Get-LeafNextView $Bridge.run_id
-    if ($null -ne $nx) {
-        foreach ($p in @(Convert-ToSafeArray $nx.pending)) {
-            $pnid = if ($p -is [string]) { $p } else { [string]$p.id }
-            $statusOf[$pnid] = "pending"
-            if ($p -isnot [string]) { $dependsOf[$pnid] = @(Convert-ToSafeArray $p.depends_on) }
-        }
-        foreach ($b in @(Convert-ToSafeArray $nx.blocked)) {
-            $bnid = if ($b -is [string]) { $b } else { [string]$b.id }
-            $statusOf[$bnid] = "pending"
-            if ($b -isnot [string]) { $dependsOf[$bnid] = @(Convert-ToSafeArray $b.depends_on) }
+    return @{ tree_data = $treeData; status = $statusOf; depends = $dependsOf }
+}
+
+function Add-LeafPendingToMap {
+    # leaf next view supplement (its pending/blocked entries carry depends_on
+    # where the status bucket only has bare ids). Mutates the maps in place.
+    param($StatusOf, $DependsOf, $Nx)
+    if ($null -eq $Nx) { return }
+    foreach ($p in @(Convert-ToSafeArray $Nx.pending)) {
+        $pnid = if ($p -is [string]) { $p } else { [string]$p.id }
+        $StatusOf[$pnid] = "pending"
+        if ($p -isnot [string]) { $DependsOf[$pnid] = @(Convert-ToSafeArray $p.depends_on) }
+    }
+    foreach ($b in @(Convert-ToSafeArray $Nx.blocked)) {
+        $bnid = if ($b -is [string]) { $b } else { [string]$b.id }
+        $StatusOf[$bnid] = "pending"
+        if ($b -isnot [string]) { $DependsOf[$bnid] = @(Convert-ToSafeArray $b.depends_on) }
+    }
+}
+
+function Test-PushCandidate {
+    # Per-node push gate (state filter + unlock + push-ledger rules). Returns
+    # $null = push it, or the skip record consumed by the caller's ledger.
+    param([string]$NodeId, $Node, [string]$Status, [bool]$Parked, $StatusOf, $DependsOf, $Bridge, [string]$RunDir = "")
+    if ($Status -in @("done", "pruned", "reported", "missing") -or ($Status -eq "claimed" -and -not $Parked)) {
+        return @{ node = $NodeId; reason = $Status }
+    }
+    # unlock gate: every depends_on target must be terminal (done; pruned also
+    # satisfies — prune discharges the obligation, same as the leaf claim gate).
+    $deps = @()
+    if ($null -ne $Node -and $Node.PSObject.Properties['depends_on'] -and $Node.depends_on) { $deps = @($Node.depends_on) }
+    elseif ($DependsOf.ContainsKey($NodeId)) { $deps = $DependsOf[$NodeId] }
+    $blockedHere = @()
+    foreach ($d in $deps) {
+        $ds = if ($StatusOf.ContainsKey([string]$d)) { $StatusOf[[string]$d] } else { "missing" }
+        if (@('done', 'pruned') -notcontains $ds) { $blockedHere += [string]$d }
+    }
+    if ($blockedHere.Count -gt 0) {
+        return @{ node = $NodeId; reason = "blocked_by_deps"; blocked_by = @($blockedHere) }
+    }
+    # stage gate (long-task-planning, 只增不减): on top of DAG unlock, the
+    # node's task stage waits for EVERY earlier stage's acceptance point —
+    # deterministic feedback is blocked_by_stage_gate (claim/dispatch surface
+    # the same gate as NODE_BLOCKED_BY_GATE).
+    $map = Get-NodeTaskStage $Bridge $NodeId
+    if ($null -ne $map) {
+        $gateBlockers = Get-PlanGateBlockers $Bridge ([int]$map.task_id)
+        if ($gateBlockers.Count -gt 0) {
+            return @{ node = $NodeId; reason = "blocked_by_stage_gate"; blocked_by = @($gateBlockers) }
         }
     }
-    foreach ($nodeId in @($Bridge.nodes.Keys)) {
-        $mapping = Get-NodeTaskStage $Bridge $nodeId
-        if ($null -eq $mapping) { continue }
+    $pushState = Get-NodePushState $Bridge $NodeId
+    $pushedOk = ($null -ne $pushState -and $pushState.Contains('last_ok_at') -and $null -ne $pushState['last_ok_at'])
+    $needsRepush = ($null -ne $pushState -and $pushState.Contains('needs_repush') -and [bool]$pushState['needs_repush'])
+    if ($pushedOk -and -not $needsRepush) {
+        return @{ node = $NodeId; reason = "already_pushed" }
+    }
+    # pointer-class failures (session created, pointer message failed) are MANUAL
+    # re-push only — an auto retry would stack a duplicate session (decision 5).
+    if ($needsRepush) {
+        $attempts = @()
+        if ($pushState.Contains('attempts') -and $null -ne $pushState['attempts']) { $attempts = @(Convert-ToSafeArray $pushState['attempts']) }
+        $lastAttempt = if ($attempts.Count -gt 0) { $attempts[-1] } else { $null }
+        $lastClass = $null
+        if ($null -ne $lastAttempt -and $lastAttempt -is [System.Collections.IDictionary] -and $lastAttempt.Contains('retry_class')) { $lastClass = [string]$lastAttempt['retry_class'] }
+        if ($lastClass -eq 'pointer') {
+            return @{ node = $NodeId; reason = "pointer_manual_repush"; retry_class = $lastClass }
+        }
+    }
+    # parallel-coordination conflict gate (AND-stacked with the R3 stage gate
+    # above, reasons kept apart): unresolved-conflict membership -> held_by_
+    # conflict; fresh change-map file overlap -> auto-registered + held_by_file_
+    # overlap. Old runs (no conflicts section) fall through untouched.
+    if (-not [string]::IsNullOrWhiteSpace($RunDir)) {
+        $hold = Test-ConflictHold -NodeId $NodeId -Bridge $Bridge -RunDir $RunDir -StatusOf $StatusOf
+        if ($null -ne $hold) { return $hold }
+    }
+    return $null
+}
+
+function Invoke-NodePush {
+    # ONE start-role push for a candidate (mapped or tree-level): brief/summary
+    # ride the pointer message, the push ledger + roster get their write-back.
+    # Returns @{ ok; error; retry_class } — failures are data, never exceptions.
+    param($Cand, [string]$RunDir, $Bridge, $Nx)
+    $nodeId = [string]$Cand.node
+    # task brief (dispatch-task-goal-anchoring): goal-first statement derived
+    # from the PERSISTED node.task — in-place from the leaf next view first
+    # (its pending entries carry the full task text), per-node probe as fallback.
+    $taskText = ""
+    if ($null -ne $Nx) {
+        foreach ($p in @(Convert-ToSafeArray $Nx.pending)) {
+            if (([string]$p.id) -eq $nodeId -and $null -ne $p.PSObject.Properties['task']) { $taskText = [string]$p.task }
+        }
+    }
+    if (-not $taskText) { $taskText = Get-NodeTaskText -RunId ([string]$Bridge.run_id) -NodeId $nodeId }
+    $brief = Get-NodeTaskBrief -NodeTask $taskText -NodeId $nodeId
+    $summary = Get-NodeTaskSummary -NodeTask $taskText
+    try {
+        # -GoalTreeRun/-GoalTreeNode stamp the pointer message with the bridge
+        # marker so the pushed worker session knows (first turn) that completion
+        # goes back to the Planner via leaf report, not a 4-step direct handoff.
+        # Tree-level acceptance nodes carry no -TaskId (start-role runs them in
+        # the goal-tree run marker shape).
+        $startArgs = @("-Role", $Cand.stage)
+        if (-not $Cand.tree_level) { $startArgs += @("-TaskId", "$($Cand.task_id)") }
+        $startArgs += @("-TaskJson", (Join-Path $Bridge.archive "task.json"), "-GoalTreeRun", ([string]$Bridge.run_id), "-GoalTreeNode", $nodeId)
+        if ($brief) { $startArgs += @("-TaskBrief", $brief) }
+        if ($summary) { $startArgs += @("-TaskSummary", $summary) }
+        $r = Invoke-StartRole $startArgs
+    }
+    catch {
+        $r = @{ exit = 1; text = "start-role invocation threw: $($_.Exception.Message)" }
+    }
+    $ok = ($r.exit -eq 0)
+    $retryClass = $null
+    $errText = $null
+    if (-not $ok) {
+        $errText = $r.text
+        $retryClass = Get-PushFailureClass $r.text
+    }
+    $newBridge = Set-NodePushRecord $RunDir $Bridge $nodeId $ok $errText $retryClass
+    if ($ok) {
+        # roster write-back (planner-session-roster): advisory, silent skip
+        $taskNum = 0
+        if (-not $Cand.tree_level) { $taskNum = [int]$Cand.task_id }
+        $null = Register-PushedSession -RunDir $RunDir -RunIdText ([string]$Bridge.run_id) -Stage $Cand.stage -TaskIdNum $taskNum -NodeId $nodeId -StartRoleText $r.text
+    }
+    return @{ ok = $ok; error = $errText; retry_class = $retryClass; bridge = $newBridge }
+}
+
+function Invoke-AutoDispatch {
+    # THE auto-push function (goal-tree-goal-root). Push = the same start-role
+    # delivery chain the manual dispatch command uses. No concurrency cap
+    # (decision 3: idempotent pushes, PM splits are small); per-node isolation so
+    # one failure never blocks the rest; per-node accounting in bridge.json v2.
+    # Returns { trigger; considered; pushed; skipped; failed; bridge } — failures
+    # are data, never exceptions (callers embed them in their own output).
+    param([string]$RunDir, $Bridge, [string]$Trigger)
+    # acceptance-chain trigger (overall-delivery): every auto-dispatch trigger
+    # (promulgate/settle/reclaim/rollback/status touch) funnels through here, so
+    # the timing expression ("all sub-requirement nodes settled") self-heals any
+    # crash window on the next touch. Grafting is tree state, not a push — it
+    # runs even under the no_push isolation gate below.
+    $chain = Update-AcceptanceChain $RunDir $Bridge
+    $Bridge = $chain.bridge
+    $grafted = @($chain.grafted)
+    # stage acceptance-point state machine (long-task-planning): same
+    # self-healing trigger placement — grafts [集成验收·S<k>] nodes, binds the
+    # R1 final chain, advances acceptance_point status, writes plan-log events.
+    $planMoves = Update-StageAcceptancePoints $RunDir $Bridge
+    $Bridge = $planMoves.bridge
+    $grafted += @($planMoves.grafted)
+    # Run-level isolation gate (bridge.json no_push, set by promulgate -NoPush):
+    # one upfront check makes an isolated run provably zero-backend for its
+    # whole lifetime (0923 incident, QA F1). The manual dispatch command stays
+    # open: an explicit human action is the designated isolation override.
+    if (Test-PropPresent $Bridge 'no_push' -and $Bridge['no_push'] -eq $true) {
+        return @{ trigger = "$Trigger (no_push)"; considered = 0; pushed = @(); skipped = @(); failed = @(); bridge = $Bridge; no_push = $true; acceptance_grafted = $grafted }
+    }
+    $result = @{ trigger = $Trigger; considered = 0; pushed = @(); skipped = @(); failed = @(); acceptance_grafted = $grafted }
+    $maps = Get-PushStatusMap ([string]$Bridge.run_id)
+    $nx = Get-LeafNextView ([string]$Bridge.run_id)
+    Add-LeafPendingToMap $maps.status $maps.depends $nx
+    foreach ($cand in @(Get-PushCandidates $Bridge)) {
         $result.considered++
-        $node = Get-NodeFromTree $treeData $nodeId
+        $node = Get-NodeFromTree $maps.tree_data ([string]$cand.node)
         $status = if ($node) { [string]$node.status } else { "missing" }
         # parked = recycled by reclaim, waiting for the next claimant: it is a PUSH
         # target (the "recycle then re-push" loop), unlike a live worker claim.
         $parked = ($status -eq "claimed" -and [string]$node.claimed_by -eq "planner-reclaim")
-        if ($status -in @("done", "pruned", "reported", "missing") -or ($status -eq "claimed" -and -not $parked)) {
-            $result.skipped += @{ node = $nodeId; reason = $status }
+        $skip = Test-PushCandidate -NodeId ([string]$cand.node) -Node $node -Status $status -Parked $parked -StatusOf $maps.status -DependsOf $maps.depends -Bridge $Bridge -RunDir $RunDir
+        if ($null -ne $skip) {
+            $result.skipped += $skip
             continue
         }
-        # unlock gate: every depends_on target must be terminal (done; pruned also
-        # satisfies — prune discharges the obligation, same as the leaf claim gate).
-        $deps = @()
-        if ($null -ne $node -and $node.PSObject.Properties['depends_on'] -and $node.depends_on) { $deps = @($node.depends_on) }
-        elseif ($dependsOf.ContainsKey($nodeId)) { $deps = $dependsOf[$nodeId] }
-        $blockedHere = @()
-        foreach ($d in $deps) {
-            $ds = if ($statusOf.ContainsKey([string]$d)) { $statusOf[[string]$d] } else { "missing" }
-            if (@('done', 'pruned') -notcontains $ds) { $blockedHere += [string]$d }
-        }
-        if ($blockedHere.Count -gt 0) {
-            $result.skipped += @{ node = $nodeId; reason = "blocked_by_deps"; blocked_by = @($blockedHere) }
-            continue
-        }
-        $pushState = Get-NodePushState $Bridge $nodeId
-        $pushedOk = ($null -ne $pushState -and $pushState.Contains('last_ok_at') -and $null -ne $pushState['last_ok_at'])
-        $needsRepush = ($null -ne $pushState -and $pushState.Contains('needs_repush') -and [bool]$pushState['needs_repush'])
-        if ($pushedOk -and -not $needsRepush) {
-            $result.skipped += @{ node = $nodeId; reason = "already_pushed" }
-            continue
-        }
-        # pointer-class failures (session created, pointer message failed) are MANUAL
-        # re-push only — an auto retry would stack a duplicate session (decision 5).
-        # (Get-NodePushState normalizes to deep hashtables — single access path.)
-        if ($needsRepush) {
-            $attempts = @()
-            if ($pushState.Contains('attempts') -and $null -ne $pushState['attempts']) { $attempts = @(Convert-ToSafeArray $pushState['attempts']) }
-            $lastAttempt = if ($attempts.Count -gt 0) { $attempts[-1] } else { $null }
-            $lastClass = $null
-            if ($null -ne $lastAttempt -and $lastAttempt -is [System.Collections.IDictionary] -and $lastAttempt.Contains('retry_class')) { $lastClass = [string]$lastAttempt['retry_class'] }
-            if ($lastClass -eq 'pointer') {
-                $result.skipped += @{ node = $nodeId; reason = "pointer_manual_repush"; retry_class = $lastClass }
-                continue
-            }
-        }
-        # task brief (dispatch-task-goal-anchoring): goal-first statement for
-        # the pushed session's pointer message, derived from the PERSISTED
-        # node.task (in-place from the leaf next view first — its pending
-        # entries carry the full task text; the per-node status probe covers
-        # the rest, e.g. parked reclaim nodes). Empty brief (legacy-format
-        # nodes, read failures) → arg omitted → zero injection.
-        $taskText = ""
-        if ($null -ne $nx) {
-            foreach ($p in @(Convert-ToSafeArray $nx.pending)) {
-                if (([string]$p.id) -eq $nodeId -and $null -ne $p.PSObject.Properties['task']) { $taskText = [string]$p.task }
-            }
-        }
-        if (-not $taskText) { $taskText = Get-NodeTaskText -RunId $Bridge.run_id -NodeId $nodeId }
-        $brief = Get-NodeTaskBrief -NodeTask $taskText -NodeId $nodeId
-        # session-list-badges: the workspace-row summary rides start-role's
-        # -TaskSummary (title channel). Same zero-injection contract as the
-        # brief: unparseable/legacy node.task → "" → arg omitted.
-        $summary = Get-NodeTaskSummary -NodeTask $taskText
-        try {
-            # -GoalTreeRun/-GoalTreeNode stamp the pointer message with the bridge
-            # marker so the pushed worker session knows (first turn) that completion
-            # goes back to the Planner via leaf report, not a 4-step direct handoff
-            # (planner-callback-handoff dual-channel check, channel 1).
-            $startArgs = @("-Role", $mapping.stage, "-TaskId", "$($mapping.task_id)", "-TaskJson", (Join-Path $Bridge.archive "task.json"), "-GoalTreeRun", $Bridge.run_id, "-GoalTreeNode", $nodeId)
-            if ($brief) { $startArgs += @("-TaskBrief", $brief) }
-            if ($summary) { $startArgs += @("-TaskSummary", $summary) }
-            $r = Invoke-StartRole $startArgs
-        }
-        catch {
-            $r = @{ exit = 1; text = "start-role invocation threw: $($_.Exception.Message)" }
-        }
-        $ok = ($r.exit -eq 0)
-        $retryClass = $null
-        $errText = $null
-        if (-not $ok) {
-            $errText = $r.text
-            $retryClass = Get-PushFailureClass $r.text
-        }
-        $Bridge = Set-NodePushRecord $RunDir $Bridge $nodeId $ok $errText $retryClass
-        if ($ok) {
-            $result.pushed += $nodeId
-            # roster write-back (planner-session-roster): advisory, silent skip
-            $null = Register-PushedSession -RunDir $RunDir -RunIdText ([string]$Bridge.run_id) -Stage $mapping.stage -TaskIdNum $mapping.task_id -NodeId $nodeId -StartRoleText $r.text
-        }
-        else { $result.failed += @{ node = $nodeId; error = $errText; retry_class = $retryClass } }
+        $push = Invoke-NodePush $cand $RunDir $Bridge $nx
+        $Bridge = $push.bridge
+        if ($push.ok) { $result.pushed += [string]$cand.node }
+        else { $result.failed += @{ node = [string]$cand.node; error = $push.error; retry_class = $push.retry_class } }
     }
     $result.bridge = $Bridge
     return $result
@@ -1640,221 +1794,1387 @@ function Get-DeferredEdgesForNode {
     return $edges
 }
 
+# === Acceptance chain (overall-delivery: integration + whole-requirement acceptance) ===
+#
+# Long-task split deliveries keep the ORIGINAL requirement's end-to-end objective:
+# the archive's requirements/overview.md carries a fixed `## 整体验收判据` section
+# (whole-requirement acceptance criteria: perceivable end-to-end scenario +
+# verifiable form + covered sub-requirements). The criteria reference rides every
+# node task text and the goal root (the dispatch-record check point), and after
+# ALL sub-requirement nodes settle a two-node tree-level acceptance chain grafts
+# under the goal root: [集成/联调] (DEV, real cross-module integration) -> settle
+# -> [整体验收] (QA, per-criterion verification of the real chain) -> settle
+# records the verdict (tests/integration-acceptance.md §3 总结论 must be
+# decidable: 通过 / 不通过). conclude achieved is gated on that verdict.
+# Tree-level nodes (no TaskId) share one branch across claim / settle / push.
+
+$script:AcceptanceCriteriaHeading = "整体验收判据"
+$script:AcceptanceReportRel = "tests/integration-acceptance.md"
+$script:AcceptanceConclusionPattern = '(?m)^\s*总结论[：:]\s*(通过|不通过)\s*$'
+$script:AcceptanceChainSpecs = @(
+    @{ kind = "integrate"; title = "[集成/联调]"; node_key = "integrate_node"; role_key = "integrate_role"; role = "DEV"
+       mission = "使命：全部子任务完成后的真实串联集成/联调——各模块数据/调用互相衔接，端到端跑通原始需求完整场景（不是各模块独立跑通子验收）。交付记录：tests/integration-acceptance.md §1 集成/联调记录（引用回调账本条目，不复制）。" }
+    @{ kind = "accept"; title = "[整体验收]"; node_key = "accept_node"; role_key = "accept_role"; role = "QA"
+       mission = "使命：对照整体验收判据逐条核验真实链路（数据/调用真实衔接），产出「通过/不通过」整体验收结论与失败点。交付记录：tests/integration-acceptance.md（§2 判据逐条核验表、§3 总结论——必须以一行『总结论：通过』或『总结论：不通过』收口）。" }
+)
+
+function Get-AcceptanceSection {
+    # bridge.json acceptance section (deep hashtable after Read-Bridge); $null on
+    # legacy runs — every caller degrades to byte-identical legacy behavior then.
+    param($Bridge)
+    if ($null -eq $Bridge) { return $null }
+    if (-not (Test-PropPresent $Bridge 'acceptance')) { return $null }
+    return $Bridge['acceptance']
+}
+
+function Read-AcceptanceCriteria {
+    # Parse the archive's fixed criteria section (requirements/overview.md
+    # `## 整体验收判据`, the stable reference anchor). Returns
+    # @{ mode = criteria|declared|absent; criteria_ref; declaration; text } —
+    # 'declared' = the explicit "无整体判据（理由：…）" exit (decision 7).
+    param([string]$ArchivePath)
+    $none = @{ mode = "absent"; criteria_ref = $null; declaration = $null; text = "" }
+    $overview = Join-Path $ArchivePath "requirements/overview.md"
+    if (-not (Test-Path -LiteralPath $overview -PathType Leaf)) { return $none }
+    $content = [System.IO.File]::ReadAllText($overview, [System.Text.Encoding]::UTF8)
+    $m = [regex]::Match($content, '(?ms)^##[ \t]*整体验收判据[ \t]*\r?\n(.*?)(?=^##[ \t]|\z)')
+    if (-not $m.Success) { return $none }
+    $body = $m.Groups[1].Value.Trim()
+    if ([string]::IsNullOrWhiteSpace($body)) { return $none }
+    $first = @($body -split "\r?\n" | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })[0]
+    if ($first -match '^\s*无整体判据') {
+        return @{ mode = "declared"; criteria_ref = $null; declaration = $body; text = $body }
+    }
+    return @{ mode = "criteria"; criteria_ref = "requirements/overview.md#$($script:AcceptanceCriteriaHeading)"; declaration = $null; text = $body }
+}
+
+function New-AcceptanceSection {
+    # bridge.json acceptance placeholder written at promulgate (planned -> grafted
+    # -> conclusion). The >=2 sub-requirement gate (archive-rules tiering) hard-
+    # fails ACCEPTANCE_CRITERIA_MISSING BEFORE any run state exists; single-
+    # requirement archives are exempt (their acceptance criteria ARE the whole).
+    param($Criteria, [int]$RequirementCount)
+    $section = @{
+        status = "none"; basis = "single_exempt"; criteria_ref = $null
+        declaration = $null; report = $script:AcceptanceReportRel
+        integrate_node = $null; integrate_role = "DEV"
+        accept_node = $null; accept_role = "QA"
+        conclusion = $null; recorded_at = $null
+    }
+    switch ([string]$Criteria.mode) {
+        "criteria" {
+            $section.status = "planned"; $section.basis = "criteria"
+            $section.criteria_ref = [string]$Criteria.criteria_ref
+        }
+        "declared" {
+            $section.basis = "declared_none"; $section.declaration = [string]$Criteria.declaration
+        }
+        default {
+            if ($RequirementCount -ge 2) {
+                Write-ErrorResult "ACCEPTANCE_CRITERIA_MISSING" "requirements/overview.md is missing the fixed '## 整体验收判据' section (>=2 sub-requirements: the whole-requirement acceptance criteria are mandatory). Fix: add criteria entries (user-perceivable end-to-end scenario + verifiable form + covered sub-requirements) per overview-template.md, or explicitly declare '无整体判据（理由：…）' when no whole scenario exists. Nothing was created." 1
+            }
+        }
+    }
+    return $section
+}
+
+function Get-AcceptanceNodeInfo {
+    # tree-level acceptance node -> @{ kind; role; chain }; $null when the node is not
+    # one of the run's chain nodes. The unified tree-level branch probes this
+    # right after the bridge mapping lookup misses (claim / settle / push).
+    param($Bridge, [string]$NodeId)
+    $a = Get-AcceptanceSection $Bridge
+    if ($null -eq $a) { return $null }
+    foreach ($spec in @($script:AcceptanceChainSpecs)) {
+        if ((Test-PropPresent $a $spec.node_key) -and [string]$a[$spec.node_key] -eq $NodeId) {
+            $role = [string]$spec.role
+            if ((Test-PropPresent $a $spec.role_key) -and $a[$spec.role_key]) { $role = [string]$a[$spec.role_key] }
+            return @{ kind = [string]$spec.kind; role = $role; chain = $true }
+        }
+    }
+    return $null
+}
+
+function Read-TreeFullNode {
+    # full node object from state/tree.json (the status view reduces nodes to
+    # bare {id,status} — type/role live only in the full state).
+    param([string]$RunDir, [string]$NodeId)
+    $treeFilePath = Join-Path (Join-Path $RunDir "state") "tree.json"
+    if (-not (Test-Path -LiteralPath $treeFilePath -PathType Leaf)) { return $null }
+    try {
+        $fullTree = [System.IO.File]::ReadAllText($treeFilePath, [System.Text.Encoding]::UTF8) | ConvertFrom-Json
+        return @($fullTree.nodes | Where-Object { [string]$_.id -eq $NodeId })[0]
+    } catch { return $null }
+}
+
+function Get-TreeLevelInfo {
+    # The unified tree-level branch (design risk map: 验收节点+树内修复节点复用):
+    # acceptance chain nodes first (kind/role + acceptance context), then stage
+    # acceptance nodes (long-task-planning), then any other non-goal tree node
+    # carrying a role (in-tree repair node, graft 下探).
+    # $null = not a tree-level delivery node (structural root / unknown id).
+    param($Bridge, [string]$RunDir, [string]$NodeId)
+    $info = Get-AcceptanceNodeInfo $Bridge $NodeId
+    if ($null -ne $info) { return $info }
+    $sa = Get-StageAcceptanceNodeInfo $Bridge $NodeId
+    if ($null -ne $sa) { return $sa }
+    $node = Read-TreeFullNode $RunDir $NodeId
+    if ($null -eq $node -or [string]$node.type -eq 'goal') { return $null }
+    $r = ""
+    if ($node.role) { $r = [string]$node.role }
+    if (-not $r) { return $null }
+    return @{ kind = "repair"; role = $r.ToUpper(); chain = $false }
+}
+
+function Read-AcceptanceConclusion {
+    # The ACCEPT verdict lives in the archive's tests/integration-acceptance.md
+    # §3 ("总结论：通过/不通过" on its own line). $null = not decidable yet.
+    param([string]$ArchivePath)
+    $p = Join-Path $ArchivePath $script:AcceptanceReportRel
+    if (-not (Test-Path -LiteralPath $p -PathType Leaf)) { return $null }
+    $content = [System.IO.File]::ReadAllText($p, [System.Text.Encoding]::UTF8)
+    $m = [regex]::Match($content, $script:AcceptanceConclusionPattern)
+    if (-not $m.Success) { return $null }
+    return [string]$m.Groups[1].Value
+}
+
+function Test-AllMappedNodesTerminal {
+    # "全部子任务 settle" (the timing expression): every bridge-mapped delivery
+    # node is terminal (done / pruned). Tree-level chain nodes never gate here.
+    param([string]$RunId, $Bridge)
+    $treeData = Get-TreeStatusView $RunId
+    foreach ($nodeId in @($Bridge.nodes.Keys)) {
+        $node = Get-NodeFromTree $treeData ([string]$nodeId)
+        $status = if ($node) { [string]$node.status } else { "missing" }
+        if (@("done", "pruned") -notcontains $status) { return $false }
+    }
+    return $true
+}
+
+function New-AcceptanceChainGraftItem {
+    # graft payload for ONE tree-level chain node (title/task/role/ref); the task
+    # text still flows through New-NodeTaskText (sole producer) with the mission
+    # and criteria-reference segments.
+    param($Spec, [string]$ReqRel, [string]$AcceptanceRef, [string]$RunId)
+    $taskText = New-NodeTaskText -Title ([string]$Spec.title) -Stage ([string]$Spec.role) -ReqRel $ReqRel `
+        -DesignRels @() -RunId $RunId -AcceptanceRef $AcceptanceRef -Mission ([string]$Spec.mission)
+    return @{
+        title = [string]$Spec.title
+        task  = $taskText
+        role  = ([string]$Spec.role).ToLower()
+        ref   = "$(($RunId -replace '^deliver-', ''))/$ReqRel"
+    }
+}
+
+function Update-AcceptanceChain {
+    # Timing-expression state machine (idempotent, rides every auto-dispatch
+    # trigger so a crash window self-heals): planned -> graft [集成/联调] when all
+    # sub-requirement nodes are terminal -> graft [整体验收] once the integrate
+    # node settles -> record the §3 conclusion once the accept node settles.
+    param([string]$RunDir, $Bridge)
+    $a = Get-AcceptanceSection $Bridge
+    $out = @{ bridge = $Bridge; grafted = @(); recorded = $null }
+    if ($null -eq $a) { return $out }
+    $status = [string]$a['status']
+    if (@("planned", "grafted") -notcontains $status) { return $out }
+    if ($status -eq "planned") {
+        if (-not (Test-AllMappedNodesTerminal ([string]$Bridge.run_id) $Bridge)) { return $out }
+        $spec = @($script:AcceptanceChainSpecs | Where-Object { $_.kind -eq "integrate" })[0]
+        $item = New-AcceptanceChainGraftItem $spec "requirements/overview.md" ([string]$a['criteria_ref']) ([string]$Bridge.run_id)
+        $g = Invoke-GraftOne ([string]$Bridge.run_id) ([string]$Bridge.goal_root) $item
+        if (-not $g.ok) { $out.error = "acceptance chain graft failed (retries on next trigger): $($g.text)"; return $out }
+        $a['integrate_node'] = $g.node_id; $a['status'] = "grafted"
+        $Bridge['acceptance'] = $a
+        Write-BridgeFile $RunDir $Bridge | Out-Null
+        $out.bridge = $Bridge
+        $out.grafted += $g.node_id
+        return $out
+    }
+    return Update-AcceptanceChainTail $RunDir $Bridge $a $out
+}
+
+function Update-AcceptanceChainTail {
+    # grafted-state tail: graft [整体验收] after the integrate node settles, then
+    # record the decidable §3 conclusion after the accept node settles.
+    param([string]$RunDir, $Bridge, $A, $Out)
+    $treeData = Get-TreeStatusView ([string]$Bridge.run_id)
+    $integrate = Get-NodeFromTree $treeData ([string]$A['integrate_node'])
+    $integrateDone = ($null -ne $integrate -and [string]$integrate.status -eq "done")
+    if ($integrateDone -and -not ([string]$A['accept_node'])) {
+        $spec = @($script:AcceptanceChainSpecs | Where-Object { $_.kind -eq "accept" })[0]
+        $item = New-AcceptanceChainGraftItem $spec "requirements/overview.md" ([string]$A['criteria_ref']) ([string]$Bridge.run_id)
+        $g = Invoke-GraftOne ([string]$Bridge.run_id) ([string]$Bridge.goal_root) $item
+        if (-not $g.ok) { $Out.error = "acceptance chain graft failed (retries on next trigger): $($g.text)"; return $Out }
+        $A['accept_node'] = $g.node_id
+        $Bridge['acceptance'] = $A
+        Write-BridgeFile $RunDir $Bridge | Out-Null
+        $Out.bridge = $Bridge
+        $Out.grafted += $g.node_id
+        return $Out
+    }
+    if (([string]$A['accept_node']) -and -not ([string]$A['conclusion'])) {
+        $accept = Get-NodeFromTree $treeData ([string]$A['accept_node'])
+        if ($null -ne $accept -and [string]$accept.status -eq "done") {
+            $verdict = Read-AcceptanceConclusion ([string]$Bridge.archive)
+            if ($null -ne $verdict) {
+                $A['conclusion'] = $verdict; $A['recorded_at'] = Get-UtcNowIso
+                $Bridge['acceptance'] = $A
+                Write-BridgeFile $RunDir $Bridge | Out-Null
+                $Out.bridge = $Bridge
+                $Out.recorded = $verdict
+            }
+        }
+    }
+    return $Out
+}
+
+function Get-AcceptanceGateVerdict {
+    # conclude hard gate (overall-delivery): the ACCEPT conclusion must be
+    # decidable AND 通过 before any goal-anchor work. A settled accept node whose
+    # §3 was written later is re-read here (fix the report, re-run conclude —
+    # the chain never needs a re-settle). Returns @{ ok; code; message }.
+    param($Bridge, [string]$ArchivePath)
+    $a = Get-AcceptanceSection $Bridge
+    if ($null -eq $a -or ([string]$a['status']) -eq "none") { return @{ ok = $true } }
+    $conclusion = $null
+    if ((Test-PropPresent $a 'conclusion') -and $a['conclusion']) { $conclusion = [string]$a['conclusion'] }
+    if ($null -eq $conclusion) { $conclusion = Read-AcceptanceConclusion $ArchivePath }
+    if ($null -eq $conclusion) {
+        return @{ ok = $false; code = "ACCEPTANCE_PENDING"; message = "The whole-requirement acceptance conclusion is not decidable yet (acceptance status='$([string]$a['status'])'). Make sure every sub-requirement settled and both tree-level nodes ([集成/联调] -> [整体验收]) settled, then write one line '总结论：通过' or '总结论：不通过' into $($script:AcceptanceReportRel) §3 and re-run conclude." }
+    }
+    if ($conclusion -ne "通过") {
+        return @{ ok = $false; code = "ACCEPTANCE_NOT_PASSED"; message = "Whole-requirement acceptance verdict is '$conclusion' — conclude achieved is refused. Failure points live in $($script:AcceptanceReportRel) §2 (the coverage mapping locates the responsible task chains); repair those task chains and re-run (the complete rework loop is out of this requirement's scope — overall-delivery boundary) before concluding." }
+    }
+    return @{ ok = $true; conclusion = $conclusion }
+}
+
+function Add-AcceptanceAnnexLines {
+    # the annex's「整体验收结论」区 (planner-guide): criteria ref + chain node ids
+    # + report pointer + verdict, rendered honestly incl. 不通过 failure pointers.
+    param($Bridge, [string]$Conclusion)
+    $lines = @()
+    $lines += "## 整体验收结论"
+    $lines += ""
+    $a = Get-AcceptanceSection $Bridge
+    if ($null -eq $a) {
+        $lines += "- 整体验收判据: （无 acceptance 段——引入前的旧 run）"
+    }
+    elseif (([string]$a['status']) -eq "none") {
+        $basisNote = [string]$a['basis']
+        if ([string]$a['declaration']) { $basisNote += "：" + (([string]$a['declaration']) -replace '\|', '/') }
+        $lines += "- 整体验收判据: 无（$basisNote）"
+    }
+    else {
+        $lines += "- 判据: $([string]$a['criteria_ref'])"
+        $lines += "- 验收链: [集成/联调] $([string]$a['integrate_node'])（$([string]$a['integrate_role'])）→ [整体验收] $([string]$a['accept_node'])（$([string]$a['accept_role'])）"
+        $lines += "- 交付记录: $($script:AcceptanceReportRel)（§1 集成/联调记录 · §2 判据逐条核验表 · §3 总结论）"
+        $verdictText = "不可判（§3 缺『总结论：通过/不通过』）"
+        $verdictSuffix = ""
+        if ($Conclusion) {
+            $verdictText = $Conclusion
+            if ($Conclusion -eq "不通过") { $verdictSuffix = "（失败点见交付记录 §2 覆盖映射）" }
+        }
+        $lines += "- 总结论: $verdictText$verdictSuffix"
+    }
+    $lines += ""
+    return $lines
+}
+
+# === Long-task plan (long-task-planning: staged plan + rolling tracking) ===
+#
+# Three carriers, one authority split (planner-guide「长程规划与滚动追踪」):
+#   PlanFile        promulgate/replan -PlanFile intake: staged plan — stages
+#                   (goal/milestone/task_ids) + per-stage parallel batches +
+#                   per-stage acceptance point (criteria subset + runnable
+#                   slice) + initial risks. Validated at intake, never edited
+#                   in place afterwards (corrections arrive as revised files).
+#   bridge.json plan section  machine-readable CURRENT state (acceptance_point
+#                   status/node + revision counter) — what status/resume render
+#                   and what the stage gate consults.
+#   plan-log.jsonl  append-only event ledger (P<n>: progress / deviation /
+#                   revision) — the sole cross-session progress/risk record;
+#                   a new planner session anchors on the run dir and gets the
+#                   whole history without conversation memory (decisions.jsonl
+#                   paradigm: run .lock append + read-back finish; bad lines
+#                   quarantined to plan-log.jsonl.corrupt).
+# Authority: task dependency ORDER lives in the goal-tree DAG (requirement
+# deps + ReviewFile overrides). The plan only annotates topological batches —
+# contradictions are rejected (PLAN_ORDER_INVALID / PLAN_BATCH_INVALID), never
+# silently reconciled into a second dependency table.
+# Stage gate (只增不减): a delivery node pushes/claims only after EVERY earlier
+# stage's acceptance point passed; blocked = deterministic NODE_BLOCKED_BY_GATE.
+# Stage acceptance point: stage task_ids all terminal (by TASK lifecycle;
+# non-delivered ids — deprecated / in-tree merged / rejected-back — are exempt)
+# -> graft tree-level [集成验收·S<k>] (role=QA under the goal root, k<K) /
+# bind the R1 accept node (k=K) / auto-pass (k=K without a whole-requirement
+# chain) -> node settled -> passed. Rollback/reclaim/reset of a covered task
+# rolls the acceptance wave back to planned (防闸门虚开) and re-verification
+# re-grafts a fresh node.
+
+$script:PlanStageAcceptanceFmt = "[集成验收·{0}]"
+$script:PlanLogFileName = "plan-log.jsonl"
+$script:PlanTerminalLifecycles = @("completed", "deprecated")
+
+function Get-PlanLogPath { param([string]$RunDir); Join-Path $RunDir $script:PlanLogFileName }
+function Get-PlanLogCorruptPath { param([string]$RunDir); (Get-PlanLogPath $RunDir) + ".corrupt" }
+
+function Get-PlanSection {
+    # bridge.json `plan` section or $null (legacy runs: no plan view, no gate).
+    param($Bridge)
+    if ($null -eq $Bridge) { return $null }
+    if (-not (Test-PropPresent $Bridge 'plan')) { return $null }
+    return $Bridge['plan']
+}
+
+function Read-PlanLogEntries {
+    # plan-log.jsonl -> @{ entries; bad }. Bad lines stay in place until the
+    # next append quarantines them (ledger paradigm: nothing is lost).
+    param([string]$RunDir)
+    $p = Get-PlanLogPath $RunDir
+    if (-not (Test-Path -LiteralPath $p -PathType Leaf)) { return @{ entries = @(); bad = @() } }
+    $entries = @(); $bad = @()
+    foreach ($line in @([System.IO.File]::ReadAllLines($p))) {
+        if ([string]::IsNullOrWhiteSpace($line)) { continue }
+        $e = $null
+        try { $e = Convert-PSObjectToHashtable ($line | ConvertFrom-Json) } catch { }
+        if ($null -ne $e -and $e -is [System.Collections.IDictionary]) { $entries += ,$e }
+        else { $bad += ,$line }
+    }
+    return @{ entries = @($entries); bad = @($bad) }
+}
+
+function Add-PlanLogEntry {
+    # THE plan-log append chain (run .lock -> quarantine bad lines -> P<n> id ->
+    # append -> read-back finish -> unlock; decisions.jsonl paradigm).
+    param([string]$RunDir, $Entry)
+    $lockInfo = Enter-BridgeRunLock $RunDir
+    try {
+        $p = Get-PlanLogPath $RunDir
+        $good = @(); $bad = @()
+        if (Test-Path -LiteralPath $p -PathType Leaf) {
+            foreach ($line in @([System.IO.File]::ReadAllLines($p))) {
+                if ([string]::IsNullOrWhiteSpace($line)) { continue }
+                $ok = $false
+                try { $null = $line | ConvertFrom-Json; $ok = $true } catch { }
+                if ($ok) { $good += ,$line } else { $bad += ,$line }
+            }
+        }
+        if ($bad.Count -gt 0) {
+            $wrapped = @()
+            foreach ($b in $bad) { $wrapped += ,('{"at":"' + (Get-UtcNowIso) + '","raw":' + (ConvertTo-Json ([string]$b) -Compress) + '}') }
+            [System.IO.File]::AppendAllText((Get-PlanLogCorruptPath $RunDir), (($wrapped) -join "`n") + "`n", $script:Utf8NoBom)
+            [System.IO.File]::WriteAllText($p, $(if ($good.Count -gt 0) { (($good) -join "`n") + "`n" } else { "" }), $script:Utf8NoBom)
+        }
+        $Entry['entry_id'] = "P$($good.Count + 1)"
+        [System.IO.File]::AppendAllText($p, (ConvertTo-Json $Entry -Depth 8 -Compress) + "`n", $script:Utf8NoBom)
+        $check = @([System.IO.File]::ReadAllLines($p) | Where-Object { $_.Trim() -ne "" })
+        try { $null = $check[-1] | ConvertFrom-Json } catch {
+            Write-ErrorResult "PLAN_LOG_READBACK_FAILED" "plan-log.jsonl last line failed to parse after append" 3
+        }
+    }
+    finally {
+        Exit-BridgeRunLock
+    }
+    $Entry['lock'] = $lockInfo
+    return $Entry
+}
+
+function Add-PlanEvent {
+    # one plan-log event: kind=progress (settle/acceptance) | deviation (the
+    # five detection points) | revision (replan). Detail is free-form context.
+    param([string]$RunDir, [string]$Kind, [string]$EventName, [string]$Node, $TaskId, [string]$Stage, $Detail)
+    $entry = [ordered]@{
+        at      = Get-UtcNowIso
+        run_id  = $RunId
+        kind    = $Kind
+        event   = $EventName
+        node    = $(if (-not [string]::IsNullOrWhiteSpace($Node)) { $Node } else { $null })
+        task_id = $TaskId
+        stage   = $(if (-not [string]::IsNullOrWhiteSpace($Stage)) { $Stage } else { $null })
+        detail  = $Detail
+    }
+    return Add-PlanLogEntry $RunDir $entry
+}
+
+function ConvertTo-PlanIntList {
+    # int list shape check (positive, no duplicates) shared by task_ids/batches.
+    param($Value, [string]$Label)
+    $out = @(); $seen = @{}
+    foreach ($v in @(Convert-ToSafeArray $Value)) {
+        $n = 0
+        try { $n = [int]$v } catch { Write-ErrorResult "PLAN_FILE_INVALID" "$Label has a non-integer entry: $v" 2 }
+        if ($n -le 0) { Write-ErrorResult "PLAN_FILE_INVALID" "$Label has a non-positive entry: $n" 2 }
+        if ($seen.Contains($n)) { Write-ErrorResult "PLAN_FILE_INVALID" "$Label repeats task #$n" 2 }
+        $seen[$n] = $true
+        $out += $n
+    }
+    return @($out)
+}
+
+function ConvertTo-PlanAcceptance {
+    # acceptance_point shape (要素齐全: criteria subset + runnable slice; the
+    # criteria_ref slot is validated against the archive by Test-PlanCriteriaRef).
+    param($RawAp, [string]$StageId)
+    $ap = Convert-PSObjectToHashtable $RawAp
+    if ($null -eq $ap -or -not ($ap -is [System.Collections.IDictionary])) {
+        Write-ErrorResult "PLAN_FILE_INVALID" "stage $StageId acceptance_point must be an object with criteria_items + slice (要素齐全)" 2
+    }
+    $items = @()
+    foreach ($i in @(Convert-ToSafeArray $ap['criteria_items'])) {
+        if ([string]::IsNullOrWhiteSpace([string]$i)) { Write-ErrorResult "PLAN_FILE_INVALID" "stage $StageId acceptance_point.criteria_items entries must be non-empty strings" 2 }
+        $items += [string]$i
+    }
+    if ($items.Count -eq 0) { Write-ErrorResult "PLAN_FILE_INVALID" "stage $StageId acceptance_point.criteria_items must be non-empty (判据子集覆盖本阶段子需求映射)" 2 }
+    if (-not $ap.Contains('slice') -or [string]::IsNullOrWhiteSpace([string]$ap['slice'])) {
+        Write-ErrorResult "PLAN_FILE_INVALID" "stage $StageId acceptance_point.slice must be a non-empty string (可运行整体切片形态)" 2
+    }
+    $ref = $null
+    if ($ap.Contains('criteria_ref') -and $null -ne $ap['criteria_ref'] -and -not [string]::IsNullOrWhiteSpace([string]$ap['criteria_ref'])) {
+        $ref = [string]$ap['criteria_ref']
+    }
+    return @{ criteria_ref = $ref; criteria_items = $items; slice = [string]$ap['slice']; node = $null; status = "planned" }
+}
+
+function ConvertTo-PlanRisk {
+    param($RawRisk)
+    $r = Convert-PSObjectToHashtable $RawRisk
+    if ($null -eq $r -or -not ($r -is [System.Collections.IDictionary]) -or [string]::IsNullOrWhiteSpace([string]$r['risk'])) {
+        Write-ErrorResult "PLAN_FILE_INVALID" "each risk must be an object with a non-empty risk string" 2
+    }
+    $level = "P2"
+    if (-not [string]::IsNullOrWhiteSpace([string]$r['level'])) {
+        $level = ([string]$r['level']).ToUpper()
+        if (@("P1", "P2", "P3") -notcontains $level) { Write-ErrorResult "PLAN_FILE_INVALID" "risk '$([string]$r['risk'])' level must be P1/P2/P3 (P1 对齐 auto-mode 人工分级)" 2 }
+    }
+    return @{ risk = [string]$r['risk']; level = $level; note = $(if ($r.Contains('note')) { [string]$r['note'] } else { "" }) }
+}
+
+function ConvertTo-PlanStage {
+    # one PlanFile stage entry -> normalized hashtable; stage identity and
+    # shape live here, DAG fit later (Test-PlanDeliveryFit).
+    param($RawStage, $SeenIds)
+    $s = Convert-PSObjectToHashtable $RawStage
+    if ($null -eq $s -or -not ($s -is [System.Collections.IDictionary])) {
+        Write-ErrorResult "PLAN_FILE_INVALID" "each stage must be a JSON object with id/goal/milestone/task_ids/batches/acceptance_point" 2
+    }
+    foreach ($k in @('id', 'goal', 'milestone', 'task_ids', 'batches', 'acceptance_point')) {
+        if (-not $s.Contains($k) -or $null -eq $s[$k]) { Write-ErrorResult "PLAN_FILE_INVALID" "stage entry missing required field: $k" 2 }
+    }
+    $sid = ([string]$s['id']).Trim()
+    if ([string]::IsNullOrWhiteSpace($sid)) { Write-ErrorResult "PLAN_FILE_INVALID" "stage id must be a non-empty string (e.g. S1)" 2 }
+    if ($SeenIds.Contains($sid)) { Write-ErrorResult "PLAN_FILE_INVALID" "duplicate stage id: $sid" 2 }
+    $SeenIds[$sid] = $true
+    foreach ($k in @('goal', 'milestone')) {
+        if ([string]::IsNullOrWhiteSpace([string]$s[$k])) { Write-ErrorResult "PLAN_FILE_INVALID" "stage $sid $k must be a non-empty string (要素齐全 ≠ 篇幅，一句话即可)" 2 }
+    }
+    $taskIds = @(ConvertTo-PlanIntList $s['task_ids'] "stage $sid task_ids")
+    if ($taskIds.Count -eq 0) { Write-ErrorResult "PLAN_FILE_INVALID" "stage $sid task_ids must be a non-empty int array" 2 }
+    $batches = @()
+    foreach ($b in @(Convert-ToSafeArray $s['batches'])) {
+        $batch = @(ConvertTo-PlanIntList $b "stage $sid batches")
+        if ($batch.Count -eq 0) { Write-ErrorResult "PLAN_FILE_INVALID" "stage $sid batches must not contain empty batches" 2 }
+        $batches += ,$batch
+    }
+    if ($batches.Count -eq 0) { Write-ErrorResult "PLAN_FILE_INVALID" "stage $sid batches must be a non-empty array of task-id batches (可并行批次, R2 消费口)" 2 }
+    return @{
+        id = $sid; goal = [string]$s['goal']; milestone = [string]$s['milestone']
+        task_ids = $taskIds; batches = $batches
+        acceptance_point = ConvertTo-PlanAcceptance $s['acceptance_point'] $sid
+    }
+}
+
+function Read-PlanFile {
+    # PlanFile contract (planner-guide「长程规划与滚动追踪」): parse + schema
+    # validation (PLAN_FILE_INVALID). DAG fit is Test-PlanDeliveryFit's job.
+    param([string]$Path)
+    if ([string]::IsNullOrWhiteSpace($Path) -or -not (Test-Path -LiteralPath $Path -PathType Leaf)) {
+        Write-ErrorResult "PLAN_FILE_INVALID" "PlanFile not found: $Path" 2
+    }
+    $h = $null
+    try { $h = Convert-PSObjectToHashtable ([System.IO.File]::ReadAllText($Path, [System.Text.Encoding]::UTF8) | ConvertFrom-Json) }
+    catch { Write-ErrorResult "PLAN_FILE_INVALID" "PlanFile failed to parse as JSON: $($_.Exception.Message)" 2 }
+    if ($null -eq $h -or -not ($h -is [System.Collections.IDictionary]) -or -not $h.Contains('stages')) {
+        Write-ErrorResult "PLAN_FILE_INVALID" "PlanFile must be a JSON object with a stages array" 2
+    }
+    $rawStages = @(Convert-ToSafeArray $h['stages'])
+    if ($rawStages.Count -eq 0) { Write-ErrorResult "PLAN_FILE_INVALID" "PlanFile stages must be a non-empty array (要素齐全: 阶段目标/里程碑/集成验收点/任务依赖排序/可并行批次)" 2 }
+    $stages = @(); $seenIds = @{}
+    foreach ($raw in $rawStages) { $stages += ,(ConvertTo-PlanStage $raw $seenIds) }
+    $risks = @()
+    foreach ($raw in @(Convert-ToSafeArray $h['risks'])) { $risks += ,(ConvertTo-PlanRisk $raw) }
+    return @{
+        planned_at = $(if ($h.Contains('planned_at') -and -not [string]::IsNullOrWhiteSpace([string]$h['planned_at'])) { [string]$h['planned_at'] } else { Get-UtcNowIso })
+        planner    = $(if ($h.Contains('planner') -and -not [string]::IsNullOrWhiteSpace([string]$h['planner'])) { [string]$h['planner'] } else { "planner" })
+        stages     = $stages
+        risks      = $risks
+    }
+}
+
+function Test-PlanStageOrder {
+    # stage sequence vs DAG: a dependency must sit in a STRICTLY earlier stage
+    # than its dependent (same stage is legal — batches carry that finer order).
+    param($Plan, $StageOfTask, $DepMap)
+    $index = @{}
+    $i = 0
+    foreach ($st in @($Plan.stages)) { $index[[string]$st.id] = $i; $i++ }
+    foreach ($tid in @($StageOfTask.Keys)) {
+        $deps = @(Convert-ToSafeArray $DepMap[$tid])
+        $myIndex = [int]$index[[string]$StageOfTask[$tid]]
+        foreach ($d in $deps) {
+            if (-not $StageOfTask.Contains([int]$d)) { continue }   # exempt dep (not delivered here)
+            $depIndex = [int]$index[[string]$StageOfTask[[int]$d]]
+            if ($depIndex -gt $myIndex) {
+                Write-ErrorResult "PLAN_ORDER_INVALID" "task #$tid (stage $($StageOfTask[$tid])) depends on task #$d (stage $($StageOfTask[[int]$d])) — a dependency must not sit in a later stage (same stage is legal: batches carry that finer order); the goal-tree DAG is the order authority" 2
+            }
+        }
+    }
+}
+
+function Test-PlanBatches {
+    # per-stage batch annotation rules: every staged task in exactly one batch,
+    # batches carry only staged tasks, and no dependency edge inside a batch
+    # (batch order must follow the DAG within the stage too).
+    param($Plan, $StageOfTask, $DepMap)
+    foreach ($st in @($Plan.stages)) {
+        $batchOf = @{}
+        $bi = 0
+        foreach ($b in @($st.batches)) {
+            foreach ($tid in @($b)) {
+                if ($StageOfTask[[int]$tid] -ne [string]$st.id) { Write-ErrorResult "PLAN_BATCH_INVALID" "stage $($st.id) batches reference task #$tid which is not a task of this stage" 2 }
+                if ($batchOf.Contains([int]$tid)) { Write-ErrorResult "PLAN_BATCH_INVALID" "stage $($st.id) task #$tid appears in batches $($batchOf[[int]$tid]) and $bi (exactly one batch per task)" 2 }
+                $batchOf[[int]$tid] = $bi
+            }
+            $bi++
+        }
+        foreach ($tid in @($st.task_ids)) {
+            if (-not $batchOf.Contains([int]$tid)) { Write-ErrorResult "PLAN_BATCH_INVALID" "stage $($st.id) task #$tid is missing from batches (each staged task sits in exactly one parallel batch)" 2 }
+        }
+        foreach ($tid in @($st.task_ids)) {
+            foreach ($d in @(Convert-ToSafeArray $DepMap[[int]$tid])) {
+                if (-not $batchOf.Contains([int]$d)) { continue }
+                if ([int]$batchOf[[int]$d] -ge [int]$batchOf[[int]$tid]) {
+                    Write-ErrorResult "PLAN_BATCH_INVALID" "stage $($st.id): task #$tid (batch $($batchOf[[int]$tid])) depends on task #$d (batch $($batchOf[[int]$d])) — batch order must follow the DAG; no dependency edge inside one batch" 2
+                }
+            }
+        }
+    }
+}
+
+function Test-PlanDeliveryFit {
+    # plan vs the delivered set: every delivered task in exactly one stage,
+    # no phantom task ids (coverage 要素齐全), then order + batch DAG fit.
+    param($Plan, [int[]]$ArchiveIds, [int[]]$DeliveredIds, $DepMap)
+    $stageOfTask = @{}
+    foreach ($st in @($Plan.stages)) {
+        foreach ($tid in @($st.task_ids)) {
+            if ($ArchiveIds -notcontains [int]$tid) { Write-ErrorResult "PLAN_FILE_INVALID" "stage $($st.id) task_ids references task #$tid which is not a task of this archive" 2 }
+            if ($stageOfTask.Contains([int]$tid)) { Write-ErrorResult "PLAN_FILE_INVALID" "task #$tid appears in both stage $($stageOfTask[[int]$tid]) and $($st.id) (exactly one stage per task)" 2 }
+            $stageOfTask[[int]$tid] = [string]$st.id
+        }
+    }
+    foreach ($tid in @($DeliveredIds)) {
+        if (-not $stageOfTask.Contains([int]$tid)) { Write-ErrorResult "PLAN_FILE_INVALID" "task #$tid is delivered by this run but missing from the plan stages (every delivered task sits in exactly one stage)" 2 }
+    }
+    Test-PlanStageOrder $Plan $stageOfTask $DepMap
+    Test-PlanBatches $Plan $stageOfTask $DepMap
+}
+
+function Test-PlanCriteriaRef {
+    # acceptance_point.criteria_ref pins R1's fixed anchor when the archive
+    # carries whole-requirement criteria; a criteria-free archive (single /
+    # declared-none) requires the slot to stay empty.
+    param($Plan, $Criteria)
+    $mode = "none"
+    if ($null -ne $Criteria) { $mode = [string]$Criteria.mode }
+    foreach ($st in @($Plan.stages)) {
+        $ref = $st.acceptance_point.criteria_ref
+        if ($mode -eq 'criteria') {
+            if ($null -eq $ref) { Write-ErrorResult "PLAN_FILE_INVALID" "stage $($st.id) acceptance_point.criteria_ref is required (整体验收判据存在: $($Criteria.criteria_ref))" 2 }
+            if ($ref -ne [string]$Criteria.criteria_ref) { Write-ErrorResult "PLAN_FILE_INVALID" "stage $($st.id) acceptance_point.criteria_ref '$ref' must reference the fixed anchor '$($Criteria.criteria_ref)'" 2 }
+        }
+        elseif ($null -ne $ref) {
+            Write-ErrorResult "PLAN_FILE_INVALID" "stage $($st.id) acceptance_point.criteria_ref must be omitted (本归档无整体验收判据)" 2
+        }
+    }
+}
+
+function New-PlanSection {
+    # bridge.json plan section (machine-readable current state) from a
+    # validated PlanFile; acceptance points start at status=planned.
+    param($Plan, [string]$SourceText)
+    $stages = @()
+    foreach ($st in @($Plan.stages)) {
+        $stages += ,@{
+            id = $st.id; goal = $st.goal; milestone = $st.milestone
+            task_ids = @($st.task_ids); batches = @($st.batches)
+            acceptance_point = @{
+                criteria_ref = $st.acceptance_point.criteria_ref
+                criteria_items = @($st.acceptance_point.criteria_items)
+                slice = $st.acceptance_point.slice
+                node = $null; status = "planned"
+            }
+        }
+    }
+    return @{
+        revision = 1; source = $SourceText; planner = $Plan.planner
+        planned_at = $Plan.planned_at; applied_at = Get-UtcNowIso
+        stages = $stages; risks = @($Plan.risks)
+    }
+}
+
+function Get-PlanStageOfTask {
+    param($PlanSec, [int]$TaskId)
+    if ($null -eq $PlanSec) { return $null }
+    foreach ($st in @($PlanSec['stages'])) {
+        if (@($st['task_ids']) -contains $TaskId) { return $st }
+    }
+    return $null
+}
+
+function Get-PlanGateBlockers {
+    # stage gate (只增不减): stages strictly before the task's own whose
+    # acceptance point has not passed. Empty = gate open (legacy runs too —
+    # no plan section means no gate on top of the dependency unlock semantics).
+    param($Bridge, [int]$TaskId)
+    $p = Get-PlanSection $Bridge
+    if ($null -eq $p) { return @() }
+    $st = Get-PlanStageOfTask $p $TaskId
+    if ($null -eq $st) { return @() }
+    $blockers = @()
+    foreach ($other in @($p['stages'])) {
+        if ([string]$other['id'] -eq [string]$st['id']) { break }
+        if ([string]$other['acceptance_point']['status'] -ne 'passed') { $blockers += [string]$other['id'] }
+    }
+    return @($blockers)
+}
+
+function Assert-PlanGateOpen {
+    # NODE_BLOCKED_BY_GATE — the deterministic claim/dispatch feedback for a
+    # closed stage gate (long-task-planning). No force bypass: settling the
+    # stage acceptance node or replanning the stages is the only way through.
+    param($Bridge, [int]$TaskId)
+    $blockers = Get-PlanGateBlockers $Bridge $TaskId
+    if ($blockers.Count -gt 0) {
+        Write-ErrorResult "NODE_BLOCKED_BY_GATE" "Task #$TaskId sits behind a closed stage gate — waiting on acceptance point(s) of stage(s): [$($blockers -join ', ')]. Settle the [集成验收·S<k>] node(s) (真实执行集成验收), or replan to re-scope the stages; no force bypass." 1
+    }
+}
+
+function Test-StageTasksTerminal {
+    # stage completion is per-TASK terminality (complete/deprecated), not node
+    # settle (multi-owner tasks settle node by node); ids this run does not
+    # deliver (deprecated / in-tree merged / rejected-back) are exempt —
+    # they must never wedge the gate or the acceptance trigger.
+    param($Stage, $Bridge, $FlowTasks)
+    foreach ($tid in @($Stage['task_ids'])) {
+        if (-not $Bridge.tasks.Contains("$tid")) { continue }
+        $task = Find-ArchiveTask $FlowTasks ([int]$tid)
+        if ($null -eq $task) { continue }
+        if ($script:PlanTerminalLifecycles -notcontains ([string]$task.lifecycle)) { return $false }
+    }
+    return $true
+}
+
+function New-StageAcceptanceSpec {
+    # [集成验收·S<k>] node spec: role=QA tree-level node under the goal root,
+    # task text carries the criteria subset + runnable slice (真实执行 evidence
+    # asks for the slice run result in extras.verification).
+    param($Stage, [string]$ReqRel, [string]$RunIdText)
+    $title = $script:PlanStageAcceptanceFmt -f ([string]$Stage['id'])
+    $items = (@($Stage['acceptance_point']['criteria_items']) | ForEach-Object { [string]$_ }) -join '；'
+    $mission = "使命：阶段「$([string]$Stage['goal'])」末尾集成验收点——对照判据子集（$items）核验本阶段交付的真实衔接，并实证可运行切片：$([string]$Stage['acceptance_point']['slice'])。交付记录：验证摘要 + 切片运行证据（回调 extras.verification）。"
+    $spec = @{ title = $title; role = "QA"; mission = $mission }
+    $item = New-AcceptanceChainGraftItem $spec $ReqRel $([string]$Stage['acceptance_point']['criteria_ref']) $RunIdText
+    return @{ title = $title; item = $item }
+}
+
+function Get-PlanStageReqRel {
+    # requirement doc anchor for a stage acceptance node (archive-relative, the
+    # graft-item convention): the first staged task this run delivers.
+    param($Bridge, $Stage)
+    foreach ($tid in @($Stage['task_ids'])) {
+        if ($Bridge.tasks.Contains("$tid") -and $Bridge.tasks["$tid"].Contains('requirement')) {
+            return [string]$Bridge.tasks["$tid"]['requirement']
+        }
+    }
+    return "requirements/overview.md"
+}
+
+function Set-PlanAcceptanceState {
+    # acceptance_point transition -> persist bridge -> plan-log progress event.
+    param([string]$RunDir, $Bridge, $Stage, [string]$Status, [string]$Node, [string]$EventName, $Detail)
+    $ap = $Stage['acceptance_point']
+    $ap['status'] = $Status
+    if (-not [string]::IsNullOrWhiteSpace($Node)) { $ap['node'] = $Node }
+    Write-BridgeFile $RunDir $Bridge | Out-Null
+    $null = Add-PlanEvent $RunDir 'progress' $EventName ([string]$ap['node']) $null ([string]$Stage['id']) $Detail
+    return $Bridge
+}
+
+function Update-FinalStageAcceptance {
+    # k=K acceptance point: the R1 [集成/联调]->[整体验收] chain IS the final
+    # acceptance (no duplicate node — the accept node is bound once it exists).
+    # Without a whole-requirement chain (single/declared-none exemption) the
+    # final stage auto-passes on task terminality (K=1 stays zero extra nodes).
+    param([string]$RunDir, $Bridge, $Stage)
+    $a = Get-AcceptanceSection $Bridge
+    if ($null -eq $a -or ([string]$a['status']) -eq 'none') {
+        return Set-PlanAcceptanceState $RunDir $Bridge $Stage 'passed' $null 'acceptance_passed' @{ basis = "final stage without a whole-requirement acceptance chain — task terminality is the verification unit" }
+    }
+    $acceptNode = [string]$a['accept_node']
+    if ([string]::IsNullOrWhiteSpace($acceptNode)) { return $Bridge }   # wait for the R1 chain
+    $node = Get-NodeFromTree (Get-TreeStatusView $RunId) $acceptNode
+    $status = "grafted"
+    if ($null -ne $node -and ([string]$node.status) -eq 'done') { $status = 'passed' }
+    return Set-PlanAcceptanceState $RunDir $Bridge $Stage $status $acceptNode 'acceptance_bound' @{ basis = "rides the R1 final-acceptance chain"; node = $acceptNode }
+}
+
+function Update-OneStageAcceptance {
+    # one stage's acceptance transition (idempotent): tasks terminal -> graft
+    # [集成验收·S<k>] / bind the final chain -> node settled -> passed.
+    param([string]$RunDir, $Bridge, $Stage, [bool]$IsLast, $FlowTasks)
+    if (([string]$Stage['acceptance_point']['status']) -eq 'passed') { return @{ bridge = $Bridge; grafted = $null } }
+    if (-not (Test-StageTasksTerminal $Stage $Bridge $FlowTasks)) { return @{ bridge = $Bridge; grafted = $null } }
+    if ($IsLast) { return @{ bridge = (Update-FinalStageAcceptance $RunDir $Bridge $Stage); grafted = $null } }
+    $ap = $Stage['acceptance_point']
+    if (([string]$ap['status']) -eq 'planned') {
+        $spec = New-StageAcceptanceSpec $Stage (Get-PlanStageReqRel $Bridge $Stage) ([string]$Bridge.run_id)
+        $g = Invoke-GraftOne ([string]$Bridge.run_id) ([string]$Bridge.goal_root) $spec.item
+        if (-not $g.ok) { return @{ bridge = $Bridge; grafted = $null } }   # retried on the next trigger
+        $b = Set-PlanAcceptanceState $RunDir $Bridge $Stage 'grafted' $g.node_id 'acceptance_grafted' @{ title = $spec.title; slice = [string]$ap['slice'] }
+        return @{ bridge = $b; grafted = @{ node = $g.node_id; title = $spec.title; stage = [string]$Stage['id'] } }
+    }
+    $node = Get-NodeFromTree (Get-TreeStatusView $RunId) ([string]$ap['node'])
+    if ($null -ne $node -and ([string]$node.status) -eq 'done') {
+        $b = Set-PlanAcceptanceState $RunDir $Bridge $Stage 'passed' $null 'acceptance_passed' @{ node = [string]$ap['node']; slice = [string]$ap['slice'] }
+        return @{ bridge = $b; grafted = $null }
+    }
+    return @{ bridge = $Bridge; grafted = $null }
+}
+
+function Update-StageAcceptancePoints {
+    # Stage acceptance-point state machine — rides every auto-dispatch trigger
+    # (self-healing, like Update-AcceptanceChain): grafts/binds/advances and
+    # writes the plan-log progress events at the transitions only.
+    param([string]$RunDir, $Bridge)
+    $out = @{ bridge = $Bridge; grafted = @() }
+    $p = Get-PlanSection $Bridge
+    if ($null -eq $p) { return $out }
+    $pending = @($p['stages'] | Where-Object { ([string]$_['acceptance_point']['status']) -ne 'passed' })
+    if ($pending.Count -eq 0) { return $out }
+    $flow = Read-ArchiveTasks $Bridge.archive
+    $lastId = ""
+    if (@($p['stages']).Count -gt 0) { $lastId = [string](@($p['stages'])[-1]['id']) }
+    foreach ($st in @($pending)) {
+        $r = Update-OneStageAcceptance $RunDir $out.bridge $st (([string]$st['id']) -eq $lastId) $flow.tasks
+        $out.bridge = $r.bridge
+        if ($null -ne $r.grafted) { $out.grafted += ,$r.grafted }
+    }
+    return $out
+}
+
+function Get-StageAcceptanceNodeInfo {
+    # tree-level recognition for [集成验收·S<k>] nodes (the claim/settle
+    # tree-level short-circuit branch, same shape as Get-AcceptanceNodeInfo).
+    param($Bridge, [string]$NodeId)
+    $p = Get-PlanSection $Bridge
+    if ($null -eq $p) { return $null }
+    foreach ($st in @($p['stages'])) {
+        $ap = $st['acceptance_point']
+        if ($null -ne $ap -and -not [string]::IsNullOrWhiteSpace([string]$ap['node']) -and ([string]$ap['node']) -eq $NodeId) {
+            return @{
+                kind = "stage_acceptance"; role = "QA"; chain = $true
+                stage_id = [string]$st['id']
+                criteria_ref = $(if ($null -ne $ap['criteria_ref']) { [string]$ap['criteria_ref'] } else { $null })
+                criteria_items = @($ap['criteria_items']); slice = [string]$ap['slice']
+            }
+        }
+    }
+    return $null
+}
+
+function Reset-PlanStageAcceptance {
+    # invalidation wave (防闸门虚开): the touched task's stage and every later
+    # stage roll their acceptance point back to planned (node unbound; a later
+    # re-verification re-grafts a fresh node). Records acceptance_invalidated.
+    param([string]$RunDir, $Bridge, [int]$TaskId, [string]$Trigger, [string]$ReasonText)
+    $p = Get-PlanSection $Bridge
+    if ($null -eq $p) { return $false }
+    $st = Get-PlanStageOfTask $p $TaskId
+    if ($null -eq $st) { return $false }
+    $reached = $false; $hit = $false
+    foreach ($other in @($p['stages'])) {
+        if (([string]$other['id']) -eq ([string]$st['id'])) { $reached = $true }
+        if (-not $reached) { continue }
+        $ap = $other['acceptance_point']
+        if (([string]$ap['status']) -eq 'planned') { continue }
+        $ap['status'] = 'planned'; $ap['node'] = $null
+        $hit = $true
+        $null = Add-PlanEvent $RunDir 'deviation' 'acceptance_invalidated' $null $TaskId ([string]$other['id']) @{ trigger = $Trigger; reason = $ReasonText }
+    }
+    if ($hit) { Write-BridgeFile $RunDir $Bridge | Out-Null }
+    return $hit
+}
+
+function Write-PlanRecoveryTail {
+    # reclaim / rollback tail bookkeeping: deviation event (task failed / cross-
+    # stage redo) + the acceptance invalidation wave over the touched stage.
+    param([string]$RunDir, $Bridge, [string]$EventName, [string]$NodeIdText, [int]$TaskId, [string]$ModeText)
+    if ($null -eq (Get-PlanSection $Bridge)) { return }
+    $stage = Get-PlanStageOfTask (Get-PlanSection $Bridge) $TaskId
+    $stageId = $null
+    if ($null -ne $stage) { $stageId = [string]$stage['id'] }
+    $null = Add-PlanEvent $RunDir 'deviation' $EventName $NodeIdText $TaskId $stageId @{ mode = $ModeText }
+    $null = Reset-PlanStageAcceptance $RunDir $Bridge $TaskId $EventName $ModeText
+}
+
+function Test-PlanEventSeen {
+    # deviation dedup: one event per (kind, event, key) observation signature —
+    # the ledger stays replayable without spamming identical rows.
+    param($Entries, [string]$EventName, [string]$Key, [string]$Signature)
+    foreach ($e in @($Entries)) {
+        if (([string]$e['kind']) -ne 'deviation' -or ([string]$e['event']) -ne $EventName) { continue }
+        $d = $e['detail']
+        if ($null -eq $d -or -not ($d -is [System.Collections.IDictionary])) { continue }
+        if (([string]$d['key']) -eq $Key -and ([string]$d['signature']) -eq $Signature) { return $true }
+    }
+    return $false
+}
+
+function Write-PlanPatrolDeviations {
+    # rolling reconciliation patrol (status touch): delay over the shared 60min
+    # threshold + mid-run scope shrink (delivered task deprecated) — compared
+    # against the plan entries, deduped per observation signature.
+    param([string]$RunDir, $Bridge, $TreeData, $FlowTasks)
+    $p = Get-PlanSection $Bridge
+    if ($null -eq $p) { return @() }
+    $log = Read-PlanLogEntries $RunDir
+    $found = @()
+    foreach ($c in @(Convert-ToSafeArray $TreeData.nodes.claimed)) {
+        $node = [string]$c.id
+        if ([string]::IsNullOrWhiteSpace($node)) { $node = [string]$c.node }
+        $map = Get-NodeTaskStage $Bridge $node
+        if ($null -eq $map) { continue }
+        $stage = Get-PlanStageOfTask $p ([int]$map.task_id)
+        if ($null -eq $stage) { continue }
+        $claimedAt = [string]$c.claimed_at
+        if (Test-PlanEventSeen $log.entries 'delay' $node $claimedAt) { continue }
+        $null = Add-PlanEvent $RunDir 'deviation' 'delay' $node ([int]$map.task_id) ([string]$stage['id']) @{ key = $node; signature = $claimedAt; age_min = [int]$c.age_min; threshold_min = $DeadClaimMinutes }
+        $found += "delay:$node"
+    }
+    foreach ($t in @($FlowTasks)) {
+        if (([string]$t.lifecycle) -ne 'deprecated') { continue }
+        $tid = [int]$t.id
+        if (-not $Bridge.tasks.Contains("$tid")) { continue }
+        if (Test-PlanEventSeen $log.entries 'scope' "task#$tid" 'deprecated') { continue }
+        $stage = Get-PlanStageOfTask $p $tid
+        $null = Add-PlanEvent $RunDir 'deviation' 'scope' $null $tid $(if ($null -ne $stage) { [string]$stage['id'] } else { $null }) @{ key = "task#$tid"; signature = 'deprecated'; note = "delivered task deprecated mid-run (范围变化)" }
+        $found += "scope:task#$tid"
+    }
+    return @($found)
+}
+
+function Write-PlanSettleTail {
+    # settle tail bookkeeping: progress event for the settled node + the
+    # settle-time deviation checks (task outside the plan / an earlier stage's
+    # acceptance still open while a later task landed).
+    param([string]$RunDir, $Bridge, $Target, [string]$NodeIdText)
+    $p = Get-PlanSection $Bridge
+    if ($null -eq $p) { return }
+    if ($Target.tree_level) {
+        $sa = Get-StageAcceptanceNodeInfo $Bridge $NodeIdText
+        if ($null -ne $sa) {
+            $null = Add-PlanEvent $RunDir 'progress' 'acceptance_node_settled' $NodeIdText $null ([string]$sa.stage_id) @{ note = "stage acceptance node settled — the state machine records the pass" }
+        }
+        return
+    }
+    $taskId = [int]$Target.task_id
+    $stage = Get-PlanStageOfTask $p $taskId
+    if ($null -eq $stage) {
+        $null = Add-PlanEvent $RunDir 'deviation' 'scope' $NodeIdText $taskId $null @{ key = "task#$taskId"; signature = 'settled_out_of_plan'; note = "settled task is not covered by any plan stage (范围变化)" }
+        return
+    }
+    $null = Add-PlanEvent $RunDir 'progress' 'settle' $NodeIdText $taskId ([string]$stage['id']) @{ stage_role = [string]$Target.stage }
+    foreach ($other in @($p['stages'])) {
+        if (([string]$other['id']) -eq ([string]$stage['id'])) { break }
+        if (([string]$other['acceptance_point']['status']) -eq 'passed') { continue }
+        $null = Add-PlanEvent $RunDir 'deviation' 'order' $NodeIdText $taskId ([string]$stage['id']) @{ key = "task#$taskId"; signature = 'out_of_stage_order'; blocked_by = [string]$other['id']; note = "task landed while an earlier stage's acceptance point is still open" }
+        break
+    }
+}
+
+function Compare-PlanRevisions {
+    # structured diff old plan section vs new PlanFile (the revision event's
+    # changes[]): stage_added/removed/changed, task_moved, batches_changed,
+    # acceptance_changed, risks_changed — replayable, never a file snapshot.
+    param($OldSec, $Plan)
+    $changes = @()
+    $oldById = @{}
+    foreach ($st in @($OldSec['stages'])) { $oldById[[string]$st['id']] = $st }
+    $newById = @{}
+    foreach ($st in @($Plan.stages)) { $newById[[string]$st.id] = $st }
+    foreach ($sid in @($newById.Keys)) {
+        if (-not $oldById.Contains($sid)) { $changes += @{ op = "stage_added"; stage = $sid; detail = "tasks [$(@($newById[$sid].task_ids) -join ', ')]" }; continue }
+        $o = $oldById[$sid]; $n = $newById[$sid]
+        $changes += @(Compare-PlanStageEntry $o $n)
+    }
+    foreach ($sid in @($oldById.Keys)) {
+        if (-not $newById.Contains($sid)) { $changes += @{ op = "stage_removed"; stage = $sid; detail = "tasks [$(@($oldById[$sid]['task_ids']) -join ', ')]" } }
+    }
+    if ((ConvertTo-PortableJson @($OldSec['risks'])) -ne (ConvertTo-PortableJson @($Plan.risks))) {
+        $changes += @{ op = "risks_changed"; stage = $null; detail = "risk list replaced" }
+    }
+    return @($changes)
+}
+
+function Compare-PlanStageEntry {
+    # one common stage: field-level diff (task set move gets the explicit rows).
+    param($OldStage, $NewStage)
+    $rows = @()
+    $sid = [string]$NewStage.id
+    $oldTasks = @($OldStage['task_ids']); $newTasks = @($NewStage.task_ids)
+    $movedIn = @($newTasks | Where-Object { $oldTasks -notcontains $_ })
+    $movedOut = @($oldTasks | Where-Object { $newTasks -notcontains $_ })
+    if ($movedIn.Count -gt 0 -or $movedOut.Count -gt 0) {
+        $rows += @{ op = "task_moved"; stage = $sid; detail = "in [$($movedIn -join ', ')] out [$($movedOut -join ', ')]" }
+    }
+    if (([string]$OldStage['goal']) -ne ([string]$NewStage.goal) -or ([string]$OldStage['milestone']) -ne ([string]$NewStage.milestone)) {
+        $rows += @{ op = "stage_changed"; stage = $sid; detail = "goal/milestone revised" }
+    }
+    if ((ConvertTo-PortableJson @($OldStage['batches'])) -ne (ConvertTo-PortableJson @($NewStage.batches))) {
+        $rows += @{ op = "batches_changed"; stage = $sid; detail = "parallel batches re-cut" }
+    }
+    $oap = $OldStage['acceptance_point']; $nap = $NewStage.acceptance_point
+    $sameAp = (([string]$oap['criteria_ref']) -eq ([string]$nap.criteria_ref)) -and
+              ((ConvertTo-PortableJson @($oap['criteria_items'])) -eq (ConvertTo-PortableJson @($nap.criteria_items))) -and
+              (([string]$oap['slice']) -eq ([string]$nap.slice))
+    if (-not $sameAp) { $rows += @{ op = "acceptance_changed"; stage = $sid; detail = "acceptance point criteria/slice revised" } }
+    return @($rows)
+}
+
+function Merge-PlanRevision {
+    # replan application: carry runtime acceptance state over for untouched
+    # stages; stages whose verified content changed reset to planned (the
+    # invalidation wave semantics) with an acceptance_invalidated record.
+    param([string]$RunDir, $Bridge, $OldSec, $Plan, [string]$SourceText)
+    $newSec = New-PlanSection $Plan $SourceText
+    $newSec['revision'] = ([int]$OldSec['revision']) + 1
+    $newSec['planned_at'] = [string]$OldSec['planned_at']
+    foreach ($st in @($newSec['stages'])) {
+        $sid = [string]$st['id']
+        $old = $null
+        foreach ($o in @($OldSec['stages'])) { if (([string]$o['id']) -eq $sid) { $old = $o; break } }
+        if ($null -eq $old) { continue }
+        $contentSame = ((ConvertTo-PortableJson @($old['task_ids'])) -eq (ConvertTo-PortableJson @($st['task_ids']))) -and
+                       ((ConvertTo-PortableJson @($old['batches'])) -eq (ConvertTo-PortableJson @($st['batches']))) -and
+                       (([string]$old['acceptance_point']['slice']) -eq ([string]$st['acceptance_point']['slice']))
+        if ($contentSame -and ([string]$old['acceptance_point']['status']) -ne 'planned') {
+            $st['acceptance_point']['status'] = [string]$old['acceptance_point']['status']
+            $st['acceptance_point']['node'] = $old['acceptance_point']['node']
+        }
+        elseif (-not $contentSame -and ([string]$old['acceptance_point']['status']) -ne 'planned') {
+            $null = Add-PlanEvent $RunDir 'deviation' 'acceptance_invalidated' $null $null $sid @{ trigger = 'replan'; reason = "stage content changed after acceptance" }
+        }
+    }
+    $Bridge['plan'] = $newSec
+    Write-BridgeFile $RunDir $Bridge | Out-Null
+    return $Bridge
+}
+
+function New-PlanStageRow {
+    param($Stage, $Bridge, $FlowTasks)
+    $done = 0; $total = 0
+    foreach ($tid in @($Stage['task_ids'])) {
+        $total++
+        $task = $null
+        if ($Bridge.tasks.Contains("$tid")) { $task = Find-ArchiveTask $FlowTasks ([int]$tid) }
+        if ($null -eq $task -or ($script:PlanTerminalLifecycles -contains ([string]$task.lifecycle))) { $done++ }
+    }
+    $ap = $Stage['acceptance_point']
+    return [ordered]@{
+        id         = [string]$Stage['id']
+        goal       = [string]$Stage['goal']
+        milestone  = [string]$Stage['milestone']
+        task_ids   = @($Stage['task_ids'])
+        batches    = @($Stage['batches'])
+        progress   = "$done/$total"
+        acceptance = [ordered]@{
+            status         = [string]$ap['status']
+            node           = $(if (-not [string]::IsNullOrWhiteSpace([string]$ap['node'])) { [string]$ap['node'] } else { $null })
+            criteria_ref   = $ap['criteria_ref']
+            criteria_items = @($ap['criteria_items'])
+            slice          = [string]$ap['slice']
+        }
+    }
+}
+
+function Get-PlanView {
+    # status/resume plan view (the human-facing收口 of the machine plan; no
+    # separate plan document is ever written). $null = legacy run, no plan view.
+    param([string]$RunDir, $Bridge)
+    $p = Get-PlanSection $Bridge
+    if ($null -eq $p) { return $null }
+    $flow = Read-ArchiveTasks $Bridge.archive
+    $rows = @()
+    foreach ($st in @($p['stages'])) { $rows += ,(New-PlanStageRow $st $Bridge $flow.tasks) }
+    $log = Read-PlanLogEntries $RunDir
+    $deviations = @($log.entries | Where-Object { ([string]$_['kind']) -eq 'deviation' })
+    $revisions = @($log.entries | Where-Object { ([string]$_['kind']) -eq 'revision' })
+    return [ordered]@{
+        revision     = [int]$p['revision']
+        source       = [string]$p['source']
+        planned_at   = [string]$p['planned_at']
+        applied_at   = [string]$p['applied_at']
+        plan_log     = ".rdd/goal-trees/$($Bridge.run_id)/$script:PlanLogFileName"
+        stages       = $rows
+        risks        = @($p['risks'])
+        deviation_count = $deviations.Count
+        revision_count  = $revisions.Count
+        recent_events   = @($log.entries | Select-Object -Last 6 | ForEach-Object { "$($_['entry_id']) $($_['kind'])/$($_['event'])$(if ($null -ne $_['stage']) { '@' + ([string]$_['stage']) })" })
+        log_corrupt     = (@($log.bad).Count -gt 0)
+    }
+}
+
+function Add-PlanAnnexLines {
+    # 「计划完成度」区 (delivery-annex): stage goals/milestones + completion
+    # + acceptance verdicts + the rolling records pointer. Legacy runs get an
+    # explicit "no plan" line — the annex stays honest either way.
+    param([string]$RunDir, $Bridge, $FlowTasks)
+    $lines = @()
+    $lines += "## 计划完成度"
+    $lines += ""
+    $p = Get-PlanSection $Bridge
+    if ($null -eq $p) {
+        $lines += "- 无计划段（引入长程规划前的旧 run）"
+        $lines += ""
+        return $lines
+    }
+    $log = Read-PlanLogEntries $RunDir
+    $lines += "- 计划载体：$([string]$p['source'])（revision $([int]$p['revision'])）；进度/风险/偏差/修正账本：plan-log.jsonl"
+    $lines += ""
+    $lines += "| 阶段 | 目标 | 里程碑 | 任务 | 完成度 | 集成验收点 |"
+    $lines += "|------|------|--------|------|--------|------------|"
+    foreach ($st in @($p['stages'])) {
+        $row = New-PlanStageRow $st $Bridge $FlowTasks
+        $ap = $st['acceptance_point']
+        $nodeNote = ""
+        if (-not [string]::IsNullOrWhiteSpace([string]$ap['node'])) { $nodeNote = " ($([string]$ap['node']))" }
+        $lines += "| $($st['id']) | $($st['goal']) | $($st['milestone']) | $(@($st['task_ids']) -join ', ') | $($row.progress) | $([string]$ap['status'])$nodeNote |"
+    }
+    $lines += ""
+    $lines += "- 修正记录：$(@($log.entries | Where-Object { ([string]$_['kind']) -eq 'revision' }).Count) 次 replan；偏差事件：$(@($log.entries | Where-Object { ([string]$_['kind']) -eq 'deviation' }).Count) 条（详见 plan-log.jsonl）"
+    $lines += ""
+    return $lines
+}
+
+function Get-PlanConcludeVerdict {
+    # STAGE_ACCEPTANCE_PENDING (conclude hard gate, same family as ACCEPTANCE_*):
+    # every stage's acceptance point must be passed before the run may anchor
+    # on achieved — 未过验收点不得结案.
+    param($Bridge)
+    $p = Get-PlanSection $Bridge
+    if ($null -eq $p) { return @{ ok = $true } }
+    $pending = @()
+    foreach ($st in @($p['stages'])) {
+        $status = [string]$st['acceptance_point']['status']
+        if ($status -ne 'passed') { $pending += "$([string]$st['id'])=$status" }
+    }
+    if ($pending.Count -gt 0) {
+        return @{
+            ok = $false
+            code = "STAGE_ACCEPTANCE_PENDING"
+            message = "Stage acceptance point(s) not passed: [$($pending -join ', ')]. Settle the [集成验收·S<k>] node(s) first (真实执行集成验收), or replan to re-scope the stages; conclusion is blocked until every stage's acceptance point is passed."
+        }
+    }
+    return @{ ok = $true }
+}
+
+function Get-PlanDepMaps {
+    # delivered task ids + their DAG dep edges. The bridge's dep_task_ids IS
+    # the promulgated task-DAG view (requirement inference + ReviewFile
+    # overrides); goal-tree node edges stay the node-level authority.
+    param($Bridge)
+    $delivered = @(); $deps = @{}
+    foreach ($key in @($Bridge.tasks.Keys)) {
+        $tid = [int]$key
+        $delivered += $tid
+        $deps[$tid] = @(Convert-ToSafeArray $Bridge.tasks[$key]['dep_task_ids'] | ForEach-Object { [int]$_ })
+    }
+    return @{ delivered = @($delivered | Sort-Object); deps = $deps }
+}
+
+function Invoke-BridgeReplan {
+    # long-task-planning rolling correction — the ONLY correction entry point:
+    # revised PlanFile + mandatory -Reason -> DAG-fit validation -> structured
+    # changes[] -> plan-log `revision` (append-only, never a file snapshot) ->
+    # plan section replaced (revision+1) -> unlock set recomputed on the
+    # auto-push tail. The DAG itself is never edited here; a re-cut that needs
+    # different dependencies stitches them via goal-tree deps add/remove first.
+    $runDir = Get-BridgeRunDir $RunId
+    $bridge = Require-Bridge $runDir
+    if ([string]::IsNullOrWhiteSpace($PlanFile)) { Write-ErrorResult "PLAN_MISSING" "replan requires -PlanFile <revised staged plan>" 1 }
+    if ([string]::IsNullOrWhiteSpace($Reason)) { Write-ErrorResult "MISSING_REASON" "replan requires -Reason <deviation being answered>" 1 }
+    $oldSec = Get-PlanSection $bridge
+    $tree = Get-TreeStatusView $RunId
+    if ($null -eq $oldSec -or ([string]$tree.state) -eq 'concluded') {
+        Write-ErrorResult "REPLAN_NOT_ACTIVE" "run $RunId has no active plan to revise (legacy run or already concluded) — replan only rolls a promulgated staged plan forward" 1
+    }
+    $null = Enter-PlannerLease $runDir
+    $newPlan = Read-PlanFile $PlanFile
+    $flow = Read-ArchiveTasks $bridge.archive
+    $maps = Get-PlanDepMaps $bridge
+    Test-PlanDeliveryFit $newPlan @($flow.tasks | ForEach-Object { [int]$_.id }) $maps.delivered $maps.deps
+    Test-PlanCriteriaRef $newPlan (Read-AcceptanceCriteria ([string]$bridge.archive))
+    $changes = Compare-PlanRevisions $oldSec $newPlan
+    $bridge = Merge-PlanRevision $runDir $bridge $oldSec $newPlan $PlanFile
+    $rev = [int]((Get-PlanSection $bridge)['revision'])
+    $null = Add-PlanEvent $runDir 'revision' 'replan' $null $null $null @{ reason = $Reason; revision = $rev; changes = $changes }
+    $push = Invoke-AutoDispatch $runDir $bridge "replan"
+    $bridge = $push.bridge
+    return @{
+        success = $true
+        data    = [ordered]@{
+            run_id     = $RunId
+            revision   = $rev
+            reason     = $Reason
+            changes    = @($changes)
+            plan       = Get-PlanView $runDir $bridge
+            auto_push  = @{ trigger = $push.trigger; pushed = @($push.pushed); failed = @($push.failed); skipped = @($push.skipped | ForEach-Object { "$($_.node):$($_.reason)" }) }
+            next_step  = "plan revision $rev applied — unlock set recomputed and stage gates re-evaluate against the revised stages"
+        }
+    }
+}
+
 # === Command: promulgate ===
 
-function Invoke-Promulgate {
-    if ([string]::IsNullOrWhiteSpace($TaskJson)) { Write-ErrorResult "MISSING_TASK_JSON" "-TaskJson (archive task.json path) is required" 1 }
-    $tj = $TaskJson
-    if (-not [System.IO.Path]::IsPathRooted($tj)) { $tj = Join-Path $repoRoot $tj }
-    if (-not (Test-Path -LiteralPath $tj -PathType Leaf)) { Write-ErrorResult "TASK_JSON_NOT_FOUND" "task.json not found: $tj" 2 }
-    $archivePath = Split-Path -Parent $tj
-    $archiveName = Split-Path $archivePath -Leaf
-
-    $runId = "deliver-$archiveName"
-    $runDir = Join-Path $script:GoalTreesRoot $runId
-    if (Test-Path -LiteralPath $runDir -PathType Container) {
-        $existing = Read-Bridge $runDir
-        if ($null -ne $existing) {
-            Write-ErrorResult "RUN_EXISTS" "Bridge run already promulgated: .rdd/goal-trees/$runId (at $($existing.promulgated_at)). Use -RunId $runId with status/resume to continue." 1
-        }
-        Write-ErrorResult "RUN_EXISTS" "Run directory exists but is not a bridge run: .rdd/goal-trees/$runId" 1
+function Resolve-ReviewPlan {
+    # Requirement review gate consumption (hard constraint 6, -ReviewFile):
+    # classify verdicts into exclusion maps and validate merge-target survival.
+    # No -ReviewFile -> every map stays empty and promulgate is byte-identical
+    # to the pre-review behavior (regression guarantee).
+    param($Tasks, $AllIds, [string]$ReviewFilePath)
+    $info = @{
+        review = $null; deprecated_ids = @(); excluded_merge = @{}
+        excluded_reject = @{}; verdict_of = @{}; verdict_by_id = @{}
     }
-
-    $flow = Read-ArchiveTasks $archivePath
-    $tasks = $flow.tasks
-    if ($tasks.Count -eq 0) { Write-ErrorResult "EMPTY_ARCHIVE" "No tasks in task.json: $tj" 2 }
-    $allIds = @($tasks | ForEach-Object { [int]$_.id })
-    $archiveRel = ".rdd/changes/archive/$archiveName"
-
-    # requirement review gate (planner-requirement-review): the planner session
-    # reviews every sub-requirement BEFORE the tree exists and hands its verdicts
-    # over as a ReviewFile; this layer mechanically consumes them — excluded
-    # tasks (merged / reject_return) never graft, depends_on_override wholesale-
-    # replaces regex inference, deps on a merged task redirect to the absorber,
-    # deps dangling on a rejected task hard-fail (never silently dropped).
-    # Default (no -ReviewFile): everything below short-circuits — promulgate is
-    # byte-for-byte identical to the pre-review behavior (regression guarantee).
-    $review = $null
-    $deprecatedIds = @()
-    $excludedMerge = @{}    # taskId -> absorber taskId (dep redirect + annex note)
-    $excludedReject = @{}   # taskId -> $true (conclude-gate exemption set)
-    $verdictOf = @{}        # taskId -> verdict (node-producing tasks only)
-    $verdictById = @{}      # taskId -> verdict (all, for review.md rendering)
-    if (-not [string]::IsNullOrWhiteSpace($ReviewFile)) {
-        $review = Read-ReviewFile $ReviewFile $allIds
-        $deprecatedIds = @($tasks | Where-Object { ([string]$_.lifecycle) -eq 'deprecated' } | ForEach-Object { [int]$_.id })
-        foreach ($v in @($review.verdicts)) {
-            $tid = [int]$v['task_id']
-            $verdict = [string]$v['verdict']
-            $verdictById[$tid] = $v
-            # deprecated tasks are excluded before the review ever runs: only a
-            # merged_into verdict documents their (already executed) pre-promulgate
-            # deprecate; any other verdict on one is meaningless bookkeeping.
-            if (($deprecatedIds -contains $tid) -and ($verdict -ne 'tree_adjudicated' -or -not $v.Contains('merged_into_task_id'))) {
-                Write-ErrorResult "REVIEW_FILE_INVALID" "task #$tid is deprecated (excluded from delivery before the review) — only a merged_into verdict documents its pre-promulgate deprecate; remove task #$tid from the ReviewFile" 2
-            }
-            switch ($verdict) {
-                'reject_return'    { $excludedReject[$tid] = $true }
-                'tree_adjudicated' {
-                    if ($v.Contains('merged_into_task_id')) { $excludedMerge[$tid] = [int]$v['merged_into_task_id'] }
-                    else { $verdictOf[$tid] = $v }
-                }
-                default            { $verdictOf[$tid] = $v }
-            }
+    if ([string]::IsNullOrWhiteSpace($ReviewFilePath)) { return $info }
+    $info.review = Read-ReviewFile $ReviewFilePath $AllIds
+    $info.deprecated_ids = @($Tasks | Where-Object { ([string]$_.lifecycle) -eq 'deprecated' } | ForEach-Object { [int]$_.id })
+    foreach ($v in @($info.review.verdicts)) {
+        $tid = [int]$v['task_id']
+        $verdict = [string]$v['verdict']
+        $info.verdict_by_id[$tid] = $v
+        # deprecated tasks are excluded before the review ever runs: only a
+        # merged_into verdict documents their (already executed) pre-promulgate
+        # deprecate; any other verdict on one is meaningless bookkeeping.
+        if (($info.deprecated_ids -contains $tid) -and ($verdict -ne 'tree_adjudicated' -or -not $v.Contains('merged_into_task_id'))) {
+            Write-ErrorResult "REVIEW_FILE_INVALID" "task #$tid is deprecated (excluded from delivery before the review) — only a merged_into verdict documents its pre-promulgate deprecate; remove task #$tid from the ReviewFile" 2
         }
-        # merge-target survival: the absorber must itself produce an initial node —
-        # not deprecated, not rejected, not absorbed away (no merge chains).
-        foreach ($tid in @($excludedMerge.Keys)) {
-            $target = [int]$excludedMerge[$tid]
-            if (($deprecatedIds -contains $target) -or $excludedMerge.Contains($target) -or $excludedReject.Contains($target)) {
-                Write-ErrorResult "REVIEW_FILE_INVALID" "task #$tid merged_into_task_id=$target does not survive the review (deprecated / rejected / itself merged) — merge into a task this run actually delivers" 2
+        switch ($verdict) {
+            'reject_return'    { $info.excluded_reject[$tid] = $true }
+            'tree_adjudicated' {
+                if ($v.Contains('merged_into_task_id')) { $info.excluded_merge[$tid] = [int]$v['merged_into_task_id'] }
+                else { $info.verdict_of[$tid] = $v }
             }
+            default            { $info.verdict_of[$tid] = $v }
         }
     }
+    Test-ReviewMergeTargets $info
+    return $info
+}
 
-    # pure-auto-mode snapshot build (planner-auto-mode): EARLY, before any run
-    # state exists — an invalid -RiskPolicy is a deterministic usage error and
-    # must never leave a half-promulgated run behind (the Read-ReviewFile
-    # ordering discipline). $null when -AutoMode is absent (byte-identical
-    # legacy promulgation); the snapshot lands in bridge.json at 3c-2 below.
-    # NOTE: the local is named $amSnapshot (NOT $autoMode) — PS variable names
-    # are case-INsensitive, so a `$autoMode = $null` init would shadow the
-    # bound $AutoMode switch before the `if` below ever reads it.
-    $amSnapshot = $null
-    if ($AutoMode) {
-        $amSnapshot = New-AutoModeSnapshot $RiskPolicy
+function Test-ReviewMergeTargets {
+    # merge-target survival: the absorber must itself produce an initial node —
+    # not deprecated, not rejected, not absorbed away (no merge chains).
+    param($ReviewInfo)
+    foreach ($tid in @($ReviewInfo.excluded_merge.Keys)) {
+        $target = [int]$ReviewInfo.excluded_merge[$tid]
+        if (($ReviewInfo.deprecated_ids -contains $target) -or $ReviewInfo.excluded_merge.Contains($target) -or $ReviewInfo.excluded_reject.Contains($target)) {
+            Write-ErrorResult "REVIEW_FILE_INVALID" "task #$tid merged_into_task_id=$target does not survive the review (deprecated / rejected / itself merged) — merge into a task this run actually delivers" 2
+        }
     }
+}
 
-    # stage resolution + dependency inference (task-level, from requirement docs)
+function Resolve-PlanTaskDeps {
+    # Dependency resolution for ONE planned task under the review gate:
+    # depends_on_override wholesale-replaces regex inference ([] clears all),
+    # merged-away deps redirect to the absorber, deps dangling on a rejected
+    # task hard-fail REVIEW_EXCLUDED_DEP (never a silent drop).
+    param([int]$TaskId, $DepIds, [bool]$IsOverride, $ReviewInfo)
+    $resolved = @()
+    $explicit = @()
+    foreach ($d in @($DepIds)) {
+        $di = [int]$d
+        if ($ReviewInfo.excluded_merge.Contains($di)) {
+            $absorber = [int]$ReviewInfo.excluded_merge[$di]
+            if ($resolved -notcontains $absorber) { $resolved += $absorber }
+            if ($explicit -notcontains $absorber) { $explicit += $absorber }
+        }
+        elseif ($ReviewInfo.excluded_reject.Contains($di)) {
+            Write-ErrorResult "REVIEW_EXCLUDED_DEP" "task #$TaskId depends on task #$di, which the review rejected back to PM — adjudicate task #$TaskId as well (depends_on_override, or reject it too); the dependency will not be silently dropped" 1
+        }
+        else {
+            if ($IsOverride -and ($ReviewInfo.deprecated_ids -contains $di)) {
+                Write-ErrorResult "REVIEW_FILE_INVALID" "task #$TaskId depends_on_override entry #$di is deprecated (delivers nothing, anchors no node) — override to tasks this run delivers, or drop the entry" 2
+            }
+            if ($resolved -notcontains $di) { $resolved += $di }
+            if ($IsOverride -and $explicit -notcontains $di) { $explicit += $di }
+        }
+    }
+    return @{ resolved = $resolved; explicit = $explicit }
+}
+
+function New-DeliveryPlan {
+    # stage resolution + dependency inference per deliverable task (deprecated
+    # and review-excluded tasks graft no node, enter no bridge.tasks, never push).
+    param($Tasks, [string]$ArchivePath, $AllIds, $ReviewInfo)
     $plan = @()
     $skippedReview = @()
-    foreach ($t in $tasks) {
+    foreach ($t in $Tasks) {
         if (([string]$t.lifecycle) -eq 'deprecated') { continue }   # deprecated tasks are not promulgated
         $taskId = [int]$t.id
-        if ($excludedReject.Contains($taskId) -or $excludedMerge.Contains($taskId)) {
-            $skippedReview += $taskId        # review-excluded tasks build no node, enter no bridge.tasks, never push
+        if ($ReviewInfo.excluded_reject.Contains($taskId) -or $ReviewInfo.excluded_merge.Contains($taskId)) {
+            $skippedReview += $taskId
             continue
         }
         $group = @(Resolve-InitialGroup $t)
         $null = Resolve-TaskPhase $t $group   # phase gate: PHASE_INVALID / PHASE_OWNER_MISMATCH / GROUP_DIVERGENT_NEXT
-        $depIds = @(Get-RequirementDepTaskIds $archivePath $t $allIds)
+        $depIds = @(Get-RequirementDepTaskIds $ArchivePath $t $AllIds)
         $isOverride = $false
-        if ($verdictOf.Contains($taskId) -and $verdictOf[$taskId].Contains('depends_on_override')) {
-            # override presence wholesale-replaces regex inference ([] clears all deps)
-            $depIds = @($verdictOf[$taskId]['depends_on_override'] | ForEach-Object { [int]$_ })
+        if ($ReviewInfo.verdict_of.Contains($taskId) -and $ReviewInfo.verdict_of[$taskId].Contains('depends_on_override')) {
+            $depIds = @($ReviewInfo.verdict_of[$taskId]['depends_on_override'] | ForEach-Object { [int]$_ })
             $isOverride = $true
         }
         $explicitDeps = @()
-        if ($null -ne $review) {
-            $resolved = @()
-            foreach ($d in $depIds) {
-                $di = [int]$d
-                if ($excludedMerge.Contains($di)) {
-                    # merged-away dep: redirect to the absorber (its delivery covers
-                    # the merged scope) — review key rule 1.
-                    $absorber = [int]$excludedMerge[$di]
-                    if ($resolved -notcontains $absorber) { $resolved += $absorber }
-                    if ($explicitDeps -notcontains $absorber) { $explicitDeps += $absorber }
-                }
-                elseif ($excludedReject.Contains($di)) {
-                    # dep dangling on a rejected task: hard error, never a silent drop —
-                    # a silent drop would push this task prematurely (the exact
-                    # mis-ordering bug class this gate exists to kill).
-                    Write-ErrorResult "REVIEW_EXCLUDED_DEP" "task #$taskId depends on task #$di, which the review rejected back to PM — adjudicate task #$taskId as well (depends_on_override, or reject it too); the dependency will not be silently dropped" 1
-                }
-                else {
-                    if ($isOverride -and ($deprecatedIds -contains $di)) {
-                        Write-ErrorResult "REVIEW_FILE_INVALID" "task #$taskId depends_on_override entry #$di is deprecated (delivers nothing, anchors no node) — override to tasks this run delivers, or drop the entry" 2
-                    }
-                    if ($resolved -notcontains $di) { $resolved += $di }
-                    if ($isOverride -and $explicitDeps -notcontains $di) { $explicitDeps += $di }
-                }
-            }
-            $depIds = @($resolved)
+        if ($null -ne $ReviewInfo.review) {
+            $rd = Resolve-PlanTaskDeps -TaskId $taskId -DepIds $depIds -IsOverride $isOverride -ReviewInfo $ReviewInfo
+            $depIds = @($rd.resolved)
+            $explicitDeps = @($rd.explicit)
         }
         $plan += @{ task = $t; group = $group; dep_ids = $depIds; explicit_deps = $explicitDeps }
     }
-    if ($null -ne $review -and $plan.Count -eq 0) {
+    if ($null -ne $ReviewInfo.review -and $plan.Count -eq 0) {
         Write-ErrorResult "REVIEW_FILE_INVALID" "the review excluded every deliverable task — nothing to promulgate" 2
     }
+    return @{ plan = $plan; skipped_review = $skippedReview }
+}
 
-    $effWidth = if ($NodeWidth -gt 0) { $NodeWidth } else { [Math]::Max(4, $plan.Count) }
-    $effMaxNodes = if ($MaxNodes -gt 0) { $MaxNodes } else { ($plan.Count * 5 + 6) }
-
-    # goal root payload (goal-tree-goal-root): the original requirement as the
-    # final objective — title + description travel via the file channel (same
-    # encoding-safety convention as graft's -TasksFile).
-    $goal = Read-ArchiveGoal $archivePath $plan
+function Invoke-GoalRootStart {
+    # 1) goal-tree start in goal-root mode (RefRoots = whole repo: delivery
+    #    citations are change lists anywhere). start itself is atomic (manifest
+    #    CreateNew), so a concurrent double-promulgate loses here before any
+    #    bridge state exists. Then: planner lease + roster row + open round 1
+    #    (kept open for the whole delivery; conclude auto-closes it).
+    param([string]$RunId, $Goal, [string]$ArchiveRel, [int]$EffWidth, [int]$EffMaxNodes)
     $goalFile = Join-Path ([System.IO.Path]::GetTempPath()) ("bridge-goal-{0}.md" -f ([guid]::NewGuid().ToString("N").Substring(0, 10)))
-    [System.IO.File]::WriteAllText($goalFile, $goal.description, $script:Utf8NoBom)
-
-    # 1) goal-tree start in goal-root mode (RefRoots = whole repo: delivery citations
-    #    are change lists anywhere). start itself is atomic (manifest CreateNew), so
-    #    a concurrent double-promulgate loses here before any bridge state exists.
+    [System.IO.File]::WriteAllText($goalFile, $Goal.description, $script:Utf8NoBom)
     try {
-        $r = Invoke-GoalTree @("-Command", "start", "-RunId", $runId,
-            "-Goal", "$($goal.title) — deliver $archiveRel",
-            "-Title", $goal.title,
+        $r = Invoke-GoalTree @("-Command", "start", "-RunId", $RunId,
+            "-Goal", "$($Goal.title) — deliver $ArchiveRel",
+            "-Title", $Goal.title,
             "-GoalRoot", "-GoalFile", $goalFile,
             "-RefRoots", ".", "-CreatedBy", $CreatedBy,
-            "-MaxRounds", "$MaxRounds", "-NodeWidth", "$effWidth", "-MaxNodes", "$effMaxNodes",
-            "-Notes", "delivery-bridge run for $archiveRel")
+            "-MaxRounds", "$MaxRounds", "-NodeWidth", "$EffWidth", "-MaxNodes", "$EffMaxNodes",
+            "-Notes", "delivery-bridge run for $ArchiveRel")
     }
     finally {
         Remove-Item -LiteralPath $goalFile -Force -ErrorAction SilentlyContinue
     }
     if ($r.exit -ne 0 -or -not $r.json.success) { Write-ErrorResult "PROMULGATE_START_FAILED" "goal-tree start failed: $($r.text)" 3 }
-    $runDir = Join-Path $script:GoalTreesRoot $runId
-
+    $runDir = Join-Path $script:GoalTreesRoot $RunId
     $null = Enter-PlannerLease $runDir
-
     # planner body roster row (planner-session-roster): the promulgating dsh
-    # session IS this run's planner — register it right after the run dir
-    # exists (advisory; CLI planners carry no DSH_SESSION_ID and skip silently).
-    $null = Register-PlannerBody -RunDir $runDir -RunIdText $runId
+    # session IS this run's planner — register it right after the run dir exists
+    # (advisory; CLI planners carry no DSH_SESSION_ID and skip silently).
+    $null = Register-PlannerBody -RunDir $runDir -RunIdText $RunId
+    $r2 = Invoke-GoalTree @("-Command", "round-start", "-RunId", $RunId)
+    if ($r2.exit -ne 0 -or -not $r2.json.success) { Write-ErrorResult "PROMULGATE_ROUND_FAILED" "round-start failed: $($r2.text)" 3 }
+    return $runDir
+}
 
-    # 2) open round 1 (kept open for the whole delivery; conclude auto-closes it)
-    $r = Invoke-GoalTree @("-Command", "round-start", "-RunId", $runId)
-    if ($r.exit -ne 0 -or -not $r.json.success) { Write-ErrorResult "PROMULGATE_ROUND_FAILED" "round-start failed: $($r.text)" 3 }
+function Get-PlanDepMapsFromDeliveryPlan {
+    # delivered ids + task-DAG edges from the in-flight delivery plan — the
+    # staged plan is validated against the very DAG promulgate is grafting.
+    param($DeliveryPlan)
+    $delivered = @(); $deps = @{}
+    foreach ($p in @($DeliveryPlan)) {
+        $tid = [int]$p.task.id
+        $delivered += $tid
+        $deps[$tid] = @(Convert-ToSafeArray $p['dep_ids'] | ForEach-Object { [int]$_ })
+    }
+    return @{ delivered = @($delivered | Sort-Object); deps = $deps }
+}
 
-    # 3) graft one chain-head node per (task, initial group role) under the goal root;
-    #    deps point at EVERY chain head of each dep task (phase-model multi-anchor:
-    #    the dependent unlocks only when the whole upstream phase settles). The
-    #    requirement chain heads (first-stage work nodes, ref-bound to their
-    #    requirement docs) ARE the goal root's children — the "requirement node"
-    #    layer and the first work node are one (decision 4). Parallel owners each
-    #    get their own head (the old single-stage resolution dropped all but the
-    #    first owner's work); stages stay single-value per role key in bridge.tasks
-    #    so a parallel group never collides.
-    $bridge = @{
+function New-PromulgateGoal {
+    # goal root payload (goal-tree-goal-root): the original requirement as the
+    # final objective — title + description travel via the file channel (same
+    # encoding-safety convention as graft's -TasksFile). criteria mode injects
+    # the acceptance anchor (dispatch-record check point, overall-delivery).
+    param([string]$ArchivePath, $Plan, $Acceptance)
+    $goal = Read-ArchiveGoal $ArchivePath $Plan
+    if (([string]$Acceptance.status) -eq 'planned') {
+        $goal.description = $goal.description + "`n`n> 整体验收判据：$([string]$Acceptance.criteria_ref)"
+    }
+    return $goal
+}
+
+function New-PromulgateInitialPush {
+    # 4) initial dependency-driven push (goal-tree-goal-root): every node with
+    #    no unsatisfied dependency (and an open stage gate) gets its role
+    #    session started right here — no manual dispatch, no confirmation gate.
+    #    -NoPush (test/incident isolation): build the run but start NOTHING —
+    #    the persisted run-level flag is re-asserted by every later trigger.
+    param([string]$RunDir, $Bridge)
+    if ($NoPush) {
+        return @{ push = @{ trigger = "promulgate (-NoPush)"; considered = 0; pushed = @(); skipped = @(); failed = @() }; bridge = $Bridge }
+    }
+    $push = Invoke-AutoDispatch $RunDir $Bridge "promulgate"
+    return @{ push = $push; bridge = $push.bridge }
+}
+
+function New-BridgeSkeleton {
+    # bridge.json v2 skeleton: node<->TaskId authoritative mapping + goal_root
+    # anchor + the acceptance placeholder (overall-delivery, planned -> grafted)
+    # + the plan section (long-task-planning current state; mandatory at
+    # promulgate since -PlanFile is a hard gate).
+    param([string]$RunId, [string]$ArchivePath, [string]$ArchiveRel, $Goal, [string]$CreatedByText, $Acceptance, $PlanSec)
+    return @{
         format_version  = 2
-        run_id          = $runId
-        archive         = $archivePath
-        archive_rel     = $archiveRel
+        run_id          = $RunId
+        archive         = $ArchivePath
+        archive_rel     = $ArchiveRel
         promulgated_at  = Get-UtcNowIso
-        created_by      = $CreatedBy
+        created_by      = $CreatedByText
         goal_root       = "n1"
-        goal            = @{ title = $goal.title; source = $goal.source }
+        goal            = @{ title = $Goal.title; source = $Goal.source }
+        acceptance      = $Acceptance
+        plan            = $PlanSec
         tasks           = @{}
         nodes           = @{}
         pending_sync    = @()
         pushes          = @{}
     }
+}
+
+function Invoke-InitialChainGrafts {
+    # 3) graft one chain-head node per (task, initial group role) under the goal
+    #    root; deps point at EVERY chain head of each dep task (phase-model
+    #    multi-anchor: the dependent unlocks only when the whole upstream phase
+    #    settles). Returns @{ bridge; initial_nodes_of_task }.
+    param([string]$RunId, $Plan, $Bridge, [string]$ArchiveName, [string]$AcceptanceRef)
     $initialNodesOfTask = @{}
-    foreach ($p in $plan) {
+    foreach ($p in $Plan) {
         $t = $p.task
         $taskId = [int]$t.id
         $group = @($p.group)
         $depNodes = @()
         foreach ($d in $p.dep_ids) { if ($initialNodesOfTask.ContainsKey($d)) { $depNodes += @($initialNodesOfTask[$d]) } }
-        # bookkeeping for the deferred review-edge stitching below (single-pass
-        # graft can only express deps on already-grafted nodes)
+        # bookkeeping for the deferred review-edge stitching (single-pass graft
+        # can only express deps on already-grafted nodes)
         $p['grafted_dep_nodes'] = @($depNodes)
-
         $reqRel = ([string]$t.requirement -replace '\\', '/')
         $designRels = @()
         foreach ($d in @(Convert-ToSafeArray $t.designDocs)) { $designRels += ([string]$d.path -replace '\\', '/') }
-        $bridge.tasks["$taskId"] = @{
+        $Bridge.tasks["$taskId"] = @{
             title          = [string]$t.title
             requirement    = $reqRel
             initial_group  = @($group)
@@ -1864,173 +3184,333 @@ function Invoke-Promulgate {
         $initialNodesOfTask[$taskId] = @()
         foreach ($role in $group) {
             # goal-first node task text (dispatch-task-goal-anchoring): single
-            # authoritative producer — see New-NodeTaskText above
-            $taskText = New-NodeTaskText -Title ([string]$t.title) -Stage $role -ReqRel $reqRel -DesignRels $designRels -RunId $runId
+            # authoritative producer — New-NodeTaskText; AcceptanceRef injects
+            # the whole-requirement criteria anchor (overall-delivery).
+            # ConventionsRef (parallel-coordination): DESIGN 链头注入「架构约定:<path>」。
+            $conventionsRef = $null
+            if (Test-DesignStageNode ([string]$role) $t) { $conventionsRef = Get-ConventionsRef $Bridge }
+            $taskText = New-NodeTaskText -Title ([string]$t.title) -Stage $role -ReqRel $reqRel -DesignRels $designRels -RunId $RunId -AcceptanceRef $AcceptanceRef -ConventionsRef $conventionsRef
             $graftItem = @{
                 title      = [string]$t.title
                 task       = $taskText
                 role       = $role.ToLower()
-                ref        = "$archiveName/$reqRel"   # requirement-node ref ↔ the requirement doc (goal-tree-goal-root AC-1)
+                ref        = "$ArchiveName/$reqRel"   # requirement-node ref <-> the requirement doc
             }
             if ($depNodes.Count -gt 0) { $graftItem['depends_on'] = @($depNodes) }
-            $g = Invoke-GraftOne $runId "n1" $graftItem
+            $g = Invoke-GraftOne $RunId ([string]$Bridge.goal_root) $graftItem
             if (-not $g.ok) { Write-ErrorResult "PROMULGATE_GRAFT_FAILED" "graft failed for task $taskId ($role): $($g.text)" 3 }
-            $nodeId = $g.node_id
-            Set-NodeTaskStage $bridge $nodeId $taskId $role
-            $initialNodesOfTask[$taskId] += $nodeId
+            Set-NodeTaskStage $Bridge $g.node_id $taskId $role
+            $initialNodesOfTask[$taskId] += $g.node_id
         }
     }
+    return @{ bridge = $Bridge; initial_nodes_of_task = $initialNodesOfTask }
+}
 
+function Get-DeferredReviewEdges {
     # 3b) deferred review-edge stitching: single-pass graft can only express deps
     #     on already-grafted nodes (task order); when the planner's override or a
-    #     merge-redirect points at a task grafted LATER, the edge is added here via
-    #     the public deps CLI (DAG-validated, deps-log audited) instead of silently
-    #     vanishing. Inferred (non-adjudicated) deps keep the legacy one-pass shape.
-    #     Per-node edge stitching lives in Get-DeferredEdgesForNode (nesting cap).
-    $deferredEdges = @()
-    if ($null -ne $review) {
-        foreach ($p in $plan) {
-            if (@($p['explicit_deps']).Count -eq 0) { continue }
-            $have = @($p['grafted_dep_nodes'])
-            foreach ($nodeId in @($initialNodesOfTask[[int]$p.task.id])) {
-                $deferredEdges += @(Get-DeferredEdgesForNode -RunId $runId -TaskId ([int]$p.task.id) -NodeId $nodeId -ExplicitDeps @($p['explicit_deps']) -GraftedDepNodes $have -InitialNodesOfTask $initialNodesOfTask)
-            }
+    #     merge-redirect points at a task grafted LATER, the edge is added via
+    #     the public deps CLI (DAG-validated, deps-log audited) instead of
+    #     silently vanishing. Per-node edge nesting cap: Get-DeferredEdgesForNode.
+    param([string]$RunId, $Plan, $InitialNodesOfTask)
+    $edges = @()
+    foreach ($p in $Plan) {
+        if (@($p['explicit_deps']).Count -eq 0) { continue }
+        $have = @($p['grafted_dep_nodes'])
+        foreach ($nodeId in @($InitialNodesOfTask[[int]$p.task.id])) {
+            $edges += @(Get-DeferredEdgesForNode -RunId $RunId -TaskId ([int]$p.task.id) -NodeId $nodeId -ExplicitDeps @($p['explicit_deps']) -GraftedDepNodes $have -InitialNodesOfTask $InitialNodesOfTask)
         }
     }
+    return $edges
+}
 
-    # 3c) bridge.json v2 review section (machine-readable audit: disposition type /
-    #     reason / times — acceptance 2). Old runs without it read unchanged
-    #     (Test-PropPresent convention).
-    $reviewAppliedAt = $null
-    if ($null -ne $review) {
-        $reviewAppliedAt = Get-UtcNowIso
-        $bridge['review'] = @{
-            reviewed_at = $review.reviewed_at
-            reviewer    = $review.reviewer
-            verdicts    = @($review.verdicts)
-            applied_at  = $reviewAppliedAt
+function Set-BridgeOptionalSections {
+    # 3c/3c-2/3c-3: review audit + auto_mode snapshot + no_push isolation as
+    # PERSISTED run-level attributes. Absent when off: byte-identical legacy
+    # promulgation (the -ReviewFile / -AutoMode / -NoPush gating discipline).
+    param($Bridge, $ReviewInfo, [string]$ReviewAppliedAt, $AmSnapshot)
+    if ($null -ne $ReviewInfo.review) {
+        $Bridge['review'] = @{
+            reviewed_at = $ReviewInfo.review.reviewed_at
+            reviewer    = $ReviewInfo.review.reviewer
+            verdicts    = @($ReviewInfo.review.verdicts)
+            applied_at  = $ReviewAppliedAt
         }
     }
+    if ($null -ne $AmSnapshot) { $Bridge['auto_mode'] = $AmSnapshot }
+    if ($NoPush) { $Bridge['no_push'] = $true }
+    return $Bridge
+}
 
-    # 3c-2) auto_mode snapshot (planner-auto-mode): ONLY for -AutoMode
-    #       promulgations — the immutable in-run copy built EARLY above (default
-    #       R1-R9, or the -RiskPolicy wholesale override with the R1
-    #       constitutional hard floor force-merged back) lands in bridge.json.
-    #       Absent when off: byte-identical legacy promulgation (the -ReviewFile
-    #       gating discipline).
-    if ($null -ne $amSnapshot) {
-        $bridge['auto_mode'] = $amSnapshot
-    }
-
-    # 3c-3) -NoPush isolation as a PERSISTED run-level attribute (0923 incident
-    #       response, QA F1): a promulgate-time skip alone was pierceable — every
-    #       later auto-dispatch trigger (status touch / reclaim / settle /
-    #       rollback) re-derived never-pushed nodes as candidates and really
-    #       pushed them. Invoke-AutoDispatch consumes this flag at the top of its
-    #       gate chain, so the run stays zero-backend for its whole lifetime;
-    #       absent when off: byte-identical legacy promulgation.
-    if ($NoPush) { $bridge['no_push'] = $true }
-
-    Write-BridgeFile $runDir $bridge
-
+function Write-ReviewReportFile {
     # 3d) report/review.md — the human-readable per-task conclusions table
     #     (acceptance 1: the persistent carrier presented to the user; the
     #     planner session renders the same verdicts live from the JSON return).
-    if ($null -ne $review) {
-        $revDir = Join-Path $runDir "report"
-        if (-not (Test-Path -LiteralPath $revDir)) { New-Item -ItemType Directory -Path $revDir -Force | Out-Null }
-        $verdictLabel = @{ pass = "通过"; tree_adjudicated = "树内裁定"; reject_return = "驳回回流" }
-        $rl = @()
-        $rl += "# 需求审查结论 — $runId"
-        $rl += ""
-        $rl += "- 归档: $archiveRel"
-        $rl += "- 审查时间: $($review.reviewed_at) · 审查者: $($review.reviewer) · 应用时间: $reviewAppliedAt"
-        $rl += ""
-        $rl += "| Task | 标题 | 结论 | 理由 | 处置 |"
-        $rl += "|------|------|------|------|------|"
-        foreach ($t in $tasks) {
-            $taskId = [int]$t.id
-            $isDep = (([string]$t.lifecycle) -eq 'deprecated')
-            if ($isDep -and -not $verdictById.Contains($taskId)) { continue }
-            $label = "通过"; $reason = "（未单列 = 审查通过）"; $disp = "正常建树"
-            if ($verdictById.Contains($taskId)) {
-                $v = $verdictById[$taskId]
-                $label = $verdictLabel[[string]$v['verdict']]
-                $reason = ([string]$v['reason'] -replace '\|', '/')
-                switch ([string]$v['verdict']) {
-                    'pass' { $disp = "正常建树" }
-                    'tree_adjudicated' {
-                        if ($v.Contains('merged_into_task_id')) {
-                            $disp = "合并至 #$([int]$v['merged_into_task_id'])（不建节点$(if ($isDep) { '，已 deprecate' } else { '，本 run 排除' })）"
-                        } else {
-                            $disp = "依赖覆盖: [$(@($v['depends_on_override']) -join ',')]（整体替代正则推导）"
-                        }
+    param([string]$RunId, [string]$RunDir, [string]$ArchiveRel, $Tasks, $ReviewInfo, [string]$ReviewAppliedAt, $DeferredEdges)
+    $revDir = Join-Path $RunDir "report"
+    if (-not (Test-Path -LiteralPath $revDir)) { New-Item -ItemType Directory -Path $revDir -Force | Out-Null }
+    $verdictLabel = @{ pass = "通过"; tree_adjudicated = "树内裁定"; reject_return = "驳回回流" }
+    $rl = @()
+    $rl += "# 需求审查结论 — $RunId"
+    $rl += ""
+    $rl += "- 归档: $ArchiveRel"
+    $rl += "- 审查时间: $($ReviewInfo.review.reviewed_at) · 审查者: $($ReviewInfo.review.reviewer) · 应用时间: $ReviewAppliedAt"
+    $rl += ""
+    $rl += "| Task | 标题 | 结论 | 理由 | 处置 |"
+    $rl += "|------|------|------|------|------|"
+    foreach ($t in $Tasks) {
+        $taskId = [int]$t.id
+        $isDep = (([string]$t.lifecycle) -eq 'deprecated')
+        if ($isDep -and -not $ReviewInfo.verdict_by_id.Contains($taskId)) { continue }
+        $label = "通过"; $reason = "（未单列 = 审查通过）"; $disp = "正常建树"
+        if ($ReviewInfo.verdict_by_id.Contains($taskId)) {
+            $v = $ReviewInfo.verdict_by_id[$taskId]
+            $label = $verdictLabel[[string]$v['verdict']]
+            $reason = ([string]$v['reason'] -replace '\|', '/')
+            switch ([string]$v['verdict']) {
+                'pass' { $disp = "正常建树" }
+                'tree_adjudicated' {
+                    if ($v.Contains('merged_into_task_id')) {
+                        $disp = "合并至 #$([int]$v['merged_into_task_id'])（不建节点$(if ($isDep) { '，已 deprecate' } else { '，本 run 排除' })）"
+                    } else {
+                        $disp = "依赖覆盖: [$(@($v['depends_on_override']) -join ',')]（整体替代正则推导）"
                     }
-                    'reject_return' { $disp = "驳回协议回流 PM（不建节点，不进本轮交付）" }
                 }
+                'reject_return' { $disp = "驳回协议回流 PM（不建节点，不进本轮交付）" }
             }
-            $rl += "| $taskId | $(([string]$t.title) -replace '\|', '/') | $label | $reason | $disp |"
         }
+        $rl += "| $taskId | $(([string]$t.title) -replace '\|', '/') | $label | $reason | $disp |"
+    }
+    $rl += ""
+    $rl += "> 未列出的 active 任务 = 审查通过（正常建树）；deprecated 且未列出的任务 = 审查前已排除，不属本 run 交付。用户可随时干预或推翻裁定（最终裁决权在用户）。"
+    if (@($DeferredEdges).Count -gt 0) {
         $rl += ""
-        $rl += "> 未列出的 active 任务 = 审查通过（正常建树）；deprecated 且未列出的任务 = 审查前已排除，不属本 run 交付。用户可随时干预或推翻裁定（最终裁决权在用户）。"
-        if ($deferredEdges.Count -gt 0) {
-            $rl += ""
-            $rl += "> 延后缝合的审查依赖边（graft 单趟无法表达的前向引用，经 deps add 补齐并留 deps-log 审计）: $(@($deferredEdges | ForEach-Object { "#$($_.task_id)→#$($_.on_task_id)" }) -join '、')"
-        }
-        [System.IO.File]::WriteAllText((Join-Path $revDir "review.md"), ($rl -join "`n"), $script:Utf8NoBom)
+        $rl += "> 延后缝合的审查依赖边（graft 单趟无法表达的前向引用，经 deps add 补齐并留 deps-log 审计）: $(@($DeferredEdges | ForEach-Object { "#$($_.task_id)→#$($_.on_task_id)" }) -join '、')"
     }
+    [System.IO.File]::WriteAllText((Join-Path $revDir "review.md"), ($rl -join "`n"), $script:Utf8NoBom)
+}
 
-    # 4) initial dependency-driven push (goal-tree-goal-root): every node with no
-    #    unsatisfied dependency gets its role session started right here — no
-    #    manual per-node dispatch, no confirmation gate (decision 1-A/3).
-    #    -NoPush (test/incident isolation): build the run but start NOTHING —
-    #    deterministic zero-backend runs for the engine test-suite. The isolation
-    #    lives in the PERSISTED run-level flag (bridge.json no_push=true, 3c-3
-    #    above) and is re-asserted by Invoke-AutoDispatch's gate on every later
-    #    trigger; this local early-out only spells the trigger out in the
-    #    response and keeps the per-node pushes ledger empty.
-    if ($NoPush) {
-        $push = @{ trigger = "promulgate (-NoPush)"; considered = 0; pushed = @(); skipped = @(); failed = @() }
-    } else {
-        $push = Invoke-AutoDispatch $runDir $bridge "promulgate"
+function New-PlanResultSummary {
+    # promulgate response plan echo: revision + stage/batch essentials + risks.
+    param($PlanSec)
+    return @{
+        revision = [int]$PlanSec['revision']
+        source   = [string]$PlanSec['source']
+        stages   = @($PlanSec['stages'] | ForEach-Object {
+            $pst = $_
+            @{ id = [string]$pst['id']; goal = [string]$pst['goal']; milestone = [string]$pst['milestone']; task_ids = @($pst['task_ids']); batches = @($pst['batches']) }
+        })
+        risks    = @($PlanSec['risks'])
     }
+}
 
+function New-PromulgateResult {
+    # the promulgate JSON payload (acceptance 1/2 response surface): plan echo +
+    # review/auto_mode/acceptance optional sections + budget + auto-push ledger.
+    param([string]$RunId, [string]$RunDir, [string]$ArchiveRel, $Goal, $Plan, $InitialNodesOfTask, $Tasks,
+          $ReviewInfo, [string]$ReviewAppliedAt, $AmSnapshot, $DeferredEdges, $Acceptance,
+          [int]$EffWidth, [int]$EffMaxNodes, $Push, $SkippedReview, $PlanSec)
     return @{
         success = $true
         data    = @{
             promulgated  = $true
-            run_id       = $runId
-            archive      = $archiveRel
-            directory    = ".rdd/goal-trees/$runId"
-            goal_root    = @{ node = "n1"; title = $goal.title; source = $goal.source }
-            tasks        = @($plan | ForEach-Object { @{ task_id = [int]$_.task.id; stage = @($_.group)[0]; group = @($_.group); node = @($initialNodesOfTask[[int]$_.task.id])[0]; nodes = @($initialNodesOfTask[[int]$_.task.id]); dep_task_ids = @($_.dep_ids) } })
-            skipped_deprecated = @($tasks | Where-Object { ([string]$_.lifecycle) -eq 'deprecated' } | ForEach-Object { [int]$_.id })
-            skipped_review    = @($skippedReview)
-            review       = $(if ($null -ne $review) {
+            run_id       = $RunId
+            archive      = $ArchiveRel
+            directory    = ".rdd/goal-trees/$RunId"
+            goal_root    = @{ node = "n1"; title = $Goal.title; source = $Goal.source }
+            plan         = New-PlanResultSummary $PlanSec
+            tasks        = @($Plan | ForEach-Object { @{ task_id = [int]$_.task.id; stage = @($_.group)[0]; group = @($_.group); node = @($InitialNodesOfTask[[int]$_.task.id])[0]; nodes = @($InitialNodesOfTask[[int]$_.task.id]); dep_task_ids = @($_.dep_ids) } })
+            skipped_deprecated = @($Tasks | Where-Object { ([string]$_.lifecycle) -eq 'deprecated' } | ForEach-Object { [int]$_.id })
+            skipped_review    = @($SkippedReview)
+            acceptance   = $Acceptance
+            review       = $(if ($null -ne $ReviewInfo.review) {
                 @{
-                    reviewed_at = $review.reviewed_at
-                    reviewer    = $review.reviewer
-                    applied_at  = $reviewAppliedAt
-                    report      = ".rdd/goal-trees/$runId/report/review.md"
-                    verdicts    = @($review.verdicts)
-                    deferred_dep_edges = @($deferredEdges | ForEach-Object { "task#$($_.task_id)->task#$($_.on_task_id) ($($_.node)->$($_.on))" })
+                    reviewed_at = $ReviewInfo.review.reviewed_at
+                    reviewer    = $ReviewInfo.review.reviewer
+                    applied_at  = $ReviewAppliedAt
+                    report      = ".rdd/goal-trees/$RunId/report/review.md"
+                    verdicts    = @($ReviewInfo.review.verdicts)
+                    deferred_dep_edges = @($DeferredEdges | ForEach-Object { "task#$($_.task_id)->task#$($_.on_task_id) ($($_.node)->$($_.on))" })
                 }
             } else { $null })
-            auto_mode     = $(if ($null -ne $amSnapshot) {
+            auto_mode     = $(if ($null -ne $AmSnapshot) {
                 @{
                     enabled       = $true
-                    policy_source = $amSnapshot.policy_source
-                    rule_count    = @($amSnapshot.policy.rules).Count
+                    policy_source = $AmSnapshot.policy_source
+                    rule_count    = @($AmSnapshot.policy.rules).Count
                     r1_floor      = "manual (hard floor, force-merged)"
-                    protocol      = Get-AutoModeProtocolHint $runId
+                    protocol      = Get-AutoModeProtocolHint $RunId
                 }
             } else { $null })
-            budget       = @{ max_rounds = $MaxRounds; node_width = $effWidth; max_nodes = $effMaxNodes }
-            lease        = @{ holder = (Get-LeaseState $runDir).holder }
-            auto_push    = @{ trigger = $push.trigger; pushed = @($push.pushed); blocked = @($push.skipped | Where-Object { $_.reason -eq 'blocked_by_deps' } | ForEach-Object { $_.node }); failed = @($push.failed) }
-            next_step    = "initial pushes are automatic (pushed: [$(@($push.pushed) -join ', ')]; dep-blocked nodes push when their dependencies settle). Workers start with: delivery-bridge.cmd -Command claim -RunId $runId -NodeId <id> -Role <stage>."
+            budget       = @{ max_rounds = $MaxRounds; node_width = $EffWidth; max_nodes = $EffMaxNodes }
+            lease        = @{ holder = (Get-LeaseState $RunDir).holder }
+            auto_push    = @{ trigger = $Push.trigger; pushed = @($Push.pushed); blocked = @($Push.skipped | Where-Object { $_.reason -eq 'blocked_by_deps' } | ForEach-Object { $_.node }); failed = @($Push.failed) }
+            next_step    = "initial pushes are automatic (pushed: [$(@($Push.pushed) -join ', ')]; dep-blocked nodes push when their dependencies settle). Workers start with: delivery-bridge.cmd -Command claim -RunId $RunId -NodeId <id> -Role <stage>."
         }
     }
+}
+
+function Resolve-PromulgatePaths {
+    # path resolution + the RUN_EXISTS double-promulgate guard (the run id is the
+    # frozen deliver-<archive> convention). Returns the resolved coordinates.
+    param([string]$TaskJsonPath)
+    if ([string]::IsNullOrWhiteSpace($TaskJsonPath)) { Write-ErrorResult "MISSING_TASK_JSON" "-TaskJson (archive task.json path) is required" 1 }
+    $tj = $TaskJsonPath
+    if (-not [System.IO.Path]::IsPathRooted($tj)) { $tj = Join-Path $repoRoot $tj }
+    if (-not (Test-Path -LiteralPath $tj -PathType Leaf)) { Write-ErrorResult "TASK_JSON_NOT_FOUND" "task.json not found: $tj" 2 }
+    $archivePath = Split-Path -Parent $tj
+    $archiveName = Split-Path $archivePath -Leaf
+    $runId = "deliver-$archiveName"
+    $runDir = Join-Path $script:GoalTreesRoot $runId
+    if (Test-Path -LiteralPath $runDir -PathType Container) {
+        $existing = Read-Bridge $runDir
+        if ($null -ne $existing) {
+            Write-ErrorResult "RUN_EXISTS" "Bridge run already promulgated: .rdd/goal-trees/$runId (at $($existing.promulgated_at)). Use -RunId $runId with status/resume to continue." 1
+        }
+        Write-ErrorResult "RUN_EXISTS" "Run directory exists but is not a bridge run: .rdd/goal-trees/$runId" 1
+    }
+    return @{ task_json = $tj; archive = $archivePath; archive_name = $archiveName; run_id = $runId; run_dir = $runDir }
+}
+
+function Get-PromulgateBudget {
+    # node_width budget = goal-root children: the chain heads + the two
+    # tree-level acceptance nodes (overall-delivery width formula +2 — the 2/3
+    # task-count WIDTH_EXCEEDED regression) + (K-1) stage acceptance nodes
+    # (long-task-planning: they hang on the goal root too; K=1 adds zero);
+    # node budget keeps per-task ×5 + 6 slack + (K-1). Explicit -NodeWidth /
+    # -MaxNodes always win.
+    param($Plan, [int]$StageCount = 1)
+    $headCount = 0
+    foreach ($p in $Plan) { $headCount += @($p.group).Count }
+    $extra = [Math]::Max(0, $StageCount - 1)
+    return @{
+        width     = $(if ($NodeWidth -gt 0) { $NodeWidth } else { [Math]::Max(4, $headCount + 2 + $extra) })
+        max_nodes = $(if ($MaxNodes -gt 0) { $MaxNodes } else { (@($Plan).Count * 5 + 6 + $extra) })
+    }
+}
+
+function New-PromulgateIntake {
+    # intake guards before any run state exists (invalid input = deterministic
+    # error, zero residue): review gate + auto-mode snapshot + acceptance basis.
+    # NOTE: $amSnapshot is deliberately named that way here (the caller's
+    # $autoModeName would shadow a common $autoMode variable per the review).
+    param([string]$ArchivePath, $Tasks, $AllIds)
+    $reviewInfo = Resolve-ReviewPlan $Tasks $AllIds $ReviewFile
+    $amSnapshot = $null
+    if ($AutoMode) { $amSnapshot = New-AutoModeSnapshot $RiskPolicy }
+    $criteria = Read-AcceptanceCriteria $ArchivePath
+    $reqCount = @($Tasks | Where-Object { ([string]$_.lifecycle) -ne 'deprecated' }).Count
+    return @{
+        review_info = $reviewInfo
+        am_snapshot = $amSnapshot
+        criteria    = $criteria
+        acceptance  = (New-AcceptanceSection $criteria $reqCount)
+    }
+}
+
+function Test-PlanPromulgateFit {
+    # the plan's two promulgate-time fits (long-task-planning): every delivered
+    # id lives in exactly one stage + dep edges run forward across stage order;
+    # batches must form a dep-forward topological order inside each stage.
+    param($PlanFileObj, $Plan, $AllIds, $Criteria)
+    $maps = Get-PlanDepMapsFromDeliveryPlan $Plan
+    Test-PlanDeliveryFit $PlanFileObj $AllIds $maps.delivered $maps.deps
+    Test-PlanCriteriaRef $PlanFileObj $Criteria
+}
+
+function Set-PromulgateRunState {
+    # bridge state persistence + plan ledger tail + optional review report —
+    # everything between the initial grafts and the initial push tail.
+    param([string]$RunIdText, [string]$RunDir, [string]$ArchiveRel, [string]$ArchiveName, $Bridge, $PlanSec, $ReviewInfo, $AmSnapshot, $Plan, $InitialNodesOfTask, $Tasks)
+    $deferredEdges = @()
+    $reviewAppliedAt = $null
+    if ($null -ne $ReviewInfo.review) {
+        $deferredEdges = @(Get-DeferredReviewEdges $RunIdText $Plan $InitialNodesOfTask)
+        $reviewAppliedAt = Get-UtcNowIso
+    }
+    $Bridge = Set-BridgeOptionalSections $Bridge $ReviewInfo $reviewAppliedAt $AmSnapshot
+    Write-BridgeFile $RunDir $Bridge
+    # design_maps 只读派生缓存初扫(parallel-coordination):设计产物已在归档内时
+    # 即刻机读,DESIGN_MAP_INVALID 警示早期可见(status 继续透出,不阻塞流转)。
+    $null = Get-DesignMaps $RunDir $Bridge $Tasks
+    $null = Add-PlanEvent $RunDir 'progress' 'plan_promulgated' $null $null $null @{
+        revision = 1; stage_ids = @($PlanSec.stages | ForEach-Object { [string]$_.id })
+    }
+    if ($null -ne $ReviewInfo.review) {
+        Write-ReviewReportFile $RunIdText $RunDir $ArchiveRel $Tasks $ReviewInfo $reviewAppliedAt $deferredEdges
+    }
+    return @{ bridge = $Bridge; deferred_edges = @($deferredEdges); review_applied_at = $reviewAppliedAt }
+}
+
+function Invoke-Promulgate {
+    # long-task-planning hard gate: a staged plan is MANDATORY (要素齐全 ≠ 篇幅 —
+    # one-line goals are fine, but the elements must be there). PLAN_MISSING
+    # fires before any run state exists (zero residue, like every intake error).
+    if ([string]::IsNullOrWhiteSpace($PlanFile)) {
+        Write-ErrorResult "PLAN_MISSING" "promulgate requires -PlanFile <staged plan> (long-task-planning: 阶段目标/里程碑/集成验收点/任务依赖排序/可并行批次). Produce the PlanFile first — see planner-guide「长程规划与滚动追踪」." 1
+    }
+    # NOTE: the parsed plan is named $planParsed — PS names are case-INsensitive,
+    # a $planFile local would silently clobber the bound $PlanFile path param.
+    $planParsed = Read-PlanFile $PlanFile
+    $paths = Resolve-PromulgatePaths $TaskJson
+    $archivePath = $paths.archive
+    $archiveName = $paths.archive_name
+    $runId = $paths.run_id
+    $runDir = $paths.run_dir
+
+    $flow = Read-ArchiveTasks $archivePath
+    $tasks = $flow.tasks
+    if ($tasks.Count -eq 0) { Write-ErrorResult "EMPTY_ARCHIVE" "No tasks in task.json: $($paths.task_json)" 2 }
+    $allIds = @($tasks | ForEach-Object { [int]$_.id })
+    $archiveRel = ".rdd/changes/archive/$archiveName"
+
+    # requirement review gate (hard constraint 6) + acceptance basis + auto-mode
+    # snapshot: intake guard helper (invalid input = deterministic error, zero
+    # residue; ordering discipline documented there).
+    $intake = New-PromulgateIntake $archivePath $tasks $allIds
+    $reviewInfo = $intake.review_info
+    $amSnapshot = $intake.am_snapshot
+    $criteria = $intake.criteria
+    $acceptance = $intake.acceptance
+
+    $pd = New-DeliveryPlan $tasks $archivePath $allIds $reviewInfo
+    $plan = @($pd.plan)
+    # staged-plan fit vs the delivery plan's DAG (authority: the DAG) + the
+    # criteria anchor rules; only then is the plan injected as bridge state.
+    Test-PlanPromulgateFit $planParsed $plan $allIds $criteria
+    $planSec = New-PlanSection $planParsed $PlanFile
+    $budget = Get-PromulgateBudget $plan (@($planParsed.stages).Count)
+
+    # parallel-coordination conventions gate (zero residue — fires before ANY run
+    # state exists, same discipline as ACCEPTANCE_CRITERIA_MISSING): DESIGN 并行
+    # 链头 ≥2(多任务、互为并行)缺 -ConventionsFile -> CONVENTIONS_MISSING;
+    # 单设计/串行设计/非桥接 run 豁免。
+    $conventionsInput = Read-ConventionsInput $ConventionsFile
+    Test-ConventionsRequired $plan $conventionsInput
+
+    $goal = New-PromulgateGoal $archivePath $plan $acceptance
+    $null = Invoke-GoalRootStart $runId $goal $archiveRel $budget.width $budget.max_nodes
+
+    $bridge = New-BridgeSkeleton $runId $archivePath $archiveRel $goal $CreatedBy $acceptance $planSec
+    # 架构约定落点(report/architecture-conventions.md + bridge.conventions 段)——
+    # 须在链头 graft 前写入,DESIGN 链头 node.task 才能注入「架构约定:<path>」。
+    if ($null -ne $conventionsInput) { $bridge = Set-ConventionsSection $runDir $runId $bridge $conventionsInput }
+    $acceptanceRef = $null
+    if (([string]$acceptance.status) -eq 'planned') { $acceptanceRef = [string]$acceptance.criteria_ref }
+    $gg = Invoke-InitialChainGrafts $runId $plan $bridge $archiveName $acceptanceRef
+    $bridge = $gg.bridge
+
+    $runState = Set-PromulgateRunState $runId $runDir $archiveRel $archiveName $bridge $planSec $reviewInfo $amSnapshot $plan $gg.initial_nodes_of_task $tasks
+    $bridge = $runState.bridge
+
+    $pushRes = New-PromulgateInitialPush $runDir $bridge
+    $push = $pushRes.push
+    $bridge = $pushRes.bridge
+
+    return New-PromulgateResult -RunId $runId -RunDir $runDir -ArchiveRel $archiveRel -Goal $goal -Plan $plan `
+        -InitialNodesOfTask $gg.initial_nodes_of_task -Tasks $tasks -ReviewInfo $reviewInfo -ReviewAppliedAt $runState.review_applied_at `
+        -AmSnapshot $amSnapshot -DeferredEdges $runState.deferred_edges -Acceptance $acceptance -EffWidth $budget.width `
+        -EffMaxNodes $budget.max_nodes -Push $push -SkippedReview $pd.skipped_review -PlanSec $planSec
 }
 
 # === Command: dispatch ===
@@ -2051,6 +3531,23 @@ function Invoke-Dispatch {
     $nodeStatus = if ($node) { [string]$node.status } else { "missing" }
     if ($nodeStatus -in @("done", "pruned", "missing")) {
         Write-ErrorResult "NODE_NOT_DISPATCHABLE" "Node $NodeId is '$nodeStatus'; dispatch targets open work only." 1
+    }
+    # stage gate (long-task-planning, 不设 Force 旁路): manual dispatch obeys
+    # the same gate as auto-push — deterministic NODE_BLOCKED_BY_GATE feedback.
+    Assert-PlanGateOpen $bridge ([int]$mapping.task_id)
+    # parallel-coordination conflict gate (same discipline as the R3 stage gate
+    # above: manual dispatch must not push a node INTO an unresolved conflict —
+    # that would be the 「默默二选一」 the registry exists to prevent).
+    $conflictStatusOf = @{}
+    foreach ($bucket in @('pending', 'claimed', 'reported', 'done', 'pruned')) {
+        foreach ($n in @(Convert-ToSafeArray $treeData.nodes.$bucket)) {
+            $bId = if ($n -is [string]) { $n } else { [string]$n.id }
+            if ($bId) { $conflictStatusOf[$bId] = $bucket }
+        }
+    }
+    $hold = Test-ConflictHold -NodeId $NodeId -Bridge $bridge -RunDir $runDir -StatusOf $conflictStatusOf
+    if ($null -ne $hold) {
+        Write-ErrorResult "NODE_HELD_BY_CONFLICT" "node $NodeId is held by conflict $($hold.conflict) ($($hold.reason)) — resolve first: delivery-bridge.cmd -Command conflict -RunId $RunId -Action resolve -ConflictId $($hold.conflict) -Ruling '<结论>' [-Serialize <早者节点>]" 1
     }
 
     # task brief (dispatch-task-goal-anchoring): the tree status view above
@@ -2100,19 +3597,31 @@ function Invoke-Dispatch {
 
 # === Command: claim (composite: prechecks -> tree -> flow) ===
 
-function Invoke-BridgeClaim {
-    $runDir = Get-BridgeRunDir $RunId
-    $bridge = Require-Bridge $runDir
-    if ([string]::IsNullOrWhiteSpace($NodeId)) { Write-ErrorResult "MISSING_NODE_ID" "-NodeId is required" 1 }
+function Resolve-ClaimTarget {
+    # Resolve the claim target: bridge-mapped (task, stage) OR a tree-level node
+    # (acceptance chain / in-tree repair node, no TaskId — the unified branch).
+    # Returns @{ stage; task_id; tree_level; acceptance }.
+    param($Bridge, [string]$RoleText, [string]$RunDirText)
+    $mapping = Get-NodeTaskStage $Bridge $NodeId
+    if ($null -ne $mapping) {
+        $stage = if ([string]::IsNullOrWhiteSpace($RoleText)) { $mapping.stage } else { $RoleText }
+        if ($script:RoleOrder -notcontains $stage) { Write-ErrorResult "ROLE_INVALID" "-Role must be one of PM/CTO/UX/DEV/QA" 1 }
+        return @{ stage = $stage; task_id = [int]$mapping.task_id; tree_level = $false; acceptance = $null }
+    }
+    $info = Get-TreeLevelInfo $Bridge $RunDirText $NodeId
+    if ($null -eq $info) { Write-ErrorResult "NODE_NOT_MAPPED" "Node $NodeId is not in this run's bridge mapping" 2 }
+    $stage = if ([string]::IsNullOrWhiteSpace($RoleText)) { $info.role } else { $RoleText }
+    if ($stage -ne $info.role) {
+        Write-ErrorResult "ROLE_INVALID" "Tree-level node $NodeId carries role '$($info.role)' ($($info.kind)); claim it as -Role $($info.role)." 1
+    }
+    return @{ stage = $stage; task_id = 0; tree_level = $true; acceptance = $info }
+}
 
-    $mapping = Get-NodeTaskStage $bridge $NodeId
-    if ($null -eq $mapping) { Write-ErrorResult "NODE_NOT_MAPPED" "Node $NodeId is not in this run's bridge mapping" 2 }
-    $stage = if ([string]::IsNullOrWhiteSpace($Role)) { $mapping.stage } else { $Role }
-    if ($script:RoleOrder -notcontains $stage) { Write-ErrorResult "ROLE_INVALID" "-Role must be one of PM/CTO/UX/DEV/QA" 1 }
-    $taskId = $mapping.task_id
-
-    # --- precheck 1: tree side (read-only) ---
-    $leafStatus = Invoke-GoalTreeLeaf @("-Command", "status", "-RunId", $RunId, "-NodeId", $NodeId)
+function Test-ClaimTreeState {
+    # Precheck 1 (tree side, read-only): status + dependency blockers. Returns
+    # @{ node; parked; leaf } or a deterministic conflict verdict.
+    param($Bridge, [string]$NodeIdText, [string]$RunDirText)
+    $leafStatus = Invoke-GoalTreeLeaf @("-Command", "status", "-RunId", $RunId, "-NodeId", $NodeIdText)
     if ($leafStatus.exit -ne 0 -or $null -eq $leafStatus.json -or -not $leafStatus.json.success) {
         Write-ErrorResult "NODE_STATUS_FAILED" "leaf status failed: $($leafStatus.text)" 2
     }
@@ -2121,120 +3630,302 @@ function Invoke-BridgeClaim {
     # shows claimed_by=planner-reclaim. A parked node is claimable (steal + force).
     $parked = ($node.status -eq "claimed" -and [string]$node.claimed_by -eq "planner-reclaim")
     if ($node.status -ne "pending" -and -not $parked) {
-        # deterministic conflict feedback + claimable list (acceptance: duplicate sessions never spin);
-        # only bridge-mapped nodes count (the structural root n1 is not a delivery unit)
+        # deterministic conflict feedback + claimable list (acceptance: duplicate
+        # sessions never spin); delivery units = mapped + tree-level acceptance
+        # nodes (the structural root n1 is not a delivery unit)
         $claimable = @()
         $nx = Get-LeafNextView $RunId
         if ($null -ne $nx) {
             foreach ($p in @(Convert-ToSafeArray $nx.pending)) {
-                if ($null -ne (Get-NodeTaskStage $bridge ([string]$p.id))) { $claimable += $p.id }
+                if ((Get-NodeTaskStage $Bridge ([string]$p.id)) -or (Get-TreeLevelInfo $Bridge $RunDirText ([string]$p.id))) { $claimable += $p.id }
             }
         }
         $who = if ($node.claimed_by) { " (claimed_by=$($node.claimed_by) at $($node.claimed_at))" } else { "" }
-        Write-ErrorResult "NODE_NOT_CLAIMABLE" "Node $NodeId is '$($node.status)'$who. Claimable nodes right now: [$($claimable -join ', ')]. Pick one of those (delivery-bridge claim -RunId $RunId -NodeId <id> -Role <stage>)." 1
+        Write-ErrorResult "NODE_NOT_CLAIMABLE" "Node $NodeIdText is '$($node.status)'$who. Claimable nodes right now: [$($claimable -join ', ')]. Pick one of those (delivery-bridge claim -RunId $RunId -NodeId <id> -Role <stage>)." 1
     }
     $blockedBy = @()
     if ($leafStatus.json.data.dependencies -and $leafStatus.json.data.dependencies.blocked_by) {
         $blockedBy = @($leafStatus.json.data.dependencies.blocked_by)
     }
     if ($blockedBy.Count -gt 0) {
-        Write-ErrorResult "NODE_BLOCKED_BY_DEPS" "Node $NodeId is blocked by unsatisfied dependencies: [$($blockedBy -join ', ')]. Wait for them to settle or pick another node." 1
+        Write-ErrorResult "NODE_BLOCKED_BY_DEPS" "Node $NodeIdText is blocked by unsatisfied dependencies: [$($blockedBy -join ', ')]. Wait for them to settle or pick another node." 1
     }
+    return @{ node = $node; parked = $parked; leaf = $leafStatus.json.data }
+}
 
-    # --- precheck 2: flow side (read-only) ---
-    $flow = Read-ArchiveTasks $bridge.archive
-    $task = Find-ArchiveTask $flow.tasks $taskId
-    if ($null -eq $task) { Write-ErrorResult "TASK_NOT_FOUND" "TaskId $taskId not found in $($bridge.archive)" 2 }
+function Test-ClaimFlowState {
+    # Precheck 2 (flow side, read-only): task exists + active + role owner + no
+    # live worker conflict. Returns @{ force } — set for parked slots AND
+    # replacement-node residue (both overwrite the lingering entry with -Force).
+    param($Bridge, [string]$NodeIdText, [int]$TaskIdNum, [string]$Stage, [bool]$Parked, $Node)
+    $flow = Read-ArchiveTasks $Bridge.archive
+    $task = Find-ArchiveTask $flow.tasks $TaskIdNum
+    if ($null -eq $task) { Write-ErrorResult "TASK_NOT_FOUND" "TaskId $TaskIdNum not found in $($Bridge.archive)" 2 }
     if (([string]$task.lifecycle) -ne "active") {
-        Write-ErrorResult "TASK_NOT_CLAIMABLE" "TaskId $taskId lifecycle is '$($task.lifecycle)' (only active tasks can be claimed)" 1
+        Write-ErrorResult "TASK_NOT_CLAIMABLE" "TaskId $TaskIdNum lifecycle is '$($task.lifecycle)' (only active tasks can be claimed)" 1
     }
     $owners = @()
     if ($null -ne $task.currentOwners) { $owners = @($task.currentOwners) }
-    if ($owners -notcontains $stage) {
-        Write-ErrorResult "ROLE_NOT_OWNER" "'$stage' is not in currentOwners of TaskId ${taskId}: [$($owners -join '+')]" 1
+    if ($owners -notcontains $Stage) {
+        Write-ErrorResult "ROLE_NOT_OWNER" "'$Stage' is not in currentOwners of TaskId ${TaskIdNum}: [$($owners -join '+')]" 1
     }
-    $flowForce = $false   # set for parked slots AND replacement-node residue
+    $flowForce = $false
     foreach ($w in @(Convert-ToSafeArray $task.currentWorker)) {
         if ($null -eq $w) { continue }
         $keys = @()
         if ($w -is [System.Collections.IDictionary]) { $keys = @($w.Keys) } else { $keys = @($w.PSObject.Properties | ForEach-Object { $_.Name }) }
-        if ($keys -contains $stage) {
-            $t0 = [string](@($w) | ForEach-Object { if ($_ -is [System.Collections.IDictionary]) { $_[$stage] } else { $_.$stage } })
-            if ($parked) {
-                # the parked entry was left by reclaim for exactly this next claimant;
-                # write 2 below overwrites it with -Force
-                $flowForce = $true
-                continue
-            }
-            # replacement-node residue: reclaim's rejected-delivery mode grafts a fresh
-            # PENDING node for the same (task, stage) while the flow entry lingers.
-            # Invariant: a live flow claim <=> the bridge's current stage node is in an
-            # actively claimed state. If the current stage node IS this (pending) node,
-            # the flow entry must be reclaim residue -> overwrite with -Force.
-            $curStageNode = $null
-            if ($bridge.tasks.Contains("$taskId") -and $null -ne $bridge.tasks["$taskId"]['stages']) {
-                $bStages = $bridge.tasks["$taskId"]['stages']
-                if ($bStages.Contains($stage)) { $curStageNode = [string]$bStages[$stage] }
-            }
-            if ($curStageNode -eq $NodeId -and $node.status -eq "pending") {
-                $flowForce = $true
-                continue
-            }
-            Write-ErrorResult "FLOW_CLAIM_CONFLICT" "TaskId $taskId already has a currentWorker entry for $stage (claimed at $t0). If that session is dead, ask the Planner to run: delivery-bridge.cmd -Command reclaim -RunId $RunId -NodeId $NodeId" 1
+        if ($keys -contains $Stage) {
+            $flowForce = Test-ClaimWorkerEntry -Bridge $Bridge -NodeIdText $NodeIdText -TaskIdNum $TaskIdNum -Stage $Stage -Parked $Parked -Node $Node -Entry $w
         }
     }
+    return @{ force = $flowForce }
+}
 
-    # --- write 1: tree side (parked nodes need -Steal to leave the reclaim parking slot) ---
-    $treeArgs = @("-Command", "claim", "-RunId", $RunId, "-NodeId", $NodeId, "-Worker", $stage)
-    if ($parked) { $treeArgs += "-Steal" }
+function Test-ClaimWorkerEntry {
+    # One existing currentWorker entry vs this claim: parked residue / replacement
+    # residue overwrite with -Force, anything else is a live-conflict hard error.
+    param($Bridge, [string]$NodeIdText, [int]$TaskIdNum, [string]$Stage, [bool]$Parked, $Node, $Entry)
+    $t0 = [string](@($Entry) | ForEach-Object { if ($_ -is [System.Collections.IDictionary]) { $_[$Stage] } else { $_.$Stage } })
+    if ($Parked) {
+        # the parked entry was left by reclaim for exactly this next claimant;
+        # the flow write below overwrites it with -Force
+        return $true
+    }
+    # replacement-node residue: reclaim's rejected-delivery mode grafts a fresh
+    # PENDING node for the same (task, stage) while the flow entry lingers.
+    # Invariant: a live flow claim <=> the bridge's current stage node is in an
+    # actively claimed state. If the current stage node IS this (pending) node,
+    # the flow entry must be reclaim residue -> overwrite with -Force.
+    $curStageNode = $null
+    if ($Bridge.tasks.Contains("$TaskIdNum") -and $null -ne $Bridge.tasks["$TaskIdNum"]['stages']) {
+        $bStages = $Bridge.tasks["$TaskIdNum"]['stages']
+        if ($bStages.Contains($Stage)) { $curStageNode = [string]$bStages[$Stage] }
+    }
+    if ($curStageNode -eq $NodeIdText -and $Node.status -eq "pending") { return $true }
+    Write-ErrorResult "FLOW_CLAIM_CONFLICT" "TaskId $TaskIdNum already has a currentWorker entry for $Stage (claimed at $t0). If that session is dead, ask the Planner to run: delivery-bridge.cmd -Command reclaim -RunId $RunId -NodeId $NodeIdText" 1
+}
+
+function Invoke-ClaimWrites {
+    # Write 1: tree side (parked nodes need -Steal to leave the reclaim parking
+    # slot). Write 2: flow side — SKIPPED for tree-level acceptance nodes (no
+    # TaskId exists; the tree settle is the whole state machine for them). A
+    # flow conflict here is a half-claim (rare after the precheck).
+    param([string]$NodeIdText, [int]$TaskIdNum, [string]$Stage, [bool]$Parked, [bool]$FlowForce, [bool]$TreeLevel, $Bridge)
+    $treeArgs = @("-Command", "claim", "-RunId", $RunId, "-NodeId", $NodeIdText, "-Worker", $Stage)
+    if ($Parked) { $treeArgs += "-Steal" }
     $r1 = Invoke-GoalTreeLeaf $treeArgs
     if ($r1.exit -ne 0 -or -not $r1.json.success) {
         Write-ErrorResult "TREE_CLAIM_FAILED" "leaf claim failed: $($r1.text)" 1
     }
-
-    # --- write 2: flow side; a conflict here is a half-claim (rare after the precheck) ---
-    $flowArgs = @("-Command", "claim", "-TaskId", "$taskId", "-Role", $stage, "-Archive", $bridge.archive)
-    if ($flowForce) { $flowArgs += "-Force" }
+    if ($TreeLevel) { return @{ tree = $r1.json.data; flow = $null } }
+    $flowArgs = @("-Command", "claim", "-TaskId", "$TaskIdNum", "-Role", $Stage, "-Archive", $Bridge.archive)
+    if ($FlowForce) { $flowArgs += "-Force" }
     $r2 = Invoke-RddFlow $flowArgs
     if ($r2.exit -ne 0 -or $null -eq $r2.json -or -not $r2.json.success) {
-        Write-ErrorResult "BRIDGE_CLAIM_HALF_FAILED" "Tree side claimed, rdd-flow claim errored: $($r2.text). Disposition: run 'delivery-bridge.cmd -Command reclaim -RunId $RunId -NodeId $NodeId' to recycle the claim, or retry after fixing the flow-side error." 1
+        Write-ErrorResult "BRIDGE_CLAIM_HALF_FAILED" "Tree side claimed, rdd-flow claim errored: $($r2.text). Disposition: run 'delivery-bridge.cmd -Command reclaim -RunId $RunId -NodeId $NodeIdText' to recycle the claim, or retry after fixing the flow-side error." 1
     }
     if ($r2.json.data.claimed -ne $true) {
         $conf = $r2.json.data.conflict
-        Write-ErrorResult "BRIDGE_CLAIM_HALF_FAILED" "Tree side claimed but rdd-flow reports an existing $stage claim on TaskId $taskId (at $($conf.claimedAt)). Disposition: run 'delivery-bridge.cmd -Command reclaim -RunId $RunId -NodeId $NodeId' to recycle this half-claim." 1
+        Write-ErrorResult "BRIDGE_CLAIM_HALF_FAILED" "Tree side claimed but rdd-flow reports an existing $Stage claim on TaskId $TaskIdNum (at $($conf.claimedAt)). Disposition: run 'delivery-bridge.cmd -Command reclaim -RunId $RunId -NodeId $NodeIdText' to recycle this half-claim." 1
     }
+    return @{ tree = $r1.json.data; flow = $r2.json.data }
+}
 
-    return @{
-        success = $true
-        data    = @{
-            run_id      = $RunId
-            node_id     = $NodeId
-            task_id     = $taskId
-            stage       = $stage
-            tree_claim  = @{ node = $r1.json.data.node; report_next = $r1.json.data.report_next; dep_note = $r1.json.data.dep_note }
-            flow_claim  = @{ claimed = $r2.json.data.claimed; currentWorker = $r2.json.data.currentWorker }
-            task        = $r2.json.data.task
-            start_context = "requirement: $($bridge.archive_rel)/$($bridge.tasks["$taskId"].requirement) — full pointers in task.summary fields above"
-            report_hint = "goal-tree bridge run: on completion report back to the Planner instead of start-role-ing a downstream role — goal-tree-leaf.cmd -Command report -RunId $RunId -Worker $stage -CallbackFile <cb.json>. Artifact locations ride the callback: citations = change list (real paths; settle checks every ref exists), full_report = main deliverable doc pointer (design doc / implementation notes; expected in bridge runs), extras.verification = verification result (settle requires citations + verification non-empty)"
-            auto_mode   = $(if ($null -ne (Get-AutoModeSection $bridge)) {
-                # authorization passthrough (planner-auto-mode): the claim is the
-                # worker's mandatory first action, so it is the natural injection
-                # point — enabled flag + the immutable snapshot + the protocol
-                # hint (report_hint precedent). Absent on non-auto runs (legacy
-                # claim responses stay byte-identical).
-                @{
-                    enabled  = $true
-                    policy   = (Get-AutoModeSection $bridge)['policy']
-                    protocol = Get-AutoModeProtocolHint $RunId
-                }
-            } else { $null })
+function Add-ClaimTreeLevelContext {
+    # tree-level claim context (R1 acceptance chain / stage acceptance point /
+    # in-tree repair node): mutates $Data with tree_level + acceptance +
+    # start_context per kind.
+    param($Data, $Target, $Bridge)
+    $Data['tree_level'] = $true
+    $kind = [string]$Target.acceptance.kind
+    if ($kind -eq 'stage_acceptance') {
+        $sa = $Target.acceptance
+        $Data['acceptance'] = @{
+            kind           = 'stage_acceptance'
+            stage_id       = [string]$sa.stage_id
+            criteria_ref   = $sa.criteria_ref
+            criteria_items = @($sa.criteria_items)
+            slice          = [string]$sa.slice
         }
+        $Data['start_context'] = "stage acceptance node ($([string]$sa.stage_id)): 集成验收点判据子集 + 可运行切片形态 in node.task (claim 输出全文); 交付记录 = 验证摘要 + 切片运行证据 (extras.verification)"
+        return
     }
+    if ([bool]$Target.acceptance.chain) {
+        $a = Get-AcceptanceSection $Bridge
+        $Data['acceptance'] = @{
+            kind       = $kind
+            criteria_ref = $(if ($null -ne $a) { [string]$a['criteria_ref'] } else { $null })
+            report     = $script:AcceptanceReportRel
+            conclusion_rule = "§3 以一行『总结论：通过』或『总结论：不通过』收口（结论必须可判）"
+        }
+        $Data['start_context'] = "acceptance node ($kind): 整体验收判据 — $([string]$Data['acceptance'].criteria_ref); mission + deliverable convention in node.task (claim 输出全文)"
+        return
+    }
+    $Data['start_context'] = "tree-level repair node ($kind, role $([string]$Target.acceptance.role)): mission + deliverable convention in node.task (claim 输出全文); 修复节点不动 flow 流转"
+}
+
+function New-ClaimResult {
+    # Claim response assembly: the worker's context bundle (tree claim + flow
+    # claim + task summary + report hint), auto_mode passthrough when enabled.
+    param($Bridge, [string]$NodeIdText, $Target, [string]$Stage, $Writes)
+    $data = @{
+        run_id      = $RunId
+        node_id     = $NodeIdText
+        task_id     = $(if ($Target.tree_level) { $null } else { $Target.task_id })
+        stage       = $Stage
+        tree_claim  = @{ node = $Writes.tree.node; report_next = $Writes.tree.report_next; dep_note = $Writes.tree.dep_note }
+        flow_claim  = $(if ($null -ne $Writes.flow) { @{ claimed = $Writes.flow.claimed; currentWorker = $Writes.flow.currentWorker } } else { $null })
+        task        = $(if ($null -ne $Writes.flow) { $Writes.flow.task } else { $null })
+        report_hint = "goal-tree bridge run: on completion report back to the Planner instead of start-role-ing a downstream role — goal-tree-leaf.cmd -Command report -RunId $RunId -Worker $Stage -CallbackFile <cb.json>. Artifact locations ride the callback: citations = change list (real paths; settle checks every ref exists), full_report = main deliverable doc pointer (design doc / implementation notes; expected in bridge runs), extras.verification = verification result (settle requires citations + verification non-empty)"
+        auto_mode   = $(if ($null -ne (Get-AutoModeSection $Bridge)) {
+            # authorization passthrough (planner-auto-mode): the claim is the
+            # worker's mandatory first action, so it is the natural injection
+            # point — enabled flag + the immutable snapshot + the protocol hint.
+            @{
+                enabled  = $true
+                policy   = (Get-AutoModeSection $Bridge)['policy']
+                protocol = Get-AutoModeProtocolHint $RunId
+            }
+        } else { $null })
+    }
+    if ($Target.tree_level) { Add-ClaimTreeLevelContext $data $Target $Bridge }
+    else {
+        $data['start_context'] = "requirement: $($Bridge.archive_rel)/$($Bridge.tasks["$($Target.task_id)"].requirement) — full pointers in task.summary fields above"
+    }
+    return @{ success = $true; data = $data }
+}
+
+function Invoke-BridgeClaim {
+    $runDir = Get-BridgeRunDir $RunId
+    $bridge = Require-Bridge $runDir
+    if ([string]::IsNullOrWhiteSpace($NodeId)) { Write-ErrorResult "MISSING_NODE_ID" "-NodeId is required" 1 }
+
+    $target = Resolve-ClaimTarget $bridge $Role $runDir
+    # stage gate (long-task-planning): tree-level nodes carry no stage, only
+    # mapped delivery claims wait on earlier stages' acceptance points.
+    if (-not $target.tree_level) { Assert-PlanGateOpen $bridge ([int]$target.task_id) }
+    $ts = Test-ClaimTreeState $bridge $NodeId $runDir
+    $flowForce = $false
+    if (-not $target.tree_level) {
+        $fs = Test-ClaimFlowState -Bridge $bridge -NodeIdText $NodeId -TaskIdNum $target.task_id -Stage $target.stage -Parked ([bool]$ts.parked) -Node $ts.node
+        $flowForce = [bool]$fs.force
+    }
+    $writes = Invoke-ClaimWrites -NodeIdText $NodeId -TaskIdNum $target.task_id -Stage $target.stage -Parked ([bool]$ts.parked) -FlowForce $flowForce -TreeLevel ([bool]$target.tree_level) -Bridge $bridge
+    return New-ClaimResult -Bridge $bridge -NodeIdText $NodeId -Target $target -Stage $target.stage -Writes $writes
 }
 
 # === Command: reclaim (composite recovery: dead claims AND rejected deliveries) ===
 
+function Invoke-ReclaimRejectedDelivery {
+    # rejected-delivery recovery: the reported node FAILED the three-check gate —
+    # prune the failed delivery (ledger keeps the audit) + graft a fresh stage
+    # node + remap the bridge, so the task returns to workable state.
+    param([string]$RunDir, $Bridge, $Node, [string]$NodeIdText, [int]$TaskId, [string]$Stage)
+    $problems = @(Test-SettleEvidence -RunDir $RunDir -Node $Node -NodeId $NodeIdText)
+    if ($problems.Count -eq 0) {
+        Write-ErrorResult "RECLAIM_REQUIRES_UNQUALIFIED" "Node $NodeIdText is reported with QUALIFIED evidence — settle it instead (settle -RunId $RunId -NodeId $NodeIdText); reclaim only recovers dead claims or rejected deliveries." 1
+    }
+    $reason = "delivery rejected by settle evidence gate: $($problems -join '; ')"
+    $rp = Invoke-GoalTree @("-Command", "prune", "-RunId", $RunId, "-NodeId", $NodeIdText, "-Reason", $reason)
+    if ($rp.exit -ne 0 -or -not $rp.json.success) {
+        Write-ErrorResult "RECLAIM_PRUNE_FAILED" "prune of rejected delivery failed: $($rp.text)" 1
+    }
+    # graft a replacement node for the same (task, stage) under the same parent
+    $flow = Read-ArchiveTasks $Bridge.archive
+    $task = Find-ArchiveTask $flow.tasks $TaskId
+    if ($null -eq $task) { Write-ErrorResult "TASK_NOT_FOUND" "TaskId $TaskId not found in $($Bridge.archive)" 2 }
+    $g = Invoke-GraftNextStage $RunDir $Bridge $task ([string]$Node.parent) $Stage
+    if (-not $g.success) { Write-ErrorResult "RECLAIM_GRAFT_FAILED" "replacement node graft failed after prune (task $TaskId stays routed at $Stage): $($g.error)" 1 }
+    $Bridge = $g.bridge
+    $newNodeId = $g.node_id
+    $null = Invoke-RddFlow @("-Command", "claim", "-TaskId", "$TaskId", "-Role", $Stage, "-Archive", $Bridge.archive, "-Force")
+    # plan recovery tail (long-task-planning) BEFORE the push tail below.
+    Write-PlanRecoveryTail $RunDir $Bridge 'reclaim' $NodeIdText $TaskId "rejected delivery pruned; redo grafted as $newNodeId"
+    # the fresh replacement node is never-pushed by construction — push it now
+    # (goal-tree-goal-root: recycle-then-repush, no manual dispatch step).
+    $push = Invoke-AutoDispatch $RunDir $Bridge "reclaim"
+    $Bridge = $push.bridge
+    return @{
+        success = $true
+        data    = @{
+            run_id       = $RunId
+            node_id      = $newNodeId
+            pruned_node  = $NodeIdText
+            task_id      = $TaskId
+            stage        = $Stage
+            reclaimed    = $true
+            mode         = "rejected-delivery"
+            auto_push    = @{ trigger = $push.trigger; pushed = @($push.pushed); failed = @($push.failed) }
+            next_step    = "failed delivery pruned (ledger keeps the audit); replacement node $newNodeId grafted" + $(if (@($push.pushed) -contains $newNodeId) { " and auto-pushed" } else { " — re-push via status touch or dispatch -NodeId $newNodeId" })
+        }
+    }
+}
+
+function Test-ReclaimLiveness {
+    # liveness gate (goal-tree-goal-root decision 6): alive sessions are
+    # mechanically unreclaimable (RECLAIM_TARGET_ALIVE); unknown liveness falls
+    # back to the shared DeadClaimMinutes threshold — younger claims are not
+    # provably dead. Returns the liveness probe row.
+    param([string]$RunId, [string]$NodeIdText, $Node)
+    $live = Get-ClaimLiveness $RunId $NodeIdText
+    if ($live.liveness -eq "alive") {
+        Write-ErrorResult "RECLAIM_TARGET_ALIVE" "Node $NodeIdText is claimed by a LIVE session (session_id=$($live.session_id), verified via $($live.reason)). Long-running work is not reclaimable — wait for its report, or have the session itself release/steal. If you are certain this is wrong, verify the session in dsh first." 1
+    }
+    if ($live.liveness -eq "unknown") {
+        $ageMin = $null
+        if ($Node.claimed_at) {
+            try { $ageMin = [int]((Get-Date).ToUniversalTime() - [datetime]::Parse($Node.claimed_at, $null, [System.Globalization.DateTimeStyles]::RoundtripKind)).TotalMinutes } catch {}
+        }
+        if ($null -eq $ageMin -or $ageMin -lt $DeadClaimMinutes) {
+            $shownAge = if ($null -ne $ageMin) { $ageMin } else { "?" }
+            Write-ErrorResult "RECLAIM_UNPROVEN_DEAD" "Node $NodeIdText claim liveness is unknown ($($live.reason)) and the claim is only $shownAge min old (< $DeadClaimMinutes min threshold) — not provably dead, refusing to reclaim (better to wait than to miskill; timeout marks ≠ dead). Retry after the threshold, or reclaim from a dsh shell where the agents registry can verify the session." 1
+        }
+    }
+    return $live
+}
+
+function Invoke-ReclaimDeadClaim {
+    # dead-claim recovery: steal the tree claim, force-reclaim the flow route,
+    # flag for re-push and auto-dispatch immediately (recycle-then-repush).
+    param([string]$RunDir, $Bridge, $Node, [string]$NodeIdText, [int]$TaskId, [string]$Stage)
+    $worker = "planner-reclaim"
+    $live = Test-ReclaimLiveness $RunId $NodeIdText $Node
+    # tree side: -Steal only recovers nodes stuck in claimed
+    $r1 = Invoke-GoalTreeLeaf @("-Command", "claim", "-RunId", $RunId, "-NodeId", $NodeIdText, "-Worker", $worker, "-Steal")
+    if ($r1.exit -ne 0 -or -not $r1.json.success) {
+        Write-ErrorResult "RECLAIM_TREE_FAILED" "leaf steal failed: $($r1.text)" 1
+    }
+    # flow side: -Force overwrites this role's timestamp
+    $r2 = Invoke-RddFlow @("-Command", "claim", "-TaskId", "$TaskId", "-Role", $Stage, "-Archive", $Bridge.archive, "-Force")
+    if ($r2.exit -ne 0 -or $null -eq $r2.json -or -not $r2.json.success) {
+        Write-ErrorResult "RECLAIM_FLOW_FAILED" "rdd-flow claim -Force failed: $($r2.text)" 1
+    }
+    $Bridge = Set-NodeRepushFlag $RunDir $Bridge $NodeIdText
+    # plan recovery tail (long-task-planning) BEFORE the push tail below.
+    Write-PlanRecoveryTail $RunDir $Bridge 'reclaim' $NodeIdText $TaskId "dead claim stolen (session never delivered)"
+    $push = Invoke-AutoDispatch $RunDir $Bridge "reclaim"
+    $Bridge = $push.bridge
+    return @{
+        success = $true
+        data    = @{
+            run_id     = $RunId
+            node_id    = $NodeIdText
+            task_id    = $TaskId
+            stage      = $Stage
+            reclaimed  = $true
+            mode       = "dead-claim"
+            steal_count = $r1.json.data.node.steal_count
+            liveness   = $live
+            auto_push  = @{ trigger = $push.trigger; pushed = @($push.pushed); failed = @($push.failed) }
+            next_step  = $(if (@($push.pushed) -contains $NodeIdText) { "fresh session auto-pushed for the parked node; its first action re-claims with -Role $Stage" } else { "node is parked as '$worker' — re-push it via status touch or dispatch -NodeId $NodeIdText (its first action re-claims with -Role $Stage)" })
+        }
+    }
+}
+
 function Invoke-BridgeReclaim {
+    # composite recovery (dead claims AND rejected deliveries) — orchestrator
+    # over the two mode helpers (QA function-size gate decomposition; messages
+    # and codes are unchanged from the pre-split single function).
     $runDir = Get-BridgeRunDir $RunId
     $bridge = Require-Bridge $runDir
     if ([string]::IsNullOrWhiteSpace($NodeId)) { Write-ErrorResult "MISSING_NODE_ID" "-NodeId is required" 1 }
@@ -2243,9 +3934,8 @@ function Invoke-BridgeReclaim {
 
     $mapping = Get-NodeTaskStage $bridge $NodeId
     if ($null -eq $mapping) { Write-ErrorResult "NODE_NOT_MAPPED" "Node $NodeId is not in this run's bridge mapping" 2 }
-    $stage = $mapping.stage
-    $taskId = $mapping.task_id
-    $worker = "planner-reclaim"
+    $stage = [string]$mapping.stage
+    $taskId = [int]$mapping.task_id
 
     # read-only state check: the recovery path depends on the node's status
     $leafStatus = Invoke-GoalTreeLeaf @("-Command", "status", "-RunId", $RunId, "-NodeId", $NodeId)
@@ -2256,108 +3946,16 @@ function Invoke-BridgeReclaim {
     $nodeStatus = [string]$node.status
 
     if ($nodeStatus -eq "reported") {
-        # A reported node whose delivery FAILED the three-check gate: it can neither
-        # re-report (leaf refuses non-claimed) nor settle (evidence rejected). Recovery
-        # = prune the failed delivery (ledger keeps the audit trail) + graft a fresh
-        # stage node + remap the bridge, so the task returns to workable state.
-        $problems = @(Test-SettleEvidence -RunDir $runDir -Node $node -NodeId $NodeId)
-        if ($problems.Count -eq 0) {
-            Write-ErrorResult "RECLAIM_REQUIRES_UNQUALIFIED" "Node $NodeId is reported with QUALIFIED evidence — settle it instead (settle -RunId $RunId -NodeId $NodeId); reclaim only recovers dead claims or rejected deliveries." 1
-        }
-        $reason = "delivery rejected by settle evidence gate: $($problems -join '; ')"
-        $rp = Invoke-GoalTree @("-Command", "prune", "-RunId", $RunId, "-NodeId", $NodeId, "-Reason", $reason)
-        if ($rp.exit -ne 0 -or -not $rp.json.success) {
-            Write-ErrorResult "RECLAIM_PRUNE_FAILED" "prune of rejected delivery failed: $($rp.text)" 1
-        }
-        # graft a replacement node for the same (task, stage) under the same parent
-        $flow = Read-ArchiveTasks $bridge.archive
-        $task = Find-ArchiveTask $flow.tasks $taskId
-        if ($null -eq $task) { Write-ErrorResult "TASK_NOT_FOUND" "TaskId $taskId not found in $($bridge.archive)" 2 }
-        $g = Invoke-GraftNextStage $runDir $bridge $task ([string]$node.parent) $stage
-        if (-not $g.success) { Write-ErrorResult "RECLAIM_GRAFT_FAILED" "replacement node graft failed after prune (task $taskId stays routed at $stage): $($g.error)" 1 }
-        $bridge = $g.bridge
-        $newNodeId = $g.node_id
-        $null = Invoke-RddFlow @("-Command", "claim", "-TaskId", "$taskId", "-Role", $stage, "-Archive", $bridge.archive, "-Force")
-        # the fresh replacement node is never-pushed by construction — push it now
-        # (goal-tree-goal-root: recycle-then-repush, no manual dispatch step).
-        $push = Invoke-AutoDispatch $runDir $bridge "reclaim"
-        $bridge = $push.bridge
-        return @{
-            success = $true
-            data    = @{
-                run_id       = $RunId
-                node_id      = $newNodeId
-                pruned_node  = $NodeId
-                task_id      = $taskId
-                stage        = $stage
-                reclaimed    = $true
-                mode         = "rejected-delivery"
-                auto_push    = @{ trigger = $push.trigger; pushed = @($push.pushed); failed = @($push.failed) }
-                next_step    = "failed delivery pruned (ledger keeps the audit); replacement node $newNodeId grafted" + $(if (@($push.pushed) -contains $newNodeId) { " and auto-pushed" } else { " — re-push via status touch or dispatch -NodeId $newNodeId" })
-            }
-        }
+        return Invoke-ReclaimRejectedDelivery $runDir $bridge $node $NodeId $taskId $stage
     }
-
     if ($nodeStatus -eq "pending") {
         Write-ErrorResult "RECLAIM_NOT_NEEDED" "Node $NodeId is pending (nobody claimed it) — a plain bridge claim is enough; reclaim recovers dead claims or rejected deliveries." 1
     }
     if ($nodeStatus -in @("done", "pruned")) {
         Write-ErrorResult "RECLAIM_NOT_POSSIBLE" "Node $NodeId is '$nodeStatus' — terminal; nothing to reclaim." 1
     }
-
-    # claimed: the dead-claim recovery path — but first prove the session is not
-    # alive (goal-tree-goal-root decision 6): alive sessions are mechanically
-    # unreclaimable (RECLAIM_TARGET_ALIVE — long-task miskill becomes physically
-    # impossible); unknown liveness (CLI claims / endpoint unreachable) falls back
-    # to the DeadClaimMinutes threshold — younger claims are not provably dead.
-    $live = Get-ClaimLiveness $RunId $NodeId
-    if ($live.liveness -eq "alive") {
-        Write-ErrorResult "RECLAIM_TARGET_ALIVE" "Node $NodeId is claimed by a LIVE session (session_id=$($live.session_id), verified via $($live.reason)). Long-running work is not reclaimable — wait for its report, or have the session itself release/steal. If you are certain this is wrong, verify the session in dsh first." 1
-    }
-    if ($live.liveness -eq "unknown") {
-        $ageMin = $null
-        if ($node.claimed_at) {
-            try { $ageMin = [int]((Get-Date).ToUniversalTime() - [datetime]::Parse($node.claimed_at, $null, [System.Globalization.DateTimeStyles]::RoundtripKind)).TotalMinutes } catch {}
-        }
-        if ($null -eq $ageMin -or $ageMin -lt $DeadClaimMinutes) {
-            $shownAge = if ($null -ne $ageMin) { $ageMin } else { "?" }
-            Write-ErrorResult "RECLAIM_UNPROVEN_DEAD" "Node $NodeId claim liveness is unknown ($($live.reason)) and the claim is only $shownAge min old (< $DeadClaimMinutes min threshold) — not provably dead, refusing to reclaim (better to wait than to miskill; timeout marks ≠ dead). Retry after the threshold, or reclaim from a dsh shell where the agents registry can verify the session." 1
-        }
-    }
-
-    # tree side: -Steal only recovers nodes stuck in claimed
-    $r1 = Invoke-GoalTreeLeaf @("-Command", "claim", "-RunId", $RunId, "-NodeId", $NodeId, "-Worker", $worker, "-Steal")
-    if ($r1.exit -ne 0 -or -not $r1.json.success) {
-        Write-ErrorResult "RECLAIM_TREE_FAILED" "leaf steal failed: $($r1.text)" 1
-    }
-
-    # flow side: -Force overwrites this role's timestamp
-    $r2 = Invoke-RddFlow @("-Command", "claim", "-TaskId", "$taskId", "-Role", $stage, "-Archive", $bridge.archive, "-Force")
-    if ($r2.exit -ne 0 -or $null -eq $r2.json -or -not $r2.json.success) {
-        Write-ErrorResult "RECLAIM_FLOW_FAILED" "rdd-flow claim -Force failed: $($r2.text)" 1
-    }
-
-    # recycle-then-repush loop closure (goal-tree-goal-root): the parked node needs
-    # a fresh session — mark it for re-push and auto-dispatch immediately.
-    $bridge = Set-NodeRepushFlag $runDir $bridge $NodeId
-    $push = Invoke-AutoDispatch $runDir $bridge "reclaim"
-    $bridge = $push.bridge
-
-    return @{
-        success = $true
-        data    = @{
-            run_id     = $RunId
-            node_id    = $NodeId
-            task_id    = $taskId
-            stage      = $stage
-            reclaimed  = $true
-            mode       = "dead-claim"
-            steal_count = $r1.json.data.node.steal_count
-            liveness   = $live
-            auto_push  = @{ trigger = $push.trigger; pushed = @($push.pushed); failed = @($push.failed) }
-            next_step  = $(if (@($push.pushed) -contains $NodeId) { "fresh session auto-pushed for the parked node; its first action re-claims with -Role $stage" } else { "node is parked as '$worker' — re-push it via status touch or dispatch -NodeId $NodeId (its first action re-claims with -Role $stage)" })
-        }
-    }
+    # claimed: the dead-claim recovery path
+    return Invoke-ReclaimDeadClaim $runDir $bridge $node $NodeId $taskId $stage
 }
 
 # === Command: rollback (cross-stage reverse transition, planner-stage-rollback) ===
@@ -2713,6 +4311,10 @@ function Invoke-BridgeRollback {
     $rebuild = Invoke-RollbackRebuild $runDir $bridge $ctx
     $bridge = $rebuild.bridge
 
+    # plan recovery tail (long-task-planning) BEFORE the flow-side auto-push:
+    # deviation record + acceptance invalidation wave over the touched stage.
+    Write-PlanRecoveryTail $runDir $bridge 'rollback' $NodeId ([int]$ctx.task_id) "cross-stage rollback to $(@($ctx.target_roles) -join '+') ($(if ($ctx.resume) { 'resume' } else { 'prune+rebuild' })): $($ctx.reason)"
+
     $flow = Invoke-RollbackFlowSide $runDir $bridge $ctx
     $bridge = $flow.bridge
 
@@ -2906,39 +4508,52 @@ function Invoke-PhaseSettleFlow {
     return Invoke-PhaseSwitchSettle $RunDir $Bridge $Task $NodeId $TaskPhase $nextPhase $res
 }
 
-function Invoke-BridgeSettle {
-    $runDir = Get-BridgeRunDir $RunId
-    $bridge = Require-Bridge $runDir
-    if ([string]::IsNullOrWhiteSpace($NodeId)) { Write-ErrorResult "MISSING_NODE_ID" "-NodeId is required" 1 }
+function Resolve-SettleTarget {
+    # Resolve the settle target: bridge-mapped (task, stage) OR a tree-level node
+    # (acceptance chain / in-tree repair node, no TaskId — the unified branch).
+    # Returns @{ stage; task_id; tree_level; acceptance; next_stage }.
+    param($Bridge, [string]$NodeIdText, [string]$RunDirText)
+    $mapping = Get-NodeTaskStage $Bridge $NodeIdText
+    if ($null -ne $mapping) {
+        return @{ stage = [string]$mapping.stage; task_id = [int]$mapping.task_id; tree_level = $false; acceptance = $null; next_stage = $script:StageNext[[string]$mapping.stage] }
+    }
+    $info = Get-TreeLevelInfo $Bridge $RunDirText $NodeIdText
+    if ($null -eq $info) { Write-ErrorResult "NODE_NOT_MAPPED" "Node $NodeIdText is not in this run's bridge mapping" 2 }
+    return @{ stage = [string]$info.role; task_id = 0; tree_level = $true; acceptance = $info; next_stage = $null }
+}
 
-    $null = Enter-PlannerLease $runDir
-
-    $mapping = Get-NodeTaskStage $bridge $NodeId
-    if ($null -eq $mapping) { Write-ErrorResult "NODE_NOT_MAPPED" "Node $NodeId is not in this run's bridge mapping" 2 }
-    $stage = $mapping.stage
-    $taskId = $mapping.task_id
-    $nextStage = $script:StageNext[$stage]
-
-    # --- state precheck: node must be reported ---
-    $leafStatus = Invoke-GoalTreeLeaf @("-Command", "status", "-RunId", $RunId, "-NodeId", $NodeId)
+function Test-SettleDelivery {
+    # state precheck (node must be reported) + the three evidence checks —
+    # identical gate for mapped and tree-level nodes (unqualified delivery never
+    # transitions). Returns the node for the transition step.
+    param([string]$RunDir, [string]$NodeIdText, [bool]$TreeLevel = $false)
+    $leafStatus = Invoke-GoalTreeLeaf @("-Command", "status", "-RunId", $RunId, "-NodeId", $NodeIdText)
     if ($leafStatus.exit -ne 0 -or $null -eq $leafStatus.json -or -not $leafStatus.json.success) {
         Write-ErrorResult "NODE_STATUS_FAILED" "leaf status failed: $($leafStatus.text)" 2
     }
     $node = $leafStatus.json.data.node
     if ($node.status -ne "reported") {
-        Write-ErrorResult "SETTLE_REQUIRES_REPORTED" "Node $NodeId is '$($node.status)'; settle only accepts reported nodes (claim -> work -> leaf report first)." 1
+        Write-ErrorResult "SETTLE_REQUIRES_REPORTED" "Node $NodeIdText is '$($node.status)'; settle only accepts reported nodes (claim -> work -> leaf report first)." 1
     }
-
-    # --- the three evidence checks (hard gate: no qualified delivery, no transition) ---
-    $problems = @(Test-SettleEvidence -RunDir $runDir -Node $node -NodeId $NodeId)
+    $problems = @(Test-SettleEvidence -RunDir $RunDir -Node $node -NodeId $NodeIdText)
     if ($problems.Count -gt 0) {
-        Write-ErrorResult "SETTLE_EVIDENCE_REJECTED" "Unqualified delivery — task.json NOT transitioned. Disposition: reclaim the node (delivery-bridge -Command reclaim -RunId $RunId -NodeId $NodeId), have the worker fix the delivery, then report again; or re-dispatch. Problems: $($problems -join '; ')" 1
+        $disp = "Disposition: reclaim the node (delivery-bridge -Command reclaim -RunId $RunId -NodeId $NodeIdText), have the worker fix the delivery, then report again; or re-dispatch."
+        if ($TreeLevel) {
+            $disp = "Disposition: tree-level node (no task.json flow) — recycling it is out of this round's scope (overall-delivery boundary); ask the Planner for intervention (the run cannot conclude until a qualified delivery settles)."
+        }
+        Write-ErrorResult "SETTLE_EVIDENCE_REJECTED" "Unqualified delivery — nothing transitioned. $disp Problems: $($problems -join '; ')" 1
     }
+    return $node
+}
 
-    # --- flow-side prechecks (avoid the settle->set-route half-failure window) ---
-    $flow = Read-ArchiveTasks $bridge.archive
+function Test-SettleFlowReady {
+    # flow-side prechecks (avoid the settle->set-route half-failure window):
+    # task exists + active + owner membership. Returns @{ task; task_phase; owners }.
+    param($Bridge, $Target)
+    $taskId = [int]$Target.task_id
+    $flow = Read-ArchiveTasks $Bridge.archive
     $task = Find-ArchiveTask $flow.tasks $taskId
-    if ($null -eq $task) { Write-ErrorResult "TASK_NOT_FOUND" "TaskId $taskId not found in $($bridge.archive)" 2 }
+    if ($null -eq $task) { Write-ErrorResult "TASK_NOT_FOUND" "TaskId $taskId not found in $($Bridge.archive)" 2 }
     if (([string]$task.lifecycle) -ne "active") {
         Write-ErrorResult "TASK_NOT_ACTIVE" "TaskId $taskId lifecycle is '$($task.lifecycle)'; nothing to advance." 1
     }
@@ -2953,74 +4568,132 @@ function Invoke-BridgeSettle {
         if ($script:PhaseOrder -notcontains $taskPhase) {
             Write-ErrorResult "PHASE_INVALID" "TaskId $taskId carries phase '$taskPhase' not in $($script:PhaseOrder -join '/') — fix task.json (rdd-flow check) before settling" 1
         }
-        if ($owners -notcontains $stage) {
-            Write-ErrorResult "FLOW_ADVANCE_WOULD_FAIL" "Precheck: '$stage' is not in currentOwners of TaskId $taskId ([$($owners -join '+')]) — the phase-side set-route would mis-narrow. Fix routing or use rdd-flow set-route first." 1
+        if ($owners -notcontains $Target.stage) {
+            Write-ErrorResult "FLOW_ADVANCE_WOULD_FAIL" "Precheck: '$($Target.stage)' is not in currentOwners of TaskId $taskId ([$($owners -join '+')]) — the phase-side set-route would mis-narrow. Fix routing or use rdd-flow set-route first." 1
         }
     }
-    elseif ($null -ne $nextStage) {
-        if ($owners -notcontains $stage) {
-            Write-ErrorResult "FLOW_ADVANCE_WOULD_FAIL" "Precheck: '$stage' is not in currentOwners of TaskId $taskId ([$($owners -join '+')]) — advance would fail. Fix routing or use rdd-flow set-route first." 1
+    elseif ($null -ne $Target.next_stage) {
+        if ($owners -notcontains $Target.stage) {
+            Write-ErrorResult "FLOW_ADVANCE_WOULD_FAIL" "Precheck: '$($Target.stage)' is not in currentOwners of TaskId $taskId ([$($owners -join '+')]) — advance would fail. Fix routing or use rdd-flow set-route first." 1
         }
     }
+    return @{ task = $task; task_phase = $taskPhase; owners = $owners }
+}
 
-    # --- tree settle (irreversible) ---
-    $settleArgs = @("-Command", "settle", "-RunId", $RunId, "-NodeId", $NodeId)
+function Invoke-TreeSettleWrite {
+    # the irreversible tree settle (shared by the mapped and tree-level tails).
+    param([string]$NodeIdText)
+    $settleArgs = @("-Command", "settle", "-RunId", $RunId, "-NodeId", $NodeIdText)
     if (-not [string]::IsNullOrWhiteSpace($Note)) { $settleArgs += @("-Note", $Note) }
     $r1 = Invoke-GoalTree $settleArgs
     if ($r1.exit -ne 0 -or -not $r1.json.success) {
         Write-ErrorResult "TREE_SETTLE_FAILED" "goal-tree settle failed (nothing transitioned): $($r1.text)" 1
     }
+    return $r1.json.data
+}
 
-    # --- flow transition + chained next-stage graft; half-failures land in pending_sync ---
-    $warnings = @()
-    $graftedNext = $null
-    $graftedNextNodes = @()
-    if ($null -eq $taskPhase) {
+function Invoke-SettleTreeOnly {
+    # tree-level acceptance node settle: the tree settle IS the whole transition
+    # ("终态即止" — no task.json transition exists for a TaskId-less node). The
+    # acceptance-chain trigger rides the auto-dispatch tail after this returns.
+    param([string]$RunDir, [string]$NodeIdText)
+    $null = Invoke-TreeSettleWrite $NodeIdText
+    return @{
+        bridge = $null; warnings = @(); graftedNext = $null; graftedNextNodes = @()
+        flowOperation = "tree-level settle (no task.json transition)"; taskLifecycle = "tree-level"
+    }
+}
+
+function Invoke-SettleFlowTransition {
+    # tree settle (irreversible) + flow transition + chained next-stage graft;
+    # half-failures land in pending_sync (Repair-PendingSync re-runs them).
+    param([string]$RunDir, $Bridge, $Target, $Ready)
+    $null = Invoke-TreeSettleWrite $NodeId
+    if ($null -eq $Ready.task_phase) {
         # LEGACY null-phase task: conservative degrade — byte-identical pre-phase
         # behavior (StageNext chain + single graft). New archives always carry phase.
-        $tail = Invoke-LegacySettleFlow $runDir $bridge $task $NodeId $stage $nextStage
+        $tail = Invoke-LegacySettleFlow $RunDir $Bridge $Ready.task $NodeId $Target.stage $Target.next_stage
     }
     else {
         # PHASE MODE (phase-model.md §5.2). Owners narrowing keeps the phase and only
         # fills MISSING live nodes (serial CTO->UX inside DESIGN); the LAST settle of
         # the phase switches atomically to PhaseRoles[PhaseNext[phase]] and grafts the
         # next phase's heads (convergence — no per-branch fan-out, no tree split).
-        $tail = Invoke-PhaseSettleFlow $runDir $bridge $task $NodeId $stage $owners $taskPhase
+        $tail = Invoke-PhaseSettleFlow $RunDir $Bridge $Ready.task $NodeId $Target.stage $Ready.owners $Ready.task_phase
     }
-    $bridge = $tail.bridge
-    $warnings += @($tail.warnings)
-    $graftedNext = $tail.graftedNext
-    $graftedNextNodes = @($tail.graftedNextNodes)
-    if (@($graftedNextNodes).Count -gt 0) { $graftedNext = @($graftedNextNodes)[0] }
-    $flowOperation = $tail.flowOperation
-    $taskLifecycle = $tail.taskLifecycle
+    return $tail
+}
 
-    # --- dependency-driven unlock push (goal-tree-goal-root): settling this node may
-    #     unlock other tasks' nodes (and grafted this task's own next phase) — push
-    #     every newly unlocked node automatically; push failures are isolated data.
-    $push = Invoke-AutoDispatch $runDir $bridge "settle"
-    $bridge = $push.bridge
-    foreach ($f in @($push.failed)) {
-        $warnings += "auto-push failed for node $($f.node) (retry_class=$($f.retry_class)): session-create class auto-retries on the next trigger; pointer class needs manual dispatch. $($f.error)"
-    }
-
+function New-SettleResult {
+    # settle response assembly (shared by mapped and tree-level targets).
+    param($Target, $Tail, $Push, $Bridge, $Warnings)
+    $taskIdOut = $(if ($Target.tree_level) { $null } else { $Target.task_id })
     return @{
         success = $true
         data    = @{
             run_id          = $RunId
             node_id         = $NodeId
-            task_id         = $taskId
-            stage_settled   = $stage
-            phase           = $(if ($null -ne $taskPhase) { $taskPhase } else { $null })
-            flow_operation  = $flowOperation
-            next_stage_node = $graftedNext
-            next_stage_nodes = @($graftedNextNodes)
-            task_lifecycle  = $taskLifecycle
-            auto_push       = @{ trigger = $push.trigger; pushed = @($push.pushed); failed = @($push.failed); skipped = @($push.skipped | ForEach-Object { "$($_.node):$($_.reason)" }) }
-            warnings        = $warnings
-            next_step       = $(if ($push.failed.Count -gt 0) { "repair failed pushes: session-create class auto-retries via status; pointer class → dispatch -NodeId <id> manually" } elseif ($taskLifecycle -eq "completed") { "task $taskId reached terminal state" } else { "unlocked nodes pushed automatically (see auto_push); failures retry via status touch" })
+            task_id         = $taskIdOut
+            stage_settled   = $Target.stage
+            tree_level      = [bool]$Target.tree_level
+            phase           = $Tail.taskPhase
+            flow_operation  = [string]$Tail.flowOperation
+            next_stage_node = $Tail.graftedNext
+            next_stage_nodes = @($Tail.graftedNextNodes)
+            task_lifecycle  = [string]$Tail.taskLifecycle
+            acceptance      = Get-AcceptanceSection $Bridge
+            auto_push       = @{ trigger = $Push.trigger; pushed = @($Push.pushed); failed = @($Push.failed); skipped = @($Push.skipped | ForEach-Object { "$($_.node):$($_.reason)" }) }
+            warnings        = $Warnings
+            next_step       = $(if (@($Push.failed).Count -gt 0) { "repair failed pushes: session-create class auto-retries via status; pointer class → dispatch -NodeId <id> manually" } elseif ([string]$Tail.taskLifecycle -eq "completed") { "task $($Target.task_id) reached terminal state" } else { "unlocked nodes pushed automatically (see auto_push); failures retry via status touch" })
         }
     }
+}
+
+function Invoke-BridgeSettle {
+    $runDir = Get-BridgeRunDir $RunId
+    $bridge = Require-Bridge $runDir
+    if ([string]::IsNullOrWhiteSpace($NodeId)) { Write-ErrorResult "MISSING_NODE_ID" "-NodeId is required" 1 }
+
+    $null = Enter-PlannerLease $runDir
+
+    $target = Resolve-SettleTarget $bridge $NodeId $runDir
+    $node = Test-SettleDelivery -RunDir $runDir -NodeIdText $NodeId -TreeLevel ([bool]$target.tree_level)
+    # parallel-coordination settle conflict gate (三查先行,冲突门后置,错误码分立):
+    # design-kind 涉事节点恒拒 / file-kind 仅双活跃方互拦 — NODE_HELD_BY_CONFLICT
+    if (-not [bool]$target.tree_level) {
+        Test-SettleConflictGate -RunDir $runDir -Bridge $bridge -NodeIdText $NodeId
+    }
+    $conflictWarnings = @(Test-CitationDeviation -RunDir $runDir -Bridge $bridge -NodeIdText $NodeId -Node $node)
+    $tail = $null
+    if ($target.tree_level) {
+        $tail = Invoke-SettleTreeOnly $runDir $NodeId
+    }
+    else {
+        $flowReady = Test-SettleFlowReady -Bridge $bridge -Target $target
+        $tail = Invoke-SettleFlowTransition -RunDir $runDir -Bridge $bridge -Target $target -Ready $flowReady
+        $tail['taskPhase'] = $flowReady.task_phase
+    }
+    if ($null -eq $tail.bridge) { $tail.bridge = $bridge }
+    $bridge = $tail.bridge
+
+    # plan settle tail (long-task-planning rolling tracking): progress event +
+    # settle-time deviation checks, before the auto-dispatch tail below.
+    Write-PlanSettleTail $runDir $bridge $target $NodeId
+
+    # dependency-driven unlock push (goal-tree-goal-root): settling this node may
+    # unlock other tasks' nodes (and grafted this task's own next phase) — push
+    # every newly unlocked node automatically; push failures are isolated data.
+    # The same call runs the acceptance-chain trigger (overall-delivery).
+    $push = Invoke-AutoDispatch $runDir $bridge "settle"
+    $bridge = $push.bridge
+    $warnings = @()
+    $warnings += @($tail.warnings)
+    $warnings += $conflictWarnings
+    foreach ($f in @($push.failed)) {
+        $warnings += "auto-push failed for node $($f.node) (retry_class=$($f.retry_class)): session-create class auto-retries on the next trigger; pointer class needs manual dispatch. $($f.error)"
+    }
+
+    return New-SettleResult -Target $target -Tail $tail -Push $push -Bridge $bridge -Warnings $warnings
 }
 
 function Add-PendingSync {
@@ -3075,16 +4748,22 @@ function New-NodeTaskText {
     # time (the prune reason alone stays invisible to workers). The redo
     # section is composed HERE like every other segment (sole-producer
     # invariant); its stable prefix is what Get-NodeTaskBrief re-extracts.
-    param([string]$Title, [string]$Stage, [string]$ReqRel, [string[]]$DesignRels, [string]$RunId, $RedoContext)
+    param([string]$Title, [string]$Stage, [string]$ReqRel, [string[]]$DesignRels, [string]$RunId, $RedoContext,
+          [string]$AcceptanceRef, [string]$Mission, [string]$ConventionsRef)
 
     $duty = ""
     if ($script:StageDuty.Contains($Stage)) { $duty = "（$($script:StageDuty[$Stage])）" }
     $archiveName = $RunId -replace '^deliver-', ''
 
     $t = "目标：完成「$Title」的 $Stage 阶段$duty。"
+    if (-not [string]::IsNullOrWhiteSpace($Mission)) { $t += $Mission }
     $t += "需求文档：$ReqRel"
     if (@($DesignRels).Count -gt 0) { $t += "；设计文档：$(@($DesignRels) -join '、')" }
     $t += "；归档：$archiveName。"
+    if (-not [string]::IsNullOrWhiteSpace($AcceptanceRef)) { $t += "整体验收判据：$AcceptanceRef。" }
+    # 架构约定注入(parallel-coordination,与判据注入同构):DESIGN 链头/节点带
+    # 「架构约定:<path>」——多 CTO/UX 设计遵循同一套架构/风格约定。
+    if (-not [string]::IsNullOrWhiteSpace($ConventionsRef)) { $t += "架构约定：$ConventionsRef。" }
     if ($null -ne $RedoContext) {
         $rcFrom = [string]$RedoContext.from_stage
         if ([string]::IsNullOrWhiteSpace($rcFrom)) { $rcFrom = "上一" }
@@ -3130,24 +4809,39 @@ function Get-NodeTaskBrief {
         $cmd = $cmd -replace '<本节点id>', $NodeId
         $claimPart = "开工先领取节点：$cmd。"
     }
-    # redo excerpt (planner-stage-rollback): ride the 重做上下文 section along
-    # when it fits — room-aware so the claim command always survives the cap;
-    # overlong redo text truncates here but the full text always remains in
-    # node.task and the claim output (the brief only keeps the message compact)
-    if ($NodeTask -match '重做上下文（跨阶段回退）：(?<redo>.+?)(?=开工动作（辅助）：)') {
-        $redoPrefix = "重做上下文（跨阶段回退）："
-        $room = 240 - $brief.Length - $redoPrefix.Length - $claimPart.Length - 1
-        if (-not $claimPart) { $room = 0 }
-        if ($room -ge 1) {
-            $redoText = [string]$Matches['redo']
-            if ($redoText.Length -gt $room) { $redoText = $redoText.Substring(0, $room) + "…" }
-            $brief += $redoPrefix + $redoText
-        }
+    # redo excerpt (planner-stage-rollback) + whole-delivery context (使命 /
+    # 整体验收判据, overall-delivery): ride along room-aware — the claim command
+    # always survives the cap; overlong text truncates here but the full text
+    # always remains in node.task and the claim output (the brief only keeps the
+    # message compact). Context is only injected when the claim command is
+    # present (the legacy no-claim shape stays zero-injection).
+    $context = @()
+    if ($NodeTask -match '使命：(?<m>[^。]+)。') { $context += ,@("使命：", "$($Matches['m'])。") }
+    if ($NodeTask -match '整体验收判据：(?<a>[^。]+)。') { $context += ,@("整体验收判据：", "$($Matches['a'])。") }
+    if ($NodeTask -match '架构约定：(?<c>[^。]+)。') { $context += ,@("架构约定：", "$($Matches['c'])。") }
+    if ($NodeTask -match '重做上下文（跨阶段回退）：(?<redo>.+?)(?=开工动作（辅助）：)') { $context += ,@("重做上下文（跨阶段回退）：", [string]$Matches['redo']) }
+    foreach ($seg in $context) {
+        if (-not $claimPart) { break }
+        $room = 240 - $brief.Length - $claimPart.Length - 1
+        $piece = Get-BriefContextSegment $seg[0] $seg[1] $room
+        if ($piece) { $brief += $piece }
     }
     $brief += $claimPart
 
     if ($brief.Length -gt 240) { $brief = $brief.Substring(0, 239) + "…" }
     return $brief
+}
+
+function Get-BriefContextSegment {
+    # room-aware optional context segment for the pointer brief (使命 / 整体验收
+    # 判据 / 重做上下文): appended only while room remains after reserving the
+    # claim command (the brief's mandatory tail); overlong body truncates with ….
+    param([string]$Prefix, [string]$Body, [int]$Room)
+    $avail = $Room - $Prefix.Length
+    if ($avail -lt 1) { return "" }
+    $text = [string]$Body
+    if ($text.Length -gt $avail) { $text = $text.Substring(0, $avail - 1) + "…" }
+    return $Prefix + $text
 }
 
 function Get-NodeTaskSummary {
@@ -3198,8 +4892,11 @@ function Invoke-GraftNextStage {
     foreach ($d in @(Convert-ToSafeArray $Task.designDocs)) { $designRels += ([string]$d.path -replace '\\', '/') }
     # goal-first node task text (dispatch-task-goal-anchoring): single
     # authoritative producer — see New-NodeTaskText above; RedoContext is
-    # only supplied by rollback (rebuilt previous-stage node)
-    $taskText = New-NodeTaskText -Title $title -Stage $NextStage -ReqRel $reqRel -DesignRels $designRels -RunId ([string]$Bridge.run_id) -RedoContext $RedoContext
+    # only supplied by rollback (rebuilt previous-stage node). ConventionsRef
+    # (parallel-coordination): DESIGN 阶段节点同样注入「架构约定:<path>」。
+    $conventionsRef = $null
+    if (Test-DesignStageNode ([string]$NextStage) $Task) { $conventionsRef = Get-ConventionsRef $Bridge }
+    $taskText = New-NodeTaskText -Title $title -Stage $NextStage -ReqRel $reqRel -DesignRels $designRels -RunId ([string]$Bridge.run_id) -RedoContext $RedoContext -ConventionsRef $conventionsRef
     $graftItem = @{
         title = "$title"
         task  = $taskText
@@ -3479,39 +5176,44 @@ function Get-BridgeOverview {
         flagged_deliveries = $flagged
         dependencies   = $deps
         repair         = @{ repaired = $repair.repaired; remaining = $repair.remaining }
+        conflicts      = (Get-ConflictView $bridge)
         lease          = (Get-LeaseState $RunDir)
         flow_taskCount = $flow.tasks.Count
         terminalCount  = $terminalCount
     }
 }
 
-function Invoke-BridgeStatus {
-    $runDir = Get-BridgeRunDir $RunId
-    $bridge = Require-Bridge $runDir
-    $view = Get-BridgeOverview $runDir $bridge
-    $bridge = $view.bridge
-
-    # --- status touch catch-up push (goal-tree-goal-root trigger point 4): retry
-    #     session-create-class failures and any push missed by a crash mid-batch.
-    #     Best-effort and lease-aware: another live planner's lease owns pushing.
-    $touch = @{ ran = $false; note = $null }
-    if ($view.tree.state -ne "concluded") {
-        $leaseTry = Try-PlannerLeaseForTouch $runDir
-        if ($leaseTry.acquired) {
-            $push = Invoke-AutoDispatch $runDir $bridge "status"
-            $bridge = $push.bridge
-            if (-not $leaseTry.was_mine) { $null = Invoke-LeaseRelease $runDir }
-            $touch = @{ ran = $true; pushed = @($push.pushed); skipped = @($push.skipped); failed = @($push.failed) }
-        }
-        else {
-            $touch = @{ ran = $false; note = "auto-push skipped: planner lease held by '$($leaseTry.holder)' (their orchestration owns pushing)" }
-        }
+function Invoke-StatusTouch {
+    # status touch catch-up push (goal-tree-goal-root trigger point 4) + the
+    # long-task-planning patrol (delay/scope deviation detection): best-effort
+    # and lease-aware — another live planner's lease owns pushing and writing.
+    param([string]$RunDir, $Bridge, [string]$TreeState)
+    if ($TreeState -eq "concluded") {
+        return @{ touch = @{ ran = $false; note = $null }; bridge = $Bridge }
     }
+    $leaseTry = Try-PlannerLeaseForTouch $RunDir
+    if (-not $leaseTry.acquired) {
+        return @{ touch = @{ ran = $false; note = "auto-push skipped: planner lease held by '$($leaseTry.holder)' (their orchestration owns pushing)" }; bridge = $Bridge }
+    }
+    $touch = @{ ran = $true; pushed = @(); skipped = @(); failed = @() }
+    if ($null -ne (Get-PlanSection $Bridge)) {
+        $flow = Read-ArchiveTasks $Bridge.archive
+        $touch['plan_deviations'] = @(Write-PlanPatrolDeviations $RunDir $Bridge (Get-TreeStatusView $RunId) $flow.tasks)
+    }
+    $push = Invoke-AutoDispatch $RunDir $Bridge "status"
+    if (-not $leaseTry.was_mine) { $null = Invoke-LeaseRelease $RunDir }
+    $touch['pushed'] = @($push.pushed)
+    $touch['skipped'] = @($push.skipped)
+    $touch['failed'] = @($push.failed)
+    return @{ touch = $touch; bridge = $push.bridge }
+}
 
-    # per-node push ledger view (failures with retry classes stay visible here)
+function New-StatusPushRows {
+    # per-node push ledger view (failures with retry classes stay visible here).
+    param($Bridge)
     $pushRows = @()
-    foreach ($nodeId in @($bridge.pushes.Keys)) {
-        $st = $bridge.pushes[$nodeId]
+    foreach ($nodeId in @($Bridge.pushes.Keys)) {
+        $st = $Bridge.pushes[$nodeId]
         $last = @()
         foreach ($a in @(Convert-ToSafeArray $st['attempts'])) { $last += $a }
         $lastAttempt = if ($last.Count -gt 0) { $last[-1] } else { $null }
@@ -3524,22 +5226,27 @@ function Invoke-BridgeStatus {
             retry_class  = $(if ($lastAttempt -and -not $lastAttempt.ok) { $lastAttempt.retry_class } else { $null })
         }
     }
+    return $pushRows
+}
 
-    # claimed-node session liveness (read-only; unknown is normal outside dsh)
+function New-StatusLivenessRows {
+    # claimed-node session liveness (read-only; unknown is normal outside dsh).
+    param($ClaimedNodes)
     $livenessRows = @()
-    foreach ($n in @(Convert-ToSafeArray $view.tree.nodes.claimed)) {
+    foreach ($n in @(Convert-ToSafeArray $ClaimedNodes)) {
         $cid = if ($n -is [string]) { $n } else { [string]$n.id }
         $live = Get-ClaimLiveness $RunId $cid
         $livenessRows += @{ node = $cid; claimed_by = $(if ($n -is [string]) { $null } else { $n.claimed_by }); liveness = $live.liveness; session_id = $live.session_id }
     }
+    return $livenessRows
+}
 
-    # session roster (planner-session-roster): every dsh session this run
+function New-StatusSessionRows {
+    # session roster rows (planner-session-roster): every dsh session this run
     # derived — planner body, bridge dispatches, registered direct handoffs.
-    # Rows stay listed for the run's whole life: the create-before-claim window
-    # and off-tree direct sessions are exactly what this list keeps traceable.
-    $roster = Read-Roster $runDir
+    param($Sessions)
     $sessionRows = @()
-    foreach ($s in @($roster.sessions)) {
+    foreach ($s in @($Sessions)) {
         if ($null -eq $s) { continue }
         $sessionRows += @{
             session_id = [string]$s['session_id']
@@ -3552,32 +5259,86 @@ function Invoke-BridgeStatus {
             updated_at = [string]$s['updated_at']
         }
     }
+    return $sessionRows
+}
 
-    $warnings = @()
-    foreach ($w in @($view.tree.integrity.warnings)) { $warnings += "tree: $w" }
-    if ($roster.corrupt) { $warnings += "sessions.json roster unparseable — read as empty (the next registration self-heals the file)" }
-    if ($view.repair.remaining.Count -gt 0) { $warnings += "pending_sync unresolved: $(@($view.repair.remaining | ForEach-Object { "$($_.node):$($_.op)" }) -join ', ')" }
-    if ($view.dead_claims.tree.Count -gt 0) { $warnings += "dead tree claim(s) (>= ${DeadClaimMinutes} min): $(@($view.dead_claims.tree | ForEach-Object { $_.node }) -join ', ') — reclaim them" }
-    if ($view.dead_claims.flow.Count -gt 0) { $warnings += "dead flow claim(s): $(@($view.dead_claims.flow | ForEach-Object { "task#$($_.task_id):$($_.role)" }) -join ', ')" }
-    if (@($view.flagged_deliveries).Count -gt 0) {
-        $warnings += "unqualified reported delivery(ies): $(@($view.flagged_deliveries | ForEach-Object { $_.node }) -join ', ') — adjudicate: reclaim -NodeId <id> (redo the same stage) or rollback -NodeId <id> -Reason <why> (send the task one stage back)"
+function Add-PlanStatusWarnings {
+    # plan-view warnings (long-task-planning): acceptance points awaiting their
+    # settle + explicitly surfaced pending stage gates + quarantined log rows.
+    param($PlanView, $Bridge)
+    $w = @()
+    if ($null -eq $PlanView) { return $w }
+    foreach ($st in @($PlanView.stages)) {
+        if (([string]$st.acceptance.status) -eq 'grafted') {
+            $w += "stage $($st.id) acceptance point node $($st.acceptance.node) awaiting settle — downstream stage gates stay closed until it passes"
+        }
     }
-    $failedPushes = @($pushRows | Where-Object { $_.retry_class })
+    foreach ($key in @($Bridge.tasks.Keys)) {
+        $blockers = Get-PlanGateBlockers $Bridge ([int]$key)
+        if ($blockers.Count -gt 0) {
+            $w += "task #$key is stage-gated (waiting on acceptance point(s): [$($blockers -join ', ')]) — settle those acceptance nodes, or replan to re-scope the stages"
+        }
+    }
+    if ([bool]$PlanView.log_corrupt) { $w += "plan-log.jsonl has quarantined bad line(s) in plan-log.jsonl.corrupt" }
+    return $w
+}
+
+function New-StatusWarnings {
+    # joined warnings: tree integrity + roster/pending_sync/dead claims +
+    # flagged deliveries + push failures + auto-mode escalations + plan view.
+    param($View, $PushRows, $Roster, $AutoModeBlock, $PlanView, $Bridge)
+    $warnings = @()
+    foreach ($w in @($View.tree.integrity.warnings)) { $warnings += "tree: $w" }
+    if ($Roster.corrupt) { $warnings += "sessions.json roster unparseable — read as empty (the next registration self-heals the file)" }
+    if ($View.repair.remaining.Count -gt 0) { $warnings += "pending_sync unresolved: $(@($View.repair.remaining | ForEach-Object { "$($_.node):$($_.op)" }) -join ', ')" }
+    if ($View.dead_claims.tree.Count -gt 0) { $warnings += "dead tree claim(s) (>= ${DeadClaimMinutes} min): $(@($View.dead_claims.tree | ForEach-Object { $_.node }) -join ', ') — reclaim them" }
+    if ($View.dead_claims.flow.Count -gt 0) { $warnings += "dead flow claim(s): $(@($View.dead_claims.flow | ForEach-Object { "task#$($_.task_id):$($_.role)" }) -join ', ')" }
+    if (@($View.flagged_deliveries).Count -gt 0) {
+        $warnings += "unqualified reported delivery(ies): $(@($View.flagged_deliveries | ForEach-Object { $_.node }) -join ', ') — adjudicate: reclaim -NodeId <id> (redo the same stage) or rollback -NodeId <id> -Reason <why> (send the task one stage back)"
+    }
+    $failedPushes = @($PushRows | Where-Object { $_.retry_class })
     if ($failedPushes.Count -gt 0) {
         $warnings += "push failures: $(@($failedPushes | ForEach-Object { "$($_.node)($($_.retry_class))" }) -join ', ') — session-create class auto-retries on every status touch; pointer class needs manual dispatch"
     }
+    if ($null -ne $AutoModeBlock -and @($AutoModeBlock.open_escalations).Count -gt 0) {
+        $warnings += "open escalation(s): $(@($AutoModeBlock.open_escalations | ForEach-Object { "$($_.entry_id)@$($_.node)/$($_.checkpoint)$(if ($_.historical) { ' (historical: node pruned)' })" }) -join ', ') — present them to the user; verdict lands via decide -Kind resolution"
+    }
+    $warnings += @(Add-PlanStatusWarnings $PlanView $Bridge)
+    # 并行冲突治理视图(parallel-coordination):未决冲突 + 回执偏差警示(status/annex)。
+    $cv = Get-ConflictView $Bridge
+    foreach ($e in @($cv.open)) {
+        $warnings += "unresolved conflict $($e['id']) (kind=$($e['kind']), status=$($e['status']), nodes [$($e['nodes'] -join ', ')]) — 治理中(调和/上报/挂起),不得默默二选一;处置后 'delivery-bridge.cmd -Command conflict -RunId $($Bridge['run_id']) -Action resolve -ConflictId $($e['id']) -Ruling <结论>'"
+    }
+    foreach ($dv in @($cv.citation_deviations)) {
+        $warnings += "回执偏差(软核对): $($dv['node']) @ $($dv['doc']) citations 超出变更地图文件集 [$($dv['refs'] -join ', ')] — 核对变更地图是否漏报/写错(检测失明风险)"
+    }
+    return $warnings
+}
+
+function Invoke-BridgeStatus {
+    # joined view orchestrator (QA function-size gate decomposition: the row/
+    # warning/touch builders live beside it).
+    $runDir = Get-BridgeRunDir $RunId
+    $bridge = Require-Bridge $runDir
+    $view = Get-BridgeOverview $runDir $bridge
+    $bridge = $view.bridge
+
+    $touchRes = Invoke-StatusTouch $runDir $bridge ([string]$view.tree.state)
+    $bridge = $touchRes.bridge
+
+    $pushRows = New-StatusPushRows $bridge
+    $livenessRows = New-StatusLivenessRows $view.tree.nodes.claimed
+    $roster = Read-Roster $runDir
+    $sessionRows = New-StatusSessionRows $roster.sessions
+    $planView = Get-PlanView $runDir $bridge
 
     # pure-auto-mode visibility block (planner-auto-mode): ONLY for -AutoMode
-    # runs — enabled + per-node decision counts + the derived open-escalation
-    # list (QA / the Planner audit every auto answer's inputs / rule / time /
-    # decider from here or the ledger). Absent on legacy runs (byte-identical).
+    # runs (byte-identical absence on legacy runs).
     $autoModeBlock = $null
     if ($null -ne (Get-AutoModeSection $bridge)) {
         $autoModeBlock = Get-AutoModeDecisionView $runDir $bridge $view.tree
-        if (@($autoModeBlock.open_escalations).Count -gt 0) {
-            $warnings += "open escalation(s): $(@($autoModeBlock.open_escalations | ForEach-Object { "$($_.entry_id)@$($_.node)/$($_.checkpoint)$(if ($_.historical) { ' (historical: node pruned)' })" }) -join ', ') — present them to the user; verdict lands via decide -Kind resolution"
-        }
     }
+    $warnings = New-StatusWarnings $view $pushRows $roster $autoModeBlock $planView $bridge
 
     return @{
         success = $true
@@ -3597,8 +5358,10 @@ function Invoke-BridgeStatus {
             session_liveness = $livenessRows
             sessions       = $sessionRows
             pushes         = $pushRows
-            auto_push_touch = $touch
+            auto_push_touch = $touchRes.touch
             auto_mode      = $autoModeBlock
+            plan           = $planView
+            conflicts      = $view.conflicts
             pending_sync   = $view.repair.remaining
             repaired_now   = $view.repair.repaired
             lease          = $view.lease
@@ -3607,6 +5370,61 @@ function Invoke-BridgeStatus {
             next_step      = $(if (@($view.flagged_deliveries).Count -gt 0) { "adjudicate unqualified delivery(ies) [$(@($view.flagged_deliveries | ForEach-Object { $_.node }) -join ', ')]: rollback -NodeId <id> -Reason <why> (one stage back) or reclaim -NodeId <id> (same-stage redo)" } elseif ($view.terminalCount -eq $view.flow_taskCount -and $view.flow_taskCount -gt 0) { "all tasks terminal — conclude: delivery-bridge.cmd -Command conclude -RunId $RunId -Summary <...>" } else { "settle reported nodes; pushes are automatic (initial/unlock/reclaim/rollback + status touch); claimable now: [$($view.claimable -join ', ')]" })
         }
     }
+}
+
+function New-PlanResumeSteps {
+    # plan steps for a resuming planner (long-task-planning): acceptance points
+    # awaiting their settle + explicitly surfaced stage gates + the replan exit.
+    param($Bridge)
+    $steps = @()
+    $p = Get-PlanSection $Bridge
+    if ($null -eq $p) { return $steps }
+    foreach ($st in @($p['stages'])) {
+        $ap = $st['acceptance_point']
+        if (([string]$ap['status']) -eq 'grafted') {
+            $steps += "Stage $($st['id']) acceptance node $($ap['node']) awaiting settle — run 'delivery-bridge.cmd -Command settle -RunId $RunId -NodeId $($ap['node'])' (阶段集成验收点真实执行); downstream stage gates stay closed until it passes."
+        }
+    }
+    foreach ($key in @($Bridge.tasks.Keys)) {
+        $blockers = Get-PlanGateBlockers $Bridge ([int]$key)
+        if ($blockers.Count -gt 0) {
+            $steps += "Task #$key is stage-gated (waiting on acceptance point(s): [$($blockers -join ', ')]) — clear via the acceptance node settles, or replan: 'delivery-bridge.cmd -Command replan -RunId $RunId -PlanFile <revised plan> -Reason <deviation>' (滚动修正唯一入口)."
+        }
+    }
+    return $steps
+}
+
+function New-ResumeSteps {
+    # breakpoint step list core (tree/flow recovery steps) for a fresh planner
+    # session; auto_mode and plan steps are appended by the caller.
+    param($View)
+    $steps = @()
+    if ($View.tree.state -eq "concluded") {
+        $steps += "Run already concluded. Final report: report/final-report.md; delivery annex: report/delivery-annex.md."
+        return $steps
+    }
+    $steps += "Round $($View.tree.round.open) is open since $($View.tree.round.open_started_at) — the bridge keeps one round open for the whole delivery; conclude closes it."
+    foreach ($n in @(Convert-ToSafeArray $View.tree.nodes.reported)) {
+        $id = if ($n -is [string]) { $n } else { $n.id }
+        $steps += "Reported node awaiting settle: $id — run 'delivery-bridge.cmd -Command settle -RunId $RunId -NodeId $id' (three evidence checks gate the transition)."
+    }
+    if (@($View.flagged_deliveries).Count -gt 0) {
+        $steps += "Unqualified reported delivery(ies) (settle will refuse): $(@($View.flagged_deliveries | ForEach-Object { $_.node }) -join ', ') — 'delivery-bridge.cmd -Command rollback -RunId $RunId -NodeId <id> -To <roles> -Phase <REQ|DESIGN|IMPL|VERIFY> -Reason <why>' (explicit cross-phase rollback target) or 'delivery-bridge.cmd -Command reclaim -RunId $RunId -NodeId <id>' (redo the same stage)."
+    }
+    if ($View.claimable.Count -gt 0) {
+        $steps += "Dispatch sessions for claimable nodes: [$($View.claimable -join ', ')] — 'delivery-bridge.cmd -Command dispatch -RunId $RunId -NodeId <id>'."
+    }
+    if ($View.dead_claims.tree.Count -gt 0) {
+        $steps += "Recover dead claims: $(@($View.dead_claims.tree | ForEach-Object { $_.node }) -join ', ') — 'delivery-bridge.cmd -Command reclaim -RunId $RunId -NodeId <id>'."
+    }
+    if ($View.repair.remaining.Count -gt 0) {
+        $steps += "pending_sync divergence still unresolved (status retries the repair on every call): $(@($View.repair.remaining | ForEach-Object { "$($_.node):$($_.op)" }) -join ', ')."
+    }
+    if ($View.terminalCount -eq $View.flow_taskCount -and $View.flow_taskCount -gt 0) {
+        $steps += "All tasks terminal — conclude with a summary."
+    }
+    $steps += "Reported nodes are never re-consumed; duplicate sessions get deterministic conflict feedback from bridge claim."
+    return $steps
 }
 
 function Invoke-BridgeResume {
@@ -3619,33 +5437,7 @@ function Invoke-BridgeResume {
     # then shows every session that ever orchestrated this run).
     $null = Register-PlannerBody -RunDir $runDir -RunIdText $RunId
 
-    $steps = @()
-    if ($view.tree.state -eq "concluded") {
-        $steps += "Run already concluded. Final report: report/final-report.md; delivery annex: report/delivery-annex.md."
-    }
-    else {
-        $steps += "Round $($view.tree.round.open) is open since $($view.tree.round.open_started_at) — the bridge keeps one round open for the whole delivery; conclude closes it."
-        foreach ($n in @(Convert-ToSafeArray $view.tree.nodes.reported)) {
-            $id = if ($n -is [string]) { $n } else { $n.id }
-            $steps += "Reported node awaiting settle: $id — run 'delivery-bridge.cmd -Command settle -RunId $RunId -NodeId $id' (three evidence checks gate the transition)."
-        }
-        if (@($view.flagged_deliveries).Count -gt 0) {
-            $steps += "Unqualified reported delivery(ies) (settle will refuse): $(@($view.flagged_deliveries | ForEach-Object { $_.node }) -join ', ') — 'delivery-bridge.cmd -Command rollback -RunId $RunId -NodeId <id> -To <roles> -Phase <REQ|DESIGN|IMPL|VERIFY> -Reason <why>' (explicit cross-phase rollback target) or 'delivery-bridge.cmd -Command reclaim -RunId $RunId -NodeId <id>' (redo the same stage)."
-        }
-        if ($view.claimable.Count -gt 0) {
-            $steps += "Dispatch sessions for claimable nodes: [$($view.claimable -join ', ')] — 'delivery-bridge.cmd -Command dispatch -RunId $RunId -NodeId <id>'."
-        }
-        if ($view.dead_claims.tree.Count -gt 0) {
-            $steps += "Recover dead claims: $(@($view.dead_claims.tree | ForEach-Object { $_.node }) -join ', ') — 'delivery-bridge.cmd -Command reclaim -RunId $RunId -NodeId <id>'."
-        }
-        if ($view.repair.remaining.Count -gt 0) {
-            $steps += "pending_sync divergence still unresolved (status retries the repair on every call): $(@($view.repair.remaining | ForEach-Object { "$($_.node):$($_.op)" }) -join ', ')."
-        }
-        if ($view.terminalCount -eq $view.flow_taskCount -and $view.flow_taskCount -gt 0) {
-            $steps += "All tasks terminal — conclude with a summary."
-        }
-    }
-    $steps += "Reported nodes are never re-consumed; duplicate sessions get deterministic conflict feedback from bridge claim."
+    $steps = @(New-ResumeSteps $view)
 
     # pure-auto-mode breakpoint visibility (planner-auto-mode): open
     # escalations ARE the unattended-run breakpoints — a resuming planner
@@ -3658,6 +5450,21 @@ function Invoke-BridgeResume {
             $hist = if ($esc.historical) { " [historical: node $($esc.node) pruned]" } else { "" }
             $steps += "Open escalation${hist}: $($esc.entry_id) @ node $($esc.node) ($($esc.stage)) checkpoint '$($esc.checkpoint)' — present to the user, then record: delivery-bridge.cmd -Command decide -RunId $RunId -NodeId $($esc.node) -Kind resolution -RefEntry $($esc.entry_id) -Checkpoint '$($esc.checkpoint)' -Decision <user verdict>."
         }
+    }
+
+    # long-task-planning plan view + plan steps (pending acceptance points and
+    # stage gates ARE breakpoints too). plan=$null degrades legacy runs.
+    $planView = Get-PlanView $runDir $bridge
+    $steps += @(New-PlanResumeSteps $bridge)
+
+    # 并行协作冲突治理(parallel-coordination):未决冲突也是断点——续跑规划者
+    # 按 kind 续处(调和/上报/挂起),无冲突任务不被阻塞。
+    $cv = $view.conflicts
+    foreach ($e in @($cv.open)) {
+        $steps += "Unresolved conflict $($e['id']) (kind=$($e['kind']), status=$($e['status']), nodes [$($e['nodes'] -join ', ')], files [$($e['files'] -join ', ')]) — 处置:调和产出一致结论后 'delivery-bridge.cmd -Command conflict -RunId $RunId -Action resolve -ConflictId $($e['id']) -Ruling <结论>'(文件冲突可 -Serialize <早者节点> 串行化);无法调和 → -Action open -ConflictId $($e['id']) -ConflictStatus escalated -Escalation '<呈用户的问题>' 上报用户裁决;用户不在场 → -ConflictStatus suspended 挂起涉事链并上报(不阻塞无冲突任务)。硬约束:不得默默二选一。"
+    }
+    foreach ($dv in @($cv.citation_deviations)) {
+        $steps += "回执偏差(软核对): $($dv['node']) @ $($dv['doc']) citations 超出变更地图文件集 [$($dv['refs'] -join ', ')] — 核对变更地图是否漏报/写错。"
     }
 
     return @{
@@ -3676,6 +5483,8 @@ function Invoke-BridgeResume {
             dead_claims    = $view.dead_claims
             dependencies   = $view.dependencies
             auto_mode      = $autoModeBlock
+            plan           = $planView
+            conflicts      = $view.conflicts
             recovery_steps = $steps
             lease          = $view.lease
         }
@@ -3684,18 +5493,11 @@ function Invoke-BridgeResume {
 
 # === Command: conclude ===
 
-function Invoke-BridgeConclude {
-    $runDir = Get-BridgeRunDir $RunId
-    $bridge = Require-Bridge $runDir
-    if ([string]::IsNullOrWhiteSpace($Summary)) { Write-ErrorResult "MISSING_SUMMARY" "-Summary is required (closing summary for the delivery)" 1 }
-
-    $null = Enter-PlannerLease $runDir
-
-    $flow = Read-ArchiveTasks $Bridge.archive
-    # review-gate exemption (planner-requirement-review): tasks the planner
-    # rejected back to PM stay active@PM BY DESIGN — their rework happens outside
-    # this run. The gate exempts EXACTLY the review section's reject_return set;
-    # every other non-terminal task still hard-fails DELIVERY_INCOMPLETE.
+function Resolve-ConcludeReviewState {
+    # review-gate exemption sets (planner-requirement-review): tasks the planner
+    # rejected back to PM stay active@PM BY DESIGN; merged tasks document their
+    # in-tree absorption. Returns both maps + the pending reject id list.
+    param($Bridge, $Flow)
     $rejectReturned = @{}
     $mergedInto = @{}
     if ((Test-PropPresent $Bridge 'review') -and $null -ne $Bridge['review']) {
@@ -3707,56 +5509,55 @@ function Invoke-BridgeConclude {
             }
         }
     }
-    $notTerminal = @($flow.tasks | Where-Object {
-        (([string]$_.lifecycle) -notin @("completed", "deprecated")) -and (-not $rejectReturned.Contains([int]$_.id))
+    $pendingRejectIds = @($Flow.tasks | Where-Object {
+        $rejectReturned.Contains([int]$_.id) -and (([string]$_.lifecycle) -notin @("completed", "deprecated"))
+    } | ForEach-Object { [int]$_.id })
+    return @{ reject_returned = $rejectReturned; merged_into = $mergedInto; pending_reject_ids = $pendingRejectIds }
+}
+
+function Test-ConcludeDeliveryComplete {
+    # DELIVERY_INCOMPLETE (every task terminal except the exempt reject_return
+    # set) + TREE_NOT_SETTLED (every bridge-mapped delivery node terminal; the
+    # structural root n1 and the acceptance chain never block here — the
+    # acceptance gate below owns the chain).
+    param($Bridge, $Flow, $RejectReturned, $TreeData)
+    $notTerminal = @($Flow.tasks | Where-Object {
+        (([string]$_.lifecycle) -notin @("completed", "deprecated")) -and (-not $RejectReturned.Contains([int]$_.id))
     })
     if ($notTerminal.Count -gt 0) {
         Write-ErrorResult "DELIVERY_INCOMPLETE" "Not all tasks are terminal yet: $(@($notTerminal | ForEach-Object { "#$($_.id)($($_.lifecycle)) @$($_.currentOwners -join '+')" }) -join ', '). Settle/prune the remaining work first." 1
     }
-    # reject_return tasks still non-terminal = the pending rejections (active@PM)
-    $pendingRejects = @($flow.tasks | Where-Object {
-        $rejectReturned.Contains([int]$_.id) -and (([string]$_.lifecycle) -notin @("completed", "deprecated"))
-    })
-    $pendingRejectIds = @($pendingRejects | ForEach-Object { [int]$_.id })
-    $treeData = Get-TreeStatusView $RunId
-    # only BRIDGE-MAPPED nodes are delivery units — the structural root node (n1)
-    # stays pending forever and must not block the conclusion
     $mappedPending = @()
-    foreach ($p in @(Convert-ToSafeArray $treeData.nodes.pending)) {
+    foreach ($p in @(Convert-ToSafeArray $TreeData.nodes.pending)) {
         if ($null -ne (Get-NodeTaskStage $Bridge ([string]$p))) { $mappedPending += [string]$p }
     }
     $mappedClaimed = @()
-    foreach ($c in @(Convert-ToSafeArray $treeData.nodes.claimed)) {
+    foreach ($c in @(Convert-ToSafeArray $TreeData.nodes.claimed)) {
         $cid = if ($c -is [string]) { $c } else { [string]$c.id }
         if ($null -ne (Get-NodeTaskStage $Bridge $cid)) { $mappedClaimed += $cid }
     }
     if ($mappedPending.Count -gt 0 -or $mappedClaimed.Count -gt 0) {
         Write-ErrorResult "TREE_NOT_SETTLED" "Tree still has pending/claimed delivery nodes: pending=[$($mappedPending -join ',')] claimed=[$($mappedClaimed -join ',')]. Settle or prune them first." 1
     }
+}
 
-    # anchor (goal-tree-goal-root): the goal root is the conclude anchor — goal-tree
-    # validates it by root semantics (all direct children terminal). The root anchor
-    # applies only when the tree node actually carries type=goal (v2-promulgated runs);
-    # a legacy-shaped run (v1 bridge.json migrated to v2 over a plain structural root)
-    # falls through to the legacy anchor resolution below.
-    # NOTE: Get-NodeFromTree serves the status view, where pending/done/pruned nodes
-    # are reduced to bare {id,status} — and the goal root stays pending forever — so
-    # its type=goal must be read from the full state/tree.json instead.
+function Resolve-ConcludeAnchor {
+    # anchor (goal-tree-goal-root): the goal root is the conclude anchor —
+    # goal-tree validates it by root semantics (all direct children terminal).
+    # Applies only when the node actually carries type=goal (v2 promulgations);
+    # a legacy-shaped run falls through to the legacy anchor resolution.
+    # NOTE: Get-NodeFromTree serves the status view (bare {id,status}) and the
+    # goal root stays pending forever — read type=goal from state/tree.json.
+    param([string]$RunDir, $Bridge, $Flow, $TreeData)
     $anchor = $null
     $rootNode = $null
     $anchorType = $null
     if ((Test-PropPresent $Bridge 'goal_root') -and $Bridge.goal_root) {
-        $treeFilePath = Join-Path (Join-Path $runDir "state") "tree.json"
-        if (Test-Path -LiteralPath $treeFilePath -PathType Leaf) {
-            try {
-                $fullTree = [System.IO.File]::ReadAllText($treeFilePath, [System.Text.Encoding]::UTF8) | ConvertFrom-Json
-                $rootNode = @($fullTree.nodes | Where-Object { [string]$_.id -eq [string]$Bridge.goal_root })[0]
-            } catch { $rootNode = $null }
-        }
+        $rootNode = Read-TreeFullNode $RunDir ([string]$Bridge.goal_root)
         if ($null -ne $rootNode -and [string]$rootNode.type -eq 'goal') { $anchor = [string]$Bridge.goal_root; $anchorType = 'goal' }
     }
     if ($null -eq $anchor) {
-        foreach ($t in $flow.tasks) {
+        foreach ($t in $Flow.tasks) {
             $taskId = [int]$t.id
             if ($Bridge.tasks.Contains("$taskId")) {
                 $bStages = $Bridge.tasks["$taskId"]['stages']
@@ -3765,51 +5566,23 @@ function Invoke-BridgeConclude {
         }
     }
     if ($null -eq $anchor) {
-        $doneList = @($treeData.nodes.done)
+        $doneList = @($TreeData.nodes.done)
         if ($doneList.Count -gt 0) { $anchor = [string]$doneList[-1] }
     }
     if ($null -eq $anchor) { Write-ErrorResult "ANCHOR_UNRESOLVED" "No done node found to anchor the achieved conclusion" 1 }
+    return @{ anchor = $anchor; anchor_type = $anchorType; root_node = $rootNode }
+}
 
-    # 1) goal-tree conclude (auto-closes the open round; renders final-report.md)
-    $r = Invoke-GoalTree @("-Command", "conclude", "-RunId", $RunId, "-Outcome", "achieved", "-AnchorNodeId", $anchor, "-Summary", $Summary)
-    if ($r.exit -ne 0 -or -not $r.json.success) {
-        Write-ErrorResult "TREE_CONCLUDE_FAILED" "goal-tree conclude failed: $($r.text)" 3
-    }
-
-    # 2) rdd-flow check (integrity of the whole archive routing)
-    $chk = Invoke-RddFlow @("-Command", "check", "-Archive", $Bridge.archive)
-    $checkOk = ($chk.exit -eq 0 -and $null -ne $chk.json -and $chk.json.success -and [int]$chk.json.data.issueCount -eq 0)
-    $checkIssues = @()
-    if ($null -ne $chk.json -and $chk.json.success) { $checkIssues = @(Convert-ToSafeArray $chk.json.data.issues) }
-
-    # 3) delivery annex: per-task terminal state + check result
-    $annexDir = Join-Path $runDir "report"
-    if (-not (Test-Path -LiteralPath $annexDir)) { New-Item -ItemType Directory -Path $annexDir -Force | Out-Null }
+function New-AnnexTaskTableLines {
+    # 「任务终态」table: per-task terminal state + phase chain, with the review-
+    # gate annotations (merged = absorbed in-tree, pending rejects = active@PM).
+    param($Bridge, $Flow, $TreeData, $MergedInto, $PendingRejectIds)
     $lines = @()
-    $lines += "# 交付结案附录 — $RunId"
-    $lines += ""
-    $lines += "- 归档: $($Bridge.archive_rel)"
-    $lines += "- 结案时间: $(Get-UtcNowIso) · 发起: $($Bridge.created_by)"
-    $lines += "- rdd-flow check: $(if ($checkOk) { '通过（0 issues）' } else { "发现问题 $($checkIssues.Count) 条" })"
-    if ((Test-PropPresent $Bridge 'goal_root') -and $Bridge.goal_root -and (Test-PropPresent $Bridge 'goal') -and $null -ne $rootNode -and [string]$rootNode.type -eq 'goal') {
-        # root-goal achievement state (goal-tree-goal-root AC-2): the original
-        # requirement reached its final objective — every sub-requirement terminal
-        # (goal-tree concluded the run anchored on the type=goal root). Review-
-        # rejected sub-requirements pending at PM make it PARTIAL, rendered
-        # honestly (never dressed up as complete) — acceptance 3 / edge #3.
-        $goalTitle = if ($Bridge.goal.Contains('title')) { [string]$Bridge.goal['title'] } else { "-" }
-        if ($pendingRejects.Count -eq 0) {
-            $lines += "- 根目标: **达成** — goal 根 $($Bridge.goal_root)「$goalTitle」全部直接子需求节点终态（原始需求=最终目标）"
-        } else {
-            $lines += "- 根目标: **部分达成（$($pendingRejects.Count) 条驳回回流 PM，见任务终态表）** — goal 根 $($Bridge.goal_root)「$goalTitle」交付节点全部终态；驳回项 active@PM 为真实状态，修订后经后续 run/正常流程承接"
-        }
-    }
-    $lines += ""
     $lines += "## 任务终态"
     $lines += ""
     $lines += "| Task | 标题 | 终态 | 阶段链 |"
     $lines += "|------|------|------|--------|"
-    foreach ($t in $flow.tasks) {
+    foreach ($t in $Flow.tasks) {
         $taskId = [int]$t.id
         $chain = "-"
         if ($Bridge.tasks.Contains("$taskId")) {
@@ -3819,33 +5592,113 @@ function Invoke-BridgeConclude {
                 # StageChain iterates RoleOrder — PM heads included)
                 $cPhase = [string]$t.phase
                 if ([string]::IsNullOrEmpty($cPhase)) { $cPhase = "" }
-                $chain = Format-StageChain $bStages $treeData $cPhase
+                $chain = Format-StageChain $bStages $TreeData $cPhase
             }
         }
-        # review-gate annotations (planner-requirement-review): merged tasks carry
-        # "deprecated (absorbed in-tree, not abandoned)"; pending rejects carry
-        # their true active@PM state — the annex never dresses either up.
         $termCell = [string]$t.lifecycle
-        if ($mergedInto.Contains($taskId)) {
-            $termCell = "$termCell（树内合并至 #$($mergedInto[$taskId])，非放弃）"
+        if ($MergedInto.Contains($taskId)) {
+            $termCell = "$termCell（树内合并至 #$($MergedInto[$taskId])，非放弃）"
         }
-        elseif ($pendingRejectIds -contains $taskId) {
+        elseif ($PendingRejectIds -contains $taskId) {
             $termCell = "$termCell（驳回回流 PM，修订中）"
         }
         $lines += "| $taskId | $([string]$t.title) | $termCell | $chain |"
     }
     $lines += ""
-    if (-not $checkOk) {
+    return $lines
+}
+
+function New-DeliveryAnnex {
+    # delivery-annex.md assembly: header + root-goal achievement state + 任务终态
+    # +「整体验收结论」区 (overall-delivery) + check issues + planner summary.
+    param([string]$RunId, [string]$RunDir, $Bridge, $Flow, $TreeData, [bool]$CheckOk, $CheckIssues,
+          [string]$SummaryText, $RootNode, $PendingRejects, $PendingRejectIds, $MergedInto, [string]$Conclusion)
+    $annexDir = Join-Path $RunDir "report"
+    if (-not (Test-Path -LiteralPath $annexDir)) { New-Item -ItemType Directory -Path $annexDir -Force | Out-Null }
+    $lines = @()
+    $lines += "# 交付结案附录 — $RunId"
+    $lines += ""
+    $lines += "- 归档: $($Bridge.archive_rel)"
+    $lines += "- 结案时间: $(Get-UtcNowIso) · 发起: $($Bridge.created_by)"
+    $lines += "- rdd-flow check: $(if ($CheckOk) { '通过（0 issues）' } else { "发现问题 $($CheckIssues.Count) 条" })"
+    if ((Test-PropPresent $Bridge 'goal_root') -and $Bridge.goal_root -and (Test-PropPresent $Bridge 'goal') -and $null -ne $RootNode -and [string]$RootNode.type -eq 'goal') {
+        # root-goal achievement state (goal-tree-goal-root AC-2): the original
+        # requirement reached its final objective — every sub-requirement terminal
+        # (goal-tree concluded the run anchored on the type=goal root). Review-
+        # rejected sub-requirements pending at PM make it PARTIAL, rendered
+        # honestly (never dressed up as complete) — acceptance 3 / edge #3.
+        $goalTitle = if ($Bridge.goal.Contains('title')) { [string]$Bridge.goal['title'] } else { "-" }
+        if (@($PendingRejects).Count -eq 0) {
+            $lines += "- 根目标: **达成** — goal 根 $($Bridge.goal_root)「$goalTitle」全部直接子需求节点终态（原始需求=最终目标）"
+        } else {
+            $lines += "- 根目标: **部分达成（$(@($PendingRejects).Count) 条驳回回流 PM，见任务终态表）** — goal 根 $($Bridge.goal_root)「$goalTitle」交付节点全部终态；驳回项 active@PM 为真实状态，修订后经后续 run/正常流程承接"
+        }
+    }
+    $lines += ""
+    $lines += New-AnnexTaskTableLines $Bridge $Flow $TreeData $MergedInto $PendingRejectIds
+    $lines += Add-AcceptanceAnnexLines $Bridge $Conclusion
+    $lines += Add-PlanAnnexLines $RunDir $Bridge $Flow.tasks
+    # 并行冲突治理记录引用(parallel-coordination):conclude 不新增硬门(涉事任务
+    # 未终态由 DELIVERY_INCOMPLETE 兜底),annex 如实引用冲突治理记录。
+    $lines += Add-ConflictAnnexLines $Bridge
+    if (-not $CheckOk) {
         $lines += "## rdd-flow check 问题清单"
         $lines += ""
-        foreach ($i in $checkIssues) { $lines += "- $i" }
+        foreach ($i in $CheckIssues) { $lines += "- $i" }
         $lines += ""
     }
     $lines += "## 规划者结案摘要"
     $lines += ""
-    $lines += $Summary
+    $lines += $SummaryText
     $lines += ""
-    [System.IO.File]::WriteAllText((Get-AnnexPath $runDir), ($lines -join "`n"), $script:Utf8NoBom)
+    [System.IO.File]::WriteAllText((Get-AnnexPath $RunDir), ($lines -join "`n"), $script:Utf8NoBom)
+}
+
+function Invoke-BridgeConclude {
+    $runDir = Get-BridgeRunDir $RunId
+    $bridge = Require-Bridge $runDir
+    if ([string]::IsNullOrWhiteSpace($Summary)) { Write-ErrorResult "MISSING_SUMMARY" "-Summary is required (closing summary for the delivery)" 1 }
+
+    $null = Enter-PlannerLease $runDir
+
+    $flow = Read-ArchiveTasks $bridge.archive
+    $reviewState = Resolve-ConcludeReviewState $bridge $flow
+    $treeData = Get-TreeStatusView $RunId
+    Test-ConcludeDeliveryComplete $bridge $flow $reviewState.reject_returned $treeData
+
+    # acceptance hard gate (overall-delivery): the whole-requirement ACCEPT
+    # conclusion must be decidable AND 通过 — reported BEFORE any goal-anchor
+    # work (ACCEPTANCE_PENDING / ACCEPTANCE_NOT_PASSED have priority over the
+    # anchor codes). Runs without criteria (exempt/declared/legacy) pass through.
+    $gate = Get-AcceptanceGateVerdict $bridge ([string]$bridge.archive)
+    if (-not $gate.ok) { Write-ErrorResult $gate.code $gate.message 1 }
+    # stage acceptance hard gate (long-task-planning, same family — after the
+    # ACCEPTANCE_* gate so legacy/whole-requirement codes keep their priority):
+    # every stage's acceptance point must be passed before anchoring achieved.
+    $planGate = Get-PlanConcludeVerdict $bridge
+    if (-not $planGate.ok) { Write-ErrorResult $planGate.code $planGate.message 1 }
+    $conclusion = $null
+    if ((Test-PropPresent $gate 'conclusion')) { $conclusion = [string]$gate.conclusion }
+
+    $anchorInfo = Resolve-ConcludeAnchor $runDir $bridge $flow $treeData
+
+    # 1) goal-tree conclude (auto-closes the open round; renders final-report.md)
+    $r = Invoke-GoalTree @("-Command", "conclude", "-RunId", $RunId, "-Outcome", "achieved", "-AnchorNodeId", $anchorInfo.anchor, "-Summary", $Summary)
+    if ($r.exit -ne 0 -or -not $r.json.success) {
+        Write-ErrorResult "TREE_CONCLUDE_FAILED" "goal-tree conclude failed: $($r.text)" 3
+    }
+
+    # 2) rdd-flow check (integrity of the whole archive routing)
+    $chk = Invoke-RddFlow @("-Command", "check", "-Archive", $bridge.archive)
+    $checkOk = ($chk.exit -eq 0 -and $null -ne $chk.json -and $chk.json.success -and [int]$chk.json.data.issueCount -eq 0)
+    $checkIssues = @()
+    if ($null -ne $chk.json -and $chk.json.success) { $checkIssues = @(Convert-ToSafeArray $chk.json.data.issues) }
+
+    # 3) delivery annex: per-task terminal state + acceptance conclusion + check
+    $pendingRejects = @($flow.tasks | Where-Object { $reviewState.pending_reject_ids -contains [int]$_.id })
+    New-DeliveryAnnex -RunId $RunId -RunDir $runDir -Bridge $bridge -Flow $flow -TreeData $treeData -CheckOk $checkOk `
+        -CheckIssues $checkIssues -SummaryText $Summary -RootNode $anchorInfo.root_node -PendingRejects $pendingRejects `
+        -PendingRejectIds $reviewState.pending_reject_ids -MergedInto $reviewState.merged_into -Conclusion $conclusion
 
     # 4) release the lease (delivery closed)
     $null = Invoke-LeaseRelease $runDir
@@ -3856,13 +5709,15 @@ function Invoke-BridgeConclude {
             run_id         = $RunId
             concluded      = $true
             outcome        = "achieved"
-            anchor_node    = $anchor
-            anchor_type    = $anchorType
+            anchor_node    = $anchorInfo.anchor
+            anchor_type    = $anchorInfo.anchor_type
+            acceptance     = $(if ($null -ne $conclusion) { @{ conclusion = $conclusion } } else { $null })
+            plan           = Get-PlanView $runDir $bridge
             flow_check     = @{ ok = $checkOk; issues = $checkIssues }
             final_report   = ".rdd/goal-trees/$RunId/report/final-report.md"
             delivery_annex = ".rdd/goal-trees/$RunId/report/delivery-annex.md"
-            tasks_terminal = "$(@($flow.tasks | Where-Object { (([string]$_.lifecycle) -in @("completed", "deprecated")) -or $rejectReturned.Contains([int]$_.id) }).Count)/$($flow.tasks.Count)"
-            reject_return_pending = @($pendingRejectIds)
+            tasks_terminal = "$(@($flow.tasks | Where-Object { (([string]$_.lifecycle) -in @("completed", "deprecated")) -or $reviewState.reject_returned.Contains([int]$_.id) }).Count)/$($flow.tasks.Count)"
+            reject_return_pending = @($reviewState.pending_reject_ids)
         }
     }
 }
@@ -4140,6 +5995,732 @@ function Invoke-BridgeEscalate {
     }
 }
 
+# === Parallel coordination (parallel-coordination: 并行协作冲突预防与治理) ===
+#
+# 两类冲突、一个注册表(planner-guide「并行协作冲突治理」):
+#   design  多 CTO/UX 设计互斥或风格不一致 — PLANNER 调和产出一致结论,不成则上报
+#           用户裁决(escalated,留痕),用户不在场挂起涉事链(suspended);硬约束:
+#           不得默默二选一。
+#   file    多 DEV 任务经 CTO 变更地图判出同文件重叠 — 派发前(推送门)识别并预防;
+#           消解手段 = 归属划分(reclaim/replan,首选)/串行化(resolve -Serialize 组合
+#           goal-tree deps add,兜底);错峰不采用(时间错开不构成互斥)。
+# 状态机:open → resolved | open → escalated → resolved | open → suspended;
+# 上报/挂起为条目状态属性,动作仅 open|resolve(同 decisions.jsonl 追加范式,
+# history 追加不改写;语义边界=编排层并行冲突,与 AutoMode 决策账本分工)。
+# 载体:bridge.json `conflicts` 段 + 人读镜像 report/design-conflicts.md;变更地图
+# 机读缓存 `design_maps`(只读派生);架构/风格约定 `conventions` 段 +
+# report/architecture-conventions.md(DESIGN 链头注入「架构约定:<path>」,与判据
+# 注入同构)。三个新键全为可选 — 引入前的 run 逐字节兼容(无段=无门零成本)。
+# 错误码: NODE_HELD_BY_CONFLICT / CONFLICT_NOT_FOUND / CONFLICT_ALREADY_RESOLVED /
+# CONFLICT_ENTRY_INVALID / CONVENTIONS_MISSING / DESIGN_MAP_INVALID(警示级)。
+
+$script:ConflictFlowTasksCache = $null
+
+function Get-ConflictSection {
+    param($Bridge)
+    if (-not (Test-PropPresent $Bridge 'conflicts') -or $null -eq $Bridge['conflicts']) { return @() }
+    return @(Convert-ToSafeArray $Bridge['conflicts'])
+}
+
+function Find-ConflictEntry {
+    param($Bridge, [string]$ConflictId)
+    foreach ($e in @(Get-ConflictSection $Bridge)) {
+        if (([string]$e['id']) -eq $ConflictId) { return $e }
+    }
+    return $null
+}
+
+function Get-UnresolvedConflicts {
+    param($Bridge)
+    return @(Get-ConflictSection $Bridge | Where-Object { ([string]$_['status']) -ne 'resolved' })
+}
+
+function Write-ConflictReportFile {
+    # 人读镜像(report/design-conflicts.md):每次注册表变更后整篇重写——镜像非账本,
+    # 机器可读单源永远是 bridge.json `conflicts` 段。
+    param([string]$RunDir, $Bridge)
+    $repDir = Join-Path $RunDir "report"
+    if (-not (Test-Path -LiteralPath $repDir)) { New-Item -ItemType Directory -Path $repDir -Force | Out-Null }
+    $entries = @(Get-ConflictSection $Bridge)
+    $rl = @()
+    $rl += "# 并行协作冲突治理 — $([string]$Bridge['run_id'])"
+    $rl += ""
+    if ($entries.Count -eq 0) {
+        $rl += "（无冲突登记）"
+    }
+    else {
+        $rl += "| ID | 类型 | 状态 | 节点 | 任务 | 文件 | 发现途径 | 裁定/上报 |"
+        $rl += "|----|------|------|------|------|------|----------|----------|"
+        foreach ($e in $entries) {
+            $ruling = "-"
+            if ($null -ne $e['ruling']) { $ruling = (([string]$e['ruling']['text']) -replace '\|', '/') }
+            elseif ($null -ne $e['escalation']) { $ruling = "上报用户：" + (([string]$e['escalation']['question']) -replace '\|', '/') }
+            $fileCell = (@(Convert-ToSafeArray $e['files']) | ForEach-Object { ([string]$_) -replace '\|', '/' }) -join '<br>'
+            $rl += "| $($e['id']) | $($e['kind']) | $($e['status']) | $(@(Convert-ToSafeArray $e['nodes']) -join ',') | $(@(Convert-ToSafeArray $e['tasks']) -join ',') | $fileCell | $($e['detected_by']) | $ruling |"
+        }
+        $rl += ""
+        $rl += "## 处置历史（追加不改写）"
+        $rl += ""
+        foreach ($e in $entries) {
+            foreach ($h in @(Convert-ToSafeArray $e['history'])) {
+                $noteText = [string]$h['note']
+                $extra = ""
+                if (-not [string]::IsNullOrWhiteSpace($noteText)) { $extra = " — " + ($noteText -replace '\|', '/') }
+                $rl += "- $($e['id']) · $($h['at']) · $($h['action'])$extra"
+            }
+        }
+    }
+    $rl += ""
+    $rl += "> 硬约束：设计冲突**不得默默二选一**——调和产出一致结论，或上报用户裁决并留痕；用户不在场挂起涉事链并上报，不阻塞无冲突任务。机器可读单源：bridge.json ``conflicts`` 段。"
+    [System.IO.File]::WriteAllText((Join-Path $repDir "design-conflicts.md"), ($rl -join "`n"), $script:Utf8NoBom)
+}
+
+function Save-ConflictState {
+    # one persistence path for every registry mutation: bridge.json write-back
+    # (read-back contract inside Write-BridgeFile) + human mirror rewrite.
+    param([string]$RunDir, $Bridge)
+    Write-BridgeFile $RunDir $Bridge
+    Write-ConflictReportFile $RunDir $Bridge
+    return $Bridge
+}
+
+function Add-ConflictEntry {
+    # register ONE conflict (C<n> ascending, history append-only). The entry's
+    # status attribute is set at open (escalated/suspended may be born recorded).
+    param([string]$RunDir, $Bridge, [string]$Kind, [string[]]$NodeIds, [int[]]$TaskIds, [string[]]$FilePaths,
+          [string]$DetectedByText, [string]$NoteText, [string]$StatusText, [string]$EscalationText)
+    $maxId = 0
+    foreach ($e in @(Get-ConflictSection $Bridge)) {
+        if (([string]$e['id']) -match '^C(\d+)$') { $n = [int]$Matches[1]; if ($n -gt $maxId) { $maxId = $n } }
+    }
+    $now = Get-UtcNowIso
+    $entry = [ordered]@{
+        id          = "C$($maxId + 1)"
+        kind        = $Kind
+        nodes       = @($NodeIds)
+        tasks       = @($TaskIds)
+        files       = @($FilePaths)
+        detected_by = $DetectedByText
+        status      = $(if (-not [string]::IsNullOrWhiteSpace($StatusText)) { $StatusText } else { "open" })
+        note        = $(if (-not [string]::IsNullOrWhiteSpace($NoteText)) { $NoteText } else { $null })
+        escalation  = $(if (-not [string]::IsNullOrWhiteSpace($EscalationText)) { [ordered]@{ question = $EscalationText; at = $now } } else { $null })
+        ruling      = $null
+        serialize   = $null
+        created_at  = $now
+        updated_at  = $now
+        history     = @([ordered]@{ at = $now; action = "open"; note = $NoteText })
+    }
+    $conflicts = @(Get-ConflictSection $Bridge)
+    $conflicts += ,$entry
+    $Bridge['conflicts'] = $conflicts
+    $null = Save-ConflictState $RunDir $Bridge
+    return $entry
+}
+
+function Set-ConflictState {
+    # escalation / suspension are entry STATUS ATTRIBUTES (the action set stays
+    # open|resolve): open -> escalated | open -> suspended | escalated <-> suspended.
+    param([string]$RunDir, $Bridge, $Entry, [string]$StatusText, [string]$NoteText, [string]$EscalationText)
+    $now = Get-UtcNowIso
+    $Entry['status'] = $StatusText
+    if (-not [string]::IsNullOrWhiteSpace($NoteText)) { $Entry['note'] = $NoteText }
+    if (-not [string]::IsNullOrWhiteSpace($EscalationText)) { $Entry['escalation'] = [ordered]@{ question = $EscalationText; at = $now } }
+    $Entry['updated_at'] = $now
+    $hist = @(Convert-ToSafeArray $Entry['history'])
+    $hist += ,[ordered]@{ at = $now; action = $StatusText; note = $NoteText }
+    $Entry['history'] = $hist
+    $null = Save-ConflictState $RunDir $Bridge
+    return $Entry
+}
+
+function Set-ConflictSerializeEdges {
+    # 串行化兜底(resolve -Serialize):晚者 depends_on 早者(goal-tree deps add 公开
+    # CLI,DAG 校验 + deps-log 审计)——早者 settle 后晚者自动解锁。失败即整体拒绝
+    # (登记不半写,冲突保持未决)。
+    param([string]$RunIdText, $Entry, [string]$Earlier)
+    $others = @(@($Entry['nodes']) | Where-Object { ([string]$_) -ne $Earlier })
+    if ($others.Count -eq 0) {
+        Write-ErrorResult "CONFLICT_ENTRY_INVALID" "-Serialize $Earlier needs at least one later counterpart node in $($Entry['id'])" 1
+    }
+    $added = @()
+    foreach ($later in $others) {
+        $r = Invoke-GoalTree @("-Command", "deps", "-DepAction", "add", "-RunId", $RunIdText, "-NodeId", ([string]$later), "-On", $Earlier)
+        if ($r.exit -ne 0 -or $null -eq $r.json -or -not $r.json.success) {
+            Write-ErrorResult "CONFLICT_ENTRY_INVALID" "serializing $later -> $Earlier failed (conflict stays OPEN): $($r.text)" 1
+        }
+        $added += "$later->$Earlier"
+    }
+    return $added
+}
+
+function Resolve-ConflictEntry {
+    param([string]$RunDir, $Bridge, $Entry, [string]$RulingText, [string]$SerializeNode)
+    $now = Get-UtcNowIso
+    $Entry['status'] = "resolved"
+    $Entry['ruling'] = [ordered]@{ text = $RulingText; at = $now; by = "planner" }
+    if (-not [string]::IsNullOrWhiteSpace($SerializeNode)) { $Entry['serialize'] = [ordered]@{ earlier = $SerializeNode } }
+    $Entry['updated_at'] = $now
+    $hist = @(Convert-ToSafeArray $Entry['history'])
+    $hist += ,[ordered]@{ at = $now; action = "resolve"; note = $RulingText }
+    $Entry['history'] = $hist
+    $null = Save-ConflictState $RunDir $Bridge
+    return $Entry
+}
+
+function Read-DesignChangeMap {
+    # 变更地图机读化(行格式契约:rdd-cto/design-template.md):文件行 =
+    # `仓库根相对完整路径`  [新增]/[修改]/[删除] 说明;目录行仅视觉分组、计数行
+    # 机械核对。带 [op] 标注但路径不可解析的行 -> DESIGN_MAP_INVALID 警示(警示级,
+    # 不阻塞流转);存量/旧格式(无反引号完整路径)降级人工核对——显式警示,不硬拒
+    # 也不静默放行(问题 1 补齐)。
+    param([string]$DocAbsPath, [string]$DocRelPath)
+    $res = [ordered]@{
+        doc                  = $DocRelPath
+        files                = @()
+        counts               = $null
+        parsed_counts        = [ordered]@{ add = 0; modify = 0; delete = 0 }
+        warnings             = @()
+        invalid_lines        = @()
+        legacy               = $false
+        fingerprint          = $null
+        tasks                = @()
+        citation_deviations  = @()
+        parsed_at            = Get-UtcNowIso
+    }
+    $content = ""
+    try { $content = [System.IO.File]::ReadAllText($DocAbsPath, [System.Text.Encoding]::UTF8) }
+    catch { $res.warnings += "DESIGN_MAP_INVALID:变更地图读取失败 $DocRelPath ($($_.Exception.Message))"; return $res }
+    $inMap = $false
+    $opSeen = 0
+    $fileSeen = 0
+    foreach ($line in ($content -split "`r?`n")) {
+        if ($line -match '^\s*##\s*变更地图') { $inMap = $true; continue }
+        if ($inMap -and $line -match '^\s*##\s') { break }
+        if (-not $inMap) { continue }
+        if ($line -match '^\s*\[新增\]\s*(\d+)\s*\|\s*\[修改\]\s*(\d+)\s*\|\s*\[删除\]\s*(\d+)') {
+            $res.counts = [ordered]@{ add = [int]$Matches[1]; modify = [int]$Matches[2]; delete = [int]$Matches[3] }
+            continue
+        }
+        if ([string]::IsNullOrWhiteSpace($line)) { continue }
+        $m = [regex]::Match($line, '`(?<path>[^`]+)`\s*\[(?<op>新增|修改|删除)\]\s*(?<note>.*)$')
+        if ($m.Success) {
+            $p = ((([string]$m.Groups['path'].Value).Trim()) -replace '\\', '/') -replace '^\./', ''
+            $opMap = @{ '新增' = 'add'; '修改' = 'modify'; '删除' = 'delete' }
+            $op = $opMap[[string]$m.Groups['op'].Value]
+            $res.files += ,([ordered]@{ path = $p; op = $op; note = ([string]$m.Groups['note'].Value).Trim() })
+            $res.parsed_counts[$op] = [int]$res.parsed_counts[$op] + 1
+            $fileSeen++
+            continue
+        }
+        if ($line -match '\[(新增|修改|删除)\]') {
+            $opSeen++
+            $res.invalid_lines += ($line.Trim())
+        }
+    }
+    if ($fileSeen -eq 0 -and $opSeen -gt 0) {
+        $res.legacy = $true
+        $res.warnings += "DESIGN_MAP_INVALID:旧格式/存量变更地图($opSeen 行带 [op] 标注但路径不可解析)——降级人工核对,文件重叠机械检测对 $DocRelPath 失明(不阻塞流转)"
+    }
+    elseif ($opSeen -gt 0) {
+        $res.warnings += "DESIGN_MAP_INVALID:$opSeen 行带 [op] 标注但路径不可解析——按行格式契约('完整路径' [op] 说明)修正后可机读;不阻塞流转"
+    }
+    if ($null -ne $res.counts) {
+        foreach ($k in @('add', 'modify', 'delete')) {
+            if ([int]$res.counts[$k] -ne [int]$res.parsed_counts[$k]) {
+                $res.warnings += "计数行机械核对不一致($DocRelPath):[$k] 声明 $($res.counts[$k]) / 实际解析 $($res.parsed_counts[$k])"
+                break
+            }
+        }
+    }
+    return $res
+}
+
+function Get-DesignMaps {
+    # design_maps 只读派生缓存:逐任务 designDocs 的变更地图机读结果。文档出现或
+    # 内容变化(长度+mtime 指纹)时重解析;设计尚未产出的文档跳过(CTO 设计在 run
+    # 中落地,下次触发点自动补扫)。返回 @{ maps; changed }。
+    param([string]$RunDir, $Bridge, $FlowTasks, [switch]$Force)
+    $changed = $false
+    if (-not (Test-PropPresent $Bridge 'design_maps') -or $null -eq $Bridge['design_maps']) { $Bridge['design_maps'] = @{} }
+    $maps = $Bridge['design_maps']
+    foreach ($t in @(Convert-ToSafeArray $FlowTasks)) {
+        $taskId = [int]$t.id
+        foreach ($d in @(Convert-ToSafeArray $t.designDocs)) {
+            $rel = (([string]$d.path) -replace '\\', '/')
+            if ([string]::IsNullOrWhiteSpace($rel)) { continue }
+            $abs = Join-Path ([string]$Bridge.archive) ($rel -replace '/', '\')
+            if (-not (Test-Path -LiteralPath $abs -PathType Leaf)) { continue }
+            $fi = Get-Item -LiteralPath $abs
+            $fp = "$($fi.Length):$($fi.LastWriteTimeUtc.Ticks)"
+            $have = $null
+            if ($maps -is [System.Collections.IDictionary] -and $maps.Contains($rel)) { $have = $maps[$rel] }
+            if ((-not $Force) -and $null -ne $have -and ([string]$have['fingerprint']) -eq $fp) {
+                $taskList = @(Convert-ToSafeArray $have['tasks'])
+                if ($taskList -notcontains $taskId) {
+                    $have['tasks'] = @($taskList + @($taskId))
+                    $changed = $true
+                }
+                continue
+            }
+            $parsed = Read-DesignChangeMap $abs $rel
+            $parsed['fingerprint'] = $fp
+            $parsed['tasks'] = @($taskId)
+            if ($null -ne $have) { $parsed['citation_deviations'] = @(Convert-ToSafeArray $have['citation_deviations']) }
+            $maps[$rel] = $parsed
+            $changed = $true
+        }
+    }
+    if ($changed) {
+        $Bridge['design_maps'] = $maps
+        Write-BridgeFile $RunDir $Bridge
+    }
+    return @{ maps = $maps; changed = $changed }
+}
+
+function Get-ConflictFlowTasks {
+    # per-invocation memo (one rdd-flow show subprocess per CLI run, not per node).
+    param($Bridge)
+    $key = [string]$Bridge.archive
+    if ($null -ne $script:ConflictFlowTasksCache -and ([string]$script:ConflictFlowTasksCache.key) -eq $key) {
+        return @($script:ConflictFlowTasksCache.tasks)
+    }
+    $flow = Read-ArchiveTasks $key
+    $script:ConflictFlowTasksCache = @{ key = $key; tasks = @($flow.tasks) }
+    return @($flow.tasks)
+}
+
+function Get-TaskChangeMapFiles {
+    # 一任务的变更地图文件集(重叠口径=路径精确匹配,决策 6:保守判定是有意取舍)。
+    param($Bridge, $FlowTasks, [int]$TaskIdNum)
+    $files = @()
+    if (-not (Test-PropPresent $Bridge 'design_maps') -or $null -eq $Bridge['design_maps']) { return @() }
+    $maps = $Bridge['design_maps']
+    foreach ($t in @(Convert-ToSafeArray $FlowTasks)) {
+        if ([int]$t.id -ne $TaskIdNum) { continue }
+        foreach ($d in @(Convert-ToSafeArray $t.designDocs)) {
+            $rel = (([string]$d.path) -replace '\\', '/')
+            if ($maps -is [System.Collections.IDictionary] -and $maps.Contains($rel)) {
+                foreach ($f in @(Convert-ToSafeArray ($maps[$rel]['files']))) { $files += [string]$f['path'] }
+            }
+        }
+    }
+    return @($files | Select-Object -Unique)
+}
+
+function Test-TaskDependent {
+    # A 依赖 B 或 B 依赖 A(传递闭包,dep_task_ids 单源) => 两任务非并发。
+    param($Bridge, [int]$AId, [int]$BId)
+    foreach ($pair in @(@($AId, $BId), @($BId, $AId))) {
+        $seen = @{}
+        $queue = @([int]$pair[0])
+        while ($queue.Count -gt 0) {
+            $cur = [int]$queue[0]
+            if ($queue.Count -gt 1) { $queue = @($queue[1..($queue.Count - 1)]) } else { $queue = @() }
+            if ($seen.Contains($cur)) { continue }
+            $seen[$cur] = $true
+            if ($cur -eq [int]$pair[1]) { return $true }
+            if (-not $Bridge.tasks.Contains("$cur")) { continue }
+            foreach ($dep in @(Convert-ToSafeArray $Bridge.tasks["$cur"]['dep_task_ids'])) { $queue += [int]$dep }
+        }
+    }
+    return $false
+}
+
+function Test-ConflictHold {
+    # 并行协作冲突推送门(与 R3 阶段闸门 AND 叠加、reason 分列):
+    #   held_by_conflict      节点已在任一未决冲突条目内(设计/文件,登记在先)
+    #   held_by_file_overlap  变更地图精确路径重叠于并发实施节点 -> 自动登记 file
+    #                         条目 + hold(只 hold 待推候选,不追溯拦在途——对齐
+    #                         「已 claimed 不受后加依赖回溯」)
+    # resolve 后条目已决,下一触发点自动推送自然恢复。
+    param([string]$NodeId, $Bridge, [string]$RunDir, $StatusOf)
+    foreach ($e in @(Get-UnresolvedConflicts $Bridge)) {
+        if (@(Convert-ToSafeArray $e['nodes']) -contains $NodeId) {
+            return @{ node = $NodeId; reason = "held_by_conflict"; conflict = [string]$e['id']; kind = [string]$e['kind'] }
+        }
+    }
+    $map = Get-NodeTaskStage $Bridge $NodeId
+    if ($null -eq $map -or ([string]$map.stage) -ne 'DEV') { return $null }
+    $tasks = Get-ConflictFlowTasks $Bridge
+    $null = Get-DesignMaps $RunDir $Bridge $tasks
+    $myFiles = @(Get-TaskChangeMapFiles $Bridge $tasks ([int]$map.task_id))
+    if ($myFiles.Count -eq 0) { return $null }
+    $counterparts = @()
+    foreach ($otherId in @($Bridge.nodes.Keys)) {
+        if (([string]$otherId) -eq $NodeId) { continue }
+        $m2 = Get-NodeTaskStage $Bridge ([string]$otherId)
+        if ($null -eq $m2) { continue }
+        if (([string]$m2.stage) -ne 'DEV') { continue }
+        if (([int]$m2.task_id) -eq ([int]$map.task_id)) { continue }
+        $st2 = if ($StatusOf.ContainsKey([string]$otherId)) { [string]$StatusOf[[string]$otherId] } else { "missing" }
+        if ($st2 -notin @('pending', 'claimed', 'reported')) { continue }   # 并发口径=待推/在途实施节点
+        if (Test-TaskDependent $Bridge ([int]$map.task_id) ([int]$m2.task_id)) { continue }
+        $otherFiles = @(Get-TaskChangeMapFiles $Bridge $tasks ([int]$m2.task_id))
+        $overlap = @($myFiles | Where-Object { $otherFiles -contains $_ })
+        if ($overlap.Count -eq 0) { continue }
+        $counterparts += @{ node = [string]$otherId; task = [int]$m2.task_id; files = @($overlap) }
+    }
+    if ($counterparts.Count -eq 0) { return $null }
+    $entryNodes = @($NodeId)
+    $entryTasks = @([int]$map.task_id)
+    $entryFiles = @()
+    foreach ($c in $counterparts) {
+        if ($entryNodes -notcontains $c.node) { $entryNodes += $c.node }
+        if ($entryTasks -notcontains $c.task) { $entryTasks += $c.task }
+        foreach ($f in @($c.files)) { if ($entryFiles -notcontains $f) { $entryFiles += $f } }
+    }
+    $noteText = "推送门自动登记:变更地图文件重叠($($entryFiles -join ', ')),并发实施节点 [$($entryNodes -join ', ')]——消解经归属划分(首选,reclaim/replan)或串行化(conflict -Action resolve -ConflictId <本条> -Serialize <早者节点>)"
+    $entry = Add-ConflictEntry -RunDir $RunDir -Bridge $Bridge -Kind 'file' -NodeIds $entryNodes -TaskIds $entryTasks -FilePaths $entryFiles `
+        -DetectedByText 'change-map-scan' -StatusText 'open' -EscalationText $null -NoteText $noteText
+    return @{ node = $NodeId; reason = "held_by_file_overlap"; conflict = [string]$entry['id']; files = @($entryFiles); nodes = @($entryNodes) }
+}
+
+function Test-SettleConflictGate {
+    # settle 前置冲突门(三查先行、错误码分立,冲突门后置),按 kind 分流(决策 5):
+    #   design 涉事节点恒拒(不得默默二选一——先调和/上报并 resolve 再 settle)
+    #   file   仅双活跃方互拦(claimed/reported),单活跃写者放行(先行落地即串行化前提)
+    param([string]$RunDir, $Bridge, [string]$NodeIdText)
+    $open = @(Get-UnresolvedConflicts $Bridge | Where-Object { @(Convert-ToSafeArray $_['nodes']) -contains $NodeIdText })
+    if ($open.Count -eq 0) { return }
+    foreach ($e in $open) {
+        if (([string]$e['kind']) -eq 'design') {
+            Write-ErrorResult "NODE_HELD_BY_CONFLICT" "node $NodeIdText is inside unresolved conflict $($e['id']) (kind=design, status=$($e['status'])) — 设计冲突不得默默二选一:调和产出一致结论或上报用户裁决后,delivery-bridge.cmd -Command conflict -RunId $RunId -Action resolve -ConflictId $($e['id']) -Ruling '<一致结论/用户裁决>'" 1
+        }
+    }
+    $tree = Get-TreeStatusView $RunId
+    foreach ($e in $open) {
+        if (([string]$e['kind']) -ne 'file') { continue }
+        $counterparts = @()
+        foreach ($other in @(Convert-ToSafeArray $e['nodes'])) {
+            if (([string]$other) -eq $NodeIdText) { continue }
+            $st2 = Get-NodeViewState $tree ([string]$other)
+            $st2Text = if ($st2) { [string]$st2.status } else { "missing" }
+            if ($st2Text -in @('claimed', 'reported')) { $counterparts += "$other($st2Text)" }
+        }
+        if ($counterparts.Count -gt 0) {
+            Write-ErrorResult "NODE_HELD_BY_CONFLICT" "node $NodeIdText and active counterpart(s) [$($counterparts -join ', ')] both hold $($e['id']) (kind=file, files: $(@(Convert-ToSafeArray $e['files']) -join ', ')) — 双活跃方互拦防并发同文件覆盖:先 delivery-bridge.cmd -Command conflict -RunId $RunId -Action resolve -ConflictId $($e['id']) -Ruling '<归属划分/串行化结论>' [-Serialize <早者节点>]" 1
+        }
+    }
+}
+
+function Test-CitationDeviation {
+    # 回执一致性软核对(不硬拒):DEV citations 超出其设计变更地图文件集 -> 偏差警示
+    # 入 status/annex 并记进 design_maps[doc].citation_deviations——防「地图写错致
+    # 检测失明」(变更地图失真 P1 风险的可见化)。
+    param([string]$RunDir, $Bridge, [string]$NodeIdText, $Node)
+    $map = Get-NodeTaskStage $Bridge $NodeIdText
+    if ($null -eq $map -or ([string]$map.stage) -ne 'DEV') { return @() }
+    $tasks = Get-ConflictFlowTasks $Bridge
+    $null = Get-DesignMaps $RunDir $Bridge $tasks
+    $expected = @(Get-TaskChangeMapFiles $Bridge $tasks ([int]$map.task_id))
+    if ($expected.Count -eq 0) { return @() }
+    $cb = Find-AcceptedCallback $RunDir $Node
+    if ($null -eq $cb) { return @() }
+    $deviant = @()
+    foreach ($c in @(Convert-ToSafeArray $cb.callback.citations)) {
+        $ref = ((([string]$c.ref) -replace '\\', '/') -replace '^\./', '')
+        if ($expected -notcontains $ref) { $deviant += $ref }
+    }
+    if ($deviant.Count -eq 0) { return @() }
+    $now = Get-UtcNowIso
+    $maps = $Bridge['design_maps']
+    $changed = $false
+    foreach ($t in @(Convert-ToSafeArray $tasks)) {
+        if ([int]$t.id -ne [int]$map.task_id) { continue }
+        foreach ($d in @(Convert-ToSafeArray $t.designDocs)) {
+            $rel = (([string]$d.path) -replace '\\', '/')
+            if (-not ($maps -is [System.Collections.IDictionary] -and $maps.Contains($rel))) { continue }
+            $devs = @(Convert-ToSafeArray $maps[$rel]['citation_deviations'])
+            $devs += ,([ordered]@{ node = $NodeIdText; at = $now; refs = @($deviant) })
+            $maps[$rel]['citation_deviations'] = $devs
+            $changed = $true
+        }
+    }
+    if ($changed) {
+        $Bridge['design_maps'] = $maps
+        Write-BridgeFile $RunDir $Bridge
+    }
+    return @("回执一致性软核对(警示,不阻塞):node $NodeIdText 的 citations 超出变更地图文件集 [$($deviant -join ', ')]——核对变更地图是否漏报/写错(机械重叠检测失明风险),人工确认后按需修正设计产物")
+}
+
+function Get-ConflictView {
+    # status/resume 共用冲突视图:登记全量 + 未决清单 + 回执偏差。
+    param($Bridge)
+    $rows = @()
+    foreach ($e in @(Get-ConflictSection $Bridge)) {
+        $rows += [ordered]@{
+            id          = [string]$e['id']
+            kind        = [string]$e['kind']
+            status      = [string]$e['status']
+            nodes       = @(Convert-ToSafeArray $e['nodes'])
+            tasks       = @(Convert-ToSafeArray $e['tasks'])
+            files       = @(Convert-ToSafeArray $e['files'])
+            detected_by = [string]$e['detected_by']
+            note        = $e['note']
+            escalation  = $e['escalation']
+            ruling      = $e['ruling']
+            serialize   = $e['serialize']
+        }
+    }
+    $devs = @()
+    if ((Test-PropPresent $Bridge 'design_maps') -and $null -ne $Bridge['design_maps'] -and ($Bridge['design_maps'] -is [System.Collections.IDictionary])) {
+        foreach ($rel in @($Bridge['design_maps'].Keys)) {
+            foreach ($dv in @(Convert-ToSafeArray $Bridge['design_maps'][$rel]['citation_deviations'])) {
+                $devs += [ordered]@{ doc = $rel; node = [string]$dv['node']; at = [string]$dv['at']; refs = @(Convert-ToSafeArray $dv['refs']) }
+            }
+        }
+    }
+    return @{ conflicts = $rows; open = @($rows | Where-Object { $_['status'] -ne 'resolved' }); citation_deviations = $devs }
+}
+
+function Add-ConflictAnnexLines {
+    # annex 引用冲突治理记录(conclude 不新增硬门:涉事任务未终态由 DELIVERY_
+    # INCOMPLETE 兜底)。无登记无偏差时不产出行(旧 run annex 形态不变)。
+    param($Bridge)
+    $view = Get-ConflictView $Bridge
+    if (@($view.conflicts).Count -eq 0 -and @($view.citation_deviations).Count -eq 0) { return @() }
+    $openCount = @($view.open).Count
+    $lines = @()
+    $lines += "## 并行冲突治理"
+    $lines += ""
+    $lines += "- 冲突登记：共 $(@($view.conflicts).Count) 条（未决 $openCount 条），人读镜像 ``report/design-conflicts.md``，机器可读单源 bridge.json ``conflicts`` 段（追加不改写）"
+    foreach ($e in @($view.conflicts)) {
+        $rulingText = "-"
+        if ($null -ne $e['ruling']) { $rulingText = [string]$e['ruling']['text'] }
+        elseif ($null -ne $e['escalation']) { $rulingText = "上报用户：" + [string]$e['escalation']['question'] }
+        $lines += "- $($e['id'])（$($e['kind'])/$($e['status'])）节点 [$($e['nodes'] -join ', ')] 文件 [$($e['files'] -join ', ')] — $rulingText"
+    }
+    foreach ($dv in @($view.citation_deviations)) {
+        $lines += "- 回执偏差警示（软核对）：$($dv['node']) @ $($dv['doc']) — citations 超出变更地图文件集 [$($dv['refs'] -join ', ')]"
+    }
+    $lines += ""
+    return $lines
+}
+
+function Get-ConventionsRef {
+    param($Bridge)
+    if ((Test-PropPresent $Bridge 'conventions') -and $null -ne $Bridge['conventions'] -and ($Bridge['conventions'] -is [System.Collections.IDictionary]) -and $Bridge['conventions'].Contains('path')) {
+        return [string]$Bridge['conventions']['path']
+    }
+    return $null
+}
+
+function Test-DesignStageNode {
+    # DESIGN 链头/节点判定:角色在 PhaseRoles[DESIGN] 白名单且任务所处阶段=DESIGN
+    # (stored phase 优先,存量空 phase 按 owners 推导)。
+    param([string]$Stage, $Task)
+    if (@($script:PhaseRoles['DESIGN']) -notcontains $Stage) { return $false }
+    $ph = $null
+    if ($null -ne $Task) {
+        $stored = $null
+        if (Test-PropPresent $Task 'phase') { $stored = [string]$Task.phase }
+        if (-not [string]::IsNullOrWhiteSpace($stored)) { $ph = $stored }
+        else {
+            $owners = @()
+            if (Test-PropPresent $Task 'currentOwners') { $owners = @(Convert-ToSafeArray $Task.currentOwners) }
+            $ph = Get-PhaseFromOwners $owners
+        }
+    }
+    return ($ph -eq 'DESIGN')
+}
+
+function Read-ConventionsInput {
+    # 架构/风格约定载体(决策 3:review 步产出 report/architecture-conventions.md):
+    # promulgate -ConventionsFile。缺失/空内容在建树前判定(CONVENTIONS_MISSING,
+    # 零残留——与 ACCEPTANCE_CRITERIA_MISSING 同纪律)。
+    param([string]$Path)
+    if ([string]::IsNullOrWhiteSpace($Path)) { return $null }
+    $p = $Path
+    if (-not [System.IO.Path]::IsPathRooted($p)) { $p = Join-Path $repoRoot $p }
+    if (-not (Test-Path -LiteralPath $p -PathType Leaf)) {
+        Write-ErrorResult "CONVENTIONS_MISSING" "conventions file not found: $Path — 多 CTO 设计须遵循同一套架构/风格约定,载体由 review 步产出(planner-guide「并行协作冲突治理」)" 2
+    }
+    $text = ""
+    try { $text = [System.IO.File]::ReadAllText($p, [System.Text.Encoding]::UTF8) }
+    catch { Write-ErrorResult "CONVENTIONS_MISSING" "conventions file unreadable: $($_.Exception.Message)" 2 }
+    if ([string]::IsNullOrWhiteSpace($text)) {
+        Write-ErrorResult "CONVENTIONS_MISSING" "conventions file is empty: $Path — 架构/风格约定必须非空(否则多 CTO 设计无共同基线)" 2
+    }
+    return @{ path = $p; text = $text }
+}
+
+function Test-PlanTasksDependent {
+    # promulgate 期(bridge 未落)任务依赖判定:A 依赖 B 或 B 依赖 A(传递,plan dep_ids)。
+    param($Plan, [int]$AId, [int]$BId)
+    $depsOf = @{}
+    foreach ($p in @($Plan)) { $depsOf[[int]$p.task.id] = @(Convert-ToSafeArray $p.dep_ids) }
+    foreach ($pair in @(@($AId, $BId), @($BId, $AId))) {
+        $seen = @{}
+        $queue = @([int]$pair[0])
+        while ($queue.Count -gt 0) {
+            $cur = [int]$queue[0]
+            if ($queue.Count -gt 1) { $queue = @($queue[1..($queue.Count - 1)]) } else { $queue = @() }
+            if ($seen.Contains($cur)) { continue }
+            $seen[$cur] = $true
+            if ($cur -eq [int]$pair[1]) { return $true }
+            if ($depsOf.Contains($cur)) { foreach ($d in @($depsOf[$cur])) { $queue += [int]$d } }
+        }
+    }
+    return $false
+}
+
+function Test-ConventionsRequired {
+    # CONVENTIONS_MISSING(建树前,零残留):DESIGN 并行链头 ≥2(多任务、互为并行——
+    # 任意两任务间无依赖路径)而未提供 -ConventionsFile -> 拒建树。单设计(单任务
+    # 设计单元)/串行设计(有依赖边)/非桥接 run 豁免。
+    param($Plan, $ConventionsInput)
+    if ($null -ne $ConventionsInput) { return }
+    $designTaskIds = @()
+    foreach ($p in @($Plan)) {
+        $isDesign = $false
+        foreach ($role in @($p.group)) {
+            if (Test-DesignStageNode ([string]$role) $p.task) { $isDesign = $true }
+        }
+        if ($isDesign -and ($designTaskIds -notcontains [int]$p.task.id)) { $designTaskIds += [int]$p.task.id }
+    }
+    if ($designTaskIds.Count -lt 2) { return }
+    for ($i = 0; $i -lt $designTaskIds.Count; $i++) {
+        for ($j = $i + 1; $j -lt $designTaskIds.Count; $j++) {
+            if (Test-PlanTasksDependent $Plan $designTaskIds[$i] $designTaskIds[$j]) { return }   # 串行设计豁免
+        }
+    }
+    Write-ErrorResult "CONVENTIONS_MISSING" "promulgate 检出 DESIGN 并行链头 ≥2(并行设计任务 [$($designTaskIds -join ', ')],多 CTO 并行设计)但未提供 -ConventionsFile——多 CTO 设计须遵循同一套架构/风格约定(review 步产出 report/architecture-conventions.md,decision 3)。补 -ConventionsFile <path> 后重试;错误发生在建树前,零残留。" 1
+}
+
+function Set-ConventionsSection {
+    # report/architecture-conventions.md + bridge.json `conventions` 段(运行侧落点);
+    # DESIGN 链头 node.task 注入「架构约定:<path>」与判据注入同构。
+    param([string]$RunDir, [string]$RunIdText, $Bridge, $ConventionsInput)
+    $repDir = Join-Path $RunDir "report"
+    if (-not (Test-Path -LiteralPath $repDir)) { New-Item -ItemType Directory -Path $repDir -Force | Out-Null }
+    [System.IO.File]::WriteAllText((Join-Path $repDir "architecture-conventions.md"), $ConventionsInput.text, $script:Utf8NoBom)
+    $Bridge['conventions'] = @{
+        path       = ".rdd/goal-trees/$RunIdText/report/architecture-conventions.md"
+        source     = $ConventionsInput.path
+        applied_at = Get-UtcNowIso
+    }
+    return $Bridge
+}
+
+function Resolve-ConflictNodes {
+    param($TreeData, [string]$NodesText)
+    if ([string]::IsNullOrWhiteSpace($NodesText)) { Write-ErrorResult "CONFLICT_ENTRY_INVALID" "-Nodes (comma-separated node ids) is required" 1 }
+    $ids = @()
+    foreach ($raw in @(($NodesText -split ','))) {
+        $nid = $raw.Trim()
+        if ([string]::IsNullOrWhiteSpace($nid)) { continue }
+        if ($null -eq (Get-NodeViewState $TreeData $nid)) {
+            Write-ErrorResult "CONFLICT_ENTRY_INVALID" "node '$nid' does not exist in run $RunId" 1
+        }
+        if ($ids -notcontains $nid) { $ids += $nid }
+    }
+    if ($ids.Count -eq 0) { Write-ErrorResult "CONFLICT_ENTRY_INVALID" "-Nodes resolved to no node ids" 1 }
+    return $ids
+}
+
+function Invoke-BridgeConflict {
+    # conflict — 并行协作冲突注册表命令族(动作仅 open|resolve;上报/挂起为条目
+    # 状态属性,经 open -ConflictId <id> 更新)。登记即拦截「默默二选一」:涉事节点
+    # 推送门 hold / settle 门按 kind 分流;resolve 后下一触发点自动推送恢复。
+    $runDir = Get-BridgeRunDir $RunId
+    $bridge = Require-Bridge $runDir
+    if ([string]::IsNullOrWhiteSpace($Action)) { Write-ErrorResult "CONFLICT_ACTION_REQUIRED" "-Action is required (open / resolve)" 1 }
+    $null = Enter-PlannerLease $runDir
+    $tree = Get-TreeStatusView $RunId
+
+    if ($Action -eq 'open') {
+        if (-not [string]::IsNullOrWhiteSpace($ConflictId)) {
+            # state-attribute update on an existing entry (escalated / suspended)
+            $entry = Find-ConflictEntry $bridge $ConflictId
+            if ($null -eq $entry) { Write-ErrorResult "CONFLICT_NOT_FOUND" "conflict '$ConflictId' is not in this run's registry (see status conflicts view)" 1 }
+            if (([string]$entry['status']) -eq 'resolved') { Write-ErrorResult "CONFLICT_ALREADY_RESOLVED" "conflict '$ConflictId' is already resolved — a changed verdict reopens as a NEW conflict entry (registry is append-only)" 1 }
+            if ($ConflictStatus -notin @('escalated', 'suspended')) {
+                Write-ErrorResult "CONFLICT_ENTRY_INVALID" "state-attribute update needs -ConflictStatus escalated|suspended (上报/挂起是条目状态属性;open→escalated/suspended)" 1
+            }
+            if ($ConflictStatus -eq 'escalated' -and [string]::IsNullOrWhiteSpace($Escalation)) {
+                Write-ErrorResult "CONFLICT_ENTRY_INVALID" "-ConflictStatus escalated needs -Escalation <呈用户裁决的问题>(上报记录)" 1
+            }
+            $entry = Set-ConflictState $runDir $bridge $entry $ConflictStatus $Note $Escalation
+            return @{
+                success = $true
+                data    = [ordered]@{
+                    run_id    = $RunId
+                    conflict  = $entry
+                    report    = ".rdd/goal-trees/$RunId/report/design-conflicts.md"
+                    next_step = $(if ($ConflictStatus -eq 'escalated') { "已上报用户裁决($($entry['id']))——呈现问题并等用户裁决;裁决落地后 resolve:-Action resolve -ConflictId $($entry['id']) -Ruling '<用户裁决>'" } else { "涉事链已挂起($($entry['id']))并上报——不阻塞无冲突任务;后续会话续处,status 冲突视图可见" })
+                }
+            }
+        }
+        if ([string]::IsNullOrWhiteSpace($ConflictKind)) { Write-ErrorResult "CONFLICT_ENTRY_INVALID" "-ConflictKind design|file is required for a new conflict entry" 1 }
+        $nodeIds = Resolve-ConflictNodes $tree $Nodes
+        $filePaths = @()
+        if ($ConflictKind -eq 'file') {
+            if ([string]::IsNullOrWhiteSpace($Files)) { Write-ErrorResult "CONFLICT_ENTRY_INVALID" "kind=file requires -Files (comma-separated repo-root-relative paths)" 1 }
+            foreach ($f in @(($Files -split ','))) {
+                $fp = (($f.Trim()) -replace '\\', '/')
+                if (-not [string]::IsNullOrWhiteSpace($fp) -and ($filePaths -notcontains $fp)) { $filePaths += $fp }
+            }
+            if ($filePaths.Count -eq 0) { Write-ErrorResult "CONFLICT_ENTRY_INVALID" "-Files resolved to no path" 1 }
+        }
+        $statusOut = 'open'
+        if ($ConflictStatus -in @('escalated', 'suspended')) { $statusOut = $ConflictStatus }
+        if ($statusOut -eq 'escalated' -and [string]::IsNullOrWhiteSpace($Escalation)) {
+            Write-ErrorResult "CONFLICT_ENTRY_INVALID" "status escalated needs -Escalation <呈用户裁决的问题>(上报记录)" 1
+        }
+        $taskIds = @()
+        foreach ($nid in $nodeIds) {
+            $m = Get-NodeTaskStage $bridge $nid
+            if ($null -ne $m -and ($taskIds -notcontains [int]$m.task_id)) { $taskIds += [int]$m.task_id }
+        }
+        $entry = Add-ConflictEntry -RunDir $runDir -Bridge $bridge -Kind $ConflictKind -NodeIds $nodeIds -TaskIds $taskIds -FilePaths $filePaths `
+            -DetectedByText $(if (-not [string]::IsNullOrWhiteSpace($DetectedBy)) { $DetectedBy } else { 'planner' }) `
+            -NoteText $Note -StatusText $statusOut -EscalationText $Escalation
+        return @{
+            success = $true
+            data    = [ordered]@{
+                run_id    = $RunId
+                conflict  = $entry
+                report    = ".rdd/goal-trees/$RunId/report/design-conflicts.md"
+                next_step = "冲突已登记($($entry['id']),涉事节点推送门 hold/settle 门拦截)。调和落地 → -Action resolve -ConflictId $($entry['id']) -Ruling '<一致结论>'(文件冲突可 -Serialize <早者节点> 串行化);无法调和 → -Action open -ConflictId $($entry['id']) -ConflictStatus escalated -Escalation '<呈用户的问题>' 上报用户裁决;用户不在场 → -ConflictStatus suspended 挂起涉事链并上报(不阻塞无冲突任务)。硬约束:不得默默二选一。"
+            }
+        }
+    }
+
+    if ([string]::IsNullOrWhiteSpace($ConflictId)) { Write-ErrorResult "CONFLICT_ENTRY_INVALID" "-Action resolve requires -ConflictId <C<n>>" 1 }
+    $entry = Find-ConflictEntry $bridge $ConflictId
+    if ($null -eq $entry) { Write-ErrorResult "CONFLICT_NOT_FOUND" "conflict '$ConflictId' is not in this run's registry (see status conflicts view)" 1 }
+    if (([string]$entry['status']) -eq 'resolved') {
+        Write-ErrorResult "CONFLICT_ALREADY_RESOLVED" "conflict '$ConflictId' was already resolved (ruling at $($entry['ruling']['at'])) — a changed verdict reopens as a NEW conflict entry (registry is append-only)" 1
+    }
+    $ruling = $Ruling
+    $serialized = @()
+    if (-not [string]::IsNullOrWhiteSpace($Serialize)) {
+        $earlier = $Serialize.Trim()
+        if (@(Convert-ToSafeArray $entry['nodes']) -notcontains $earlier) {
+            Write-ErrorResult "CONFLICT_ENTRY_INVALID" "-Serialize $earlier is not a node of $($entry['id']) (nodes: $(@(Convert-ToSafeArray $entry['nodes']) -join ', '))" 1
+        }
+        $serialized = @(Set-ConflictSerializeEdges $RunId $entry $earlier)
+        if ([string]::IsNullOrWhiteSpace($ruling)) {
+            $laterText = (@(Convert-ToSafeArray $entry['nodes']) | Where-Object { ([string]$_) -ne $earlier }) -join ', '
+            $ruling = "串行化消解：$earlier 先行落地,$laterText 待其 settle 后自动解锁(时间错开不构成互斥,故取依赖互斥)"
+        }
+    }
+    if ([string]::IsNullOrWhiteSpace($ruling)) {
+        Write-ErrorResult "CONFLICT_ENTRY_INVALID" "-Action resolve requires -Ruling <调和一致结论/用户裁决> (or -Serialize <早者节点> for 串行化)" 1
+    }
+    $entry = Resolve-ConflictEntry $runDir $bridge $entry $ruling $Serialize
+    return @{
+        success = $true
+        data    = [ordered]@{
+            run_id     = $RunId
+            conflict   = $entry
+            serialized = $serialized
+            report     = ".rdd/goal-trees/$RunId/report/design-conflicts.md"
+            next_step  = "$($entry['id']) 已 resolved——涉事节点解除 hold,下一触发点自动推送恢复;设计返修经 reclaim rejected-delivery(调和结论写入 -Note/重做上下文)或 rollback 落地"
+        }
+    }
+}
+
 # === Dispatch ===
 
 switch ($Command) {
@@ -4156,6 +6737,8 @@ switch ($Command) {
     "register-session" { $result = Invoke-BridgeRegisterSession }
     "decide"           { $result = Invoke-BridgeDecide }
     "escalate"         { $result = Invoke-BridgeEscalate }
+    "replan"           { $result = Invoke-BridgeReplan }
+    "conflict"         { $result = Invoke-BridgeConflict }
 }
 
 ConvertTo-PortableJson $result -Depth 14

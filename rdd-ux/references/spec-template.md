@@ -15,6 +15,7 @@ status: active
 role: ux
 design_date: YYYY-MM-DD
 source_mode: 翻译者 / 创作者 / 混合
+acceptance_ref: requirements/{name}.md（对齐验收标准 1/2/3）
 ---
 
 ## 需求覆盖映射

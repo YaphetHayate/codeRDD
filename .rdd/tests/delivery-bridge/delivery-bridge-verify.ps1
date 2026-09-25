@@ -102,7 +102,20 @@ function Invoke-EngineCli {
     if ($text) { try { $json = $text | ConvertFrom-Json } catch { $json = $null } }
     return @{ exit = $exitCode; text = $text; json = $json }
 }
-function TB   { param([string[]]$A) Invoke-EngineCli $BridgeCmd $A }
+function TB   {
+    param([string[]]$A)
+    # long-task-planning: promulgate is a hard gate without -PlanFile; every
+    # fixture ships a companion plan.json (New-FixtureArchive) and each call
+    # names its fixture via -TaskJson, so inject -PlanFile here mechanically.
+    if ($A -contains "promulgate" -and $A -notcontains "-PlanFile") {
+        $ti = [array]::IndexOf($A, "-TaskJson")
+        if ($ti -ge 0 -and ($ti + 1) -lt $A.Count) {
+            $plan = Join-Path (Split-Path -Parent $A[$ti + 1]) "plan.json"
+            if (Test-Path -LiteralPath $plan) { $A = @($A) + @("-PlanFile", $plan) }
+        }
+    }
+    Invoke-EngineCli $BridgeCmd $A
+}
 function TRun { param([string[]]$A) Invoke-EngineCli $GoalTreeCmd $A }
 function TLeaf { param([string[]]$A) Invoke-EngineCli $GoalTreeLeafCmd $A }
 function TFlow { param([string[]]$A) Invoke-EngineCli $FlowCmd $A }
@@ -124,7 +137,7 @@ function New-FixtureArchive {
     $archDir = Join-Path $script:WorkDir $archName
     New-Item -ItemType Directory -Path (Join-Path $archDir "requirements") -Force | Out-Null
     # 原始需求(overview):goal 根的目标文本来源(H1=标题,全文=描述)
-    [System.IO.File]::WriteAllText((Join-Path $archDir "requirements\overview.md"), "# 原始需求：QA 夹具总纲`r`n`r`n三件套夹具:底座/依赖方/独立项——供桥接验证器断言目标根语义。", $Utf8NoBom)
+    [System.IO.File]::WriteAllText((Join-Path $archDir "requirements\overview.md"), "# 原始需求：QA 夹具总纲`r`n`r`n三件套夹具:底座/依赖方/独立项——供桥接验证器断言目标根语义。`r`n`r`n## 整体验收判据`r`n`r`n无整体判据（理由：桥接验证器夹具，无整体验收场景，归档级已显式声明）", $Utf8NoBom)
     $reqs = @{
         "t1" = "# T1`r`n`r`n- **描述**：底座`r`n- **依赖关系**：无（本需求为底座）"
         "t2" = "# T2`r`n`r`n- **描述**：依赖方`r`n- **依赖关系**：依赖需求 1（t1 底座）"
@@ -145,6 +158,31 @@ function New-FixtureArchive {
 }
 '@
     [System.IO.File]::WriteAllText((Join-Path $archDir "task.json"), $tasksJson, $Utf8NoBom)
+    # long-task-planning companion PlanFile (promulgate hard gate): single
+    # stage over all fixture tasks, batches = topological layers of the
+    # fixture DAG ([[1,3],[2]]); the overview declares 无整体判据 so the
+    # criteria_ref slot stays omitted (declared-none contract).
+    $planJson = @'
+{
+    "planned_at": "2026-09-25T00:00:00Z",
+    "planner": "qa-verify",
+    "stages": [
+        {
+            "id": "S1",
+            "goal": "夹具整批交付",
+            "milestone": "三件套落位",
+            "task_ids": [1, 2, 3],
+            "batches": [[1, 3], [2]],
+            "acceptance_point": {
+                "criteria_items": ["smoke: fixture slice runs"],
+                "slice": "runnable single-command slice"
+            }
+        }
+    ],
+    "risks": []
+}
+'@
+    [System.IO.File]::WriteAllText((Join-Path $archDir "plan.json"), $planJson, $Utf8NoBom)
     $script:CreatedArchives.Add($archDir) | Out-Null
     return @{ name = $archName; dir = $archDir; run_id = "deliver-$archName" }
 }
@@ -1071,7 +1109,7 @@ function New-ReviewFixture {
     $archName = "2099-12-31-qa-fixture-$Tag-$($script:RunStamp)"
     $archDir = Join-Path $script:WorkDir $archName
     New-Item -ItemType Directory -Path (Join-Path $archDir "requirements") -Force | Out-Null
-    [System.IO.File]::WriteAllText((Join-Path $archDir "requirements\overview.md"), "# 审查门夹具总纲`r`n`r`n$Tag:供审查门验证器断言三级处置语义。", $Utf8NoBom)
+    [System.IO.File]::WriteAllText((Join-Path $archDir "requirements\overview.md"), "# 审查门夹具总纲`r`n`r`n$Tag:供审查门验证器断言三级处置语义。`r`n`r`n## 整体验收判据`r`n`r`n无整体判据（理由：审查门夹具，无整体验收场景，归档级已显式声明）", $Utf8NoBom)
     $taskJson = @()
     foreach ($t in $Tasks) {
         $reqRel = "requirements/t$($t.id).md"
@@ -1417,7 +1455,7 @@ function New-PayloadFixture {
     $archName = "2099-12-31-qa-fixture-$Tag-$($script:RunStamp)"
     $archDir = Join-Path $script:WorkDir $archName
     New-Item -ItemType Directory -Path (Join-Path $archDir "requirements") -Force | Out-Null
-    [System.IO.File]::WriteAllText((Join-Path $archDir "requirements\overview.md"), "# 载荷夹具总纲`r`n`r`n$Tag`:供派发载荷验证器断言目标为主文本契约。", $Utf8NoBom)
+    [System.IO.File]::WriteAllText((Join-Path $archDir "requirements\overview.md"), "# 载荷夹具总纲`r`n`r`n$Tag`:供派发载荷验证器断言目标为主文本契约。`r`n`r`n## 整体验收判据`r`n`r`n无整体判据（理由：载荷夹具，无整体验收场景，归档级已显式声明）", $Utf8NoBom)
     $taskJson = @()
     foreach ($t in $Tasks) {
         $reqAbs = Join-Path $archDir (($t.reqRel) -replace '/', '\')

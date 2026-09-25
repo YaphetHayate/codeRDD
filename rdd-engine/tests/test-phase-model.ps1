@@ -71,7 +71,7 @@ function Find-Task { param($Tasks, [int]$Id)
 function New-Archive { param([string]$Name, [string]$TasksJson)
     $archDir = Join-Path $Work (".rdd/changes/archive/$Name")
     New-Item -ItemType Directory -Path (Join-Path $archDir 'requirements') -Force | Out-Null
-    Write-Utf8NoBom (Join-Path $archDir 'requirements/overview.md') "# $Name`n`nphase-model 测试归档 $Name。`n"
+    Write-Utf8NoBom (Join-Path $archDir 'requirements/overview.md') "# $Name`n`nphase-model 测试归档 $Name。`n`n## 整体验收判据`n`n无整体判据（理由：phase-model 行为等价性测试归档，无整体验收场景）`n"
     $i = 1
     foreach ($line in ($TasksJson | ConvertFrom-Json)) {
         $doc = "requirements/t$i.md"
@@ -100,6 +100,36 @@ function New-Cb { param([string]$NodeId, [string]$Ref, [bool]$Qualified = $true)
     return $cbFile
 }
 
+# Minimal PlanFile writer (long-task-planning): stages = the given task sets;
+# each stage's batches = topological layers of its tasks under the dep map.
+function Write-TestPlan { param([string]$Path, $Stages, $Deps, [string]$CriteriaItem = 'smoke: core flow works')
+    $stageObjs = @()
+    foreach ($st in $Stages) {
+        $pending = @($st.tasks | ForEach-Object { [int]$_ })
+        $batches = @()
+        while ($pending.Count -gt 0) {
+            $batch = @($pending | Where-Object {
+                $t = [int]$_
+                @(@($Deps[$t]) | Where-Object { $pending -contains [int]$_ }).Count -eq 0
+            })
+            if ($batch.Count -eq 0) { throw "Write-TestPlan: cyclic deps in stage $($st.id)" }
+            $batches += ,@($batch | Sort-Object)
+            $pending = @($pending | Where-Object { $batch -notcontains [int]$_ })
+        }
+        $stageObjs += ,@{
+            id = [string]$st.id
+            goal = "stage $($st.id) 目标"
+            milestone = "stage $($st.id) 里程碑"
+            task_ids = @($st.tasks | ForEach-Object { [int]$_ } | Sort-Object)
+            batches = $batches
+            acceptance_point = @{ criteria_items = @($CriteriaItem); slice = 'runnable single-command slice' }
+        }
+    }
+    $plan = [ordered]@{ planned_at = '2026-09-25T00:00:00Z'; planner = 'test'; stages = $stageObjs; risks = @() }
+    Write-Utf8NoBom $Path ($plan | ConvertTo-Json -Depth 8)
+    return $Path
+}
+
 # claim -> report (qualified by default). Returns nothing; throws on hard failure.
 function Do-Deliver { param([string]$RunId, [string]$NodeId, [string]$Role, [string]$Ref, [bool]$Qualified = $true)
     $r = Invoke-Bridge @('-Command', 'claim', '-RunId', $RunId, '-NodeId', $NodeId, '-Role', $Role)
@@ -119,7 +149,8 @@ try {
     # ================= S1: single-owner full chain (behavior-equivalent) =================
     $arch1 = New-Archive 'pm-s1' '[{"title":"S1 单链","requirement":"requirements/t1.md","currentOwners":["CTO"],"designDocs":[]}]'
     $ref1 = "$arch1/requirements/t1.md"
-    $r = Invoke-Bridge @('-Command', 'promulgate', '-TaskJson', ($arch1 + '/task.json'), '-NoPush')
+    $pf1 = Write-TestPlan (Join-Path $Work 'pm-s1-plan.json') @(@{ id = 'S1'; tasks = @(1) }) @{}
+    $r = Invoke-Bridge @('-Command', 'promulgate', '-TaskJson', ($arch1 + '/task.json'), '-PlanFile', $pf1, '-NoPush')
     Assert-True ($r.json.success -eq $true) 'S1 promulgate ok'
     $b = Read-BridgeJson 'deliver-pm-s1'
     $cto = [string]$b.tasks.'1'.stages.CTO
@@ -151,7 +182,8 @@ try {
     # ================= S2: parallel ["CTO","UX"] convergence =================
     $arch2 = New-Archive 'pm-s2' '[{"title":"S2 并行","requirement":"requirements/t1.md","currentOwners":["CTO","UX"],"designDocs":[]}]'
     $ref2 = "$arch2/requirements/t1.md"
-    $r = Invoke-Bridge @('-Command', 'promulgate', '-TaskJson', ($arch2 + '/task.json'), '-NoPush')
+    $pf2 = Write-TestPlan (Join-Path $Work 'pm-s2-plan.json') @(@{ id = 'S1'; tasks = @(1) }) @{}
+    $r = Invoke-Bridge @('-Command', 'promulgate', '-TaskJson', ($arch2 + '/task.json'), '-PlanFile', $pf2, '-NoPush')
     Assert-True ($r.json.success -eq $true) 'S2 promulgate ok'
     $b = Read-BridgeJson 'deliver-pm-s2'
     $cto2 = [string]$b.tasks.'1'.stages.CTO
@@ -180,7 +212,8 @@ try {
     # ================= S3: serial within DESIGN (mid-flow expansion) =================
     $arch3 = New-Archive 'pm-s3' '[{"title":"S3 串行","requirement":"requirements/t1.md","currentOwners":["CTO"],"designDocs":[]}]'
     $ref3 = "$arch3/requirements/t1.md"
-    $null = Invoke-Bridge @('-Command', 'promulgate', '-TaskJson', ($arch3 + '/task.json'), '-NoPush')
+    $pf3 = Write-TestPlan (Join-Path $Work 'pm-s3-plan.json') @(@{ id = 'S1'; tasks = @(1) }) @{}
+    $null = Invoke-Bridge @('-Command', 'promulgate', '-TaskJson', ($arch3 + '/task.json'), '-PlanFile', $pf3, '-NoPush')
     $b = Read-BridgeJson 'deliver-pm-s3'
     $cto3 = [string]$b.tasks.'1'.stages.CTO
     # planner expands the owner set within DESIGN (set-route no -Phase = narrowing against whitelist)
@@ -198,7 +231,8 @@ try {
     # ================= S4: QA test-first (3-way DESIGN) + QA re-entry in VERIFY =================
     $arch4 = New-Archive 'pm-s4' '[{"title":"S4 测试先行","requirement":"requirements/t1.md","currentOwners":["CTO","UX","QA"],"designDocs":[]}]'
     $ref4 = "$arch4/requirements/t1.md"
-    $null = Invoke-Bridge @('-Command', 'promulgate', '-TaskJson', ($arch4 + '/task.json'), '-NoPush')
+    $pf4 = Write-TestPlan (Join-Path $Work 'pm-s4-plan.json') @(@{ id = 'S1'; tasks = @(1) }) @{}
+    $null = Invoke-Bridge @('-Command', 'promulgate', '-TaskJson', ($arch4 + '/task.json'), '-PlanFile', $pf4, '-NoPush')
     $b = Read-BridgeJson 'deliver-pm-s4'
     $cto4 = [string]$b.tasks.'1'.stages.CTO; $ux4 = [string]$b.tasks.'1'.stages.UX; $qa4 = [string]$b.tasks.'1'.stages.QA
     Assert-True ($cto4 -and $ux4 -and $qa4 -and ($cto4 -ne $ux4) -and ($ux4 -ne $qa4)) 'S4 THREE heads built (CTO+UX+QA)'
@@ -268,7 +302,8 @@ try {
     Write-Utf8NoBom (Join-Path $arch6 'requirements/overview.md') "# pm-s6a`n`nS6a 归档`n"
     Write-Utf8NoBom (Join-Path $arch6 'requirements/t1.md') "# S6a 需求`n`n- **描述**：跨阶段 owner 集`n"
     Write-Utf8NoBom (Join-Path $arch6 'task.json') '{"version":1,"archive":"pm-s6a","tasks":[{"id":1,"title":"S6a 跨阶段","requirement":"requirements/t1.md","currentOwners":["UX","DEV"],"designDocs":[],"currentWorker":[],"remark":"","lifecycle":"active"}]}'
-    $r = Invoke-Bridge @('-Command', 'promulgate', '-TaskJson', ($arch6.Replace('\', '/') + '/task.json'), '-NoPush')
+    $pf6a = Write-TestPlan (Join-Path $Work 'pm-s6a-plan.json') @(@{ id = 'S1'; tasks = @(1) }) @{}
+    $r = Invoke-Bridge @('-Command', 'promulgate', '-TaskJson', ($arch6.Replace('\', '/') + '/task.json'), '-PlanFile', $pf6a, '-NoPush')
     Assert-True ($r.json.success -eq $false -and $r.json.error.code -eq 'GROUP_DIVERGENT_NEXT') 'S6a cross-phase owners -> GROUP_DIVERGENT_NEXT' ($r.raw)
     # 6b: stored junk phase -> PHASE_OWNER_MISMATCH
     $arch6b = Join-Path $Work '.rdd/changes/archive/pm-s6b'
@@ -276,7 +311,8 @@ try {
     Write-Utf8NoBom (Join-Path $arch6b 'requirements/overview.md') "# pm-s6b`n`nS6b 归档`n"
     Write-Utf8NoBom (Join-Path $arch6b 'requirements/t1.md') "# S6b 需求`n`n- **描述**：存量 phase 与 owner 冲突`n"
     Write-Utf8NoBom (Join-Path $arch6b 'task.json') '{"version":1,"archive":"pm-s6b","tasks":[{"id":1,"title":"S6b 冲突","requirement":"requirements/t1.md","currentOwners":["CTO","UX"],"phase":"IMPL","designDocs":[],"currentWorker":[],"remark":"","lifecycle":"active"}]}'
-    $r = Invoke-Bridge @('-Command', 'promulgate', '-TaskJson', ($arch6b.Replace('\', '/') + '/task.json'), '-NoPush')
+    $pf6b = Write-TestPlan (Join-Path $Work 'pm-s6b-plan.json') @(@{ id = 'S1'; tasks = @(1) }) @{}
+    $r = Invoke-Bridge @('-Command', 'promulgate', '-TaskJson', ($arch6b.Replace('\', '/') + '/task.json'), '-PlanFile', $pf6b, '-NoPush')
     Assert-True ($r.json.success -eq $false -and $r.json.error.code -eq 'PHASE_OWNER_MISMATCH') 'S6b stored phase conflicts owners -> PHASE_OWNER_MISMATCH' ($r.raw)
     # 6c: flow check flags owners outside the stored phase (design test point 6)
     $arch6c = Join-Path $Work '.rdd/changes/archive/pm-s6c'
@@ -296,7 +332,8 @@ try {
     $ref7 = "$arch7/requirements/t1.md"
     $t = Find-Task (Read-Tasks $arch7) 1
     Assert-True ([string]$t.phase -eq 'VERIFY') 'S7 init infers VERIFY for ["QA"]'
-    $null = Invoke-Bridge @('-Command', 'promulgate', '-TaskJson', ($arch7 + '/task.json'), '-NoPush')
+    $pf7 = Write-TestPlan (Join-Path $Work 'pm-s7-plan.json') @(@{ id = 'S1'; tasks = @(1) }) @{}
+    $null = Invoke-Bridge @('-Command', 'promulgate', '-TaskJson', ($arch7 + '/task.json'), '-PlanFile', $pf7, '-NoPush')
     $b = Read-BridgeJson 'deliver-pm-s7'
     $qa7 = [string]$b.tasks.'1'.stages.QA
     Assert-True ($qa7 -eq 'n2') 'S7 QA head grafted'
@@ -312,7 +349,8 @@ try {
     Write-Utf8NoBom (Join-Path $arch8 'requirements/overview.md') "# pm-s8`n`nS8 旧归档`n"
     Write-Utf8NoBom (Join-Path $arch8 'requirements/t1.md') "# S8 需求`n`n- **描述**：无 phase 旧格式`n"
     Write-Utf8NoBom (Join-Path $arch8 'task.json') '{"version":1,"archive":"pm-s8","tasks":[{"id":1,"title":"S8 存量","requirement":"requirements/t1.md","currentOwners":["CTO"],"designDocs":[],"currentWorker":[],"remark":"","lifecycle":"active"}]}'
-    $r = Invoke-Bridge @('-Command', 'promulgate', '-TaskJson', ($arch8.Replace('\', '/') + '/task.json'), '-NoPush')
+    $pf8 = Write-TestPlan (Join-Path $Work 'pm-s8-plan.json') @(@{ id = 'S1'; tasks = @(1) }) @{}
+    $r = Invoke-Bridge @('-Command', 'promulgate', '-TaskJson', ($arch8.Replace('\', '/') + '/task.json'), '-PlanFile', $pf8, '-NoPush')
     Assert-True ($r.json.success -eq $true) 'S8 legacy promulgate ok (conservative degrade)' ($r.raw)
     $t = Find-Task (Read-Tasks '.rdd/changes/archive/pm-s8') 1
     Assert-True ($null -eq $t.phase) 'S8 task.json phase stays null (no hidden inference)'
@@ -327,7 +365,8 @@ try {
     # ================= S9: multi-anchor deps =================
     $arch9 = New-Archive 'pm-s9' '[{"title":"S9 上游","requirement":"requirements/t1.md","currentOwners":["CTO","UX"],"designDocs":[]},{"title":"S9 下游","requirement":"requirements/t2.md","currentOwners":["CTO"],"designDocs":[],"dep":1}]'
     $ref9 = "$arch9/requirements/t1.md"
-    $r = Invoke-Bridge @('-Command', 'promulgate', '-TaskJson', ($arch9 + '/task.json'), '-NoPush')
+    $pf9 = Write-TestPlan (Join-Path $Work 'pm-s9-plan.json') @(@{ id = 'S1'; tasks = @(1, 2) }) @{ 2 = @(1) }
+    $r = Invoke-Bridge @('-Command', 'promulgate', '-TaskJson', ($arch9 + '/task.json'), '-PlanFile', $pf9, '-NoPush')
     Assert-True ($r.json.success -eq $true) 'S9 promulgate ok'
     $b = Read-BridgeJson 'deliver-pm-s9'
     $upCto = [string]$b.tasks.'1'.stages.CTO; $upUx = [string]$b.tasks.'1'.stages.UX; $down = [string]$b.tasks.'2'.stages.CTO
@@ -396,7 +435,8 @@ try {
 
     # ================= S13: rollback demands explicit -Phase (edge E2) =================
     $arch13 = New-Archive 'pm-s13' '[{"title":"S13 歧义","requirement":"requirements/t1.md","currentOwners":["DEV"],"designDocs":[]}]'
-    $null = Invoke-Bridge @('-Command', 'promulgate', '-TaskJson', ($arch13 + '/task.json'), '-NoPush')
+    $pf13 = Write-TestPlan (Join-Path $Work 'pm-s13-plan.json') @(@{ id = 'S1'; tasks = @(1) }) @{}
+    $null = Invoke-Bridge @('-Command', 'promulgate', '-TaskJson', ($arch13 + '/task.json'), '-PlanFile', $pf13, '-NoPush')
     $r = Invoke-Bridge @('-Command', 'rollback', '-RunId', 'deliver-pm-s13', '-NodeId', 'n2', '-To', 'CTO+UX', '-Reason', 'no phase given')
     Assert-True ($r.json.success -eq $false -and $r.json.error.code -eq 'SET_PHASE_REQUIRED') 'S13 rollback without -Phase -> SET_PHASE_REQUIRED' ($r.raw)
     $r = Invoke-Bridge @('-Command', 'rollback', '-RunId', 'deliver-pm-s13', '-NodeId', 'n2', '-To', 'QA', '-Phase', 'DESIGN', '-Reason', 'pending guard check')

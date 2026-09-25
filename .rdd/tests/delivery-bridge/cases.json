@@ -12,9 +12,11 @@
                     ],
     "testCode":  [
                      ".rdd/tests/delivery-bridge/delivery-bridge-verify.ps1",
-                     "rdd-engine/tests/test-phase-model.ps1"
+                     "rdd-engine/tests/test-phase-model.ps1",
+                     "rdd-engine/tests/test-bridge-acceptance.ps1",
+                     "rdd-engine/tests/test-bridge-conflicts.ps1"
                  ],
-    "lastChange":  "2026-09-23-delivery-phase-model",
+    "lastChange":  "2026-09-24-long-task-integrated-delivery",
     "cases":  [
                   {
                       "id":  "TC-B01",
@@ -1355,6 +1357,302 @@
                           "CTO settle,断言 flow_operation=advance CTO->DEV(老路径)且 owners=[DEV] phase=null"
                       ],
                       "expected": "旧归档全程走 StageNext 线性链老路径;settle/check/show 均不 crash;phase 永不隐式写入(migrate 是唯一回填通道)——存量归档零迁移成本"
+                  },
+                  {
+                      "id": "TC-B69",
+                      "title": "判据门硬拒:≥2 子需求归档 overview 缺「## 整体验收判据」固定段(无条目且无显式声明)→ promulgate 报 ACCEPTANCE_CRITERIA_MISSING 且零残留(未创建任何 run 状态)",
+                      "type": "negative",
+                      "priority": "P0",
+                      "acceptance": "OD-AC-1",
+                      "codeRef": "rdd-engine/tests/test-bridge-acceptance.ps1:129",
+                      "sourceChange": "2026-09-24-long-task-integrated-delivery",
+                      "status": "active",
+                      "crossFeature": [],
+                      "precondition": "临时 git 仓库 fixture:归档 ba-t1 含 2 任务,requirements/overview.md 无判据段",
+                      "steps": [
+                          "promulgate ba-t1(2 子需求,无判据段)",
+                          "断言 success=false 且 error.code=ACCEPTANCE_CRITERIA_MISSING",
+                          "断言 .rdd/goal-trees/deliver-ba-t1 未创建(零残留)"
+                      ],
+                      "expected": "硬拒发生在任何 run 状态创建之前;错误信息指明补判据条目或显式声明两出口——判据必填分层(archive-rules)成立"
+                  },
+                  {
+                      "id": "TC-B70",
+                      "title": "判据分层豁免双出口:单需求免判据(basis=single_exempt)/显式「无整体判据(理由:…)」声明(basis=declared_none)——均 status=none 不建验收链不设 conclude 硬门",
+                      "type": "boundary",
+                      "priority": "P0",
+                      "acceptance": "OD-AC-1",
+                      "codeRef": "rdd-engine/tests/test-bridge-acceptance.ps1:135",
+                      "sourceChange": "2026-09-24-long-task-integrated-delivery",
+                      "status": "active",
+                      "crossFeature": [],
+                      "precondition": "fixture:单任务归档 ba-t2;双任务归档 ba-t3 带「无整体判据(理由:…)」声明块",
+                      "steps": [
+                          "promulgate ba-t2,断言 acceptance.basis=single_exempt 且 status=none",
+                          "settle 链头后 conclude,断言 achieved 且不需要验收报告",
+                          "promulgate ba-t3(声明块),断言 basis=declared_none 不建链",
+                          "conclude ba-t3 正常达成,annex「整体验收结论」区标注依据"
+                      ],
+                      "expected": "两出口都走 status=none:不 graft 验收链、conclude 不受 ACCEPTANCE_* 硬门约束;annex 如实标注 single_exempt/declared_none——禁止静默缺失但允许显式豁免"
+                  },
+                  {
+                      "id": "TC-B71",
+                      "title": "判据锚全程携带:promulgate 将 criteria_ref=requirements/overview.md#整体验收判据 注入 acceptance 段(planned)/goal 根描述/各拆分节点 task/指针 brief;设计文档经 frontmatter acceptance_ref 引用对齐",
+                      "type": "positive",
+                      "priority": "P0",
+                      "acceptance": "OD-AC-1",
+                      "codeRef": "rdd-engine/tests/test-bridge-acceptance.ps1:164",
+                      "sourceChange": "2026-09-24-long-task-integrated-delivery",
+                      "status": "active",
+                      "crossFeature": [],
+                      "precondition": "fixture:双任务归档 ba-t4 带「## 整体验收判据」条目块",
+                      "steps": [
+                          "promulgate ba-t4,断言 success 且 budget.node_width=4(链头 2+2)",
+                          "断言 bridge.json acceptance.status=planned 且 criteria_ref 锚定固定段",
+                          "断言验收链尚未 graft(时机表达占位)",
+                          "核对 goal 根与各链头节点 task 文本携带判据锚"
+                      ],
+                      "expected": "判据引用单源注入(goal 根/节点 task/指针 brief/acceptance.criteria_ref),供 PLANNER/CTO/DEV 全程对齐;模板侧 CTO/UX frontmatter acceptance_ref 建立设计文档引用对齐——验收标准 1 可检验"
+                  },
+                  {
+                      "id": "TC-B72",
+                      "title": "验收链时机表达(自愈幂等):planned 占位于 promulgate;全部映射节点终态才 graft [集成/联调](DEV,树级);integrate settle 后 graft [整体验收](QA);中途部分终态不提前 graft",
+                      "type": "positive",
+                      "priority": "P0",
+                      "acceptance": "OD-AC-2",
+                      "codeRef": "rdd-engine/tests/test-bridge-acceptance.ps1:164",
+                      "sourceChange": "2026-09-24-long-task-integrated-delivery",
+                      "status": "active",
+                      "crossFeature": ["goal-tree"],
+                      "precondition": "ba-t4 双链头待 settle",
+                      "steps": [
+                          "settle 其中一个链头,断言 acceptance.integrate_node 仍空(1/2 终态)",
+                          "settle 最后一个映射节点,断言 [集成/联调] graft 且 status=grafted",
+                          "断言集成节点为树级工作节点(type≠goal,role=dev)"
+                      ],
+                      "expected": "graft 时机与「全部子任务完成」严格对齐;集成节点使命明确「真实串联集成/联调,数据/调用互相衔接,不是各模块独立跑通子验收」——集成/联调环节存在且对象为原始需求整体"
+                  },
+                  {
+                      "id": "TC-B73",
+                      "title": "树级节点 claim/settle 硬边界:错误角色 ROLE_INVALID/目标根 NODE_NOT_MAPPED(非交付单元)/无证据交付 SETTLE_EVIDENCE_REJECTED(tree-level 文案)/树级 reclaim 越界 NODE_NOT_MAPPED(返工边界留痕)/链未走完 conclude 报 ACCEPTANCE_PENDING",
+                      "type": "negative",
+                      "priority": "P0",
+                      "acceptance": "OD-AC-2",
+                      "codeRef": "rdd-engine/tests/test-bridge-acceptance.ps1:186",
+                      "sourceChange": "2026-09-24-long-task-integrated-delivery",
+                      "status": "active",
+                      "crossFeature": ["goal-tree"],
+                      "precondition": "ba-t4 验收链 [集成/联调] 已 graft",
+                      "steps": [
+                          "用错误角色 claim 集成节点",
+                          "claim 目标根 n1",
+                          "正确 claim 后无证据 settle",
+                          "尝试 unqualified 树级返工(reclaim)",
+                          "conclude(验收链未走完)"
+                      ],
+                      "expected": "1 ROLE_INVALID;2 NODE_NOT_MAPPED;3 SETTLE_EVIDENCE_REJECTED 且文案标注 tree-level;4 NODE_NOT_MAPPED——完整返工/回溯不在需求范围的边界如实留痕;5 ACCEPTANCE_PENDING——树级分支与映射节点同强度三查门禁"
+                  },
+                  {
+                      "id": "TC-B74",
+                      "title": "整体验收结论阶梯全链路:集成交付 settle(树级终态不触 task.json)→ [整体验收] graft → 对照判据逐条核验 → tests/integration-acceptance.md §3 一行『总结论：通过』→ accept settle 记录结论快照 → conclude 达成放行,annex「整体验收结论」区四要素齐全",
+                      "type": "positive",
+                      "priority": "P0",
+                      "acceptance": "OD-AC-2",
+                      "codeRef": "rdd-engine/tests/test-bridge-acceptance.ps1:202",
+                      "sourceChange": "2026-09-24-long-task-integrated-delivery",
+                      "status": "active",
+                      "crossFeature": ["goal-tree"],
+                      "precondition": "fixture ba-t6 判据模式全流程",
+                      "steps": [
+                          "集成/联调交付并 settle,断言 flow_operation=tree-level 且 task.json 前后字节等价",
+                          "断言 [整体验收] graft 且 claim 携带 acceptance context",
+                          "写 integration-acceptance.md(§1/§2/§3)后 settle accept 节点",
+                          "断言 acceptance.conclusion=通过 且 recorded_at 非空",
+                          "conclude,断言 achieved 且 annex 含判据引用/链节点/交付记录指针/总结论"
+                      ],
+                      "expected": "验收对象=原始需求整体,产出明确『通过』结论并落交付记录;accept settle 记录快照防事后篡改;conclude achieved 由 ACCEPT 硬门放行——验收标准 2 可检验"
+                  },
+                  {
+                      "id": "TC-B75",
+                      "title": "结论防篡改与重读三阶梯:accept settle 无 §3 → conclusion 不记录 → conclude ACCEPTANCE_PENDING;§3『总结论：不通过』→ conclude ACCEPTANCE_NOT_PASSED(失败点指向 §2 覆盖映射);补写『通过』后重跑 conclude 即达成(免重 settle)",
+                      "type": "negative",
+                      "priority": "P0",
+                      "acceptance": "OD-AC-2",
+                      "codeRef": "rdd-engine/tests/test-bridge-acceptance.ps1:238",
+                      "sourceChange": "2026-09-24-long-task-integrated-delivery",
+                      "status": "active",
+                      "crossFeature": [],
+                      "precondition": "fixture ba-t7 accept 节点已 settle 但 §3 缺位",
+                      "steps": [
+                          "conclude → 断言 ACCEPTANCE_PENDING",
+                          "写 §3『总结论：不通过』→ conclude → 断言 ACCEPTANCE_NOT_PASSED",
+                          "改为『总结论：通过』→ conclude → 断言 achieved"
+                      ],
+                      "expected": "三阶梯确定性:结论可判『通过/不通过』且失败点可定位(§2 覆盖映射指向责任任务链);快照缺位时 conclude 重读报告文件补齐,无需重新 settle——不通过结论是一等公民"
+                  },
+                  {
+                      "id": "TC-B76",
+                      "title": "宽度公式 node_width=max(4,链头数+2):3 任务链头 3+2=5,两个树级验收节点 graft 均不触发 WIDTH_EXCEEDED(整体验收链不挤爆宽度预算)",
+                      "type": "boundary",
+                      "priority": "P1",
+                      "acceptance": "OD-AC-2",
+                      "codeRef": "rdd-engine/tests/test-bridge-acceptance.ps1:266",
+                      "sourceChange": "2026-09-24-long-task-integrated-delivery",
+                      "status": "active",
+                      "crossFeature": ["goal-tree"],
+                      "precondition": "fixture ba-t8 三任务判据模式",
+                      "steps": [
+                          "promulgate 断言 node_width=5",
+                          "全部映射节点终态后 graft [集成/联调]",
+                          "integrate settle 后 graft [整体验收] 为 goal-root 第 5 个子节点"
+                      ],
+                      "expected": "双验收节点按 +2 计入宽度预算公式,3 任务回归证明 graft 全程无 WIDTH_EXCEEDED"
+                  },
+                  {
+                      "id": "TC-B77",
+                      "title": "树内修复节点复用统一分支:planner graft 下探修复节点(role=dev)→ 手动 claim 走树级分支(tree_level=true,start_context 带 repair)→ settle 树级不触 task.json → 不进自动推送候选(bridge 映射外)",
+                      "type": "boundary",
+                      "priority": "P1",
+                      "acceptance": "OD-AC-2",
+                      "codeRef": "rdd-engine/tests/test-bridge-acceptance.ps1:285",
+                      "sourceChange": "2026-09-24-long-task-integrated-delivery",
+                      "status": "active",
+                      "crossFeature": ["goal-tree"],
+                      "precondition": "ba-t4 run 存在,手工写 graft 文件下探 1 个修复节点",
+                      "steps": [
+                          "graft 修复节点",
+                          "claim(角色缺省),断言 tree_level=true 且 start_context 匹配 repair",
+                          "记录 task.json 前后内容,settle 后断言字节等价"
+                      ],
+                      "expected": "修复节点与验收链节点同走树级短路分支;树级 settle 永不触 task.json;自动推送仅覆盖 bridge 映射节点+验收链节点——修复节点由 planner 手动派发"
+                  },
+                  {
+                      "id": "TC-B78",
+                      "title": "CONVENTIONS_MISSING 零残留:DESIGN 并行链头 ≥2 缺 -ConventionsFile 建树前硬拒;注入后 DESIGN 链头 node.task 带「架构约定:<path>」;单设计/串行设计豁免",
+                      "type": "boundary",
+                      "priority": "P1",
+                      "acceptance": "PC-AC-1",
+                      "codeRef": "rdd-engine/tests/test-bridge-conflicts.ps1:1",
+                      "sourceChange": "2026-09-24-long-task-integrated-delivery",
+                      "status": "active",
+                      "crossFeature": ["goal-tree"],
+                      "precondition": "pc-t1/t2/t3 夹具:2 并行 CTO 任务/带 -ConventionsFile/单 CTO 任务",
+                      "steps": [
+                          "promulgate 无 -ConventionsFile 断言 CONVENTIONS_MISSING 且零残留",
+                          "promulgate 带 -ConventionsFile 断言 bridge.conventions + report/architecture-conventions.md + 链头 node.task 注入",
+                          "单设计任务无约定文件照常建树"
+                      ],
+                      "expected": "多 CTO 并行设计必有共同基线(架构/风格约定),缺位在建树前确定性拒绝;注入与判据注入同构"
+                  },
+                  {
+                      "id": "TC-B79",
+                      "title": "变更地图机读契约:文件行 `完整路径` [op] 说明 可机读;旧格式降级人工核对并报 DESIGN_MAP_INVALID 警示(警示级不阻塞流转)",
+                      "type": "boundary",
+                      "priority": "P1",
+                      "acceptance": "PC-AC-2",
+                      "codeRef": "rdd-engine/tests/test-bridge-conflicts.ps1:1",
+                      "sourceChange": "2026-09-24-long-task-integrated-delivery",
+                      "status": "active",
+                      "crossFeature": [],
+                      "precondition": "pc-t9 夹具:旧格式变更地图设计文档",
+                      "steps": [
+                          "promulgate 照常成功(不阻塞)",
+                          "断言 design_maps[doc].legacy=true 且 warnings 含 DESIGN_MAP_INVALID"
+                      ],
+                      "expected": "存量/旧格式地图显式警示降级,机械重叠检测对该文档失明但流程不中断"
+                  },
+                  {
+                      "id": "TC-B80",
+                      "title": "推送门文件冲突预防:变更地图精确路径重叠于并发 DEV 节点 → 自动登记 file 冲突(detected_by=change-map-scan)并 hold 双节点,推送零尝试;手动 dispatch 同门 NODE_HELD_BY_CONFLICT",
+                      "type": "normal",
+                      "priority": "P1",
+                      "acceptance": "PC-AC-2",
+                      "codeRef": "rdd-engine/tests/test-bridge-conflicts.ps1:1",
+                      "sourceChange": "2026-09-24-long-task-integrated-delivery",
+                      "status": "active",
+                      "crossFeature": ["goal-tree"],
+                      "precondition": "pc-t4 夹具:2 并行 DEV 任务变更地图共享 app/core.py",
+                      "steps": [
+                          "promulgate 触发初始推送",
+                          "断言 conflicts 条目 kind=file/两节点/共享文件 + pushes 无两节点尝试",
+                          "dispatch -DryRun 断言 NODE_HELD_BY_CONFLICT",
+                          "report/design-conflicts.md 镜像存在"
+                      ],
+                      "expected": "派发前识别并预防同文件并发写;双触点(推送门+手动 dispatch)都拦,不产生覆盖"
+                  },
+                  {
+                      "id": "TC-B81",
+                      "title": "冲突消解串行化:resolve -Serialize <早者> 组合 goal-tree deps add,晚者 depends_on 早者,早者 settle 后晚者自动推送解锁",
+                      "type": "normal",
+                      "priority": "P1",
+                      "acceptance": "PC-AC-2",
+                      "codeRef": "rdd-engine/tests/test-bridge-conflicts.ps1:1",
+                      "sourceChange": "2026-09-24-long-task-integrated-delivery",
+                      "status": "active",
+                      "crossFeature": ["goal-tree"],
+                      "precondition": "pc-t4 run 存在未决 file 冲突",
+                      "steps": [
+                          "conflict -Action resolve -Ruling ... -Serialize <早者节点>",
+                          "断言晚者树节点 depends_on 含早者",
+                          "settle 早者后断言晚者进入自动推送尝试"
+                      ],
+                      "expected": "串行化即依赖互斥(错峰不采用);先行落地后自动解锁,恢复无需手动 dispatch"
+                  },
+                  {
+                      "id": "TC-B82",
+                      "title": "settle 冲突门 kind 分流:design 涉事节点恒拒(不得默默二选一);file 仅双活跃方互拦、单活跃写者放行;escalated/suspended 为条目状态属性",
+                      "type": "boundary",
+                      "priority": "P1",
+                      "acceptance": "PC-AC-1",
+                      "codeRef": "rdd-engine/tests/test-bridge-conflicts.ps1:1",
+                      "sourceChange": "2026-09-24-long-task-integrated-delivery",
+                      "status": "active",
+                      "crossFeature": [],
+                      "precondition": "pc-t6/t7/t7b 夹具",
+                      "steps": [
+                          "design 冲突下 settle 恒拒 NODE_HELD_BY_CONFLICT,resolve(用户裁决留痕)后放行",
+                          "file 冲突单活跃写者 settle 放行;双活跃(claimed/reported)互拦",
+                          "open -ConflictId 更新 -ConflictStatus escalated|suspended 留痕;历史追加不改写",
+                          "CONFLICT_NOT_FOUND/ALREADY_RESOLVED/ENTRY_INVALID 确定性错误码"
+                      ],
+                      "expected": "design 恒拒防默默二选一;file 门防并发同文件覆盖但不追溯拦在途;注册表只追加"
+                  },
+                  {
+                      "id": "TC-B83",
+                      "title": "回执一致性软核对:DEV citations 超出变更地图文件集 → 警示入 settle/status 并记 design_maps[].citation_deviations,永不硬拒",
+                      "type": "boundary",
+                      "priority": "P2",
+                      "acceptance": "PC-AC-2",
+                      "codeRef": "rdd-engine/tests/test-bridge-conflicts.ps1:1",
+                      "sourceChange": "2026-09-24-long-task-integrated-delivery",
+                      "status": "active",
+                      "crossFeature": [],
+                      "precondition": "pc-t10 夹具:变更地图文件集 {app/core.py},citations 指向 other.py",
+                      "steps": [
+                          "settle 成功且 warnings 含回执软核对警示",
+                          "断言 design_maps[].citation_deviations 记录偏差",
+                          "status 持续透出偏差警示"
+                      ],
+                      "expected": "地图失真风险可见化;警示不阻塞流转,人工核对后按需修正设计产物"
+                  },
+                  {
+                      "id": "TC-B84",
+                      "title": "未决冲突不阻塞无冲突任务:file 冲突仅 hold 涉事节点,无重叠第三任务照常推送且 dispatch 不被冲突门拦截",
+                      "type": "boundary",
+                      "priority": "P2",
+                      "acceptance": "PC-AC-2",
+                      "codeRef": "rdd-engine/tests/test-bridge-conflicts.ps1:1",
+                      "sourceChange": "2026-09-24-long-task-integrated-delivery",
+                      "status": "active",
+                      "crossFeature": ["goal-tree"],
+                      "precondition": "pc-t11 夹具:2 并行 DEV 任务共享 app/core.py,第 3 任务独立 app/reports.py",
+                      "steps": [
+                          "promulgate 触发初始推送",
+                          "断言冲突条目只覆盖重叠双方,第三节点不在条目内",
+                          "断言重叠双方零推送尝试,第三节点有推送尝试",
+                          "dispatch -DryRun 第三节点断言非 NODE_HELD_BY_CONFLICT"
+                      ],
+                      "expected": "冲突治理严格限定涉事范围;无冲突任务流转不被裹挟阻塞(需求边界与异常)"
                   }
                ]
 }

@@ -189,6 +189,7 @@ requirement_id: req-xxx
 priority: 高
 role: cto
 status: active
+acceptance_ref: requirements/{name}.md（对齐验收标准 1/2/3）
 ---
 
 # 需求标题 — 技术方向文档
@@ -200,11 +201,11 @@ status: active
 
 project-root/
 ├── backend/app/
-│   ├── models/xxx.py               [修改] 字段扩展说明
-│   └── api/xxx.py                  [修改] 处理逻辑说明
+│   ├── `backend/app/models/xxx.py`             [修改] 字段扩展说明
+│   └── `backend/app/api/xxx.py`                [修改] 处理逻辑说明
 ├── frontend/src/
-│   ├── types/index.ts              [修改] 类型新增说明
-│   └── components/xxx.tsx          [修改] 映射/渲染说明
+│   ├── `frontend/src/types/index.ts`           [修改] 类型新增说明
+│   └── `frontend/src/components/xxx.tsx`       [修改] 映射/渲染说明
 
 [新增] 0 | [修改] N | [删除] N | 无新增依赖
 
@@ -243,7 +244,7 @@ project-root/
 | 风险描述 | 影响简述 | 应对方向 | P1/P2/P3 |
 ```
 
-> **注意**：变更地图用树状图标注每个文件的操作类型（[修改]/[新增]/[删除]），一目了然。技术方案每项只写一句话结论，不展开论证。决策记录、回退记录和风险提示独立为同名 `*-decisions.md` 文件，供有疑问时查阅。
+> **注意**：变更地图用树状图标注每个文件的操作类型（[修改]/[新增]/[删除]），一目了然。**文件行是机读契约（并行文件冲突检测基础）**：「`仓库根相对完整路径` [op] 说明」——完整路径以反引号包裹、与 [op] 同一行是硬格式（delivery-bridge 机械机读文件重叠检测/计数核对/回执一致性软核对；不合契约报 `DESIGN_MAP_INVALID` 警示，不阻塞流转但重叠检测对失明文档降级人工核对）。技术方案每项只写一句话结论，不展开论证。决策记录、回退记录和风险提示独立为同名 `*-decisions.md` 文件，供有疑问时查阅。
 
 ---
 

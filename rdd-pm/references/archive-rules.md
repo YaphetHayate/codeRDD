@@ -33,6 +33,14 @@ New-Item -ItemType Directory -Path ".rdd/changes/archive/YYYY-MM-DD-short-name/r
 
 写入 `requirements/overview.md`，按 `references/overview-template.md` 模板格式。
 
+**整体验收判据必填分层**（`## 整体验收判据` 固定段，引用锚全程稳定）：
+
+- 拆分为 **≥2 条子需求**：判据**必填**（每条 = 用户可感知完整场景 + 可检验形态 + 覆盖子需求映射）——判据须在拆分时产出，后补即走过场；
+- **单需求/快速通道**：可整段省略（其验收标准即整体判据，豁免）；
+- 确无整体场景：以一行「无整体判据（理由：…）」**显式声明**（优于静默缺失）。
+
+> 桥接 run 的 promulgate 机械校验本段：≥2 条子需求且判据缺失（既无条目也无显式声明）→ 硬拒 `ACCEPTANCE_CRITERIA_MISSING`，拒绝建树。
+
 > **快速通道差异**：背景段简短即可。
 
 ### 3. 生成需求文件
