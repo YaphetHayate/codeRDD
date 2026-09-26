@@ -399,8 +399,10 @@ export function apply(ctx: Context, config: Config): void {
       if (forbidden !== undefined && exec.name === 'skill' && typeof fields?.name === 'string' && forbidden.has(fields.name)) {
         return Promise.resolve({
           kind: 'deny' as const,
-          reason: `skill "${fields.name}" is forbidden in this session: its content is already in this session's `
-          + 'system prompt or carried by the rdd_explore tool; read references directly with the read tool',
+          reason: `skill "${fields.name}" is forbidden in this session: rdd-* capabilities are not carried by skill loading — `
+          + 'role bodies are already in the persona, exploration goes through the rdd_explore tool, '
+          + 'flow/handoff/goal-tree run through the engine CLI invoked via shell, and protocols are read directly '
+          + 'from rdd-engine/references/ (start with capability-manifest.md). Do not retry skill loading.',
         })
       }
       if (

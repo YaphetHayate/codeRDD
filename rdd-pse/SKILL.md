@@ -74,7 +74,7 @@ description: >
 
 ## Phase 1：项目理解
 
-> 需要项目上下文时，加载 rdd-engine 委托生成项目理解产物。
+> 需要项目上下文时，按上方「rdd-engine 能力（工作前必读）」检索探索缓存、委托生成项目理解产物。
 > 完整分析流程见 `references/project-analysis.md`
 
 在动笔之前，必须充分理解项目。阅读以下内容：

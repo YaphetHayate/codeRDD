@@ -159,6 +159,9 @@ function assertHandoffGuidance(persona, role) {
   if (persona.includes(retiredTakeover)) {
     throw new Error(`${role} persona 残留旧式长程任务判据「${retiredTakeover}」——planner-takeover 触发条件已改为 next 输出的 longTask 显式信号，请同步 SKILL.md 措辞`)
   }
+  if (persona.includes('加载 rdd-engine') || persona.includes('加载rdd-engine')) {
+    throw new Error(`${role} persona 残留旧式技能加载指引「加载 rdd-engine」——dsh 下 rdd-* 经 skill 工具加载会被 forbiddenSkills 拒绝；请改为「按上方 rdd-engine 能力」表述（dsh 适配头自动映射到 rdd_explore 工具）`)
+  }
   if (role === 'rdd-pm' && !persona.includes('接管整批交付')) {
     throw new Error(`${role} persona 未携带 planner-takeover 接管话术——检查 rdd-pm/SKILL.md 可选分支（longTask 显式信号触发）`)
   }

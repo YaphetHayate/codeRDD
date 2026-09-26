@@ -38,9 +38,9 @@ param(
     # Task summary title (session-list-badges): optional one-line requirement
     # summary ("「<需求标题>」<阶段>") the delivery bridge derives from the
     # persisted node.task. Rides the TITLE channel (session.rename) so the
-    # workspace row shows "badges + summary" instead of the legacy text marker.
-    # Display-only, never a mission parameter; empty → the title keeps the
-    # legacy marker shape (regression anchor).
+    # workspace row shows "role pill + chips + summary" instead of the legacy
+    # text marker. Display-only, never a mission parameter; empty → the title
+    # keeps the legacy marker shape (regression anchor).
     [string]$TaskSummary = "",
 
     # PLANNER uniqueness guard (planner-uniqueness-callback): explicit user
@@ -288,7 +288,7 @@ function Get-SessionTitle {
     # — the pointer message is the SAME for every dispatch, so auto titles
     # would collapse the whole run into identical sidebar entries). Shapes, in
     # priority order:
-    #   PLANNER body     "<run短名>"（PLANNER 身份由徽章承载——见 Get-SessionBadges）
+    #   PLANNER body     "<run短名>"（PLANNER 身份由 preset 角色胶囊承载——见 Get-SessionBadges v2）
     #   bridge dispatch  "[<run短名>] T<#>·<角色>·<节点>"   (-GoalTreeRun shape)
     #   off-tree direct  "[直交] <标签>·<角色>"            (-Handoff / -SessionLabel)
     # Returns "" for the unmarked plain handoff (no goal-tree marker, no
@@ -328,27 +328,23 @@ function Get-SessionTitle {
 }
 
 function Get-SessionBadges {
-    # session-list-badges: structured identity chips for the freshly created dsh
-    # session, pinned via the session.setBadges RPC (log-only session/badges
-    # event + sessionBadges projection; display-only, never a mission
-    # parameter). Mirrors Get-SessionTitle's three shapes, one badge per
-    # structural fact — open kind vocabulary, rdd:* namespace consumed by the
-    # DSH workspace-row renderer (unknown kinds degrade to a generic chip):
-    #   PLANNER body     rdd:planner(<PLANNER>)（仅此一枚，PLANNER 身份进徽章内；
-    #                    run 名不占行首——用户裁定 2026-09-22）
-    #   bridge dispatch  rdd:stage(<阶段>) + rdd:task(T#) [+ rdd:node(<节点>)]（角色胶囊置首，
-    #                    rdd:run 长名芯片按用户裁定移除，避免遮挡标题）
-    #   off-tree direct  rdd:direct(<标签>) + rdd:role(<角色>)
-    # Returns @() for the unmarked plain handoff — zero badges, zero setBadges
-    # calls, behavior byte-for-byte identical to the pre-feature output
-    # (regression anchor, same contract as Get-SessionTitle's "" return).
+    # session-list-badges v2 (user ruling 2026-09-24): the DSH row renderer
+    # derives the role identity pill from the session's live agent preset
+    # (rdd-<role>, enum-only text, one distinct glyph per role) — dispatched
+    # AND user-created role sessions show it with no badge write at all.
+    # setBadges therefore no longer carries role text; it writes only the
+    # structural facts the preset cannot know:
+    #   PLANNER body     (none — the preset pill covers the identity)
+    #   bridge dispatch  rdd:task(T#) [+ rdd:node(<节点>)]（值链文字）
+    #   off-tree direct  rdd:direct（无 label：渲染为纯 ▶ 标记；自定义标签只留在钉住标题里）
+    # Returns @() whenever nothing structural rides along — zero badges, zero
+    # setBadges calls, behavior byte-for-byte identical to the pre-feature
+    # output (regression anchor, same contract as Get-SessionTitle's "" return).
     $badges = @()
     if ($Role -eq "PLANNER") {
-        $badges += @{ kind = "rdd:planner"; label = "PLANNER" }
         return $badges
     }
     if (-not [string]::IsNullOrWhiteSpace($GoalTreeRun)) {
-        $badges += @{ kind = "rdd:stage"; label = $Role }
         if ($TaskId -ge 1) { $badges += @{ kind = "rdd:task"; label = "T$TaskId" } }
         if (-not [string]::IsNullOrWhiteSpace($GoalTreeNode)) { $badges += @{ kind = "rdd:node"; label = $GoalTreeNode } }
         return $badges
@@ -356,6 +352,9 @@ function Get-SessionBadges {
     $handoffPresent = -not [string]::IsNullOrWhiteSpace($Handoff)
     $labelPresent = -not [string]::IsNullOrWhiteSpace($SessionLabel)
     if ($handoffPresent -or $labelPresent) {
+        # Same label validity gate as Get-SessionTitle's 直交 shape: an empty
+        # derived label means no marker at all (no title, no badge — the
+        # regression anchor stays byte-identical).
         $label = ""
         if ($labelPresent) {
             $label = $SessionLabel.Trim()
@@ -365,10 +364,8 @@ function Get-SessionBadges {
             $label = [System.IO.Path]::GetFileNameWithoutExtension($leaf)
         }
         if (-not [string]::IsNullOrWhiteSpace($label)) {
-            $badges += @{ kind = "rdd:direct"; label = $label }
-            $badges += @{ kind = "rdd:role"; label = $Role }
+            $badges += @{ kind = "rdd:direct" }
         }
-        return $badges
     }
     return $badges
 }
@@ -694,13 +691,13 @@ function Invoke-DshHandoff {
     if ($create.status -ne "ok") { return $create }
     $sessionId = [string]$create.value.sessionId
 
-    # session-list-badges: pin the structured identity chips BEFORE the title
+    # session-list-badges v2: pin the structural chips BEFORE the title
     # rename (design RPC matrix: create → setBadges → rename → prompt — badges
     # first so a badge failure can fold its structural facts into the one
     # rename that follows, never a second overwrite). Same display-only policy
     # as the title: any failure degrades with a warning and NEVER blocks the
-    # handoff. Zero badges (plain handoff) → zero calls, byte-identical legacy
-    # behavior.
+    # handoff. Zero badges (plain handoff / preset-covered shapes) → zero
+    # calls, byte-identical legacy behavior.
     $badges = @(Get-SessionBadges)
     $badgesResult = $null
     if ($badges.Count -gt 0) {
@@ -723,9 +720,12 @@ function Invoke-DshHandoff {
     # opposite of the mission-param fail-loud policy — the title carries no
     # mission, see incident-2026-09-20-stray-dispatch). Plus backend has no dsh
     # session concept at all and never reaches this function.
-    # session-list-badges: the pinned text is the task summary when one rides
-    # along (badges carrying the structure), else the legacy marker shape.
-    $title = Get-PinnedTitle -LegacyTitle (Get-SessionTitle) -BadgesPinned ([bool]($badgesResult -and $badgesResult.pinned)) -Summary $TaskSummary
+    # session-list-badges v2: the summary-replaces-marker verdict no longer
+    # depends on the badge pin — the role identity pill is guaranteed by the
+    # agent preset bound at session.create (enum-only text, renderer-derived),
+    # so the title budget stays free for the requirement line even when
+    # setBadges fails or writes nothing.
+    $title = Get-PinnedTitle -LegacyTitle (Get-SessionTitle) -BadgesPinned $true -Summary $TaskSummary
     $titleResult = $null
     if (-not [string]::IsNullOrWhiteSpace($title)) {
         $rename = Invoke-DshApi -Method "session.rename" -Payload @{ sessionId = $sessionId; title = $title }
@@ -880,10 +880,10 @@ if ($mode -eq "dsh") {
             $dryBadgesJson = $dryBadges | ConvertTo-Json -Compress
             if ($dryBadges.Count -eq 1) { $dryBadgesJson = "[{0}]" -f ($dryBadges | ConvertTo-Json -Compress) }
             Write-Host "[DRYRUN] RPC 3:   POST $DshUrl/api/session.setBadges" -ForegroundColor Yellow
-            Write-Host "[DRYRUN] payload: sessionId=<RPC 2 返回> badges=$dryBadgesJson（rdd:* 结构徽章；失败降级警告不阻断）" -ForegroundColor Yellow
+            Write-Host "[DRYRUN] payload: sessionId=<RPC 2 返回> badges=$dryBadgesJson（rdd:* 结构芯片：值链/▶ 直交标记；角色胶囊由 preset 派生，不经此 RPC）" -ForegroundColor Yellow
             $rpcNo = 4
         }
-        $dryTitle = Get-PinnedTitle -LegacyTitle (Get-SessionTitle) -BadgesPinned ($dryBadges.Count -gt 0) -Summary $TaskSummary
+        $dryTitle = Get-PinnedTitle -LegacyTitle (Get-SessionTitle) -BadgesPinned $true -Summary $TaskSummary
         if ($dryTitle) {
             Write-Host "[DRYRUN] RPC $rpcNo`:   POST $DshUrl/api/session.rename" -ForegroundColor Yellow
             Write-Host "[DRYRUN] payload: sessionId=<RPC 2 返回> title=$dryTitle（user 源钉住标题；失败降级警告不阻断）" -ForegroundColor Yellow
@@ -901,10 +901,10 @@ if ($mode -eq "dsh") {
             Write-Ok "已在 dsh 内为 $Role 创建会话（preset: $preset, sessionId: $($result.sessionId)）"
             if ($result.badges) {
                 if ($result.badges.pinned) {
-                    Write-Host "[i] 会话徽章已钉住（rdd:* 结构标识，工作区行首图标化展示）: $($result.badges.count) 枚" -ForegroundColor Cyan
+                    Write-Host "[i] 会话结构芯片已钉住（值链/▶ 直交标记；角色胶囊由 preset 派生）: $($result.badges.count) 枚" -ForegroundColor Cyan
                 }
                 else {
-                    Write-Host "[!] 会话徽章钉住失败（$($result.badges.error)），标题已降级为拼接形态，会话照常创建与派发" -ForegroundColor Yellow
+                    Write-Host "[!] 会话结构芯片钉住失败（$($result.badges.error)），角色胶囊与标题不受影响，会话照常创建与派发" -ForegroundColor Yellow
                 }
             }
             if ($result.title) {

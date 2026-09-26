@@ -207,8 +207,11 @@
 # ── skills ──────────────────────────────────────────────────────────────────
 
 # skill 目录按默认发现根注册（项目 .dsh/skills、.agents/skills 等）；
-# 项目内的 rdd-* skills 经此进目录。角色的正文已内联 persona，skill 条目仅作
-# 兜底与其他 skill 之用。
+# 项目内的 rdd-* skills 经此进目录。角色的正文已内联 persona，本两行仅为非 rdd
+# 技能与用户 /name 显式手势保留。已知现状：rdd-* 条目会出现在 <available_skills>
+# 但加载被 forbiddenSkills 拒绝（skill-filesystem 无按名过滤能力，目录层暂不可
+# 排除）；用户 /name 手势的正文注入不经 skill 工具、不在拦截范围——此为已知豁免
+# （用户显式指令优先），非遗漏。
 - id: skill-filesystem
   name: '@deepseek-ai/dsh-skill-filesystem'
 
