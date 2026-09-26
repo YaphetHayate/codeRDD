@@ -78,6 +78,13 @@ const PERSONA_PLACEHOLDER = '__PERSONA__'
 /** 模板中 rdd-explore 行内角色策略占位符（整行含换行替换）。 */
 const ROLE_POLICY_PLACEHOLDER = '__ROLE_POLICY__'
 
+/**
+ * ROLE_POLICY 占位符整行（含行尾）匹配：必须兼容 CRLF / LF 两种模板行尾。
+ * 勿退回 `\n` 字符串精确匹配——2026-09-26 CRLF 模板（autocrlf=true 检出）下
+ * LF 精确匹配永不命中，8 组 preset 全部残留裸占位符、dsh 解析全 broken。
+ */
+const ROLE_POLICY_LINE_RE = /__ROLE_POLICY__\r?\n/
+
 /** persona 在 YAML 中的缩进层级（`text: |-` 之下）。 */
 const PERSONA_INDENT = '      '
 
@@ -224,7 +231,15 @@ function renderPreset(template, persona, policy, name, description, order) {
   ].join('\n') + '\n'
   const cordis = template
     .replace(PERSONA_PLACEHOLDER, indented)
-    .replace(`${ROLE_POLICY_PLACEHOLDER}\n`, policyLines)
+    .replace(ROLE_POLICY_LINE_RE, () => policyLines)
+  // 防残留断言：任一占位符替换未命中都会产出 dsh 无法解析的坏 preset（fail loud，
+  // 禁止静默落盘）——替换函数用 thunk 形式，避免 policyLines 中潜在 `$` 序列被当作
+  // 替换模式解释。
+  for (const placeholder of [PERSONA_PLACEHOLDER, ROLE_POLICY_PLACEHOLDER]) {
+    if (cordis.includes(placeholder)) {
+      throw new Error(`preset 产物残留占位符 ${placeholder}——替换未命中（模板结构或行尾形态变化？），请检查 scripts/dsh-preset-template.yml 与生成器替换逻辑`)
+    }
+  }
   const preset = `name: ${name}\ndescription: ${description || name}\norder: ${order}\n`
   return { cordis, preset, personaChars: persona.length }
 }

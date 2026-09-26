@@ -16,8 +16,11 @@
     "scripts/build-dsh-presets.mjs",
     "scripts/install-rdd-skills.ps1"
   ],
-  "testCode": [".rdd/tests/role-handoff/run-tests.ps1"],
-  "lastChange": "2026-09-24-multi-owner-route-parsing",
+  "testCode": [
+    ".rdd/tests/role-handoff/run-tests.ps1",
+    ".rdd/tests/role-handoff/test-preset-crlf.mjs"
+  ],
+  "lastChange": "2026-09-26-preset-generator-crlf",
   "cases": [
     {
       "id": "TC-005",
@@ -620,6 +623,90 @@
       "precondition": "手写 task.json，currentOwners=[\"CTO\",\"XX\"]",
       "steps": ["rdd-flow next", "断言 CTO 块、warnings 与 XX 块缺失"],
       "expected": "CTO 块照常含任务；warnings 含 Unknown 'XX'（逐成员粒度、一坏一警）；无 XX 块；任何告警都不把合法责任人集合当单角色名"
+    },
+    {
+      "id": "TC-132",
+      "title": "CRLF 模板正向：8 组产物生成成功、零占位符残留、策略语义落位",
+      "type": "positive",
+      "priority": "P0",
+      "acceptance": "AC-1",
+      "codeRef": ".rdd/tests/role-handoff/test-preset-crlf.mjs",
+      "sourceChange": "2026-09-26-preset-generator-crlf",
+      "status": "active",
+      "crossFeature": [],
+      "precondition": "沙盒副本（生成器 + 真实 CRLF 模板 164/164 行 + 7 份 SKILL.md），argv 注入 --out 动态 import 触发主流程",
+      "steps": ["buildSandbox(crlf) → runGenerator", "逐组读 out/<role>/agent.cordis.yml 断言无 __PERSONA__/__ROLE_POLICY__ 残留", "断言 rdd-pm/rdd-cto 含 writePrefixes: ['.rdd/']，其余 6 组无 writePrefixes"],
+      "expected": "生成 exit 0；8 组产物（7 角色 + rdd-planner）零占位符残留；pm/cto 策略行以 8 空格缩进落位，无策略角色占位行消失——修复前的真实缺陷现场（CRLF 模板下 LF 精确匹配永不命中）不再复发"
+    },
+    {
+      "id": "TC-133",
+      "title": "LF 模板回归：正则 __ROLE_POLICY__\\r?\\n 对 LF 模板同样生效",
+      "type": "boundary",
+      "priority": "P0",
+      "acceptance": "AC-1",
+      "codeRef": ".rdd/tests/role-handoff/test-preset-crlf.mjs",
+      "sourceChange": "2026-09-26-preset-generator-crlf",
+      "status": "active",
+      "crossFeature": [],
+      "precondition": "沙盒副本，模板 \\r\\n→\\n 全文归一化为 LF",
+      "steps": ["buildSandbox(lf) → runGenerator", "同 TC-132 断言矩阵"],
+      "expected": "生成 exit 0；零残留；策略语义落位同 TC-132——修复前 LF 精确匹配可工作的形态（LF 模板）不得因正则化改造回归"
+    },
+    {
+      "id": "TC-134",
+      "title": "CRLF 模板替换未命中 → throw 且消息指明残留占位符（fail-loud）",
+      "type": "negative",
+      "priority": "P0",
+      "acceptance": "AC-1",
+      "codeRef": ".rdd/tests/role-handoff/test-preset-crlf.mjs",
+      "sourceChange": "2026-09-26-preset-generator-crlf",
+      "status": "active",
+      "crossFeature": [],
+      "precondition": "沙盒副本，模板占位符行破坏为 __ROLE_POLICY__ BROKEN（split 计数仍 1、正则 /__ROLE_POLICY__\\r?\\n/ 不命中）",
+      "steps": ["buildSandbox(crlf+broken) → runGenerator 捕获 import reject", "断言错误消息含「残留占位符 __ROLE_POLICY__」"],
+      "expected": "生成器 throw 防残留断言（非静默落盘）：任何替换未命中形态都会在落盘前被拦截，错误消息指明占位符名与排查方向（模板结构或行尾形态变化）"
+    },
+    {
+      "id": "TC-135",
+      "title": "LF 模板替换未命中 → 同样 throw（断言对两种行尾形态均生效）",
+      "type": "negative",
+      "priority": "P1",
+      "acceptance": "AC-1",
+      "codeRef": ".rdd/tests/role-handoff/test-preset-crlf.mjs",
+      "sourceChange": "2026-09-26-preset-generator-crlf",
+      "status": "active",
+      "crossFeature": [],
+      "precondition": "沙盒副本，LF 归一化模板 + 同 TC-134 占位符行破坏",
+      "steps": ["buildSandbox(lf+broken) → runGenerator 捕获 reject", "断言错误消息含「残留占位符 __ROLE_POLICY__」"],
+      "expected": "与 TC-134 相同的 fail-loud 行为在 LF 行尾形态下同样成立——防残留断言不依赖特定行尾形态"
+    },
+    {
+      "id": "TC-136",
+      "title": "工作树 8 组产物经 dsh 同款解析器全部可解析、零残留、策略语义正确",
+      "type": "positive",
+      "priority": "P0",
+      "acceptance": "AC-2",
+      "codeRef": ".rdd/tests/role-handoff/test-preset-crlf.mjs",
+      "sourceChange": "2026-09-26-preset-generator-crlf",
+      "status": "active",
+      "crossFeature": [],
+      "precondition": "工作树 dsh/presets/*（修复后重建）；dsh 解析器依赖锚定 $DSH_HOME/profiles/node_modules（js-yaml + @deepseek-ai/cordis-plugin-include，同 harness discovery.ts 口径）",
+      "steps": ["逐组 load(cordis, { schema: entryListSchema })（模板含 !!js 自定义 tag，默认 schema 必失败）", "entry 结构浅校验（顶层数组、行 name、group 递归）", "零占位符残留 + pm/cto writePrefixes 落位断言"],
+      "expected": "8 组 agent.cordis.yml 全部通过 dsh 同款解析（解析失败=dsh 侧 broken 的判定源）；entry 结构合法；零残留；策略语义与 AC-2 一致"
+    },
+    {
+      "id": "TC-137",
+      "title": "沙盒再生成产物与工作树 dsh/presets 逐字节一致（零漂移）",
+      "type": "positive",
+      "priority": "P0",
+      "acceptance": "AC-4",
+      "codeRef": ".rdd/tests/role-handoff/test-preset-crlf.mjs",
+      "sourceChange": "2026-09-26-preset-generator-crlf",
+      "status": "active",
+      "crossFeature": [],
+      "precondition": "TC-132 的 CRLF 沙盒产物与工作树 dsh/presets 并存",
+      "steps": ["逐组逐文件（agent.cordis.yml + preset.yml）utf8 全文比对"],
+      "expected": "8 组 16 文件逐字节一致——构建可复现（--check 幂等的等价证据），修复后生成器重建的产物与库中基线零漂移"
     }
   ]
 }

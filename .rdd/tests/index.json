@@ -107,13 +107,14 @@
       ],
       "testCode": [
         ".rdd/tests/role-handoff/run-tests.ps1",
+        ".rdd/tests/role-handoff/test-preset-crlf.mjs",
         "rdd-engine/tests/test-multi-owner-routing.ps1",
         "rdd-engine/tests/test-multi-owner-routing-qa.ps1"
       ],
-      "activeCount": 43,
+      "activeCount": 49,
       "deprecatedCount": 0,
-      "lastUpdated": "2026-09-24",
-      "lastChange": "2026-09-24-multi-owner-route-parsing"
+      "lastUpdated": "2026-09-26",
+      "lastChange": "2026-09-26-preset-generator-crlf"
     },
     {
       "feature": "session-badges",
