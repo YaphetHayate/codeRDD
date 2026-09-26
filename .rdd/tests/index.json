@@ -51,19 +51,21 @@
         "rdd-engine/scripts/start-role.ps1",
         "rdd-engine/references/planner-guide.md",
         "rdd-engine/references/rejection-protocol.md",
-        "rdd-engine/references/task-routing.md"
+        "rdd-engine/references/task-routing.md",
+        "rdd-pm/references/requirement-item-template.md"
       ],
       "testCode": [
         ".rdd/tests/delivery-bridge/delivery-bridge-verify.ps1",
+        ".rdd/tests/delivery-bridge/dep-notation-qa-verify.ps1",
         "rdd-engine/tests/test-phase-model.ps1",
         "rdd-engine/tests/test-bridge-acceptance.ps1",
         "rdd-engine/tests/test-bridge-conflicts.ps1",
         "rdd-engine/tests/test-long-task-planning.ps1"
       ],
-      "activeCount": 102,
+      "activeCount": 109,
       "deprecatedCount": 0,
-      "lastUpdated": "2026-09-25",
-      "lastChange": "2026-09-24-long-task-integrated-delivery"
+      "lastUpdated": "2026-09-26",
+      "lastChange": "2026-09-26-requirement-dependency-field"
     },
     {
       "feature": "investigation-role-cards",

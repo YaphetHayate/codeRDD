@@ -52,7 +52,7 @@ PM 归档（longTask 信号触发）→ start-role -Role PLANNER -TaskJson ...�
 
 **阶段链模型（phase-model）**：任务路由带 `phase` 字段，阶段全序 `REQ → DESIGN → IMPL → VERIFY → 完成`，阶段内角色白名单并行（DESIGN = CTO∥UX∥QA，含测试先行；完整模型见 `references/phase-model.md`，rdd-flow 侧协议见 `task-routing.md`）。多 owner 任务在颁布时**每个角色各建一个链头节点**（挂目标根），并行分支各自独立工作；settle 阶段感知：阶段内收窄不 graft，**最后一个 owner settle 才整组切换**（`set-route -To PhaseRoles[下一阶段] -Phase`）并收敛 graft 下一阶段节点（挂最后 settle 节点之下，链式 parent，无幽灵父节点，每角色至多一个活跃节点——并行分支不分裂树）。rollback 显式 `-To/-Phase` 回退时，重建的角色组节点以**兄弟挂接**回到目标阶段的链头层（沿失败节点祖先上溯第一个目标阶段白名单内节点的 parent；无锚挂目标根）——链不变量与树深在多轮回退下保持；回退到 REQ（`-To PM -Phase REQ`）可达，PM 为合法链头角色。旧归档（phase=null）整链保守降级为原 `CTO→DEV→QA` 线性行为（逐字节一致）。展示面：status/resume/conclude 的阶段链用 `∥`（阶段内并行）与 `→`（阶段间）渲染，如 `CTO=n2(done) ∥ UX=n3(done) → DEV=n5(claimed)`。
 
-**任务级依赖**：promulgate 从各任务需求文档的「依赖关系」字段自动推导（"依赖需求 N" / "依赖 #N" → 依赖任务 N 的初始节点）；跨阶段/运行中的依赖维护用 `goal-tree deps add/remove`（机械 DAG 校验 + deps-log.jsonl 审计）。
+**任务级依赖**：promulgate 从各任务需求文档的「依赖关系」字段自动推导（"依赖需求 N" / "依赖 #N" → 依赖任务 N 的初始节点；机读标注格式以 `rdd-pm/references/requirement-item-template.md`「依赖关系标注规范」为准——每个编号自带 `需求`/`#` 前缀、写在同一行、指向更小编号。单遍建树只回连先建节点：前向引用不落边，散文式描述推导为空，均需审查门 `depends_on_override` 语义兜底）；跨阶段/运行中的依赖维护用 `goal-tree deps add/remove`（机械 DAG 校验 + deps-log.jsonl 审计）。
 
 **规划者职责收敛**：推送全自动后，规划者的职责收敛为**裁定**（settle/prune/graft 下探）与**异常处置**（pointer 类重推、依赖调整、驳回移交）——不再逐节点 dispatch。
 

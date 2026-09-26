@@ -441,6 +441,40 @@ try {
     Assert-True ($r.json.success -eq $false -and $r.json.error.code -eq 'SET_PHASE_REQUIRED') 'S13 rollback without -Phase -> SET_PHASE_REQUIRED' ($r.raw)
     $r = Invoke-Bridge @('-Command', 'rollback', '-RunId', 'deliver-pm-s13', '-NodeId', 'n2', '-To', 'QA', '-Phase', 'DESIGN', '-Reason', 'pending guard check')
     Assert-True ($r.json.success -eq $false -and $r.json.error.code -eq 'ROLLBACK_REQUIRES_REPORTED') 'S13 pending node still guarded after explicit -To/-Phase (guards ordered)' ($r.raw)
+
+    # ================= S14: machine-readable 依赖关系 notation (依赖：#N) =================
+    # spec: rdd-pm/references/requirement-item-template.md「依赖关系标注规范」—
+    # canonical form derives deps; prose form derives EMPTY (why the spec exists).
+    $arch14 = New-Archive 'pm-s14' '[{"title":"S14 上游","requirement":"requirements/t1.md","currentOwners":["CTO"],"designDocs":[]},{"title":"S14 下游单依赖","requirement":"requirements/t2.md","currentOwners":["CTO"],"designDocs":[]},{"title":"S14 下游多依赖","requirement":"requirements/t3.md","currentOwners":["CTO"],"designDocs":[]},{"title":"S14 散文依赖","requirement":"requirements/t4.md","currentOwners":["CTO"],"designDocs":[]}]'
+    # rewrite the dep fields in the NEW canonical notation (New-Archive only writes the legacy form)
+    Write-Utf8NoBom (Join-Path $Work ($arch14 + '/requirements/t2.md')) "# S14 下游单依赖`n`n- **描述**：机读单依赖`n- **验收标准**：见 phase-model.md`n- **依赖关系**：依赖：#1（数据由 #1 提供）`n"
+    Write-Utf8NoBom (Join-Path $Work ($arch14 + '/requirements/t3.md')) "# S14 下游多依赖`n`n- **描述**：机读多依赖`n- **验收标准**：见 phase-model.md`n- **依赖关系**：依赖：#1、#2`n"
+    Write-Utf8NoBom (Join-Path $Work ($arch14 + '/requirements/t4.md')) "# S14 散文依赖`n`n- **描述**：旧式散文标注`n- **验收标准**：见 phase-model.md`n- **依赖关系**：粗粒度可并行批次来自 R3`n"
+    $ref14 = "$arch14/requirements/t1.md"
+    $pf14 = Write-TestPlan (Join-Path $Work 'pm-s14-plan.json') @(@{ id = 'S1'; tasks = @(1, 2, 3, 4) }) @{ 2 = @(1); 3 = @(1, 2) }
+    $r = Invoke-Bridge @('-Command', 'promulgate', '-TaskJson', ($arch14 + '/task.json'), '-PlanFile', $pf14, '-NoPush')
+    Assert-True ($r.json.success -eq $true) 'S14 promulgate ok (plan DAG matches derived deps)' ($r.raw)
+    $b = Read-BridgeJson 'deliver-pm-s14'
+    Assert-True ((@($b.tasks.'2'.dep_task_ids) -join '+') -eq '1') 'S14 canonical single dep derived (依赖：#1)' ("dep_task_ids=$(@($b.tasks.'2'.dep_task_ids) -join '+')")
+    Assert-True ((@($b.tasks.'3'.dep_task_ids) | Sort-Object) -join '+' -eq '1+2') 'S14 canonical multi dep derived (依赖：#1、#2)' ("dep_task_ids=$(@($b.tasks.'3'.dep_task_ids) -join '+')")
+    Assert-True (@(@($b.tasks.'4'.dep_task_ids)).Count -eq 0) 'S14 prose dep derives EMPTY (notation is what the parser reads)' ("dep_task_ids=$(@($b.tasks.'4'.dep_task_ids) -join '+')")
+    $h1 = [string]$b.tasks.'1'.stages.CTO; $h2 = [string]$b.tasks.'2'.stages.CTO; $h3 = [string]$b.tasks.'3'.stages.CTO; $h4 = [string]$b.tasks.'4'.stages.CTO
+    $n2 = Find-TreeNode 'deliver-pm-s14' $h2
+    $n2Deps = @()
+    if ($null -ne $n2) { $n2Deps = @($n2.depends_on) | ForEach-Object { [string]$_ } }
+    Assert-True (($n2Deps -join '+') -eq $h1) 'S14 backward dep EDGE materialized (downstream head depends_on upstream head)' ("deps=$($n2Deps -join '+') expected=$h1")
+    $nx = Invoke-Leaf @('-Command', 'next', '-RunId', 'deliver-pm-s14')
+    $blockedIds = @(@($nx.json.data.blocked) | ForEach-Object { [string]$_.id })
+    Assert-True (($blockedIds -contains $h2) -and ($blockedIds -contains $h3)) 'S14 dependents BLOCKED before upstream settles (no wrong-order push)' ("blocked=$($blockedIds -join '+')")
+    Assert-True (-not ($blockedIds -contains $h4)) 'S14 prose-dep task NOT blocked (empty derivation grants no edge)' ("blocked=$($blockedIds -join '+')")
+    Do-Deliver 'deliver-pm-s14' $h1 'CTO' $ref14
+    $r14 = Do-Settle 'deliver-pm-s14' $h1
+    Assert-True ($r14.json.success -eq $true) 'S14 upstream settles' ($r14.raw)
+    $nx = Invoke-Leaf @('-Command', 'next', '-RunId', 'deliver-pm-s14')
+    $pendingIds = @(@($nx.json.data.pending) | ForEach-Object { [string]$_.id })
+    $blockedIds = @(@($nx.json.data.blocked) | ForEach-Object { [string]$_.id })
+    Assert-True ($pendingIds -contains $h2) 'S14 single-dep dependent UNLOCKED after upstream terminal' ("pending=$($pendingIds -join '+')")
+    Assert-True ($blockedIds -contains $h3) 'S14 multi-dep dependent still blocked (also needs #2)' ("blocked=$($blockedIds -join '+')")
 }
 finally {
     Pop-Location
