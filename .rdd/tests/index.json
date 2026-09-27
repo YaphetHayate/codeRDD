@@ -62,7 +62,7 @@
         "rdd-engine/tests/test-bridge-conflicts.ps1",
         "rdd-engine/tests/test-long-task-planning.ps1"
       ],
-      "activeCount": 109,
+      "activeCount": 111,
       "deprecatedCount": 0,
       "lastUpdated": "2026-09-26",
       "lastChange": "2026-09-26-requirement-dependency-field"

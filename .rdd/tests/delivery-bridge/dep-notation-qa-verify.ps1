@@ -4,9 +4,10 @@
 # 方法: 黑盒驱动 PS5.1 生产解释器(delivery-bridge promulgate -NoPush), 断言:
 #   - 规范形态推导命中 + 建边 + 阻塞不错序 (TC-B103, 含 settle 解锁)
 #   - 规范文档逐条声明与实际推导结果一致 (TC-B104~B109)
-# TC-B105 是文档一致性断言(docClaim vs actual): 模板声明「备注不参与推导」, 解析正则
-# 却扫描整行——备注中出现不同编号会被推导为额外依赖。两侧任一修正(改文档声明或改
-# 解析器剥离备注)后本断言转绿; 现状应为 FAIL, 即 QA 报告的缺陷证据。
+# TC-B105 是文档一致性断言(docClaim vs actual): 模板声明「备注不参与推导」。2026-09-26
+# 首轮验证时解析正则扫描整行(备注异编号被推导, FAIL=reopen 证据); reopen 轮 DEV 修正
+# 解析器为「括号备注(全角/半角)推导前整体剥离」, 模板填写规则 4 同步声明——本断言应
+# PASS。TC-B110/B111 钉住新声明的两条边界: 半角括号同剥离、未闭合括号行尾视为备注。
 # Exit code 0 = all green.
 
 $ErrorActionPreference = 'Stop'
@@ -58,7 +59,7 @@ function Find-TreeNode { param([string]$RunId, [string]$Id)
     foreach ($n in (Read-TreeNodes $RunId)) { if ([string]$n.id -eq $Id) { return $n } }
     return $null
 }
-# New archive: 8 tasks, all [CTO] heads; dep fields rewritten by caller (legacy form here only for t7)
+# New archive: N tasks, all [CTO] heads; dep fields rewritten by caller (legacy form here only for t7)
 function New-Archive { param([string]$Name, [string]$TasksJson)
     $archDir = Join-Path $Work (".rdd/changes/archive/$Name")
     New-Item -ItemType Directory -Path (Join-Path $archDir 'requirements') -Force | Out-Null
@@ -131,7 +132,7 @@ $null = git init -q $Work 2>$null
 Push-Location $Work
 try {
     # ================= qa-dn1: 规范声明逐条一致性 (TC-B103~B108) =================
-    $arch1 = New-Archive 'qa-dn1' '[{"title":"上游","requirement":"requirements/t1.md","currentOwners":["CTO"],"designDocs":[]},{"title":"规范单依赖","requirement":"requirements/t2.md","currentOwners":["CTO"],"designDocs":[]},{"title":"规范多依赖","requirement":"requirements/t3.md","currentOwners":["CTO"],"designDocs":[]},{"title":"备注同编号","requirement":"requirements/t4.md","currentOwners":["CTO"],"designDocs":[]},{"title":"备注异编号","requirement":"requirements/t5.md","currentOwners":["CTO"],"designDocs":[]},{"title":"跨行依赖","requirement":"requirements/t6.md","currentOwners":["CTO"],"designDocs":[]},{"title":"旧式部分命中","requirement":"requirements/t7.md","currentOwners":["CTO"],"designDocs":[]},{"title":"软引用","requirement":"requirements/t8.md","currentOwners":["CTO"],"designDocs":[]}]'
+    $arch1 = New-Archive 'qa-dn1' '[{"title":"上游","requirement":"requirements/t1.md","currentOwners":["CTO"],"designDocs":[]},{"title":"规范单依赖","requirement":"requirements/t2.md","currentOwners":["CTO"],"designDocs":[]},{"title":"规范多依赖","requirement":"requirements/t3.md","currentOwners":["CTO"],"designDocs":[]},{"title":"备注同编号","requirement":"requirements/t4.md","currentOwners":["CTO"],"designDocs":[]},{"title":"备注异编号","requirement":"requirements/t5.md","currentOwners":["CTO"],"designDocs":[]},{"title":"跨行依赖","requirement":"requirements/t6.md","currentOwners":["CTO"],"designDocs":[]},{"title":"旧式部分命中","requirement":"requirements/t7.md","currentOwners":["CTO"],"designDocs":[]},{"title":"软引用","requirement":"requirements/t8.md","currentOwners":["CTO"],"designDocs":[]},{"title":"半角括号备注","requirement":"requirements/t9.md","currentOwners":["CTO"],"designDocs":[]},{"title":"未闭合括号","requirement":"requirements/t10.md","currentOwners":["CTO"],"designDocs":[]}]'
     # 按「依赖关系标注规范」写入各字段形态（与 PM 实际书写一致）
     Write-Utf8NoBom (Join-Path $Work ($arch1 + '/requirements/t2.md')) "# qa-dn1 需求 2`n`n- **描述**：规范单依赖`n- **验收标准**：见 requirement-item-template.md`n- **依赖关系**：依赖：#1`n"
     Write-Utf8NoBom (Join-Path $Work ($arch1 + '/requirements/t3.md')) "# qa-dn1 需求 3`n`n- **描述**：规范多依赖`n- **验收标准**：见 requirement-item-template.md`n- **依赖关系**：依赖：#1、#2`n"
@@ -139,10 +140,12 @@ try {
     Write-Utf8NoBom (Join-Path $Work ($arch1 + '/requirements/t5.md')) "# qa-dn1 需求 5`n`n- **描述**：备注出现不同编号(文档声称备注不参与推导)`n- **验收标准**：见 requirement-item-template.md`n- **依赖关系**：依赖：#1（上游 #2 提供数据）`n"
     Write-Utf8NoBom (Join-Path $Work ($arch1 + '/requirements/t6.md')) "# qa-dn1 需求 6`n`n- **描述**：依赖写在两行(规范要求同一行)`n- **验收标准**：见 requirement-item-template.md`n- **依赖关系**：依赖：#1`n  依赖：#2`n"
     Write-Utf8NoBom (Join-Path $Work ($arch1 + '/requirements/t7.md')) "# qa-dn1 需求 7`n`n- **描述**：旧式「依赖需求 1、3」(规范反例 2)`n- **验收标准**：见 requirement-item-template.md`n- **依赖关系**：依赖需求 1、3`n"
-    Write-Utf8NoBom (Join-Path $Work ($arch1 + '/requirements/t8.md')) "# qa-dn1 需求 8`n`n- **描述**：指向不存在编号(软引用)`n- **验收标准**：见 requirement-item-template.md`n- **依赖关系**：依赖：#9`n"
+    Write-Utf8NoBom (Join-Path $Work ($arch1 + '/requirements/t8.md')) "# qa-dn1 需求 8`n`n- **描述**：指向不存在编号(软引用)`n- **验收标准**：见 requirement-item-template.md`n- **依赖关系**：依赖：#99`n"
+    Write-Utf8NoBom (Join-Path $Work ($arch1 + '/requirements/t9.md')) "# qa-dn1 需求 9`n`n- **描述**：半角括号备注异编号(填写规则 4: 全角/半角均剥离)`n- **验收标准**：见 requirement-item-template.md`n- **依赖关系**：依赖：#1(上游 #2 提供数据)`n"
+    Write-Utf8NoBom (Join-Path $Work ($arch1 + '/requirements/t10.md')) "# qa-dn1 需求 10`n`n- **描述**：括号未闭合(填写规则 4: 自该括号起至行尾视为备注)`n- **验收标准**：见 requirement-item-template.md`n- **依赖关系**：依赖：#1（另参考需求 3`n"
     # PlanFile 依赖图 = 实际推导结果(黑盒观察值, 与推导一致以排除计划面干扰)
-    $planDeps = @{ 2 = @(1); 3 = @(1, 2); 4 = @(1); 5 = @(1, 2); 6 = @(1); 7 = @(1) }
-    $pf1 = Write-TestPlan (Join-Path $Work 'qa-dn1-plan.json') @(1..8) $planDeps
+    $planDeps = @{ 2 = @(1); 3 = @(1, 2); 4 = @(1); 5 = @(1); 6 = @(1); 7 = @(1); 9 = @(1); 10 = @(1) }
+    $pf1 = Write-TestPlan (Join-Path $Work 'qa-dn1-plan.json') @(1..10) $planDeps
     $r = Invoke-Bridge @('-Command', 'promulgate', '-TaskJson', ($arch1 + '/task.json'), '-PlanFile', $pf1, '-NoPush')
     Assert-True ($r.json.success -eq $true) 'TC-B103 promulgate ok (机读标注归档建树成功)' ($r.raw)
     $b = Read-BridgeJson 'deliver-qa-dn1'
@@ -189,7 +192,15 @@ try {
 
     # TC-B108: 软引用——指向不存在编号静默丢弃, 不报错
     $d8 = @(@($b.tasks.'8'.dep_task_ids)).Count
-    Assert-True ($d8 -eq 0) 'TC-B108 软引用静默丢弃(依赖：#9 → @(), 建树成功)' ("t8count=$d8")
+    Assert-True ($d8 -eq 0) 'TC-B108 软引用静默丢弃(依赖：#99 → @(), 建树成功)' ("t8count=$d8")
+
+    # TC-B110: 半角括号备注 → 备注整体剥离(填写规则 4: 全角/半角括号均剥离, 备注中编号不推导)
+    $d9 = ((@($b.tasks.'9'.dep_task_ids) | Sort-Object) -join '+')
+    Assert-True ($d9 -eq '1') 'TC-B110 半角括号备注整体剥离(依赖：#1(上游 #2 提供数据) → @(1))' ("t9=$d9")
+
+    # TC-B111: 未闭合括号 → 自该括号起至行尾均视为备注(填写规则 4 后半句)
+    $d10 = ((@($b.tasks.'10'.dep_task_ids) | Sort-Object) -join '+')
+    Assert-True ($d10 -eq '1') 'TC-B111 未闭合括号行尾视为备注(依赖：#1（另参考需求 3 → @(1))' ("t10=$d10")
 
     # ================= qa-dn2: 前向引用丢边 (TC-B109) =================
     $arch2 = New-Archive 'qa-dn2' '[{"title":"上游","requirement":"requirements/t1.md","currentOwners":["CTO"],"designDocs":[]},{"title":"前向引用方","requirement":"requirements/t2.md","currentOwners":["CTO"],"designDocs":[]},{"title":"后建任务","requirement":"requirements/t3.md","currentOwners":["CTO"],"designDocs":[]}]'

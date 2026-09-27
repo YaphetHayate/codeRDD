@@ -1988,7 +1988,7 @@
                        "sourceChange": "2026-09-26-requirement-dependency-field",
                        "status": "active",
                        "crossFeature": ["goal-tree"],
-                       "precondition": "临时 git 仓库 fixture qa-dn1(8 任务,dep 字段按「依赖关系标注规范」书写),promulgate -NoPush",
+                       "precondition": "临时 git 仓库 fixture qa-dn1(10 任务,dep 字段按「依赖关系标注规范」书写),promulgate -NoPush",
                        "steps": [
                            "断言 t2「依赖：#1」dep_task_ids=@(1)、t3「依赖：#1、#2」=@(1,2)",
                            "断言下游链头 depends_on 上游链头(树边落地)",
@@ -2015,7 +2015,7 @@
                    },
                    {
                        "id": "TC-B105",
-                       "title": "文档声明一致性:模板声称「备注不参与推导」,实际解析扫描整行——备注含不同编号被推导为额外依赖(缺陷锚点,现状 FAIL)",
+                       "title": "文档声明一致性:备注不参与推导——「依赖：#1（上游 #2 提供数据）」推导恰为 @(1)(首轮 FAIL 缺陷锚点,reopen 轮解析器备注剥离修正后转绿)",
                        "type": "negative",
                        "priority": "P0",
                        "acceptance": "DF-AC-1",
@@ -2028,7 +2028,7 @@
                            "promulgate 后读 bridge.json tasks.'5'.dep_task_ids",
                            "断言 实际推导 == 文档声明期望(@(1))"
                        ],
-                       "expected": "两侧一致:模板声明「备注不参与推导」↔ 解析仅取主编号。现状实际=@(1,2)(备注 #2 被推导)→FAIL,即 QA 驳回证据;模板修正声明或解析器剥离备注任一侧修正后本断言转绿"
+                       "expected": "两侧一致:模板填写规则 4 声明「备注推导前整体剥离、备注中编号不参与推导」↔ 解析仅取主编号。【缺陷史:2026-09-26 首轮验证 FAIL——解析正则扫描整行,备注异编号 #2 被推导为额外依赖(实际=@(1,2)),QA reopen;DEV 修正 Get-RequirementDepTaskIds 备注剥离后本断言转绿(销项)】"
                    },
                    {
                        "id": "TC-B106",
@@ -2066,7 +2066,7 @@
                    },
                    {
                        "id": "TC-B108",
-                       "title": "软引用静默丢弃:「依赖：#9」指向不存在任务 → 推导为空且建树成功无报错(填写规则 1)",
+                       "title": "软引用静默丢弃:「依赖：#99」指向不存在任务 → 推导为空且建树成功无报错(填写规则 1)",
                        "type": "boundary",
                        "priority": "P1",
                        "acceptance": "DF-AC-1",
@@ -2074,7 +2074,7 @@
                        "sourceChange": "2026-09-26-requirement-dependency-field",
                        "status": "active",
                        "crossFeature": [],
-                       "precondition": "qa-dn1 fixture t8(8 任务归档内写 #9)",
+                       "precondition": "qa-dn1 fixture t8(10 任务归档内写 #99,确保指向不存在任务)",
                        "steps": [
                            "promulgate 断言 success=true",
                            "断言 tasks.'8'.dep_task_ids 为空"
@@ -2098,6 +2098,40 @@
                            "next 断言 t2 不在 blocked(过早推送风险,交规划审查 depends_on_override 兜底)"
                        ],
                        "expected": "前向引用行为与规范反例 3 及 planner-guide「前向引用不落边」声明逐点一致:记账可审计、边不虚建、阻塞不误加"
+                   },
+                   {
+                       "id": "TC-B110",
+                       "title": "半角括号备注整体剥离:「依赖：#1(上游 #2 提供数据)」推导恰为 @(1)(填写规则 4: 全角/半角括号均剥离)",
+                       "type": "boundary",
+                       "priority": "P1",
+                       "acceptance": "DF-AC-1",
+                       "codeRef": ".rdd/tests/delivery-bridge/dep-notation-qa-verify.ps1:199",
+                       "sourceChange": "2026-09-26-requirement-dependency-field",
+                       "status": "active",
+                       "crossFeature": [],
+                       "precondition": "qa-dn1 fixture t9: 半角括号备注含异编号(规范填写规则 4 声明全角/半角均剥离)",
+                       "steps": [
+                           "promulgate 后读 tasks.'9'.dep_task_ids",
+                           "断言推导结果 = @(1)"
+                       ],
+                       "expected": "半角括号备注与全角同构整体剥离,备注中 #2 不参与推导——填写规则 4「全角/半角」双形态声明与实现一致"
+                   },
+                   {
+                       "id": "TC-B111",
+                       "title": "未闭合括号行尾视为备注:「依赖：#1（另参考需求 3」推导恰为 @(1)(填写规则 4 后半句)",
+                       "type": "boundary",
+                       "priority": "P1",
+                       "acceptance": "DF-AC-1",
+                       "codeRef": ".rdd/tests/delivery-bridge/dep-notation-qa-verify.ps1:203",
+                       "sourceChange": "2026-09-26-requirement-dependency-field",
+                       "status": "active",
+                       "crossFeature": [],
+                       "precondition": "qa-dn1 fixture t10: 依赖关系字段值含未闭合全角括号,括号后有异编号散文(需求 3)",
+                       "steps": [
+                           "promulgate 后读 tasks.'10'.dep_task_ids",
+                           "断言推导结果 = @(1)"
+                       ],
+                       "expected": "未闭合括号自该括号起至行尾均视为备注——括号后「需求 3」不参与推导,与填写规则 4 后半句声明一致"
                    }
                ]
 }

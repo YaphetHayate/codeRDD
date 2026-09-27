@@ -1523,9 +1523,12 @@ function Resolve-TaskPhase {
 
 function Get-RequirementDepTaskIds {
     # infer task-level deps from the requirement doc's 依赖关系 field:
-    # "依赖需求 2（xxx）" / "依赖 #2" / "依赖：#1、#3" -> @(2) / @(2) / @(1,3).
-    # Every id needs its own 需求/# prefix ("依赖需求 1、3" yields only @(1)); the
-    # canonical PM-side spec is rdd-pm/references/requirement-item-template.md
+    # "依赖需求 2" / "依赖 #2" / "依赖：#1、#3" -> @(2) / @(2) / @(1,3).
+    # Every id needs its own 需求/# prefix ("依赖需求 1、3" yields only @(1)).
+    # Bracketed remarks are human-only and stripped BEFORE matching ("依赖：#1
+    # （上游 #2 提供数据）" yields @(1), never @(1,2); an unclosed bracket makes
+    # the rest of the line a remark). The canonical PM-side spec is
+    # rdd-pm/references/requirement-item-template.md
     # 「依赖关系标注规范」. Ids that do not exist as tasks in this archive are
     # dropped (soft reference).
     param([string]$ArchivePath, $Task, [int[]]$AllTaskIds)
@@ -1539,7 +1542,13 @@ function Get-RequirementDepTaskIds {
         # field form: - **依赖关系**：... (same shape rdd-flow's Get-DocField matches)
         $m = [regex]::Match($content, '(?m)^\s*-\s*\*\*依赖关系\*\*[：:]\s*(.+?)\s*$')
         if ($m.Success) {
-            foreach ($mm in [regex]::Matches($m.Groups[1].Value, '(?:需求|#)\s*(\d+)')) {
+            # remark stripping: loop removes innermost （…）/(…) groups first
+            # (nested remarks collapse), then an unclosed opening bracket takes
+            # the rest of the line — numbers inside remarks never derive.
+            $field = [string]$m.Groups[1].Value
+            while ($field -match '[（(][^（）()]*[）)]') { $field = $field -replace '[（(][^（）()]*[）)]', '' }
+            $field = $field -replace '[（(].*$',''
+            foreach ($mm in [regex]::Matches($field, '(?:需求|#)\s*(\d+)')) {
                 $n = [int]$mm.Groups[1].Value
                 if (($n -ne [int]$Task.id) -and ($AllTaskIds -contains $n) -and ($ids -notcontains $n)) { $ids += $n }
             }

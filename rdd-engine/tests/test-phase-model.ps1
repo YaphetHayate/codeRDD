@@ -444,20 +444,26 @@ try {
 
     # ================= S14: machine-readable 依赖关系 notation (依赖：#N) =================
     # spec: rdd-pm/references/requirement-item-template.md「依赖关系标注规范」—
-    # canonical form derives deps; prose form derives EMPTY (why the spec exists).
-    $arch14 = New-Archive 'pm-s14' '[{"title":"S14 上游","requirement":"requirements/t1.md","currentOwners":["CTO"],"designDocs":[]},{"title":"S14 下游单依赖","requirement":"requirements/t2.md","currentOwners":["CTO"],"designDocs":[]},{"title":"S14 下游多依赖","requirement":"requirements/t3.md","currentOwners":["CTO"],"designDocs":[]},{"title":"S14 散文依赖","requirement":"requirements/t4.md","currentOwners":["CTO"],"designDocs":[]}]'
+    # canonical form derives deps; prose form derives EMPTY (why the spec exists);
+    # bracketed remarks are stripped whole before matching (TC-B105 fix: a number
+    # inside a remark — flat or after an unclosed bracket — never derives).
+    $arch14 = New-Archive 'pm-s14' '[{"title":"S14 上游","requirement":"requirements/t1.md","currentOwners":["CTO"],"designDocs":[]},{"title":"S14 下游单依赖","requirement":"requirements/t2.md","currentOwners":["CTO"],"designDocs":[]},{"title":"S14 下游多依赖","requirement":"requirements/t3.md","currentOwners":["CTO"],"designDocs":[]},{"title":"S14 散文依赖","requirement":"requirements/t4.md","currentOwners":["CTO"],"designDocs":[]},{"title":"S14 备注异编号","requirement":"requirements/t5.md","currentOwners":["CTO"],"designDocs":[]},{"title":"S14 未闭合括号","requirement":"requirements/t6.md","currentOwners":["CTO"],"designDocs":[]}]'
     # rewrite the dep fields in the NEW canonical notation (New-Archive only writes the legacy form)
     Write-Utf8NoBom (Join-Path $Work ($arch14 + '/requirements/t2.md')) "# S14 下游单依赖`n`n- **描述**：机读单依赖`n- **验收标准**：见 phase-model.md`n- **依赖关系**：依赖：#1（数据由 #1 提供）`n"
     Write-Utf8NoBom (Join-Path $Work ($arch14 + '/requirements/t3.md')) "# S14 下游多依赖`n`n- **描述**：机读多依赖`n- **验收标准**：见 phase-model.md`n- **依赖关系**：依赖：#1、#2`n"
     Write-Utf8NoBom (Join-Path $Work ($arch14 + '/requirements/t4.md')) "# S14 散文依赖`n`n- **描述**：旧式散文标注`n- **验收标准**：见 phase-model.md`n- **依赖关系**：粗粒度可并行批次来自 R3`n"
+    Write-Utf8NoBom (Join-Path $Work ($arch14 + '/requirements/t5.md')) "# S14 备注异编号`n`n- **描述**：备注含不同编号(规范: 备注剥离, 不参与推导)`n- **验收标准**：见 phase-model.md`n- **依赖关系**：依赖：#1（上游 #2 提供数据）`n"
+    Write-Utf8NoBom (Join-Path $Work ($arch14 + '/requirements/t6.md')) "# S14 未闭合括号`n`n- **描述**：括号未闭合(规范: 自该括号起视为备注)`n- **验收标准**：见 phase-model.md`n- **依赖关系**：依赖：#1（另参考需求 3`n"
     $ref14 = "$arch14/requirements/t1.md"
-    $pf14 = Write-TestPlan (Join-Path $Work 'pm-s14-plan.json') @(@{ id = 'S1'; tasks = @(1, 2, 3, 4) }) @{ 2 = @(1); 3 = @(1, 2) }
+    $pf14 = Write-TestPlan (Join-Path $Work 'pm-s14-plan.json') @(@{ id = 'S1'; tasks = @(1, 2, 3, 4, 5, 6) }) @{ 2 = @(1); 3 = @(1, 2); 5 = @(1); 6 = @(1) }
     $r = Invoke-Bridge @('-Command', 'promulgate', '-TaskJson', ($arch14 + '/task.json'), '-PlanFile', $pf14, '-NoPush')
     Assert-True ($r.json.success -eq $true) 'S14 promulgate ok (plan DAG matches derived deps)' ($r.raw)
     $b = Read-BridgeJson 'deliver-pm-s14'
     Assert-True ((@($b.tasks.'2'.dep_task_ids) -join '+') -eq '1') 'S14 canonical single dep derived (依赖：#1)' ("dep_task_ids=$(@($b.tasks.'2'.dep_task_ids) -join '+')")
     Assert-True ((@($b.tasks.'3'.dep_task_ids) | Sort-Object) -join '+' -eq '1+2') 'S14 canonical multi dep derived (依赖：#1、#2)' ("dep_task_ids=$(@($b.tasks.'3'.dep_task_ids) -join '+')")
     Assert-True (@(@($b.tasks.'4'.dep_task_ids)).Count -eq 0) 'S14 prose dep derives EMPTY (notation is what the parser reads)' ("dep_task_ids=$(@($b.tasks.'4'.dep_task_ids) -join '+')")
+    Assert-True ((@($b.tasks.'5'.dep_task_ids) -join '+') -eq '1') 'S14 remark number NOT derived (依赖：#1（上游 #2 提供数据）→ @(1), TC-B105)' ("dep_task_ids=$(@($b.tasks.'5'.dep_task_ids) -join '+')")
+    Assert-True ((@($b.tasks.'6'.dep_task_ids) -join '+') -eq '1') 'S14 unclosed bracket: tail is remark (依赖：#1（另参考需求 3 → @(1))' ("dep_task_ids=$(@($b.tasks.'6'.dep_task_ids) -join '+')")
     $h1 = [string]$b.tasks.'1'.stages.CTO; $h2 = [string]$b.tasks.'2'.stages.CTO; $h3 = [string]$b.tasks.'3'.stages.CTO; $h4 = [string]$b.tasks.'4'.stages.CTO
     $n2 = Find-TreeNode 'deliver-pm-s14' $h2
     $n2Deps = @()
