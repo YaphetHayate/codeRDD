@@ -152,7 +152,7 @@ PM 归档（longTask 信号触发）→ start-role -Role PLANNER -TaskJson ...�
 
 ## 硬约束
 
-1. **不合格交付不得流转**：settle 三查（verdict=done / citations 改动清单非空且每条 ref 真实存在 / extras.verification 非空）任一不过即拒，节点停在 reported。
+1. **不合格交付不得流转**：settle 凭据四查（verdict=done / citations 改动清单非空且每条 ref 真实存在 / extras.verification 非空 / 角色交接门——注册表分派，DEV 交付须携带 extras.quality_scan 质量扫描凭据且违规计数为 0，dev-quality-prescan-gate）任一不过即拒，节点停在 reported。
 2. **禁止手工双写**：桥接 run 的 task.json 流转正向只能走 `bridge settle`、反向只能走 `bridge rollback`——双通道皆收敛进桥接层；手工 `rdd-flow advance/complete/reopen` 会造成双源矛盾（status 的 pending_sync 只修复 settle/rollback 先行、flow 后补的半失败，不覆盖手工乱写）。
 3. **规划者变更操作需持租约**：promulgate/dispatch/settle/reclaim/rollback/conclude 要求 planner-lease（自动获取/刷新；他人持新鲜租约时报 `LEASE_HELD`，`-Takeover` 强制接管留痕）。worker 的 `claim` 免租约。
 4. **中断恢复不重复消费**：reported 节点永不被重新消费（goal-tree 既有不变量）；死 claim 用 reclaim 统一出口。
@@ -194,6 +194,7 @@ worker 沿用 goal-tree 证据导向回调结构承载交付语义，核心零�
 | `citations[]`（`ref`=真实路径） | 改动清单（settle 逐条校验路径存在） |
 | `full_report` | 主产物文档指针（设计文档 / 实现说明；桥接 run 内规范必填——回调消息据此呈现 Doc 行，规划者凭单条消息即可裁定。引擎结构校验不强制：漏带降级可接受，citations 仍含文档路径，三查不卡） |
 | `extras.verification` | 验证结果（lint/test/build 摘要；缺失即拒） |
+| `extras.quality_scan` | **DEV 出报必填**（角色交接门，dev-quality-prescan-gate）：code-metrics 质量扫描凭据。完整形 `tool`（工具标识与版本）/`tool_hash`*/`base`/`files`（作用文件集）/`thresholds`/`threshold_source`（阈值来源 `docs/code-quality.md` §1）/`violation_count`（必须为 0）/`exit_code`（必须为 0）/`report_ref`*（带 * 可选）；变更集无 PowerShell 时 skip 形 `{"skip":true,"reason":"<理由>"}`。机械判定 R1-R6：凭据缺失拒 / 结构不完整拒 / 计数非零拒 / 退出码与计数矛盾拒 / citations 含 .ps1 而 skip 拒 / citations 的 .ps1 未被 files 覆盖拒。凭据违规的 DEV 交付在 settle 前即被拦（QA 硬性项驳回轮次前置消除）；伪造凭据属语义欺骗不在机械防御面（与 citations 真实性同级，QA 复扫双保险兜底）。非 DEV 角色（QA/CTO/UX）未注册校验器，门空转放行。链式场景（DEV 直转 QA 的 `rdd-flow set-route`）挂同一门：DEV 退场必带 `-QualityScanFile <凭据JSON>`，缺失拒 `HANDOFF_GATE_REJECTED`（写入零残留） |
 
 真实性判断由 **QA 阶段节点**承担：QA 会话的 citations = 验收证据（功能+质量双通过），QA 节点 settle 即任务 complete。QA 判不合格 → report 非 done verdict（失败清单写入回调 full_report/extras），规划者收到后二选一：**同阶段重做** `reclaim -NodeId`（问题在本阶段可修）或**跨阶段回退** `rollback -NodeId -To <角色集> -Phase <阶段> -Reason <理由>`（如退回 DEV 重做：`-To "DEV" -Phase IMPL`；单命令完成剪枝+重建+路由回退+自动重推，见命令面板「回退」行）。
 

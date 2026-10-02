@@ -114,10 +114,12 @@
 #                         plan = the -PlanFile carrier is validated and injected
 #                         at promulgate, rolled forward by replan only)
 #
-# Hard constraint: "不合格交付不得流转" — settle enforces the three evidence checks
-# (verdict=done / citations non-empty and real paths / extras.verification non-empty)
-# before any task.json transition. Manual rdd-flow advance under a bridged run is
-# forbidden by protocol (see references/planner-guide.md).
+# Hard constraint: "不合格交付不得流转" — settle enforces the four evidence checks
+# (verdict=done / citations non-empty and real paths / extras.verification non-empty
+# / role handoff gate — DEV deliveries carry extras.quality_scan, the code-metrics
+# credential; dev-quality-prescan-gate) before any task.json transition. Manual
+# rdd-flow advance under a bridged run is forbidden by protocol (see
+# references/planner-guide.md).
 
 [CmdletBinding()]
 param(
@@ -3856,7 +3858,7 @@ function New-ClaimResult {
         tree_claim  = @{ node = $Writes.tree.node; report_next = $Writes.tree.report_next; dep_note = $Writes.tree.dep_note }
         flow_claim  = $(if ($null -ne $Writes.flow) { @{ claimed = $Writes.flow.claimed; currentWorker = $Writes.flow.currentWorker } } else { $null })
         task        = $(if ($null -ne $Writes.flow) { $Writes.flow.task } else { $null })
-        report_hint = "goal-tree bridge run: on completion report back to the Planner instead of start-role-ing a downstream role — goal-tree-leaf.cmd -Command report -RunId $RunId -Worker $Stage -CallbackFile <cb.json>. Artifact locations ride the callback: citations = change list (real paths; settle checks every ref exists), full_report = main deliverable doc pointer (design doc / implementation notes; expected in bridge runs), extras.verification = verification result (settle requires citations + verification non-empty)"
+        report_hint = "goal-tree bridge run: on completion report back to the Planner instead of start-role-ing a downstream role — goal-tree-leaf.cmd -Command report -RunId $RunId -Worker $Stage -CallbackFile <cb.json>. Artifact locations ride the callback: citations = change list (real paths; settle checks every ref exists), full_report = main deliverable doc pointer (design doc / implementation notes; expected in bridge runs), extras.verification = verification result (settle requires citations + verification non-empty). DEV quality gate (dev-quality-prescan-gate): when the change set touches PowerShell (.ps1), extras.quality_scan = the code-metrics credential (full form: tool/base/files/thresholds/threshold_source/violation_count/exit_code, violation_count must be 0 and every cited .ps1 inside files; skip form: skip+reason only when no PowerShell file changed) — the settle handoff gate mechanically rejects a DEV delivery without it"
         auto_mode   = $(if ($null -ne (Get-AutoModeSection $Bridge)) {
             # authorization passthrough (planner-auto-mode): the claim is the
             # worker's mandatory first action, so it is the natural injection
@@ -3870,7 +3872,7 @@ function New-ClaimResult {
     }
     if ($Target.tree_level) { Add-ClaimTreeLevelContext $data $Target $Bridge }
     else {
-        $data['start_context'] = "requirement: $($Bridge.archive_rel)/$($Bridge.tasks["$($Target.task_id)"].requirement) — full pointers in task.summary fields above"
+        $data['start_context'] = "requirement: $($Bridge.archive_rel)/$($Bridge.tasks["$($Target.task_id)"].requirement) — full pointers in task.summary fields above; DEV note: PowerShell changes require extras.quality_scan (code-metrics credential) at report time — see rdd-dev/references/execution-rules.md"
     }
     return @{ success = $true; data = $data }
 }
@@ -3901,7 +3903,7 @@ function Invoke-ReclaimRejectedDelivery {
     # prune the failed delivery (ledger keeps the audit) + graft a fresh stage
     # node + remap the bridge, so the task returns to workable state.
     param([string]$RunDir, $Bridge, $Node, [string]$NodeIdText, [int]$TaskId, [string]$Stage)
-    $problems = @(Test-SettleEvidence -RunDir $RunDir -Node $Node -NodeId $NodeIdText)
+    $problems = @(Test-SettleEvidence -RunDir $RunDir -Node $Node -NodeId $NodeIdText -Bridge $Bridge)
     if ($problems.Count -eq 0) {
         Write-ErrorResult "RECLAIM_REQUIRES_UNQUALIFIED" "Node $NodeIdText is reported with QUALIFIED evidence — settle it instead (settle -RunId $RunId -NodeId $NodeIdText); reclaim only recovers dead claims or rejected deliveries." 1
     }
@@ -4151,7 +4153,7 @@ function Resolve-RollbackReportedPlan {
     # no parent-derived stage remains, so rolling a chain head back to REQ is
     # now expressible.
     param([string]$RunDir, $Bridge, $Node, $Task)
-    $problems = @(Test-SettleEvidence -RunDir $RunDir -Node $Node -NodeId $NodeId)
+    $problems = @(Test-SettleEvidence -RunDir $RunDir -Node $Node -NodeId $NodeId -Bridge $Bridge -PreloadedTasks @($Task))
     if ($problems.Count -eq 0) {
         Write-ErrorResult "ROLLBACK_REQUIRES_UNQUALIFIED" "Node $NodeId is reported with QUALIFIED evidence — settle it instead (settle -RunId $RunId -NodeId $NodeId); rollback only rolls back unqualified deliveries." 1
     }
@@ -4299,11 +4301,17 @@ function Invoke-RollbackFlowSide {
     param([string]$RunDir, $Bridge, $Ctx)
     $warnings = @()
     $toJoined = @($Ctx.target_roles) -join '+'
-    $r3 = Invoke-RddFlow @("-Command", "set-route", "-TaskId", "$($Ctx.task_id)", "-To", $toJoined, "-Phase", [string]$Ctx.target_phase, "-Archive", $Bridge.archive)
+    # dev-quality-prescan-gate: a rollback that moves a failed DEV delivery off
+    # the task puts DEV in set-route's exit set — the chain-side gate demands a
+    # credential, and the failing credential is often exactly why we are here.
+    # Planner disposal is honestly declared via the skip form (trusted chain-side
+    # by design); the rebuilt upstream chain faces the full gate on ITS completion.
+    $scanFile = Write-RollbackScanSkipFile $RunDir
+    $r3 = Invoke-RddFlow @("-Command", "set-route", "-TaskId", "$($Ctx.task_id)", "-To", $toJoined, "-Phase", [string]$Ctx.target_phase, "-Archive", $Bridge.archive, "-QualityScanFile", $scanFile)
     $routeFailed = ($r3.exit -ne 0 -or $null -eq $r3.json -or -not $r3.json.success)
     if ($routeFailed) {
         $warnings += "flow set-route failed after prune/graft — recorded as pending_sync (every status touch retries the repair, then the catch-up push fires): $($r3.text)"
-        $Bridge = Add-PendingSync $RunDir $Bridge $NodeId "set-route" $Ctx.stage $toJoined ($r3.text) -PhaseArg ([string]$Ctx.target_phase)
+        $Bridge = Add-PendingSync $RunDir $Bridge $NodeId "set-route" $Ctx.stage $toJoined ($r3.text) -PhaseArg ([string]$Ctx.target_phase) -ScanEvidence $scanFile
     }
     else {
         foreach ($role in @($script:RoleOrder)) {
@@ -4423,16 +4431,261 @@ function Invoke-BridgeRollback {
     }
 }
 
+# === Role handoff gate (unified gate at BOTH handoff points) ===
+# dev-quality-prescan-gate: quality self-scan discipline upgraded to a mechanical
+# handoff gate. The gate is FIXED and runs unconditionally at every handoff
+# point; WHICH roles actually get validated is registry dispatch (polymorphic):
+#   bridge scenario (delivery-bridge.ps1, Test-SettleEvidence 4th check)
+#     role source = mapped task's currentOwners (tree-level node -> node.role)
+#   chain scenario (rdd-flow.ps1 set-route, before any write)
+#     role source = exit-role set (currentOwners - To)
+# An unregistered role is a no-op pass. A new role gate = a new validator
+# function + one registry line; the gate and the dispatcher never change.
+# ⚠ verbatim-synced copy — the SAME block lives in BOTH rdd-flow.ps1 and
+# delivery-bridge.ps1; changes go to BOTH, verbatim (engine copy discipline,
+# PhaseRoles precedent). tests/test-handoff-gate.ps1 locks the two copies
+# identical (conformance extraction anchor: from this `# === Role handoff gate`
+# marker line through the line before the next `# === `/`# --- ` section marker).
+
+function Get-GateField {
+    # credential field accessor tolerant of both hashtable and PSCustomObject
+    # shapes (chain side parses JSON -> PSCustomObject; the bridge side may
+    # carry either, depending on how the callback reached the ledger)
+    param($Obj, [string]$Name)
+    if ($null -eq $Obj) { return $null }
+    if ($Obj -is [System.Collections.IDictionary]) { return $Obj[$Name] }
+    $prop = $Obj.PSObject.Properties[$Name]
+    if ($null -ne $prop) { return $prop.Value }
+    return $null
+}
+
+function ConvertTo-NormalizedScanPath {
+    # R6 normalization: repo-root-relative + POSIX separators + case-insensitive
+    param([string]$Path)
+    $p = [string]$Path
+    if ($null -eq $p) { return "" }
+    $p = ($p -replace '\\', '/').Trim()
+    while ($p.StartsWith('./')) { $p = $p.Substring(2) }
+    return $p.ToLowerInvariant()
+}
+
+function Test-DevQualityScanSkipForm {
+    # skip-form rules: the reason must be non-empty, and (bridge scenario) the
+    # cited .ps1 set must be empty — a PowerShell change set cannot skip.
+    param($Qs, [string[]]$Ps1Citations)
+    $problems = @()
+    $reason = [string](Get-GateField $Qs 'reason')
+    if ([string]::IsNullOrWhiteSpace($reason)) {
+        $problems += "quality_scan: skip form requires a non-empty reason (why no code-metrics scan applies to this change set)"
+    }
+    if ($Ps1Citations.Count -gt 0) {
+        $problems += "quality_scan: skip contradicts the change list — citations contain PowerShell files ($($Ps1Citations -join ', ')); a PowerShell change set requires the full code-metrics credential, not skip"
+    }
+    return $problems
+}
+
+function Test-DevQualityScanFullForm {
+    # full-form rules — structure (R2), counts (R3), exit-code agreement (R4)
+    # and bridge coverage (R6). Returns problem strings.
+    param($Qs, [string[]]$Ps1Citations)
+    $problems = @()
+    $missing = @()
+    foreach ($f in @('tool', 'base', 'files', 'thresholds', 'threshold_source', 'violation_count', 'exit_code')) {
+        if ($null -eq (Get-GateField $Qs $f)) { $missing += $f }
+    }
+    if ($missing.Count -gt 0) {
+        return @("quality_scan: full form is missing required fields: $($missing -join ', ')")
+    }
+    foreach ($f in @('tool', 'base', 'threshold_source')) {
+        if ([string]::IsNullOrWhiteSpace([string](Get-GateField $Qs $f))) {
+            $problems += "quality_scan: field '$f' must be a non-empty string"
+        }
+    }
+    if ([string]::IsNullOrWhiteSpace([string](Get-GateField $Qs 'thresholds'))) {
+        $problems += "quality_scan: field 'thresholds' must carry the effective limits (e.g. the scan report header's limits line)"
+    }
+    $files = @(Get-GateField $Qs 'files')
+    if ($files.Count -eq 1 -and $files[0] -is [string] -and $files[0].IndexOfAny(@(',', ';')) -ge 0) {
+        # tolerate the comma/semicolon-separated spelling (code-metrics -Files CLI form)
+        $files = @($files[0] -split '[,;]' | ForEach-Object { $_.Trim() } | Where-Object { $_ -ne '' })
+    }
+    foreach ($fe in $files) {
+        if ($fe -isnot [string] -or [string]::IsNullOrWhiteSpace($fe)) {
+            $problems += "quality_scan: 'files' entries must be non-empty strings"
+            break
+        }
+    }
+    $problems += @(Test-DevQualityScanCounts $Qs)
+    # R6 — bridge coverage: every cited .ps1 must sit inside the scanned set
+    if ($Ps1Citations.Count -gt 0) {
+        $norm = @{}
+        foreach ($fe in $files) { $norm[(ConvertTo-NormalizedScanPath ([string]$fe))] = $true }
+        foreach ($ref in $Ps1Citations) {
+            if (-not $norm.ContainsKey((ConvertTo-NormalizedScanPath $ref))) {
+                $problems += "quality_scan: coverage gap — citation '$ref' (.ps1) is not inside the scanned files set; rescan with -Files covering every cited PowerShell file"
+            }
+        }
+    }
+    return $problems
+}
+
+function Test-DevQualityScanCounts {
+    # R3 + R4 — counts and exit code (integer-typed: JSON numbers, not strings)
+    param($Qs)
+    $problems = @()
+    $count = Get-GateField $Qs 'violation_count'
+    $code = Get-GateField $Qs 'exit_code'
+    $countIsInt = ($count -is [int] -or $count -is [long])
+    $codeIsInt = ($code -is [int] -or $code -is [long])
+    if (-not $countIsInt) {
+        $problems += "quality_scan: violation_count must be a non-negative integer (got '$count')"
+    }
+    elseif ([int]$count -ne 0) {
+        $problems += "quality_scan: violation_count is $count (must be 0) — fix the code-metrics violations (#1 parse / #4 function lines / #5 nesting depth) and rescan"
+    }
+    if (-not $codeIsInt) {
+        $problems += "quality_scan: exit_code must be an integer (got '$code')"
+    }
+    elseif ($countIsInt -and (([int]$code -eq 0) -ne ([int]$count -eq 0))) {
+        $problems += "quality_scan: exit_code $code contradicts violation_count $count (code-metrics exits 0 iff zero violations)"
+    }
+    return $problems
+}
+
+function Test-DevQualityScan {
+    # DEV validator (dev-quality-prescan-gate): the code-metrics self-scan
+    # discipline as a mechanical gate. Credential contract — extras.quality_scan
+    # (bridge scenario) / -QualityScanFile JSON (chain scenario), one schema:
+    #   full form : tool / tool_hash? / base / files / thresholds /
+    #               threshold_source / violation_count / exit_code / report_ref?
+    #   skip form : skip=true + reason (no applicable language in the change set)
+    # Deterministic rules:
+    #   R1 credential absent                                    -> reject
+    #   R2 full form missing/invalid required fields            -> reject
+    #   R3 violation_count not a non-negative integer, or != 0  -> reject
+    #   R4 exit_code contradicts violation_count                -> reject
+    #   R5 bridge: citations contain .ps1 but skip declared     -> reject
+    #   R6 bridge: citations' .ps1 set not covered by files     -> reject
+    # (the chain scenario has no reconciliation source for R5/R6 — the skip
+    # declaration is trusted there and QA's re-scan is the safety net)
+    # Returns an array of problem strings (empty = pass), each prefixed
+    # "quality_scan:" so both scenario surfaces aggregate them uniformly.
+    param($GatePayload)
+    $qs = $GatePayload.quality_scan
+    if ($null -eq $qs) {
+        # R1 — credential absent
+        return @("quality_scan: credential absent — run code-metrics.cmd -Command scan on the PowerShell change set and report the full credential, or skip+reason when no PowerShell file changed")
+    }
+    $skip = Get-GateField $qs 'skip'
+    $isSkip = ($skip -is [bool] -and $skip)
+    $ps1Cits = @()
+    if ($GatePayload.scenario -eq 'bridge') {
+        foreach ($c in @($GatePayload.citations)) {
+            if ($null -eq $c) { continue }
+            $ref = [string](Get-GateField $c 'ref')
+            if (-not [string]::IsNullOrWhiteSpace($ref) -and $ref -match '\.ps1$') { $ps1Cits += $ref }
+        }
+    }
+    if ($isSkip) { return @(Test-DevQualityScanSkipForm $qs $ps1Cits) }
+    return @(Test-DevQualityScanFullForm $qs $ps1Cits)
+}
+
+$script:RoleHandoffValidators = @{
+    "DEV" = ${function:Test-DevQualityScan}
+}
+
+function Invoke-RoleHandoffGate {
+    # FIXED gate: runs unconditionally at every handoff point; a per-role
+    # registry lookup decides what actually validates (polymorphic dispatch —
+    # an unregistered role passes silently). $Roles is the scenario's role
+    # source (bridge: mapped task currentOwners / tree node.role; chain:
+    # exit-role set currentOwners - To). Returns an array of problem strings
+    # (empty = pass).
+    param([string[]]$Roles, $GatePayload)
+    $problems = @()
+    foreach ($role in @($Roles)) {
+        if ($null -eq $role -or [string]::IsNullOrWhiteSpace([string]$role)) { continue }
+        $validator = $script:RoleHandoffValidators[[string]$role]
+        if ($null -eq $validator) { continue }
+        $problems += @(& $validator $GatePayload)
+    }
+    return $problems
+}
+
 # === Settle evidence gate (shared by settle, reclaim and rollback) ===
 
+function Get-SettleGateRoles {
+    # Role source for the settle handoff gate (dev-quality-prescan-gate):
+    # bridge-mapped node -> the task's live currentOwners (the routing truth);
+    # tree-level node -> node.role. Empty array when undeterminable — the gate
+    # then no-ops (same as an unregistered role). $PreloadedTasks skips the
+    # rdd-flow show subprocess when the caller already holds the archive task
+    # list (e.g. the status view probes every reported node).
+    param($Bridge, $Node, [string]$NodeIdText, $PreloadedTasks = $null)
+    if ($null -ne $Bridge) {
+        $mapping = Get-NodeTaskStage $Bridge $NodeIdText
+        if ($null -ne $mapping) {
+            $tasks = $PreloadedTasks
+            if ($null -eq $tasks) {
+                $flow = Read-ArchiveTasks $Bridge.archive
+                $tasks = $flow.tasks
+            }
+            $task = Find-ArchiveTask $tasks ([int]$mapping.task_id)
+            if ($null -ne $task -and $null -ne $task.currentOwners) { return @($task.currentOwners) }
+            return @()
+        }
+    }
+    $r = [string]$Node.role
+    if (-not [string]::IsNullOrWhiteSpace($r)) { return @($r) }
+    return @()
+}
+
+function Write-QualityScanTempFile {
+    # Materialize the accepted callback's quality_scan credential as a temp
+    # JSON file for flow-tail set-route calls (dev-quality-prescan-gate): the
+    # chain-side gate re-validates it independently — the same registry, the
+    # same rules, no caller trust. Returns $null when no accepted callback /
+    # no credential (the flow tail then omits the flag and the gate judges
+    # from what it can see).
+    param([string]$RunDir, $Node)
+    $cb = Find-AcceptedCallback $RunDir $Node
+    if ($null -eq $cb) { return $null }
+    $qs = $null
+    if ((Test-PropPresent $cb.callback 'extras') -and $null -ne $cb.callback.extras -and (Test-PropPresent $cb.callback.extras 'quality_scan')) {
+        $qs = $cb.callback.extras.quality_scan
+    }
+    if ($null -eq $qs) { return $null }
+    $path = Join-Path (Join-Path $RunDir 'state') ('quality-scan-' + [guid]::NewGuid().ToString('N').Substring(0, 8) + '.json')
+    ConvertTo-PortableJson $qs -Depth 8 | Out-File -FilePath $path -Encoding utf8
+    return $path
+}
+
+function Write-RollbackScanSkipFile {
+    # Cross-stage rollback disposal credential (dev-quality-prescan-gate): the
+    # rollback tail's set-route moves a FAILED DEV delivery off the task — that
+    # is planner disposal, not a DEV completion handoff, and the failing
+    # credential is often exactly why the rollback happens (the gate would
+    # deadlock its own disposal channel otherwise). The chain-side skip form
+    # is a trusted declaration by design (no reconciliation source there), so
+    # the engine states the disposal honestly and the gate passes it. The
+    # rebuilt upstream chain faces the full gate again on ITS completion.
+    param([string]$RunDir)
+    $path = Join-Path (Join-Path $RunDir 'state') ('quality-scan-rollback-' + [guid]::NewGuid().ToString('N').Substring(0, 8) + '.json')
+    $skip = @{ skip = $true; reason = 'cross-stage rollback disposal: recycling a failed delivery (delivery-bridge rollback); not a DEV completion handoff' }
+    ConvertTo-PortableJson $skip -Depth 3 | Out-File -FilePath $path -Encoding utf8
+    return $path
+}
+
 function Test-SettleEvidence {
-    # The three checks gating any task.json transition (hard constraint:
+    # The FOUR checks gating any task.json transition (hard constraint:
     # unqualified delivery never transitions):
     #   1. verdict=done (worker self-assessment complete)
     #   2. citations = change list, non-empty and every ref a real path
     #   3. extras.verification non-empty (the verification result)
+    #   4. role handoff gate (registry dispatch; DEV -> quality_scan credential,
+    #      dev-quality-prescan-gate) — problems join the same rejection channel
     # Returns an array of problem strings (empty = qualified).
-    param([string]$RunDir, $Node, [string]$NodeId)
+    param([string]$RunDir, $Node, [string]$NodeId, $Bridge = $null, $PreloadedTasks = $null)
     $problems = @()
     if ([string]$Node.last_verdict -ne "done") {
         $problems += "verdict check: last_verdict is '$($Node.last_verdict)', expected 'done' (worker self-assessment incomplete)"
@@ -4461,6 +4714,17 @@ function Test-SettleEvidence {
         }
         if ($null -eq $verif -or [string]::IsNullOrWhiteSpace([string]$verif)) {
             $problems += "verification check: callback extras.verification is absent/empty (worker must report the verification result)"
+        }
+        # 4th check: unified role handoff gate. Role source: bridge-mapped ->
+        # the task's currentOwners; tree-level -> node.role. Without $Bridge
+        # (a legacy direct caller) the role set is empty and the gate no-ops.
+        $gateRoles = @(Get-SettleGateRoles -Bridge $Bridge -Node $Node -NodeIdText $NodeId -PreloadedTasks $PreloadedTasks)
+        if ($gateRoles.Count -gt 0) {
+            $qs = $null
+            if ((Test-PropPresent $cb.callback 'extras') -and $null -ne $cb.callback.extras -and (Test-PropPresent $cb.callback.extras 'quality_scan')) {
+                $qs = $cb.callback.extras.quality_scan
+            }
+            $problems += @(Invoke-RoleHandoffGate -Roles $gateRoles -GatePayload @{ scenario = 'bridge'; quality_scan = $qs; citations = $cits })
         }
     }
     return $problems
@@ -4524,14 +4788,19 @@ function Invoke-PhaseSwitchSettle {
     # set-route onto PhaseRoles[PhaseNext[phase]] + convergence graft of the
     # next phase's heads. A failed switch lands in pending_sync WITH the target
     # phase — retrying it as a plain narrowing would drift the whitelist.
-    param([string]$RunDir, $Bridge, $Task, [string]$NodeId, [string]$TaskPhase, [string]$NextPhase, [hashtable]$Res)
+    param([string]$RunDir, $Bridge, $Task, [string]$NodeId, [string]$TaskPhase, [string]$NextPhase, [hashtable]$Res, [string]$QualityScanFile = $null)
     $taskId = [int]$Task.id
     $nextOwners = @($script:PhaseRoles[$NextPhase])
     $to = $nextOwners -join '+'
-    $r2 = Invoke-RddFlow @("-Command", "set-route", "-TaskId", "$taskId", "-To", $to, "-Phase", $NextPhase, "-Archive", $Bridge.archive)
+    $routeArgs = @("-Command", "set-route", "-TaskId", "$taskId", "-To", $to, "-Phase", $NextPhase, "-Archive", $Bridge.archive)
+    # credential passthrough (dev-quality-prescan-gate): a DEV settle switches
+    # IMPL->VERIFY with DEV in the exit set — the chain-side gate demands the
+    # quality_scan credential; the settle-side 4th check already validated it.
+    if (-not [string]::IsNullOrWhiteSpace($QualityScanFile)) { $routeArgs += @("-QualityScanFile", $QualityScanFile) }
+    $r2 = Invoke-RddFlow $routeArgs
     if ($r2.exit -ne 0 -or $null -eq $r2.json -or -not $r2.json.success) {
         $Res.warnings += "flow set-route phase switch failed after tree settle — recorded as pending_sync: $($r2.text)"
-        $Res.bridge = Add-PendingSync $RunDir $Bridge $NodeId "set-route" $TaskPhase $to ($r2.text) -PhaseArg $NextPhase
+        $Res.bridge = Add-PendingSync $RunDir $Bridge $NodeId "set-route" $TaskPhase $to ($r2.text) -PhaseArg $NextPhase -ScanEvidence $QualityScanFile
     }
     else {
         $ens = Invoke-EnsureStageNodes $RunDir $Bridge $Task $NodeId $nextOwners
@@ -4553,17 +4822,19 @@ function Invoke-PhaseSettleFlow {
     # PhaseRoles[PhaseNext[phase]] and grafts the next phase's heads
     # (convergence — no per-branch fan-out, no tree split). Same return shape
     # as Invoke-LegacySettleFlow.
-    param([string]$RunDir, $Bridge, $Task, [string]$NodeId, [string]$Stage, $Owners, [string]$TaskPhase)
+    param([string]$RunDir, $Bridge, $Task, [string]$NodeId, [string]$Stage, $Owners, [string]$TaskPhase, [string]$QualityScanFile = $null)
     $taskId = [int]$Task.id
     $owners = @($Owners)
     $res = @{ bridge = $Bridge; warnings = @(); graftedNext = $null; graftedNextNodes = @(); flowOperation = ""; taskLifecycle = "active @ $TaskPhase" }
     $remaining = @($owners | Where-Object { $_ -ne $Stage })
     if ($remaining.Count -gt 0) {
         $to = $remaining -join '+'
-        $r2 = Invoke-RddFlow @("-Command", "set-route", "-TaskId", "$taskId", "-To", $to, "-Archive", $Bridge.archive)
+        $routeArgs = @("-Command", "set-route", "-TaskId", "$taskId", "-To", $to, "-Archive", $Bridge.archive)
+        if (-not [string]::IsNullOrWhiteSpace($QualityScanFile)) { $routeArgs += @("-QualityScanFile", $QualityScanFile) }
+        $r2 = Invoke-RddFlow $routeArgs
         if ($r2.exit -ne 0 -or $null -eq $r2.json -or -not $r2.json.success) {
             $res.warnings += "flow set-route narrowing failed after tree settle — recorded as pending_sync: $($r2.text)"
-            $res.bridge = Add-PendingSync $RunDir $Bridge $NodeId "set-route" $TaskPhase $to ($r2.text)
+            $res.bridge = Add-PendingSync $RunDir $Bridge $NodeId "set-route" $TaskPhase $to ($r2.text) -ScanEvidence $QualityScanFile
         }
         else {
             $ens = Invoke-EnsureStageNodes $RunDir $Bridge $Task $NodeId $remaining
@@ -4585,7 +4856,7 @@ function Invoke-PhaseSettleFlow {
         $res.taskLifecycle = "completed"
         return $res
     }
-    return Invoke-PhaseSwitchSettle $RunDir $Bridge $Task $NodeId $TaskPhase $nextPhase $res
+    return Invoke-PhaseSwitchSettle $RunDir $Bridge $Task $NodeId $TaskPhase $nextPhase $res -QualityScanFile $QualityScanFile
 }
 
 function Resolve-SettleTarget {
@@ -4603,10 +4874,10 @@ function Resolve-SettleTarget {
 }
 
 function Test-SettleDelivery {
-    # state precheck (node must be reported) + the three evidence checks —
+    # state precheck (node must be reported) + the four evidence checks —
     # identical gate for mapped and tree-level nodes (unqualified delivery never
     # transitions). Returns the node for the transition step.
-    param([string]$RunDir, [string]$NodeIdText, [bool]$TreeLevel = $false)
+    param([string]$RunDir, [string]$NodeIdText, [bool]$TreeLevel = $false, $Bridge = $null)
     $leafStatus = Invoke-GoalTreeLeaf @("-Command", "status", "-RunId", $RunId, "-NodeId", $NodeIdText)
     if ($leafStatus.exit -ne 0 -or $null -eq $leafStatus.json -or -not $leafStatus.json.success) {
         Write-ErrorResult "NODE_STATUS_FAILED" "leaf status failed: $($leafStatus.text)" 2
@@ -4615,7 +4886,7 @@ function Test-SettleDelivery {
     if ($node.status -ne "reported") {
         Write-ErrorResult "SETTLE_REQUIRES_REPORTED" "Node $NodeIdText is '$($node.status)'; settle only accepts reported nodes (claim -> work -> leaf report first)." 1
     }
-    $problems = @(Test-SettleEvidence -RunDir $RunDir -Node $node -NodeId $NodeIdText)
+    $problems = @(Test-SettleEvidence -RunDir $RunDir -Node $node -NodeId $NodeIdText -Bridge $Bridge)
     if ($problems.Count -gt 0) {
         $disp = "Disposition: reclaim the node (delivery-bridge -Command reclaim -RunId $RunId -NodeId $NodeIdText), have the worker fix the delivery, then report again; or re-dispatch."
         if ($TreeLevel) {
@@ -4687,11 +4958,14 @@ function Invoke-SettleTreeOnly {
 function Invoke-SettleFlowTransition {
     # tree settle (irreversible) + flow transition + chained next-stage graft;
     # half-failures land in pending_sync (Repair-PendingSync re-runs them).
-    param([string]$RunDir, $Bridge, $Target, $Ready)
+    param([string]$RunDir, $Bridge, $Target, $Ready, [string]$QualityScanFile = $null)
     $null = Invoke-TreeSettleWrite $NodeId
     if ($null -eq $Ready.task_phase) {
         # LEGACY null-phase task: conservative degrade — byte-identical pre-phase
         # behavior (StageNext chain + single graft). New archives always carry phase.
+        # advance carries no handoff gate (deprecated command, behavior frozen —
+        # dev-quality-prescan-gate decision 6), so the legacy tail needs no
+        # credential passthrough.
         $tail = Invoke-LegacySettleFlow $RunDir $Bridge $Ready.task $NodeId $Target.stage $Target.next_stage
     }
     else {
@@ -4699,7 +4973,7 @@ function Invoke-SettleFlowTransition {
         # fills MISSING live nodes (serial CTO->UX inside DESIGN); the LAST settle of
         # the phase switches atomically to PhaseRoles[PhaseNext[phase]] and grafts the
         # next phase's heads (convergence — no per-branch fan-out, no tree split).
-        $tail = Invoke-PhaseSettleFlow $RunDir $Bridge $Ready.task $NodeId $Target.stage $Ready.owners $Ready.task_phase
+        $tail = Invoke-PhaseSettleFlow $RunDir $Bridge $Ready.task $NodeId $Target.stage $Ready.owners $Ready.task_phase -QualityScanFile $QualityScanFile
     }
     return $tail
 }
@@ -4737,7 +5011,14 @@ function Invoke-BridgeSettle {
     $null = Enter-PlannerLease $runDir
 
     $target = Resolve-SettleTarget $bridge $NodeId $runDir
-    $node = Test-SettleDelivery -RunDir $runDir -NodeIdText $NodeId -TreeLevel ([bool]$target.tree_level)
+    $node = Test-SettleDelivery -RunDir $runDir -NodeIdText $NodeId -TreeLevel ([bool]$target.tree_level) -Bridge $bridge
+    # quality_scan passthrough (dev-quality-prescan-gate): the 4th check has
+    # ALREADY validated the credential on the settle side; the flow tail's
+    # set-route re-runs the SAME gate chain-side (registry dispatch, no caller
+    # trust), so the accepted credential rides along as a temp file instead of
+    # being re-minted. A skip-form credential passes the chain side as-is
+    # (trusted declaration there by design).
+    $scanFile = Write-QualityScanTempFile -RunDir $runDir -Node $node
     # parallel-coordination settle conflict gate (三查先行,冲突门后置,错误码分立):
     # design-kind 涉事节点恒拒 / file-kind 仅双活跃方互拦 — NODE_HELD_BY_CONFLICT
     if (-not [bool]$target.tree_level) {
@@ -4750,7 +5031,7 @@ function Invoke-BridgeSettle {
     }
     else {
         $flowReady = Test-SettleFlowReady -Bridge $bridge -Target $target
-        $tail = Invoke-SettleFlowTransition -RunDir $runDir -Bridge $bridge -Target $target -Ready $flowReady
+        $tail = Invoke-SettleFlowTransition -RunDir $runDir -Bridge $bridge -Target $target -Ready $flowReady -QualityScanFile $scanFile
         $tail['taskPhase'] = $flowReady.task_phase
     }
     if ($null -eq $tail.bridge) { $tail.bridge = $bridge }
@@ -4777,7 +5058,7 @@ function Invoke-BridgeSettle {
 }
 
 function Add-PendingSync {
-    param([string]$RunDir, $Bridge, [string]$NodeId, [string]$Op, [string]$From, $To, [string]$Error, [string]$PhaseArg = $null)
+    param([string]$RunDir, $Bridge, [string]$NodeId, [string]$Op, [string]$From, $To, [string]$Error, [string]$PhaseArg = $null, [string]$ScanEvidence = $null)
     $entry = [ordered]@{
         node   = $NodeId
         op     = $Op
@@ -4789,6 +5070,9 @@ function Add-PendingSync {
     # phase-model: set-route repairs need the target phase for the retry (a phase
     # switch recorded without it would retry as a narrowing and drift the whitelist)
     if (-not [string]::IsNullOrWhiteSpace($PhaseArg)) { $entry['phase'] = $PhaseArg }
+    # dev-quality-prescan-gate: set-route repairs need the quality_scan credential
+    # file for the retry (the chain-side handoff gate demands it when DEV exits)
+    if (-not [string]::IsNullOrWhiteSpace($ScanEvidence)) { $entry['scan_evidence'] = $ScanEvidence }
     $pending = @(Convert-ToSafeArray $Bridge.pending_sync)
     $pending += ,$entry
     $Bridge.pending_sync = $pending
@@ -5059,6 +5343,14 @@ function Repair-PendingSync {
             if ($null -ne $e.phase -and ([string]$e.phase) -ne "") {
                 $retryArgs += @("-Phase", [string]$e.phase)
             }
+            # dev-quality-prescan-gate: replay the recorded quality_scan credential
+            # — a DEV-exiting retry hits the chain-side handoff gate without it
+            # (a settled credential re-materializes from the entry's scan_evidence;
+            # rollback disposals recorded the engine's honest skip declaration)
+            $ev = [string]$e.scan_evidence
+            if ($ev -ne '' -and (Test-Path -LiteralPath $ev -PathType Leaf)) {
+                $retryArgs += @("-QualityScanFile", $ev)
+            }
             $r = Invoke-RddFlow $retryArgs
         }
         elseif ([string]$e.op -eq "reopen") {
@@ -5128,18 +5420,11 @@ function Format-StageChain {
     return ($parts -join ' → ')
 }
 
-function Get-BridgeOverview {
-    # joined view shared by status and resume
-    param([string]$RunDir, $Bridge)
-
-    $treeData = Get-TreeStatusView $RunId
-    $flow = Read-ArchiveTasks $Bridge.archive
-    $repair = Repair-PendingSync $RunDir $Bridge
-    $bridge = $repair.bridge
-
-    # per-task join: stage nodes + flow routing/worker + lifecycle
+function Get-BridgeTaskRows {
+    # per-task join for the overview: stage nodes + flow routing/worker + lifecycle
+    param($Bridge, $FlowTasks, $TreeData)
     $taskRows = @()
-    foreach ($t in $flow.tasks) {
+    foreach ($t in $FlowTasks) {
         $taskId = [int]$t.id
         $stages = @()
         $stageChain = "-"
@@ -5151,7 +5436,7 @@ function Get-BridgeOverview {
             foreach ($stage in @($script:RoleOrder)) {
                 if (-not $bStages.Contains($stage)) { continue }
                 $nodeId = [string]$bStages[$stage]
-                $node = Get-NodeFromTree $treeData $nodeId
+                $node = Get-NodeFromTree $TreeData $nodeId
                 $stages += @{
                     stage  = $stage
                     node   = $nodeId
@@ -5160,7 +5445,7 @@ function Get-BridgeOverview {
             }
             $taskPhase = [string]$t.phase
             if ([string]::IsNullOrEmpty($taskPhase)) { $taskPhase = $null }
-            $stageChain = Format-StageChain $bStages $treeData $(if ($null -ne $taskPhase) { $taskPhase } else { "" })
+            $stageChain = Format-StageChain $bStages $TreeData $(if ($null -ne $taskPhase) { $taskPhase } else { "" })
         }
         $workers = @()
         foreach ($w in @(Convert-ToSafeArray $t.currentWorker)) {
@@ -5183,11 +5468,15 @@ function Get-BridgeOverview {
             stage_chain    = $stageChain
         }
     }
+    return $taskRows
+}
 
+function Get-BridgeDeadClaims {
     # dead claims: tree side claimed too old, or flow worker entries too old
+    param($TreeData, $FlowTasks)
     $deadTreeClaims = @()
     $now = Get-Date
-    foreach ($n in @(Convert-ToSafeArray $treeData.nodes.claimed)) {
+    foreach ($n in @(Convert-ToSafeArray $TreeData.nodes.claimed)) {
         $ageMin = $null
         if ($n.claimed_at) {
             try { $ageMin = [int](($now.ToUniversalTime() - [datetime]::Parse($n.claimed_at, $null, [System.Globalization.DateTimeStyles]::RoundtripKind)).TotalMinutes) } catch {}
@@ -5197,7 +5486,7 @@ function Get-BridgeOverview {
         }
     }
     $deadFlowClaims = @()
-    foreach ($t in $flow.tasks) {
+    foreach ($t in $FlowTasks) {
         foreach ($w in @(Convert-ToSafeArray $t.currentWorker)) {
             if ($null -eq $w) { continue }
             $pairs = @()
@@ -5211,6 +5500,46 @@ function Get-BridgeOverview {
             }
         }
     }
+    return @{ tree = $deadTreeClaims; flow = $deadFlowClaims }
+}
+
+function Get-FlaggedDeliveries {
+    # reported-but-unqualified deliveries (planner-stage-rollback): settle refuses
+    # them; surface the disposition menu — same-stage reclaim (redo THIS stage)
+    # vs cross-stage rollback (send the task one stage back) — so the choice
+    # never degrades into hand-edited state (hard constraint 2). The status
+    # view's reported rows lack last_verdict, so the full node comes from the
+    # per-node leaf status probe (black-box, same channel Get-NodeTaskText uses).
+    param([string]$RunDir, $Bridge, $TreeData, $FlowTasks)
+    $flagged = @()
+    foreach ($rn in @(Convert-ToSafeArray $TreeData.nodes.reported)) {
+        $rid = if ($rn -is [string]) { $rn } else { [string]$rn.id }
+        $rs = Invoke-GoalTreeLeaf @("-Command", "status", "-RunId", $RunId, "-NodeId", $rid)
+        if ($rs.exit -ne 0 -or $null -eq $rs.json -or -not $rs.json.success -or $null -eq $rs.json.data.node) { continue }
+        $probs = @(Test-SettleEvidence -RunDir $RunDir -Node $rs.json.data.node -NodeId $rid -Bridge $Bridge -PreloadedTasks $FlowTasks)
+        if ($probs.Count -gt 0) {
+            $flagged += @{
+                node        = $rid
+                problems    = $probs
+                same_stage  = "delivery-bridge.cmd -Command reclaim -RunId $RunId -NodeId $rid"
+                cross_stage = "delivery-bridge.cmd -Command rollback -RunId $RunId -NodeId $rid -To <roles> -Phase <REQ|DESIGN|IMPL|VERIFY> -Reason <why>"
+            }
+        }
+    }
+    return $flagged
+}
+
+function Get-BridgeOverview {
+    # joined view shared by status and resume
+    param([string]$RunDir, $Bridge)
+
+    $treeData = Get-TreeStatusView $RunId
+    $flow = Read-ArchiveTasks $Bridge.archive
+    $repair = Repair-PendingSync $RunDir $Bridge
+    $bridge = $repair.bridge
+
+    $taskRows = Get-BridgeTaskRows -Bridge $Bridge -FlowTasks $flow.tasks -TreeData $treeData
+    $deadClaims = Get-BridgeDeadClaims -TreeData $treeData -FlowTasks $flow.tasks
 
     # claimable nodes right now (tree pending + not dep-blocked + bridge-mapped)
     $claimable = @()
@@ -5221,27 +5550,7 @@ function Get-BridgeOverview {
         }
     }
 
-    # reported-but-unqualified deliveries (planner-stage-rollback): settle refuses
-    # them; surface the disposition menu — same-stage reclaim (redo THIS stage)
-    # vs cross-stage rollback (send the task one stage back) — so the choice
-    # never degrades into hand-edited state (hard constraint 2). The status
-    # view's reported rows lack last_verdict, so the full node comes from the
-    # per-node leaf status probe (black-box, same channel Get-NodeTaskText uses).
-    $flagged = @()
-    foreach ($rn in @(Convert-ToSafeArray $treeData.nodes.reported)) {
-        $rid = if ($rn -is [string]) { $rn } else { [string]$rn.id }
-        $rs = Invoke-GoalTreeLeaf @("-Command", "status", "-RunId", $RunId, "-NodeId", $rid)
-        if ($rs.exit -ne 0 -or $null -eq $rs.json -or -not $rs.json.success -or $null -eq $rs.json.data.node) { continue }
-        $probs = @(Test-SettleEvidence -RunDir $RunDir -Node $rs.json.data.node -NodeId $rid)
-        if ($probs.Count -gt 0) {
-            $flagged += @{
-                node        = $rid
-                problems    = $probs
-                same_stage  = "delivery-bridge.cmd -Command reclaim -RunId $RunId -NodeId $rid"
-                cross_stage = "delivery-bridge.cmd -Command rollback -RunId $RunId -NodeId $rid -To <roles> -Phase <REQ|DESIGN|IMPL|VERIFY> -Reason <why>"
-            }
-        }
-    }
+    $flagged = Get-FlaggedDeliveries -RunDir $RunDir -Bridge $bridge -TreeData $treeData -FlowTasks $flow.tasks
 
     $deps = $treeData.dependencies
 
@@ -5251,7 +5560,7 @@ function Get-BridgeOverview {
         bridge         = $bridge
         tree           = $treeData
         task_rows      = $taskRows
-        dead_claims    = @{ tree = $deadTreeClaims; flow = $deadFlowClaims }
+        dead_claims    = $deadClaims
         claimable      = $claimable
         flagged_deliveries = $flagged
         dependencies   = $deps

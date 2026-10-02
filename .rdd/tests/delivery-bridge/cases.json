@@ -17,9 +17,11 @@
                      "rdd-engine/tests/test-phase-model.ps1",
                      "rdd-engine/tests/test-bridge-acceptance.ps1",
                      "rdd-engine/tests/test-bridge-conflicts.ps1",
-                     "rdd-engine/tests/test-long-task-planning.ps1"
+                     "rdd-engine/tests/test-long-task-planning.ps1",
+                      "rdd-engine/tests/test-handoff-gate.ps1",
+                      ".rdd/tests/delivery-bridge/prescan-gate-qa-verify.ps1"
                  ],
-    "lastChange":  "2026-09-26-requirement-dependency-field",
+    "lastChange":  "2026-10-01-planner-delivery-efficiency",
     "cases":  [
                   {
                       "id":  "TC-B01",
@@ -2132,6 +2134,103 @@
                            "断言推导结果 = @(1)"
                        ],
                        "expected": "未闭合括号自该括号起至行尾均视为备注——括号后「需求 3」不参与推导,与填写规则 4 后半句声明一致"
+                   },
+                   {                        "id":  "TC-B112",                        "title":  "凭据缺失确定性拒:citations 含 .ps1 而 extras 无 quality_scan → settle 第四查拒,节点停 reported(AC5 路径 1)",                        "type":  "negative",                        "priority":  "P0",                        "acceptance":  "PG-AC-2",                        "codeRef":  ".rdd/tests/delivery-bridge/prescan-gate-qa-verify.ps1:180",                        "sourceChange":  "2026-10-01-planner-delivery-efficiency",                        "status":  "active",                        "crossFeature":  [],                        "precondition":  "pg-bridge fixture:单任务 DEV 头节点已 claim,回调 citations 含 fixtures/code.ps1 但 extras 仅 verification",                        "steps":  [
+                           "DEV leaf report 后 planner settle 该节点",
+                           "断言 SETTLE_EVIDENCE_REJECTED 且 message 含 quality_scan: credential absent",
+                           "读 state/tree.json 断言节点 status 仍为 reported"
+                       ],
+                       "expected":  "违规交付在进入 QA 前被 settle 门拦下,错误码确定,节点停 reported 待规划者处置"
+                   },
+                   {                        "id":  "TC-B113",                        "title":  "违规计数非零拒:violation_count=3 → settle 确定性拒(AC5 路径 2)",                        "type":  "negative",                        "priority":  "P0",                        "acceptance":  "PG-AC-2",                        "codeRef":  ".rdd/tests/delivery-bridge/prescan-gate-qa-verify.ps1:194",                        "sourceChange":  "2026-10-01-planner-delivery-efficiency",                        "status":  "active",                        "crossFeature":  [],                        "precondition":  "reclaim 重 graft 后的新 DEV 节点,完整形凭据但 violation_count=3、exit_code=1",                        "steps":  [
+                           "report 完整形凭据(计数 3)后 settle",
+                           "断言拒且 message 含 violation_count is 3"
+                       ],
+                       "expected":  "违规计数大于 0 的交付确定性拒于出报口,不进入 QA 阶段"
+                   },
+                   {                        "id":  "TC-B114",                        "title":  "skip 声明放行:无 PowerShell 变更 + skip+reason → settle 过且流转 QA@VERIFY(AC5 路径 3)",                        "type":  "positive",                        "priority":  "P0",                        "acceptance":  "PG-AC-1",                        "codeRef":  ".rdd/tests/delivery-bridge/prescan-gate-qa-verify.ps1:228",                        "sourceChange":  "2026-10-01-planner-delivery-efficiency",                        "status":  "active",                        "crossFeature":  [],                        "precondition":  "变更集仅含 .md citations,extras.quality_scan 为 skip+reason 形",                        "steps":  [
+                           "report skip 形凭据后 settle",
+                           "断言 settle 成功",
+                           "读 task.json 断言 currentOwners=QA、phase=VERIFY"
+                       ],
+                       "expected":  "无适用语言的变更显式声明 skip 即放行,flow 尾 set-route 携凭据过链式门"
+                   },
+                   {                        "id":  "TC-B115",                        "title":  "完整形缺工具标识拒:凭据无 tool 字段 → 拒(AC1 四要素)",                        "type":  "negative",                        "priority":  "P1",                        "acceptance":  "PG-AC-1",                        "codeRef":  ".rdd/tests/delivery-bridge/prescan-gate-qa-verify.ps1:201",                        "sourceChange":  "2026-10-01-planner-delivery-efficiency",                        "status":  "active",                        "crossFeature":  [],                        "precondition":  "citations 含 .ps1,凭据缺 tool 字段其余齐全",                        "steps":  [
+                           "report 缺 tool 凭据后 settle",
+                           "断言 message 含 missing required fields: tool"
+                       ],
+                       "expected":  "结构化凭据四要素(工具标识/阈值来源/违规计数/作用文件集)缺一即拒"
+                   },
+                   {                        "id":  "TC-B116",                        "title":  "完整形缺作用文件集拒:凭据无 files 字段 → 拒(AC1 四要素)",                        "type":  "negative",                        "priority":  "P1",                        "acceptance":  "PG-AC-1",                        "codeRef":  ".rdd/tests/delivery-bridge/prescan-gate-qa-verify.ps1:208",                        "sourceChange":  "2026-10-01-planner-delivery-efficiency",                        "status":  "active",                        "crossFeature":  [],                        "precondition":  "citations 含 .ps1,凭据缺 files 字段其余齐全",                        "steps":  [
+                           "report 缺 files 凭据后 settle",
+                           "断言 message 含 missing required fields: files"
+                       ],
+                       "expected":  "作用文件集缺失确定性拒,files 需覆盖 cited .ps1(R6 对账基础)"
+                   },
+                   {                        "id":  "TC-B117",                        "title":  "违规计数负值拒:violation_count=-1 → 拒(非负整数边界)",                        "type":  "boundary",                        "priority":  "P1",                        "acceptance":  "PG-AC-1",                        "codeRef":  ".rdd/tests/delivery-bridge/prescan-gate-qa-verify.ps1:216",                        "sourceChange":  "2026-10-01-planner-delivery-efficiency",                        "status":  "active",                        "crossFeature":  [],                        "precondition":  "凭据 violation_count=-1(int 型)",                        "steps":  [
+                           "report 负计数凭据后 settle",
+                           "断言拒且 message 命中 must be 0 或非负整数两分支之一"
+                       ],
+                       "expected":  "-1 是 int 落入「必须为 0」分支拒;字符串形态落「非负整数」分支——同为确定性拒"
+                   },
+                   {                        "id":  "TC-B118",                        "title":  "退出码与计数矛盾拒:exit_code=0 而 violation_count=2 → 拒(凭据自洽)",                        "type":  "negative",                        "priority":  "P1",                        "acceptance":  "PG-AC-1",                        "codeRef":  ".rdd/tests/delivery-bridge/prescan-gate-qa-verify.ps1:223",                        "sourceChange":  "2026-10-01-planner-delivery-efficiency",                        "status":  "active",                        "crossFeature":  [],                        "precondition":  "凭据 exit_code=0 且 violation_count=2",                        "steps":  [
+                           "report 矛盾凭据后 settle",
+                           "断言 message 含 contradicts violation_count"
+                       ],
+                       "expected":  "退出码与计数的自洽性被机械识别(code-metrics 退出码 0 当且仅当零违规)"
+                   },
+                   {                        "id":  "TC-B119",                        "title":  "规划者处置通道保留:门拒后 reclaim rejected-delivery 可用(AC2)",                        "type":  "positive",                        "priority":  "P0",                        "acceptance":  "PG-AC-2",                        "codeRef":  ".rdd/tests/delivery-bridge/prescan-gate-qa-verify.ps1:186",                        "sourceChange":  "2026-10-01-planner-delivery-efficiency",                        "status":  "active",                        "crossFeature":  [],                        "precondition":  "TC-B112 拒后节点停 reported",                        "steps":  [
+                           "delivery-bridge reclaim 该节点",
+                           "断言 mode=rejected-delivery 且重 graft 新节点可 claim"
+                       ],
+                       "expected":  "处置走既有 reclaim/rollback 通道,与三查同族错误不新增处置路径"
+                   },
+                   {                        "id":  "TC-B120",                        "title":  "完整形正向全链放行:凭据 files 覆盖 cited .ps1 → settle 过 + QA@VERIFY(AC1)",                        "type":  "positive",                        "priority":  "P0",                        "acceptance":  "PG-AC-1",                        "codeRef":  ".rdd/tests/delivery-bridge/prescan-gate-qa-verify.ps1:241",                        "sourceChange":  "2026-10-01-planner-delivery-efficiency",                        "status":  "active",                        "crossFeature":  [],                        "precondition":  "独立 pg-full fixture,完整形凭据 files 含 fixtures/code.ps1 且计数 0",                        "steps":  [
+                           "report 完整形凭据后 settle",
+                           "断言成功",
+                           "读 task.json 断言 QA@VERIFY"
+                       ],
+                       "expected":  "干净凭据双门(第四查+链式)全链放行,被受理凭据经 state 临时文件透传链式门复验"
+                   },
+                   {                        "id":  "TC-B121",                        "title":  "凭据契约对 DEV 可见:claim 响应 report_hint 与 start_context 携带契约说明(AC1)",                        "type":  "positive",                        "priority":  "P1",                        "acceptance":  "PG-AC-1",                        "codeRef":  ".rdd/tests/delivery-bridge/prescan-gate-qa-verify.ps1:237",                        "sourceChange":  "2026-10-01-planner-delivery-efficiency",                        "status":  "active",                        "crossFeature":  [],                        "precondition":  "pg-full fixture DEV 头节点 claim",                        "steps":  [
+                           "claim -Role DEV",
+                           "断言 report_hint 含 quality_scan 契约与 violation_count must be 0",
+                           "断言 start_context 含 extras.quality_scan 指引"
+                       ],
+                       "expected":  "DEV 领取任务即获凭据组装契约,降低漏带凭据的返工"
+                   },
+                   {                        "id":  "TC-B122",                        "title":  "链式缺凭据拒+零残留:set-route DEV→QA 无 -QualityScanFile → HANDOFF_GATE_REJECTED 且 task.json 字节不动(AC2 链式)",                        "type":  "negative",                        "priority":  "P0",                        "acceptance":  "PG-AC-2",                        "codeRef":  ".rdd/tests/delivery-bridge/prescan-gate-qa-verify.ps1:133",                        "sourceChange":  "2026-10-01-planner-delivery-efficiency",                        "status":  "active",                        "crossFeature":  [],                        "precondition":  "rdd-flow init 单任务 DEV@IMPL",                        "steps":  [
+                           "set-route -To QA -Phase VERIFY 不带凭据",
+                           "断言错误码 HANDOFF_GATE_REJECTED 且 message 含 credential absent",
+                           "比对拒前后 task.json 字节一致,owners/phase 未变"
+                       ],
+                       "expected":  "链式直转场景同族拦截,门先于任何写,拒绝零残留"
+                   },
+                   {                        "id":  "TC-B123",                        "title":  "链式 skip 放行:-QualityScanFile 携 skip+reason → set-route 过(AC5 路径 3 链式)",                        "type":  "positive",                        "priority":  "P1",                        "acceptance":  "PG-AC-5",                        "codeRef":  ".rdd/tests/delivery-bridge/prescan-gate-qa-verify.ps1:142",                        "sourceChange":  "2026-10-01-planner-delivery-efficiency",                        "status":  "active",                        "crossFeature":  [],                        "precondition":  "TC-B122 后任务仍 DEV@IMPL,skip 凭据文件就绪",                        "steps":  [
+                           "set-route 携 skip 凭据",
+                           "断言成功且 currentOwners=QA"
+                       ],
+                       "expected":  "链式无 citations 对账源,skip 声明被信任,QA 复扫双保险兜底"
+                   },
+                   {                        "id":  "TC-B124",                        "title":  "链式完整形放行:干净完整形凭据 → set-route 过(AC1 链式)",                        "type":  "positive",                        "priority":  "P1",                        "acceptance":  "PG-AC-1",                        "codeRef":  ".rdd/tests/delivery-bridge/prescan-gate-qa-verify.ps1:150",                        "sourceChange":  "2026-10-01-planner-delivery-efficiency",                        "status":  "active",                        "crossFeature":  [],                        "precondition":  "任务已路由回 DEV@IMPL,完整形凭据文件就绪",                        "steps":  [
+                           "set-route -To QA -Phase VERIFY -QualityScanFile 完整形",
+                           "断言成功且 QA@VERIFY"
+                       ],
+                       "expected":  "链式门与桥接第四查同 schema 同规则单源(双脚本逐字同步块)"
+                   },
+                   {                        "id":  "TC-B125",                        "title":  "阈值单源三文档同步:docs §1(50 行/5 层)唯一来源 + execution-rules 出报门表述 + planner-guide 凭据四查契约行(AC3)",                        "type":  "positive",                        "priority":  "P0",                        "acceptance":  "PG-AC-3",                        "codeRef":  ".rdd/tests/delivery-bridge/prescan-gate-qa-verify.ps1:252",                        "sourceChange":  "2026-10-01-planner-delivery-efficiency",                        "status":  "active",                        "crossFeature":  [],                        "precondition":  "真实仓库工作区(非 fixture)",                        "steps":  [
+                           "断言 docs/code-quality.md §1 含 50 行/5 层量化上限",
+                           "断言 execution-rules.md 代码度量行含出报门+quality_scan+双错误码",
+                           "断言 planner-guide.md 含凭据四查与 extras.quality_scan 契约行",
+                           "附:未注册角色(CTO→UX)退场空转放行(探针 155 行)"
+                       ],
+                       "expected":  "阈值唯一来源未动,DEV/规划者两份文档与回调契约表同步,门只挂 DEV 注册表"
+                   },
+                   {                        "id":  "TC-B126",                        "title":  "QA 后置复扫职责保留:code-quality-check.md 不在变更集且 #4/#5 复查指令仍在(AC4)",                        "type":  "positive",                        "priority":  "P1",                        "acceptance":  "PG-AC-4",                        "codeRef":  ".rdd/tests/delivery-bridge/prescan-gate-qa-verify.ps1:260",                        "sourceChange":  "2026-10-01-planner-delivery-efficiency",                        "status":  "active",                        "crossFeature":  [],                        "precondition":  "真实仓库工作区",                        "steps":  [
+                           "断言文件含 code-metrics.cmd -Command scan 与函数 50 行/嵌套 5 层复查行",
+                           "git diff --name-only 断言该文件零改动"
+                       ],
+                       "expected":  "机械门前置后 QA 复扫双保险职责不变"
                    }
                ]
 }

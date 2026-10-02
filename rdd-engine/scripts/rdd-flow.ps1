@@ -20,6 +20,9 @@ param(
     [string]$To,
     [string]$From,
     [string]$Phase,                 # REQ/DESIGN/IMPL/VERIFY (set-route phase switch/rollback target)
+    [string]$QualityScanFile,       # set-route role handoff gate (dev-quality-prescan-gate):
+                                    # quality_scan credential JSON, required when DEV
+                                    # exits currentOwners (chain handoff scenario)
     [Alias("Path")]
     [string]$DesignPath,
     [string]$Reason,
@@ -1750,7 +1753,215 @@ function Invoke-AddTask {
     }
 }
 
+# === Role handoff gate (unified gate at BOTH handoff points) ===
+# dev-quality-prescan-gate: quality self-scan discipline upgraded to a mechanical
+# handoff gate. The gate is FIXED and runs unconditionally at every handoff
+# point; WHICH roles actually get validated is registry dispatch (polymorphic):
+#   bridge scenario (delivery-bridge.ps1, Test-SettleEvidence 4th check)
+#     role source = mapped task's currentOwners (tree-level node -> node.role)
+#   chain scenario (rdd-flow.ps1 set-route, before any write)
+#     role source = exit-role set (currentOwners - To)
+# An unregistered role is a no-op pass. A new role gate = a new validator
+# function + one registry line; the gate and the dispatcher never change.
+# ⚠ verbatim-synced copy — the SAME block lives in BOTH rdd-flow.ps1 and
+# delivery-bridge.ps1; changes go to BOTH, verbatim (engine copy discipline,
+# PhaseRoles precedent). tests/test-handoff-gate.ps1 locks the two copies
+# identical (conformance extraction anchor: from this `# === Role handoff gate`
+# marker line through the line before the next `# === `/`# --- ` section marker).
+
+function Get-GateField {
+    # credential field accessor tolerant of both hashtable and PSCustomObject
+    # shapes (chain side parses JSON -> PSCustomObject; the bridge side may
+    # carry either, depending on how the callback reached the ledger)
+    param($Obj, [string]$Name)
+    if ($null -eq $Obj) { return $null }
+    if ($Obj -is [System.Collections.IDictionary]) { return $Obj[$Name] }
+    $prop = $Obj.PSObject.Properties[$Name]
+    if ($null -ne $prop) { return $prop.Value }
+    return $null
+}
+
+function ConvertTo-NormalizedScanPath {
+    # R6 normalization: repo-root-relative + POSIX separators + case-insensitive
+    param([string]$Path)
+    $p = [string]$Path
+    if ($null -eq $p) { return "" }
+    $p = ($p -replace '\\', '/').Trim()
+    while ($p.StartsWith('./')) { $p = $p.Substring(2) }
+    return $p.ToLowerInvariant()
+}
+
+function Test-DevQualityScanSkipForm {
+    # skip-form rules: the reason must be non-empty, and (bridge scenario) the
+    # cited .ps1 set must be empty — a PowerShell change set cannot skip.
+    param($Qs, [string[]]$Ps1Citations)
+    $problems = @()
+    $reason = [string](Get-GateField $Qs 'reason')
+    if ([string]::IsNullOrWhiteSpace($reason)) {
+        $problems += "quality_scan: skip form requires a non-empty reason (why no code-metrics scan applies to this change set)"
+    }
+    if ($Ps1Citations.Count -gt 0) {
+        $problems += "quality_scan: skip contradicts the change list — citations contain PowerShell files ($($Ps1Citations -join ', ')); a PowerShell change set requires the full code-metrics credential, not skip"
+    }
+    return $problems
+}
+
+function Test-DevQualityScanFullForm {
+    # full-form rules — structure (R2), counts (R3), exit-code agreement (R4)
+    # and bridge coverage (R6). Returns problem strings.
+    param($Qs, [string[]]$Ps1Citations)
+    $problems = @()
+    $missing = @()
+    foreach ($f in @('tool', 'base', 'files', 'thresholds', 'threshold_source', 'violation_count', 'exit_code')) {
+        if ($null -eq (Get-GateField $Qs $f)) { $missing += $f }
+    }
+    if ($missing.Count -gt 0) {
+        return @("quality_scan: full form is missing required fields: $($missing -join ', ')")
+    }
+    foreach ($f in @('tool', 'base', 'threshold_source')) {
+        if ([string]::IsNullOrWhiteSpace([string](Get-GateField $Qs $f))) {
+            $problems += "quality_scan: field '$f' must be a non-empty string"
+        }
+    }
+    if ([string]::IsNullOrWhiteSpace([string](Get-GateField $Qs 'thresholds'))) {
+        $problems += "quality_scan: field 'thresholds' must carry the effective limits (e.g. the scan report header's limits line)"
+    }
+    $files = @(Get-GateField $Qs 'files')
+    if ($files.Count -eq 1 -and $files[0] -is [string] -and $files[0].IndexOfAny(@(',', ';')) -ge 0) {
+        # tolerate the comma/semicolon-separated spelling (code-metrics -Files CLI form)
+        $files = @($files[0] -split '[,;]' | ForEach-Object { $_.Trim() } | Where-Object { $_ -ne '' })
+    }
+    foreach ($fe in $files) {
+        if ($fe -isnot [string] -or [string]::IsNullOrWhiteSpace($fe)) {
+            $problems += "quality_scan: 'files' entries must be non-empty strings"
+            break
+        }
+    }
+    $problems += @(Test-DevQualityScanCounts $Qs)
+    # R6 — bridge coverage: every cited .ps1 must sit inside the scanned set
+    if ($Ps1Citations.Count -gt 0) {
+        $norm = @{}
+        foreach ($fe in $files) { $norm[(ConvertTo-NormalizedScanPath ([string]$fe))] = $true }
+        foreach ($ref in $Ps1Citations) {
+            if (-not $norm.ContainsKey((ConvertTo-NormalizedScanPath $ref))) {
+                $problems += "quality_scan: coverage gap — citation '$ref' (.ps1) is not inside the scanned files set; rescan with -Files covering every cited PowerShell file"
+            }
+        }
+    }
+    return $problems
+}
+
+function Test-DevQualityScanCounts {
+    # R3 + R4 — counts and exit code (integer-typed: JSON numbers, not strings)
+    param($Qs)
+    $problems = @()
+    $count = Get-GateField $Qs 'violation_count'
+    $code = Get-GateField $Qs 'exit_code'
+    $countIsInt = ($count -is [int] -or $count -is [long])
+    $codeIsInt = ($code -is [int] -or $code -is [long])
+    if (-not $countIsInt) {
+        $problems += "quality_scan: violation_count must be a non-negative integer (got '$count')"
+    }
+    elseif ([int]$count -ne 0) {
+        $problems += "quality_scan: violation_count is $count (must be 0) — fix the code-metrics violations (#1 parse / #4 function lines / #5 nesting depth) and rescan"
+    }
+    if (-not $codeIsInt) {
+        $problems += "quality_scan: exit_code must be an integer (got '$code')"
+    }
+    elseif ($countIsInt -and (([int]$code -eq 0) -ne ([int]$count -eq 0))) {
+        $problems += "quality_scan: exit_code $code contradicts violation_count $count (code-metrics exits 0 iff zero violations)"
+    }
+    return $problems
+}
+
+function Test-DevQualityScan {
+    # DEV validator (dev-quality-prescan-gate): the code-metrics self-scan
+    # discipline as a mechanical gate. Credential contract — extras.quality_scan
+    # (bridge scenario) / -QualityScanFile JSON (chain scenario), one schema:
+    #   full form : tool / tool_hash? / base / files / thresholds /
+    #               threshold_source / violation_count / exit_code / report_ref?
+    #   skip form : skip=true + reason (no applicable language in the change set)
+    # Deterministic rules:
+    #   R1 credential absent                                    -> reject
+    #   R2 full form missing/invalid required fields            -> reject
+    #   R3 violation_count not a non-negative integer, or != 0  -> reject
+    #   R4 exit_code contradicts violation_count                -> reject
+    #   R5 bridge: citations contain .ps1 but skip declared     -> reject
+    #   R6 bridge: citations' .ps1 set not covered by files     -> reject
+    # (the chain scenario has no reconciliation source for R5/R6 — the skip
+    # declaration is trusted there and QA's re-scan is the safety net)
+    # Returns an array of problem strings (empty = pass), each prefixed
+    # "quality_scan:" so both scenario surfaces aggregate them uniformly.
+    param($GatePayload)
+    $qs = $GatePayload.quality_scan
+    if ($null -eq $qs) {
+        # R1 — credential absent
+        return @("quality_scan: credential absent — run code-metrics.cmd -Command scan on the PowerShell change set and report the full credential, or skip+reason when no PowerShell file changed")
+    }
+    $skip = Get-GateField $qs 'skip'
+    $isSkip = ($skip -is [bool] -and $skip)
+    $ps1Cits = @()
+    if ($GatePayload.scenario -eq 'bridge') {
+        foreach ($c in @($GatePayload.citations)) {
+            if ($null -eq $c) { continue }
+            $ref = [string](Get-GateField $c 'ref')
+            if (-not [string]::IsNullOrWhiteSpace($ref) -and $ref -match '\.ps1$') { $ps1Cits += $ref }
+        }
+    }
+    if ($isSkip) { return @(Test-DevQualityScanSkipForm $qs $ps1Cits) }
+    return @(Test-DevQualityScanFullForm $qs $ps1Cits)
+}
+
+$script:RoleHandoffValidators = @{
+    "DEV" = ${function:Test-DevQualityScan}
+}
+
+function Invoke-RoleHandoffGate {
+    # FIXED gate: runs unconditionally at every handoff point; a per-role
+    # registry lookup decides what actually validates (polymorphic dispatch —
+    # an unregistered role passes silently). $Roles is the scenario's role
+    # source (bridge: mapped task currentOwners / tree node.role; chain:
+    # exit-role set currentOwners - To). Returns an array of problem strings
+    # (empty = pass).
+    param([string[]]$Roles, $GatePayload)
+    $problems = @()
+    foreach ($role in @($Roles)) {
+        if ($null -eq $role -or [string]::IsNullOrWhiteSpace([string]$role)) { continue }
+        $validator = $script:RoleHandoffValidators[[string]$role]
+        if ($null -eq $validator) { continue }
+        $problems += @(& $validator $GatePayload)
+    }
+    return $problems
+}
+
 # --- set-route ---
+
+function Invoke-SetRouteHandoffGate {
+    # chain-side adapter for the unified role handoff gate (dev-quality-prescan-
+    # gate): computes the exit-role set (currentOwners - To), loads the optional
+    # -QualityScanFile credential and runs the registry-dispatched validators.
+    # The chain scenario has no citation reconciliation source — the credential
+    # declaration is trusted and QA's re-scan is the safety net. Returns the
+    # aggregated problem array (empty = pass).
+    param($Task, [string[]]$Owners, [string]$ScanFilePath)
+    $exitRoles = @()
+    foreach ($o in @($Task.currentOwners)) {
+        if ($null -ne $o -and $Owners -notcontains [string]$o) { $exitRoles += [string]$o }
+    }
+    $problems = @()
+    $scanCredential = $null
+    if (-not [string]::IsNullOrWhiteSpace($ScanFilePath)) {
+        if (Test-Path -LiteralPath $ScanFilePath -PathType Leaf) {
+            try { $scanCredential = Get-Content -LiteralPath $ScanFilePath -Raw -Encoding UTF8 | ConvertFrom-Json }
+            catch { $problems += "quality_scan: -QualityScanFile is not valid JSON: $($_.Exception.Message)" }
+        }
+        else {
+            $problems += "quality_scan: -QualityScanFile not found: $ScanFilePath"
+        }
+    }
+    $problems += @(Invoke-RoleHandoffGate -Roles $exitRoles -GatePayload @{ scenario = 'chain'; quality_scan = $scanCredential; citations = $null })
+    return $problems
+}
 
 function Invoke-SetRoute {
     param([string]$ArchivePath)
@@ -1789,6 +2000,17 @@ function Invoke-SetRoute {
     }
     else {
         $newPhase = Get-LegacyRoutePhase $owners
+    }
+
+    # --- unified role handoff gate (dev-quality-prescan-gate) ---
+    # Fixed gate BEFORE any write: a rejected handoff leaves task.json byte-
+    # identical (zero residue). Exit-role set = currentOwners - To; the gate
+    # dispatches per role via the registry, unregistered roles no-op. When DEV
+    # exits, -QualityScanFile (the quality_scan credential JSON) is mandatory —
+    # a DEV that marks its own work complete must carry the scan evidence.
+    $gateProblems = @(Invoke-SetRouteHandoffGate -Task $task -Owners $owners -ScanFilePath $QualityScanFile)
+    if ($gateProblems.Count -gt 0) {
+        Write-ErrorResult "HANDOFF_GATE_REJECTED" "Role handoff gate rejected this routing — nothing written. Problems: $($gateProblems -join '; '). Fix (DEV): run code-metrics.cmd -Command scan on the PowerShell change set (exit code 0 required), write the quality_scan credential JSON (full form: tool/base/files/thresholds/threshold_source/violation_count/exit_code; skip form: skip+reason when no PowerShell file changed), then retry with -QualityScanFile <path>. Protocol: rdd-dev/references/execution-rules.md" 1
     }
 
     $data.tasks[$taskIndex].currentOwners = $owners

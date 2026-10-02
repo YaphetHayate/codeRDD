@@ -202,9 +202,14 @@
 # 阶段切换/回退（原子更新 owners + phase）：-To ⊆ PhaseRoles[-Phase]
 & "$rdd\scripts\rdd-flow.cmd" -Command set-route -Archive ".rdd/changes/archive/<name>" -TaskId 2 -To "DEV" -Phase "IMPL"
 & "$rdd\scripts\rdd-flow.cmd" -Command set-route -Archive ".rdd/changes/archive/<name>" -TaskId 3 -To "CTO+UX" -Phase "DESIGN"
+
+# DEV 退场（退出角色集 currentOwners - To 含 DEV）须携带质量扫描凭据（dev-quality-prescan-gate）
+& "$rdd\scripts\rdd-flow.cmd" -Command set-route -Archive ".rdd/changes/archive/<name>" -TaskId 2 -To "QA" -Phase "VERIFY" -QualityScanFile ".rdd/changes/archive/<name>/report/quality-scan.json"
 ```
 
 整组替换指定 task 的 `currentOwners`（显式传 `-Phase` 时同时原子更新 `phase`）。PM 归档时设置初始路由、被打回后重新路由、阶段间推进均用此命令。`-To` 多角色用 `+` 连接。
+
+**统一交接门（dev-quality-prescan-gate）**：写入门——退出角色集（`currentOwners` − `-To` 集）经角色注册表分派校验，未注册角色（QA/CTO/UX…）空转放行；**DEV 退场必带 `-QualityScanFile <凭据JSON>`**（完整形 tool/base/files/thresholds/threshold_source/violation_count/exit_code 或 skip+reason，schema 与校验规则同桥接 settle 第四查单源；组装指引见 `rdd-dev/references/execution-rules.md`）。链式场景无 citations 对账源：skip 声明被信任，QA 复扫双保险兜底。凭据缺失/违规/文件不存在或非法 JSON → `HANDOFF_GATE_REJECTED`（exit 1，task.json 零残留）。`advance` 不挂门（已退场兼容命令，行为冻结）。
 
 **白名单校验与错误码**：
 
@@ -213,6 +218,7 @@
 | `PHASE_INVALID` | `-Phase` 枚举非法（不在 REQ/DESIGN/IMPL/VERIFY） |
 | `PHASE_OWNER_MISMATCH` | `-To` 不 ⊆ `PhaseRoles[目标phase]`（显式或推断目标时）；或 `-To` 跨阶段无单一归属 phase |
 | `SET_PHASE_REQUIRED` | 未传 `-Phase` 但 `-To` 越出当前阶段白名单（阶段切换必须显式）；或旧任务（phase=null）且 `-To` 跨阶段歧义（如单独 `QA` 同时落在 DESIGN/VERIFY） |
+| `HANDOFF_GATE_REJECTED` | 角色交接门拒（DEV 退场而凭据缺失/违规/文件不可读；明细含 quality_scan 前缀问题清单与修复指引） |
 
 旧归档（phase=null）兼容：不传 `-Phase` 时不做白名单校验、phase 保持 null（不隐性推断，`migrate` 是唯一补齐通道）；仅歧义集合（单独 `QA`）要求显式 `-Phase`。
 

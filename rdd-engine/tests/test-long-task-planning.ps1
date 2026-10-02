@@ -156,7 +156,7 @@ function New-Cb { param([string]$NodeId, [string]$Ref, [bool]$Qualified = $true)
         citations = @(@{ ref = $Ref; locator = 'L1' })
         next_suggestion = ''
     }
-    if ($Qualified) { $cb['extras'] = @{ verification = 'smoke ok' } }
+    if ($Qualified) { $cb['extras'] = @{ verification = 'smoke ok'; quality_scan = @{ skip = $true; reason = 'test fixture: cited change set carries no PowerShell files' } } }
     $cbFile = Join-Path $env:TEMP ("ltp-cb-$NodeId-$([guid]::NewGuid().ToString('N').Substring(0,6)).json")
     Write-Utf8NoBom $cbFile ($cb | ConvertTo-Json -Depth 5)
     return $cbFile

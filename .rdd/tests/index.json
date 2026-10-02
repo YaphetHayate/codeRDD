@@ -62,10 +62,10 @@
         "rdd-engine/tests/test-bridge-conflicts.ps1",
         "rdd-engine/tests/test-long-task-planning.ps1"
       ],
-      "activeCount": 111,
+      "activeCount": 126,
       "deprecatedCount": 0,
-      "lastUpdated": "2026-09-26",
-      "lastChange": "2026-09-26-requirement-dependency-field"
+      "lastUpdated": "2026-10-02",
+      "lastChange": "2026-10-01-planner-delivery-efficiency"
     },
     {
       "feature": "investigation-role-cards",
