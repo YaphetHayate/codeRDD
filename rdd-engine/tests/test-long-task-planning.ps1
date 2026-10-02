@@ -28,6 +28,13 @@
 $ErrorActionPreference = 'Stop'
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 
+# inplace-redo-session-reuse: this suite asserts the LEGACY recovery path
+# (prune + graft + repush, L9). Run from inside a dsh session, DSH_SESSION_ID
+# would bind the claims sidecar to a LIVE session and reclaim would take the
+# new in-place path instead — neutralize so the legacy assertions hold
+# deterministically wherever the suite runs.
+Remove-Item Env:\DSH_SESSION_ID -ErrorAction SilentlyContinue
+
 $EngineDir = Split-Path -Parent $PSScriptRoot | Join-Path -ChildPath 'scripts'
 $BridgePs1 = Join-Path $EngineDir 'delivery-bridge.ps1'
 $FlowPs1   = Join-Path $EngineDir 'rdd-flow.ps1'

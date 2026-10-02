@@ -183,6 +183,20 @@ param(
     # settle
     [string]$Note,
 
+    # reclaim / dispatch (inplace-redo-session-reuse): disable live-session
+    # reuse — reclaim's rejected-delivery branch then always takes the legacy
+    # prune + graft + repush path even when the original claim session is
+    # alive, and dispatch/auto-push always session.create. Escape hatch for
+    # stale-context worries; default off = byte-identical behavior whenever no
+    # live session exists anyway (regression anchor).
+    [switch]$NoReuse,
+
+    # reclaim (rejected-delivery, in-place path): planner-supplied failure-list
+    # pointer that supplements the mechanically retrieved rejection sources
+    # (four-check problems + the failing report's full_report/extras) inside
+    # the redo pointer and the ledger redo entry.
+    [string]$FailureRef,
+
     # rollback (planner-stage-rollback / phase-model explicit target)
     [string]$Reason,              # rollback audit trail (required): lands in the
                                    # prune reason AND the rebuilt node's redo context
@@ -1038,6 +1052,69 @@ function Get-ClaimLiveness {
     return @{ liveness = $live; session_id = $sessionId; reason = "agents registry (plugin liveness endpoint)" }
 }
 
+function Get-SessionLiveness {
+    # session-keyed liveness probe (inplace-redo-session-reuse): the same
+    # agents-registry source as Get-ClaimLiveness's level 1, but the session id
+    # comes from the CALLER — roster candidates are historical dispatches with
+    # no live claim sidecar, so the node-keyed form cannot address them. The
+    # plugin's liveness endpoint takes the optional session_id query parameter
+    # (sidecar resolution skipped). Outside dsh shells or on probe failure
+    # liveness degrades to unknown and the caller treats the candidate as
+    # non-reusable (conservative — unknown is never a reuse verdict).
+    param([string]$SessionId)
+    if ([string]::IsNullOrWhiteSpace($SessionId)) {
+        return @{ liveness = "unknown"; session_id = $null; reason = "no session id" }
+    }
+    if ([string]::IsNullOrWhiteSpace($env:DSH_WEB_URL)) {
+        return @{ liveness = "unknown"; session_id = $SessionId; reason = "not a dsh shell (DSH_WEB_URL absent) — registry unverifiable here" }
+    }
+    $url = "$($env:DSH_WEB_URL.TrimEnd('/'))/rdd-goal-tree/liveness?cwd=$([uri]::EscapeDataString($repoRoot))&session_id=$([uri]::EscapeDataString($SessionId))"
+    $r = Invoke-HttpGetJson $url
+    if (-not $r.ok -or $null -eq $r.json) {
+        return @{ liveness = "unknown"; session_id = $SessionId; reason = "liveness endpoint unreachable: $($r.text)" }
+    }
+    $live = "unknown"
+    if ($r.json.PSObject.Properties['liveness']) { $live = [string]$r.json.liveness }
+    return @{ liveness = $live; session_id = $SessionId; reason = "agents registry (session-keyed probe)" }
+}
+
+function Find-ReusableSession {
+    # reuse resolution for auto/manual dispatch (inplace-redo-session-reuse):
+    # scan the run's session roster for the newest ALIVE session bound to the
+    # same (task, stage) and return it as the push target — the discovery face;
+    # the claim sidecar stays the binding truth of the in-place redo path.
+    # Rows without a node binding (direct handoffs) cannot join the same-task
+    # key and never match (v1 boundary). Roster blindness, non-dsh shells and
+    # dead candidates degrade to $null = current behavior (session.create).
+    # Returns @{ session_id; liveness } or $null.
+    param([string]$RunDir, $Bridge, [int]$TaskId, [string]$Stage)
+    if ([string]::IsNullOrWhiteSpace($env:DSH_WEB_URL)) { return $null }
+    $roster = Read-Roster $RunDir
+    if (-not $roster.exists -or $roster.corrupt) { return $null }
+    $candidates = @()
+    foreach ($s in @($roster.sessions)) {
+        if ($null -eq $s -or $s -isnot [System.Collections.IDictionary]) { continue }
+        if ([string]$s['role'] -ne $Stage) { continue }
+        $rowNode = $(if ($s.Contains('node') -and $null -ne $s['node']) { [string]$s['node'] } else { "" })
+        if ([string]::IsNullOrWhiteSpace($rowNode)) { continue }
+        $mapping = Get-NodeTaskStage $Bridge $rowNode
+        if ($null -eq $mapping -or [int]$mapping.task_id -ne $TaskId) { continue }
+        if ([string]::IsNullOrWhiteSpace([string]$s['session_id'])) { continue }
+        $candidates += $s
+    }
+    if ($candidates.Count -eq 0) { return $null }
+    # newest first (updated_at desc): the most recent delivery context wins —
+    # after a re-push the upsert refreshes the winner's updated_at, keeping the
+    # chain stable across consecutive reuses
+    $sorted = @($candidates | Sort-Object -Descending { [string]$_['updated_at'] })
+    foreach ($s in $sorted) {
+        $sid = [string]$s['session_id']
+        $live = Get-SessionLiveness $sid
+        if ($live.liveness -eq "alive") { return @{ session_id = $sid; liveness = $live } }
+    }
+    return $null
+}
+
 function Get-NodePushState {
     # per-node push ledger entry (deep hashtable), $null when never pushed
     param($Bridge, [string]$NodeId)
@@ -1062,7 +1139,10 @@ function Set-NodePushRecord {
     # session existed — auto-retried by the next trigger) or 'pointer' (session
     # created but the pointer message failed — MANUAL re-push only, an auto retry
     # would stack duplicate sessions).
-    param([string]$RunDir, $Bridge, [string]$NodeId, [bool]$Ok, [string]$Error, [string]$RetryClass)
+    # ReusedSessionId (inplace-redo-session-reuse): non-empty marks a
+    # re-delivery into an EXISTING session — the attempt carries it so status
+    # push rows show the destination (reuse visibility).
+    param([string]$RunDir, $Bridge, [string]$NodeId, [bool]$Ok, [string]$Error, [string]$RetryClass, [string]$ReusedSessionId = $null)
     if (-not (Test-PropPresent $Bridge 'pushes') -or $null -eq $Bridge.pushes) { $Bridge['pushes'] = @{} }
     if (-not $Bridge.pushes.Contains($NodeId)) { $Bridge.pushes[$NodeId] = @{ last_ok_at = $null; needs_repush = $false; attempts = @() } }
     $st = $Bridge.pushes[$NodeId]
@@ -1076,6 +1156,7 @@ function Set-NodePushRecord {
     $attempt = @{ at = Get-UtcNowIso; ok = $Ok }
     if (-not [string]::IsNullOrWhiteSpace($Error)) { $attempt['error'] = $Error }
     if (-not [string]::IsNullOrWhiteSpace($RetryClass)) { $attempt['retry_class'] = $RetryClass }
+    if (-not [string]::IsNullOrWhiteSpace($ReusedSessionId)) { $attempt['reused_session_id'] = $ReusedSessionId }
     $attempts = @(Convert-ToSafeArray $st['attempts'])
     $attempts += ,$attempt
     if ($attempts.Count -gt 10) { $attempts = @($attempts | Select-Object -Last 10) }   # bounded ledger
@@ -1243,24 +1324,21 @@ function Test-PushCandidate {
     return $null
 }
 
-function Invoke-NodePush {
-    # ONE start-role push for a candidate (mapped or tree-level): brief/summary
-    # ride the pointer message, the push ledger + roster get their write-back.
-    # Returns @{ ok; error; retry_class } — failures are data, never exceptions.
-    param($Cand, [string]$RunDir, $Bridge, $Nx)
+function Invoke-StartRolePush {
+    # shared delivery core (inplace-redo-session-reuse): ONE start-role
+    # invocation for a push candidate — a fresh session, or reuse of an
+    # existing one (-ExistingSessionId; the redo re-anchoring payload rides
+    # -Appendix). Push-ledger accounting and the roster write-back stay here so
+    # reused and fresh deliveries classify identically; a failed prompt onto a
+    # session that already exists is pointer-class BY CONSTRUCTION (manual
+    # re-push only — an auto retry would re-prompt a session that may have
+    # consumed the first delivery after a transient queue rejection).
+    # Returns @{ ok; error; retry_class; bridge; session_id; reused }.
+    param($Cand, [string]$RunDir, $Bridge, [string]$TaskText, [string]$ExistingSessionId, [string]$Appendix)
     $nodeId = [string]$Cand.node
-    # task brief (dispatch-task-goal-anchoring): goal-first statement derived
-    # from the PERSISTED node.task — in-place from the leaf next view first
-    # (its pending entries carry the full task text), per-node probe as fallback.
-    $taskText = ""
-    if ($null -ne $Nx) {
-        foreach ($p in @(Convert-ToSafeArray $Nx.pending)) {
-            if (([string]$p.id) -eq $nodeId -and $null -ne $p.PSObject.Properties['task']) { $taskText = [string]$p.task }
-        }
-    }
-    if (-not $taskText) { $taskText = Get-NodeTaskText -RunId ([string]$Bridge.run_id) -NodeId $nodeId }
-    $brief = Get-NodeTaskBrief -NodeTask $taskText -NodeId $nodeId
-    $summary = Get-NodeTaskSummary -NodeTask $taskText
+    $brief = Get-NodeTaskBrief -NodeTask $TaskText -NodeId $nodeId
+    $summary = Get-NodeTaskSummary -NodeTask $TaskText
+    $reused = (-not [string]::IsNullOrWhiteSpace($ExistingSessionId))
     try {
         # -GoalTreeRun/-GoalTreeNode stamp the pointer message with the bridge
         # marker so the pushed worker session knows (first turn) that completion
@@ -1272,6 +1350,10 @@ function Invoke-NodePush {
         $startArgs += @("-TaskJson", (Join-Path $Bridge.archive "task.json"), "-GoalTreeRun", ([string]$Bridge.run_id), "-GoalTreeNode", $nodeId)
         if ($brief) { $startArgs += @("-TaskBrief", $brief) }
         if ($summary) { $startArgs += @("-TaskSummary", $summary) }
+        if ($reused) {
+            $startArgs += @("-ExistingSessionId", $ExistingSessionId)
+            if (-not [string]::IsNullOrWhiteSpace($Appendix)) { $startArgs += @("-Appendix", $Appendix) }
+        }
         $r = Invoke-StartRole $startArgs
     }
     catch {
@@ -1282,16 +1364,52 @@ function Invoke-NodePush {
     $errText = $null
     if (-not $ok) {
         $errText = $r.text
-        $retryClass = Get-PushFailureClass $r.text
+        if ($reused) { $retryClass = "pointer" }
+        else { $retryClass = Get-PushFailureClass $r.text }
     }
-    $newBridge = Set-NodePushRecord $RunDir $Bridge $nodeId $ok $errText $retryClass
+    $newBridge = Set-NodePushRecord $RunDir $Bridge $nodeId $ok $errText $retryClass $(if ($reused) { $ExistingSessionId } else { $null })
     if ($ok) {
-        # roster write-back (planner-session-roster): advisory, silent skip
+        # roster write-back (planner-session-roster): advisory, silent skip —
+        # a reuse success re-upserts the SAME session row (node/updated_at
+        # refresh, no new row: the whole point is not stacking sessions)
         $taskNum = 0
         if (-not $Cand.tree_level) { $taskNum = [int]$Cand.task_id }
         $null = Register-PushedSession -RunDir $RunDir -RunIdText ([string]$Bridge.run_id) -Stage $Cand.stage -TaskIdNum $taskNum -NodeId $nodeId -StartRoleText $r.text
     }
-    return @{ ok = $ok; error = $errText; retry_class = $retryClass; bridge = $newBridge }
+    return @{ ok = $ok; error = $errText; retry_class = $retryClass; bridge = $newBridge; session_id = $ExistingSessionId; reused = $reused }
+}
+
+function Invoke-NodePush {
+    # ONE start-role push for a candidate (mapped or tree-level). Reuse
+    # resolution (inplace-redo-session-reuse) precedes the delivery: a live
+    # roster session bound to the same (task, stage) receives the pointer
+    # directly instead of a fresh session.create — QA re-verify nodes and
+    # reclaim re-pushes benefit. Exclusions keep the legacy fresh-session path:
+    # rollback-triggered batches (v1 boundary — cross-stage rebuild keeps
+    # rebuild semantics), tree-level nodes (task_id=0 degrades the same-task
+    # key into a global match) and -NoReuse. Returns
+    # @{ ok; error; retry_class; bridge; session_id; reused; reused_session }.
+    param($Cand, [string]$RunDir, $Bridge, $Nx, [bool]$AllowReuse = $true)
+    $nodeId = [string]$Cand.node
+    # task brief (dispatch-task-goal-anchoring): goal-first statement derived
+    # from the PERSISTED node.task — in-place from the leaf next view first
+    # (its pending entries carry the full task text), per-node probe as fallback.
+    $taskText = ""
+    if ($null -ne $Nx) {
+        foreach ($p in @(Convert-ToSafeArray $Nx.pending)) {
+            if (([string]$p.id) -eq $nodeId -and $null -ne $p.PSObject.Properties['task']) { $taskText = [string]$p.task }
+        }
+    }
+    if (-not $taskText) { $taskText = Get-NodeTaskText -RunId ([string]$Bridge.run_id) -NodeId $nodeId }
+    $reuseSession = $null
+    if ($AllowReuse -and -not $Cand.tree_level) {
+        $reuseSession = Find-ReusableSession -RunDir $RunDir -Bridge $Bridge -TaskId ([int]$Cand.task_id) -Stage ([string]$Cand.stage)
+    }
+    $existingId = $null
+    if ($null -ne $reuseSession) { $existingId = [string]$reuseSession.session_id }
+    $push = Invoke-StartRolePush -Cand $Cand -RunDir $RunDir -Bridge $Bridge -TaskText $taskText -ExistingSessionId $existingId
+    $push['reused_session'] = $reuseSession
+    return $push
 }
 
 function Invoke-AutoDispatch {
@@ -1299,9 +1417,13 @@ function Invoke-AutoDispatch {
     # delivery chain the manual dispatch command uses. No concurrency cap
     # (decision 3: idempotent pushes, PM splits are small); per-node isolation so
     # one failure never blocks the rest; per-node accounting in bridge.json v2.
+    # AllowReuse (inplace-redo-session-reuse): $false forces the legacy
+    # fresh-session path for the whole batch — rollback-triggered rebuilds
+    # always pass $false (v1 boundary), reclaim passes -not $NoReuse; every
+    # other trigger keeps the reuse-priority resolution.
     # Returns { trigger; considered; pushed; skipped; failed; bridge } — failures
     # are data, never exceptions (callers embed them in their own output).
-    param([string]$RunDir, $Bridge, [string]$Trigger)
+    param([string]$RunDir, $Bridge, [string]$Trigger, [bool]$AllowReuse = $true)
     # acceptance-chain trigger (overall-delivery): every auto-dispatch trigger
     # (promulgate/settle/reclaim/rollback/status touch) funnels through here, so
     # the timing expression ("all sub-requirement nodes settled") self-heals any
@@ -1339,7 +1461,7 @@ function Invoke-AutoDispatch {
             $result.skipped += $skip
             continue
         }
-        $push = Invoke-NodePush $cand $RunDir $Bridge $nx
+        $push = Invoke-NodePush $cand $RunDir $Bridge $nx $AllowReuse
         $Bridge = $push.bridge
         if ($push.ok) { $result.pushed += [string]$cand.node }
         else { $result.failed += @{ node = [string]$cand.node; error = $push.error; retry_class = $push.retry_class } }
@@ -3619,6 +3741,39 @@ function Assert-DispatchConflictGate {
     }
 }
 
+function Resolve-DispatchReuse {
+    # dispatch 的两级复用候选（inplace-redo-session-reuse）：
+    #   1) sidecar 优先：本节点自己的 claims 边车（Get-ClaimLiveness），命中存活
+    #      即回原会话——reported 节点（redo 后重投 / 断链重续）的场景正是它；
+    #   2) roster 扫描：同 task×role 的存活历史会话（Find-ReusableSession）。
+    # 返回 @{ session_id; source } 或 $null（由调用方持有门禁与 -NoReuse）。
+    param([string]$RunId, [string]$NodeId, [string]$RunDir, $Bridge, $Mapping)
+    $claimLive = Get-ClaimLiveness $RunId $NodeId
+    if ($claimLive.liveness -eq "alive" -and -not [string]::IsNullOrWhiteSpace([string]$claimLive.session_id)) {
+        return @{ session_id = [string]$claimLive.session_id; source = "sidecar" }
+    }
+    return Find-ReusableSession -RunDir $RunDir -Bridge $Bridge -TaskId ([int]$Mapping.task_id) -Stage ([string]$Mapping.stage)
+}
+
+function Register-DispatchPush {
+    # dispatch 的推送留痕（Invoke-Dispatch 的收尾步骤）：手动重推也是一次
+    # push——成功记账、失败分类（复用投递失败归 pointer 类）；成功时回写
+    # roster（advisory，静默跳过）。返回更新后的 $bridge。
+    param([string]$RunDir, $Bridge, [string]$NodeId, $Mapping, $Result, $ReusedId)
+    $okPush = ($Result.exit -eq 0)
+    $pushClass = $null
+    if (-not $okPush) {
+        if ($null -ne $ReusedId) { $pushClass = "pointer" }
+        else { $pushClass = Get-PushFailureClass $Result.text }
+    }
+    $bridge = Set-NodePushRecord $RunDir $Bridge $NodeId $okPush $(if ($okPush) { $null } else { $Result.text }) $pushClass $ReusedId
+    if ($okPush) {
+        # roster write-back (planner-session-roster): advisory, silent skip
+        $null = Register-PushedSession -RunDir $RunDir -RunIdText $RunId -Stage $Mapping.stage -TaskIdNum $Mapping.task_id -NodeId $NodeId -StartRoleText $Result.text
+    }
+    return $bridge
+}
+
 function Invoke-Dispatch {
     $runDir = Get-BridgeRunDir $RunId
     $bridge = Require-Bridge $runDir
@@ -3644,20 +3799,24 @@ function Invoke-Dispatch {
     # node.task 派生，空则不注入（与旧消息逐字节一致）；
     # 细节见 Get-DispatchTaskAnchorArgs。
     $startArgs = Get-DispatchTaskAnchorArgs -RunIdText $RunId -NodeId $NodeId -Bridge $bridge -Mapping $mapping
+    # 复用解析（inplace-redo-session-reuse，Resolve-DispatchReuse）：手动重推是
+    # pointer 类失败的指定出路，命中复用即再投原会话而非堆新会话；
+    # -NoReuse 显式禁用（逃生开关）。树级节点不参与（v1 边界）。
+    $reusedId = $null
+    if (-not $NoReuse -and -not $DryRun) {
+        $reuseSession = Resolve-DispatchReuse -RunId $RunId -NodeId $NodeId -RunDir $runDir -Bridge $bridge -Mapping $mapping
+        if ($null -ne $reuseSession) {
+            $reusedId = [string]$reuseSession.session_id
+            $startArgs += @("-ExistingSessionId", $reusedId)
+        }
+    }
     $r = Invoke-StartRole ($startArgs + $(if ($DryRun) { @("-DryRun") } else { @() }))
     # a real (non-dry-run) dispatch IS a push: record it in the ledger — the
     # manual path is the designated resolution for pointer-class failures, and
     # an unrecorded success would leave needs_repush stuck forever (status
     # would keep advertising manual work that is already done).
     if (-not $DryRun) {
-        $okPush = ($r.exit -eq 0)
-        $pushClass = $null
-        if (-not $okPush) { $pushClass = Get-PushFailureClass $r.text }
-        $bridge = Set-NodePushRecord $runDir $bridge $NodeId $okPush $(if ($okPush) { $null } else { $r.text }) $pushClass
-        if ($okPush) {
-            # roster write-back (planner-session-roster): advisory, silent skip
-            $null = Register-PushedSession -RunDir $runDir -RunIdText $RunId -Stage $mapping.stage -TaskIdNum $mapping.task_id -NodeId $NodeId -StartRoleText $r.text
-        }
+        $bridge = Register-DispatchPush -RunDir $runDir -Bridge $bridge -NodeId $NodeId -Mapping $mapping -Result $r -ReusedId $reusedId
     }
     if (-not $DryRun -and $r.exit -ne 0) {
         Write-ErrorResult "DISPATCH_FAILED" "start-role exited $($r.exit): $($r.text)" 1
@@ -3671,6 +3830,7 @@ function Invoke-Dispatch {
             stage      = $mapping.stage
             node_status = $nodeStatus
             dry_run    = [bool]$DryRun
+            reused_session_id = $reusedId
             start_role = @{ exit = $r.exit; output = $r.text }
             next_step  = "the dispatched session's first action: delivery-bridge.cmd -Command claim -RunId $RunId -NodeId $NodeId -Role $($mapping.stage)"
         }
@@ -3899,13 +4059,23 @@ function Invoke-BridgeClaim {
 # === Command: reclaim (composite recovery: dead claims AND rejected deliveries) ===
 
 function Invoke-ReclaimRejectedDelivery {
-    # rejected-delivery recovery: the reported node FAILED the three-check gate —
-    # prune the failed delivery (ledger keeps the audit) + graft a fresh stage
-    # node + remap the bridge, so the task returns to workable state.
+    # rejected-delivery recovery: the reported node FAILED the four-check gate.
+    # Dual path (inplace-redo-session-reuse): when the ORIGINAL claim session
+    # (state/claims sidecar dsh_session_id) is provably ALIVE and reuse is not
+    # disabled, recover IN PLACE — no prune, no graft: deliver the redo pointer
+    # (failure list + re-report instruction) into the original session, then
+    # migrate the node reported -> claimed (goal-tree redo, same session).
+    # dead / unproven / non-dsh shells / -NoReuse fall back to the legacy
+    # prune + graft + repush path below (byte-identical pre-feature behavior).
     param([string]$RunDir, $Bridge, $Node, [string]$NodeIdText, [int]$TaskId, [string]$Stage)
     $problems = @(Test-SettleEvidence -RunDir $RunDir -Node $Node -NodeId $NodeIdText -Bridge $Bridge)
     if ($problems.Count -eq 0) {
         Write-ErrorResult "RECLAIM_REQUIRES_UNQUALIFIED" "Node $NodeIdText is reported with QUALIFIED evidence — settle it instead (settle -RunId $RunId -NodeId $NodeIdText); reclaim only recovers dead claims or rejected deliveries." 1
+    }
+    # --- in-place gate: the original claim session is alive and reuse is on ---
+    $live = Get-ClaimLiveness $RunId $NodeIdText
+    if (-not [bool]$NoReuse -and $live.liveness -eq "alive" -and -not [string]::IsNullOrWhiteSpace([string]$live.session_id)) {
+        return Invoke-ReclaimInPlace -RunDir $RunDir -Bridge $Bridge -Node $Node -NodeIdText $NodeIdText -TaskId $TaskId -Stage $Stage -Problems $problems -Live $live
     }
     $reason = "delivery rejected by settle evidence gate: $($problems -join '; ')"
     $rp = Invoke-GoalTree @("-Command", "prune", "-RunId", $RunId, "-NodeId", $NodeIdText, "-Reason", $reason)
@@ -3925,7 +4095,7 @@ function Invoke-ReclaimRejectedDelivery {
     Write-PlanRecoveryTail $RunDir $Bridge 'reclaim' $NodeIdText $TaskId "rejected delivery pruned; redo grafted as $newNodeId"
     # the fresh replacement node is never-pushed by construction — push it now
     # (goal-tree-goal-root: recycle-then-repush, no manual dispatch step).
-    $push = Invoke-AutoDispatch $RunDir $Bridge "reclaim"
+    $push = Invoke-AutoDispatch $RunDir $Bridge "reclaim" (-not [bool]$NoReuse)
     $Bridge = $push.bridge
     return @{
         success = $true
@@ -3937,8 +4107,121 @@ function Invoke-ReclaimRejectedDelivery {
             stage        = $Stage
             reclaimed    = $true
             mode         = "rejected-delivery"
+            fallback     = $(if ($live.liveness -eq "alive") { "no_reuse" } else { $live.liveness })
+            liveness     = $live
             auto_push    = @{ trigger = $push.trigger; pushed = @($push.pushed); failed = @($push.failed) }
             next_step    = "failed delivery pruned (ledger keeps the audit); replacement node $newNodeId grafted" + $(if (@($push.pushed) -contains $newNodeId) { " and auto-pushed" } else { " — re-push via status touch or dispatch -NodeId $newNodeId" })
+        }
+    }
+}
+
+function Get-RedoFailureRef {
+    # 失败清单组装（inplace-redo-session-reuse 设计决策 6）：settle 四查
+    # problems + 被驳回报告的 full_report/extras.verification（截断）+
+    # 规划者显式 -FailureRef（脚本级参数，经作用域链解析），'；' 连接、
+    # 折行压平。空串由调用方硬拒（REDO_FAILURE_REF_MISSING）。
+    param([string]$RunDir, $Node, $Problems)
+    $parts = @()
+    foreach ($p in @(Convert-ToSafeArray $Problems)) { $parts += [string]$p }
+    $cb = Find-AcceptedCallback $RunDir $Node
+    if ($null -ne $cb) {
+        if ($cb.callback.PSObject.Properties['full_report'] -and -not [string]::IsNullOrWhiteSpace([string]$cb.callback.full_report)) {
+            $parts += "full_report: $([string]$cb.callback.full_report)"
+        }
+        $verif = $null
+        if ((Test-PropPresent $cb.callback 'extras') -and $null -ne $cb.callback.extras -and (Test-PropPresent $cb.callback.extras 'verification')) { $verif = [string]$cb.callback.extras.verification }
+        if (-not [string]::IsNullOrWhiteSpace($verif)) {
+            $verif = ($verif -replace '\s+', ' ').Trim()
+            if ($verif.Length -gt 160) { $verif = $verif.Substring(0, 159) + "…" }
+            $parts += "verification: $verif"
+        }
+    }
+    if (-not [string]::IsNullOrWhiteSpace($FailureRef)) { $parts += "planner: $FailureRef" }
+    return (($parts -join '；') -replace '\r?\n', ' ').Trim()
+}
+
+function Invoke-RedoPointerPush {
+    # 重做指针投递（Invoke-ReclaimInPlace 的投递步骤）：把失败清单 + 原地
+    # 重报指令拼进附录，经 Invoke-StartRolePush 投给原会话。投递失败即
+    # RECLAIM_INPLACE_PROMPT_FAILED（Write-ErrorResult 直接退出——状态零
+    # 迁移）。返回 $push（含更新后的 bridge）。
+    param([string]$RunDir, $Bridge, [string]$NodeIdText, [int]$TaskId, [string]$Stage, [string]$Worker, [string]$SessionId, [string]$FailureRefText)
+    $qsHint = ""
+    if ($Stage -eq "DEV") { $qsHint = "；DEV 交付另需 extras.quality_scan 质量扫描凭据（violation_count=0）" }
+    $appendix = "重做指令：节点 $NodeIdText 的交付未通过 settle 四查（rejected delivery）。失败清单：$FailureRefText。请在原会话内修复上述问题后重新出报：goal-tree-leaf.cmd -Command report -RunId $RunId -Worker $Worker -CallbackFile <回调JSON>（citations=改动清单、extras.verification=验证结果$qsHint）。本节点已退回 claimed（原会话 in-place 重做，ledger 已留 redo 留痕）。"
+    $cand = @{ node = $NodeIdText; stage = $Stage; task_id = $TaskId; tree_level = $false }
+    $push = Invoke-StartRolePush -Cand $cand -RunDir $RunDir -Bridge $Bridge -TaskText (Get-NodeTaskText -RunId $RunId -NodeId $NodeIdText) -ExistingSessionId $SessionId -Appendix $appendix
+    if (-not $push.ok) {
+        # pointer-class failure onto an existing session: state NOT migrated
+        # (zero residue), the manual outs are dispatch re-push (reuse
+        # resolution re-prompts the same session) or a -NoReuse rerun
+        Write-ErrorResult "RECLAIM_INPLACE_PROMPT_FAILED" "redo pointer delivery into the original session ($SessionId) failed (retry_class=$($push.retry_class)): $($push.error). Node stays reported (no state migrated). Re-push manually: dispatch -RunId $RunId -NodeId $NodeIdText (reuse resolution re-prompts the same session), or rerun reclaim with -NoReuse to take the rebuild path." 1
+    }
+    return $push
+}
+
+function Invoke-ReclaimInPlace {
+    # in-place redo (inplace-redo-session-reuse, acceptance 1): recover the
+    # rejected delivery in the ORIGINAL worker session — no prune, no graft,
+    # no new session. Execution order is prompt-first (design decision 8):
+    #   four-check (caller) -> liveness gate (caller) -> failure-ref gate ->
+    #   no_push gate -> pointer delivery -> goal-tree redo migration (LAST)
+    # A crash between delivery and migration leaves a retryable reported node
+    # (redo is idempotent, reclaim rerun continues) — never a live session
+    # holding a claimed lock without instructions. The failure list is a
+    # mechanical precondition: an empty assembled ref with no -FailureRef
+    # hard-rejects (REDO_FAILURE_REF_MISSING) — a redo pointer without a
+    # failure list makes the session guess, worse than a fresh session.
+    param([string]$RunDir, $Bridge, $Node, [string]$NodeIdText, [int]$TaskId, [string]$Stage, $Problems, $Live)
+    $sessionId = [string]$Live.session_id
+    $worker = [string]$Node.claimed_by
+    if ([string]::IsNullOrWhiteSpace($worker)) { $worker = $Stage }
+    # --- failure-ref assembly (decision 6, Get-RedoFailureRef): four-check
+    # problems + the failing report's full_report/extras + the planner's
+    # -FailureRef, joined; the ledger redo entry and the redo pointer both
+    # carry it. Mechanical precondition: empty -> caller hard-rejects.
+    $failureRef = Get-RedoFailureRef -RunDir $RunDir -Node $Node -Problems $Problems
+    if ([string]::IsNullOrWhiteSpace($failureRef)) {
+        Write-ErrorResult "REDO_FAILURE_REF_MISSING" "Node $NodeIdText has a live claim session ($sessionId) but no failure list could be assembled (four-check problems empty, no full_report/extras on the accepted report, no -FailureRef given). in-place redo without a failure list makes the session guess — pass -FailureRef <失败清单引用> or rerun with -NoReuse to take the rebuild path." 2
+    }
+    # --- no_push gate (design decision 7): isolated runs skip the delivery but
+    # keep the tree-side migration — a no_push run stays zero-backend for its
+    # whole lifetime; next_step names the manual delivery path
+    $noPush = ((Test-PropPresent $Bridge 'no_push') -and $Bridge['no_push'] -eq $true)
+    $push = $null
+    if (-not $noPush) {
+        $push = Invoke-RedoPointerPush -RunDir $RunDir -Bridge $Bridge -NodeIdText $NodeIdText -TaskId $TaskId -Stage $Stage -Worker $worker -SessionId $sessionId -FailureRef $failureRef
+        $Bridge = $push.bridge
+    }
+    # --- migration (prompt-first: the LAST write) ---
+    $rr = Invoke-GoalTree @("-Command", "redo", "-RunId", $RunId, "-NodeId", $NodeIdText, "-Worker", $worker, "-FailureRef", $failureRef, "-Trigger", "reclaim")
+    if ($rr.exit -ne 0 -or -not $rr.json.success) {
+        Write-ErrorResult "RECLAIM_REDO_FAILED" "goal-tree redo migration failed for node $NodeIdText (pointer may already be delivered into session $sessionId — the session's next report may bounce once; retry reclaim, redo is idempotent): $($rr.text)" 1
+    }
+    # plan recovery tail (long-task-planning): a redo is still a reclaim
+    # deviation — the audit trail keeps counting rework rounds
+    Write-PlanRecoveryTail $RunDir $Bridge 'reclaim' $NodeIdText $TaskId "rejected delivery returned in place to the original session (redo; failure list recorded)"
+    $nextStep = ""
+    if ($noPush) {
+        $nextStep = "node $NodeIdText redone in place (reported -> claimed, same session $sessionId) but NOT delivered — this is a no_push run. Deliver the redo pointer manually into the live session, e.g. dispatch -RunId $RunId -NodeId $NodeIdText (reuse resolution prompts the same session)."
+    }
+    else {
+        $nextStep = "original session $sessionId received the redo pointer (failure list included) and node $NodeIdText is back to claimed — the session fixes the delivery and reports again in place (no context reload, no new session)."
+    }
+    return @{
+        success = $true
+        data    = @{
+            run_id       = $RunId
+            node_id      = $NodeIdText
+            task_id      = $TaskId
+            stage        = $Stage
+            reclaimed    = $true
+            mode         = "rejected-delivery-inplace"
+            session      = @{ id = $sessionId; liveness = $Live.liveness; reason = $Live.reason }
+            failure_ref  = $failureRef
+            no_push      = $noPush
+            auto_push    = $(if ($null -ne $push) { @{ delivered = $true; reused_session_id = $sessionId } } else { $null })
+            next_step    = $nextStep
         }
     }
 }
@@ -3985,7 +4268,7 @@ function Invoke-ReclaimDeadClaim {
     $Bridge = Set-NodeRepushFlag $RunDir $Bridge $NodeIdText
     # plan recovery tail (long-task-planning) BEFORE the push tail below.
     Write-PlanRecoveryTail $RunDir $Bridge 'reclaim' $NodeIdText $TaskId "dead claim stolen (session never delivered)"
-    $push = Invoke-AutoDispatch $RunDir $Bridge "reclaim"
+    $push = Invoke-AutoDispatch $RunDir $Bridge "reclaim" (-not [bool]$NoReuse)
     $Bridge = $push.bridge
     return @{
         success = $true
@@ -4324,7 +4607,9 @@ function Invoke-RollbackFlowSide {
     }
     $push = @{ trigger = "rollback"; considered = 0; pushed = @(); skipped = @(); failed = @() }
     if (-not $routeFailed) {
-        $push = Invoke-AutoDispatch $RunDir $Bridge "rollback"
+        # rollback-triggered rebuilds never reuse (inplace-redo v1 boundary:
+        # cross-stage rollback keeps rebuild semantics — fresh sessions)
+        $push = Invoke-AutoDispatch $RunDir $Bridge "rollback" $false
         $Bridge = $push.bridge
         foreach ($f in @($push.failed)) {
             $warnings += "auto-push failed for node $($f.node) (retry_class=$($f.retry_class)): session-create class auto-retries on the next trigger; pointer class needs manual dispatch. $($f.error)"

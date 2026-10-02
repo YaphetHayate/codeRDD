@@ -43,6 +43,25 @@ param(
     # keeps the legacy marker shape (regression anchor).
     [string]$TaskSummary = "",
 
+    # in-place session reuse (inplace-redo-session-reuse): optional target of a
+    # RE-DELIVERY into an already-existing dsh session. With it set, the dsh
+    # branch skips preset/workspace/session.create/badges/rename entirely and
+    # session.prompt(queue)s the pointer straight into the existing session
+    # (the original worker keeps its full context — the whole point of in-place
+    # redo); non-dsh backends reject SESSION_REUSE_UNSUPPORTED up front (no
+    # terminal window or Plus conversation can be re-entered by id). Absent
+    # (empty) → every backend's behavior is byte-for-byte identical to the
+    # pre-feature output (regression anchor).
+    [string]$ExistingSessionId = "",
+
+    # optional appendix segment appended to the pointer message tail (B2 尾段):
+    # the redo pointer's failure list + re-report instructions ride here. The
+    # goal-tree marker stays in place — A0/B2 prefix-semantic recognition
+    # tolerates the trailing appendix. Absent (empty) → zero injection,
+    # byte-for-byte identical output (regression anchor, same contract as
+    # -TaskBrief/-TaskSummary).
+    [string]$Appendix = "",
+
     # PLANNER uniqueness guard (planner-uniqueness-callback): explicit user
     # override that skips ONLY the startup gate below — the session gets
     # created, but the orchestration right and callback re-pointing still
@@ -249,6 +268,17 @@ function Get-TaskBriefSegment {
     # invocations stay byte-for-byte unchanged.
     if ([string]::IsNullOrWhiteSpace($TaskBrief)) { return "" }
     return " $TaskBrief"
+}
+
+function Get-AppendixSegment {
+    # Pointer-message appendix segment (inplace-redo-session-reuse): the redo
+    # instruction block appended AFTER the goal-tree marker — the reuse carrier's
+    # re-anchoring payload (failure list + re-report command). It rides only
+    # re-deliveries into existing sessions; empty input returns "" so every
+    # unappended invocation stays byte-for-byte unchanged (regression anchor,
+    # same contract as Get-TaskBriefSegment).
+    if ([string]::IsNullOrWhiteSpace($Appendix)) { return "" }
+    return " $Appendix"
 }
 
 function ConvertTo-RunShortName {
@@ -533,6 +563,9 @@ function Build-PointerMessage {
     # goal-tree marker (PLANNER branches above return early unmarked — the
     # planner is the callback target, not a bridge leaf)
     $msg += Get-GoalTreeMarker
+    # appendix (inplace-redo-session-reuse): redo re-anchoring payload rides
+    # only re-deliveries into existing sessions; empty → zero injection
+    $msg += Get-AppendixSegment
     return $msg
 }
 
@@ -790,6 +823,16 @@ function Test-PlannerTakeoverBlocked {
 $root = Resolve-ProjectRoot
 $mode = Resolve-RuntimeMode
 
+# --- session-reuse backend gate (inplace-redo-session-reuse) -------------------
+# -ExistingSessionId names a dsh session to re-enter: only the dsh backend can
+# deliver by id (a CLI terminal window cannot be re-entered; Plus conversations
+# are addressed by employee, not session). Deterministic reject instead of a
+# silent new session — the caller (bridge in-place path) must decide the
+# fallback itself, a fresh session here would silently defeat the reuse intent.
+if (-not [string]::IsNullOrWhiteSpace($ExistingSessionId) -and $mode -ne "dsh") {
+    Write-Err "SESSION_REUSE_UNSUPPORTED: -ExistingSessionId 只在 dsh 后端可用（当前后端 $mode 无法按 id 重入既有会话）。调用方应回落新建会话路径（reclaim 回落 / -NoReuse）。"
+}
+
 # --- PLANNER uniqueness guard (planner-uniqueness-callback) ------------------
 # start-role is the single handoff entry shared by all three backends, so the
 # gate sits BEFORE any backend dispatch (message builders stay pure functions).
@@ -862,6 +905,47 @@ if ($mode -eq "dsh") {
 
     $pointerMessage = Build-PointerMessage
     $preset = "rdd-" + $Role.ToLower()
+
+    # --- reuse carrier (inplace-redo-session-reuse) ---------------------------
+    # Re-delivery into an EXISTING session: no preset pre-check, no workspace,
+    # no session.create, no badges/rename (the session already carries its
+    # identity/title) — one queue-mode session.prompt with the pointer message
+    # (+ the redo appendix when present). Failures never fall back to creating
+    # a fresh session: the bridge classifies (pointer class) and decides; the
+    # pointer message stays visible for a manual paste into the same session.
+    if (-not [string]::IsNullOrWhiteSpace($ExistingSessionId)) {
+        if ($DryRun) {
+            Write-Host "[DRYRUN] 模式:    dsh backend reuse ($DshUrl)" -ForegroundColor Yellow
+            Write-Host "[DRYRUN] 项目根:  $root" -ForegroundColor Yellow
+            Write-Host "[DRYRUN] 复用会话: $ExistingSessionId（跳过 preset/workspace/session.create/setBadges/rename 四步）" -ForegroundColor Yellow
+            Write-Host "[DRYRUN] RPC 1:   POST $DshUrl/api/session.prompt" -ForegroundColor Yellow
+            Write-Host "[DRYRUN] payload: sessionId=$ExistingSessionId mode=queue text=$pointerMessage" -ForegroundColor Yellow
+            exit 0
+        }
+        Write-Step "检测到 dsh 运行时（$DshUrl），向角色 $Role 的既有会话投递指针（复用会话 $ExistingSessionId）..."
+        $prompt = Invoke-DshApi -Method "session.prompt" -Payload @{
+            sessionId = $ExistingSessionId
+            mode      = "queue"
+            content   = @(@{ type = "text"; text = $pointerMessage })
+        }
+        if ($prompt.status -ne "ok") {
+            if ($prompt.status -eq "business") {
+                $detailsText = ""
+                try { $detailsText = " details: $($prompt.details | ConvertTo-Json -Depth 6 -Compress)" } catch { }
+                Write-Host "[x] 既有会话指针投递失败（业务错误 $($prompt.code)）: $($prompt.message)$detailsText" -ForegroundColor Red
+            }
+            else {
+                Write-Host "[x] dsh 服务不可达（$DshUrl）: $($prompt.message)" -ForegroundColor Red
+            }
+            Write-Host "[!] 会话 $ExistingSessionId 未收到指针；可在该会话内手动粘贴发送下面的指针消息（或由规划者 dispatch -NoReuse 重建新会话）：" -ForegroundColor Yellow
+            Write-Host "[i] 指针消息: $pointerMessage" -ForegroundColor Cyan
+            exit 1
+        }
+        Write-Ok "已向角色 $Role 的既有会话投递指针（复用会话 sessionId: $ExistingSessionId）"
+        Write-Host "[i] 指针消息: $pointerMessage" -ForegroundColor Cyan
+        Write-Host "[i] 目标会话保留原上下文，目标角色已在原会话内继续工作，可点开查看进度" -ForegroundColor Cyan
+        exit 0
+    }
 
     if ($DryRun) {
         Write-Host "[DRYRUN] 模式:    dsh backend ($DshUrl)" -ForegroundColor Yellow

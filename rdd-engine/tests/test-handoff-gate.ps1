@@ -27,6 +27,13 @@
 $ErrorActionPreference = 'Stop'
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 
+# inplace-redo-session-reuse: this suite asserts the LEGACY recovery path
+# (prune + graft + repush, G18). Run from inside a dsh session, DSH_SESSION_ID
+# would bind the claims sidecar to a LIVE session and reclaim would take the
+# new in-place path instead — neutralize so the legacy assertions hold
+# deterministically wherever the suite runs.
+Remove-Item Env:\DSH_SESSION_ID -ErrorAction SilentlyContinue
+
 # The engine scripts are UTF-8 WITHOUT BOM; Windows PowerShell 5.1 reads a
 # BOM-less -File script as UTF-8 only when the console codepage is 65001 (the
 # engine .cmd wrappers chcp 65001 for exactly this reason). Child interpreters

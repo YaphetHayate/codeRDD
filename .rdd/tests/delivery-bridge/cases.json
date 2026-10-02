@@ -19,7 +19,8 @@
                      "rdd-engine/tests/test-bridge-conflicts.ps1",
                      "rdd-engine/tests/test-long-task-planning.ps1",
                       "rdd-engine/tests/test-handoff-gate.ps1",
-                      ".rdd/tests/delivery-bridge/prescan-gate-qa-verify.ps1"
+                      ".rdd/tests/delivery-bridge/prescan-gate-qa-verify.ps1",
+                      ".rdd/tests/delivery-bridge/inplace-redo-qa-verify.ps1"
                  ],
     "lastChange":  "2026-10-01-planner-delivery-efficiency",
     "cases":  [
@@ -2231,6 +2232,242 @@
                            "git diff --name-only 断言该文件零改动"
                        ],
                        "expected":  "机械门前置后 QA 复扫双保险职责不变"
-                   }
+                   },
+                  {
+                      "id":  "TC-B127",
+                      "title":  "reclaim rejected-delivery 原会话存活走 in-place：同节点同会话、零 session.create、指针含三源失败清单+重报指令、ledger redo 留痕",
+                      "type":  "positive",
+                      "priority":  "P0",
+                      "acceptance":  "IR-AC-1",
+                      "codeRef":  ".rdd/tests/delivery-bridge/inplace-redo-qa-verify.ps1:386",
+                      "sourceChange":  "2026-10-01-planner-delivery-efficiency",
+                      "status":  "active",
+                      "crossFeature":  [
+
+                                       ],
+                      "precondition":  "stub 端点隔离 run（本地 raw-TCP DSH_WEB_URL 假后端，PS5.1 生产解释器黑盒驱动）",
+                      "steps":  [
+                                    "DEV 节点以 verdict=failed 回调出报（full_report/verification 带 marker）并以 sidecar 会话 claim（alive 集）",
+                                    "reclaim -FailureRef <规划者失败清单 marker>",
+                                    "断言 mode=rejected-delivery-inplace、node_id 不变、无剪枝无重建、零 session.create、指针载荷含三源 marker 与重报指令、ledger 追加 type=redo（failure_ref/session_id/trigger）、边车保 dsh_session_id 且 claimed_at 换新钟、push 账 reused_session_id、节点键控探针先行"
+                                ],
+                      "expected":  "in-place 全链留痕完整：不剪枝、不重建、原会话收重做指针，审计链可追"
+                  },
+                  {
+                      "id":  "TC-B128",
+                      "title":  "in-place 重做后原会话重报 + settle 闭环",
+                      "type":  "positive",
+                      "priority":  "P0",
+                      "acceptance":  "IR-AC-1",
+                      "codeRef":  ".rdd/tests/delivery-bridge/inplace-redo-qa-verify.ps1:419",
+                      "sourceChange":  "2026-10-01-planner-delivery-efficiency",
+                      "status":  "active",
+                      "crossFeature":  [
+
+                                       ],
+                      "precondition":  "stub 端点隔离 run（本地 raw-TCP DSH_WEB_URL 假后端，PS5.1 生产解释器黑盒驱动）",
+                      "steps":  [
+                                    "TC-B127 场景 reclaim 后节点回 claimed",
+                                    "同会话形状重报（qualified + quality_scan skip）",
+                                    "bridge settle"
+                                ],
+                      "expected":  "重报被受理、settle 成功——同会话链路继续工作，返工轮不丢上下文"
+                  },
+                  {
+                      "id":  "TC-B129",
+                      "title":  "no_push run 的 in-place：树侧迁移照落、零 /api 调用",
+                      "type":  "boundary",
+                      "priority":  "P1",
+                      "acceptance":  "IR-AC-5",
+                      "codeRef":  ".rdd/tests/delivery-bridge/inplace-redo-qa-verify.ps1:476",
+                      "sourceChange":  "2026-10-01-planner-delivery-efficiency",
+                      "status":  "active",
+                      "crossFeature":  [
+
+                                       ],
+                      "precondition":  "stub 端点隔离 run（本地 raw-TCP DSH_WEB_URL 假后端，PS5.1 生产解释器黑盒驱动）",
+                      "steps":  [
+                                    "promulgate -NoPush 建 run，claim+report 不合格（sidecar 会话 alive）",
+                                    "reclaim",
+                                    "断言 mode=inplace + no_push 标记、节点 reported→claimed、ledger redo 存在、/api 调用零增量、next_step 提示手动投递"
+                                ],
+                      "expected":  "隔离纪律保持：no_push run 终身零后端 /api，树侧动作（迁移+留痕）照落"
+                  },
+                  {
+                      "id":  "TC-B130",
+                      "title":  "原会话 dead → 回落现行「剪枝+重建+重推」路径",
+                      "type":  "negative",
+                      "priority":  "P0",
+                      "acceptance":  "IR-AC-2",
+                      "codeRef":  ".rdd/tests/delivery-bridge/inplace-redo-qa-verify.ps1:435",
+                      "sourceChange":  "2026-10-01-planner-delivery-efficiency",
+                      "status":  "active",
+                      "crossFeature":  [
+
+                                       ],
+                      "precondition":  "stub 端点隔离 run（本地 raw-TCP DSH_WEB_URL 假后端，PS5.1 生产解释器黑盒驱动）",
+                      "steps":  [
+                                    "claim 会话不在 alive 集（dead）后出报不合格",
+                                    "reclaim",
+                                    "断言 mode=rejected-delivery、fallback=dead、旧节点 pruned+替换 graft、session.create 新会话、原会话零投递、无 redo 条目"
+                                ],
+                      "expected":  "回落路径行为与引入前一致（结构等价），不产生 in-place 副作用"
+                  },
+                  {
+                      "id":  "TC-B131",
+                      "title":  "存活探针不可达（liveness unknown）→ 回落现行路径",
+                      "type":  "exception",
+                      "priority":  "P0",
+                      "acceptance":  "IR-AC-2",
+                      "codeRef":  ".rdd/tests/delivery-bridge/inplace-redo-qa-verify.ps1:458",
+                      "sourceChange":  "2026-10-01-planner-delivery-efficiency",
+                      "status":  "active",
+                      "crossFeature":  [
+
+                                       ],
+                      "precondition":  "stub 端点隔离 run（本地 raw-TCP DSH_WEB_URL 假后端，PS5.1 生产解释器黑盒驱动）",
+                      "steps":  [
+                                    "会话 alive 但 DSH_WEB_URL 指向死端口",
+                                    "reclaim",
+                                    "断言 fallback=unknown、mode=rejected-delivery、无 redo 条目"
+                                ],
+                      "expected":  "unknown 永不作为复用判据——保守回落，零行为变化"
+                  },
+                  {
+                      "id":  "TC-B132",
+                      "title":  "CLI 后端（无实时投递通道）回落 + start-role -ExistingSessionId 拒 SESSION_REUSE_UNSUPPORTED",
+                      "type":  "boundary",
+                      "priority":  "P1",
+                      "acceptance":  "IR-AC-2",
+                      "codeRef":  ".rdd/tests/delivery-bridge/inplace-redo-qa-verify.ps1:595",
+                      "sourceChange":  "2026-10-01-planner-delivery-efficiency",
+                      "status":  "active",
+                      "crossFeature":  [
+
+                                       ],
+                      "precondition":  "stub 端点隔离 run（本地 raw-TCP DSH_WEB_URL 假后端，PS5.1 生产解释器黑盒驱动）",
+                      "steps":  [
+                                    "去除 DSH_WEB_URL 后 no_push run 出报不合格并 reclaim",
+                                    "start-role 带 -ExistingSessionId 于非 dsh 后端执行"
+                                ],
+                      "expected":  "CLI 后端回落现行路径（fallback=unknown）；复用载波确定性拒绝而非静默新建"
+                  },
+                  {
+                      "id":  "TC-B133",
+                      "title":  "QA 驳回→rollback→DEV 重做 settle 后，重验 QA 节点经花名册回原 QA 会话（同 task×role 复用 + session 键控探针）",
+                      "type":  "positive",
+                      "priority":  "P0",
+                      "acceptance":  "IR-AC-3",
+                      "codeRef":  ".rdd/tests/delivery-bridge/inplace-redo-qa-verify.ps1:485",
+                      "sourceChange":  "2026-10-01-planner-delivery-efficiency",
+                      "status":  "active",
+                      "crossFeature":  [
+
+                                       ],
+                      "precondition":  "stub 端点隔离 run（本地 raw-TCP DSH_WEB_URL 假后端，PS5.1 生产解释器黑盒驱动）",
+                      "steps":  [
+                                    "CTO→DEV→QA 全链推进，QA 首推会话入花名册并 alive",
+                                    "QA verdict=failed 出报 → rollback 至 DEV → DEV 在重建节点重做 settle",
+                                    "断言新 QA 节点推送零 session.create、指针投原 QA 会话恰一条、push 账 reused_session_id、stub 收到 session_id=<原QA会话> 键控探针查询"
+                                ],
+                      "expected":  "QA 重验节点复用原会话——两级存活机制（注册表优先）在复用解析中真实复用"
+                  },
+                  {
+                      "id":  "TC-B134",
+                      "title":  "rollback 重建节点永不复用（存活同角色会话在场仍 session.create）",
+                      "type":  "boundary",
+                      "priority":  "P0",
+                      "acceptance":  "IR-AC-3",
+                      "codeRef":  ".rdd/tests/delivery-bridge/inplace-redo-qa-verify.ps1:517",
+                      "sourceChange":  "2026-10-01-planner-delivery-efficiency",
+                      "status":  "active",
+                      "crossFeature":  [
+
+                                       ],
+                      "precondition":  "stub 端点隔离 run（本地 raw-TCP DSH_WEB_URL 假后端，PS5.1 生产解释器黑盒驱动）",
+                      "steps":  [
+                                    "花名册存在 alive 的同 task×role DEV 会话",
+                                    "rollback 触发重建节点自动推送",
+                                    "断言 session.create 新会话、原会话零新投递、push 账无 reused_session_id"
+                                ],
+                      "expected":  "v1 显式边界成立：跨阶段 rollback 保持重建语义"
+                  },
+                  {
+                      "id":  "TC-B135",
+                      "title":  "手动 dispatch 复用解析：sidecar 优先回原会话",
+                      "type":  "positive",
+                      "priority":  "P1",
+                      "acceptance":  "IR-AC-3",
+                      "codeRef":  ".rdd/tests/delivery-bridge/inplace-redo-qa-verify.ps1:552",
+                      "sourceChange":  "2026-10-01-planner-delivery-efficiency",
+                      "status":  "active",
+                      "crossFeature":  [
+
+                                       ],
+                      "precondition":  "stub 端点隔离 run（本地 raw-TCP DSH_WEB_URL 假后端，PS5.1 生产解释器黑盒驱动）",
+                      "steps":  [
+                                    "节点 claimed 且 sidecar 会话 alive",
+                                    "dispatch -RunId -NodeId",
+                                    "断言响应 reused_session_id=sidecar 会话、指针投同会话、零 session.create"
+                                ],
+                      "expected":  "pointer 类失败的指定出路再投原会话，而非堆新会话"
+                  },
+                  {
+                      "id":  "TC-B136",
+                      "title":  "planner-guide 硬约束 4 措辞更新 + 命令面板 reclaim/settle/dispatch 行同步",
+                      "type":  "positive",
+                      "priority":  "P1",
+                      "acceptance":  "IR-AC-4",
+                      "codeRef":  ".rdd/tests/delivery-bridge/inplace-redo-qa-verify.ps1:611",
+                      "sourceChange":  "2026-10-01-planner-delivery-efficiency",
+                      "status":  "active",
+                      "crossFeature":  [
+
+                                       ],
+                      "precondition":  "stub 端点隔离 run（本地 raw-TCP DSH_WEB_URL 假后端，PS5.1 生产解释器黑盒驱动）",
+                      "steps":  [
+                                    "静态断言 planner-guide.md 含指定措辞「已 settle 的 report 不重复消费；规划者显式 redo 指令可将 reported 退回 claimed（同会话 + ledger 留痕）」",
+                                    "断言命令面板回收行含 -FailureRef/-NoReuse 与双路径描述、调动行含 [-NoReuse]、流转行含复用优先、排障表含两个新回收错误码"
+                                ],
+                      "expected":  "协议文档与实现同步，规划者操作面有据可依"
+                  },
+                  {
+                      "id":  "TC-B137",
+                      "title":  "-NoReuse 逃生开关：reclaim 与 dispatch 显式禁用复用走现行路径",
+                      "type":  "negative",
+                      "priority":  "P0",
+                      "acceptance":  "IR-AC-5",
+                      "codeRef":  ".rdd/tests/delivery-bridge/inplace-redo-qa-verify.ps1:556",
+                      "sourceChange":  "2026-10-01-planner-delivery-efficiency",
+                      "status":  "active",
+                      "crossFeature":  [
+
+                                       ],
+                      "precondition":  "stub 端点隔离 run（本地 raw-TCP DSH_WEB_URL 假后端，PS5.1 生产解释器黑盒驱动）",
+                      "steps":  [
+                                    "原会话 alive 下 reclaim -NoReuse",
+                                    "sidecar alive 节点 dispatch -NoReuse"
+                                ],
+                      "expected":  "双触点均走现行路径：reclaim 剪枝+重建+create、dispatch 新会话，复用可显式关闭"
+                  },
+                  {
+                      "id":  "TC-B138",
+                      "title":  "ledger redo 审计行不膨胀 worker 报告统计且 goal-tree status 可解析",
+                      "type":  "boundary",
+                      "priority":  "P1",
+                      "acceptance":  "IR-AC-1",
+                      "codeRef":  ".rdd/tests/delivery-bridge/inplace-redo-qa-verify.ps1:413",
+                      "sourceChange":  "2026-10-01-planner-delivery-efficiency",
+                      "status":  "active",
+                      "crossFeature":  [
+
+                                       ],
+                      "precondition":  "stub 端点隔离 run（本地 raw-TCP DSH_WEB_URL 假后端，PS5.1 生产解释器黑盒驱动）",
+                      "steps":  [
+                                    "统计 redo 前后的 worker 报告条数（无 type 字段行）",
+                                    "goal-tree status 解析"
+                                ],
+                      "expected":  "redo 行是审计条目不是报告：统计口径不变，消费方不误读"
+                  }
                ]
 }

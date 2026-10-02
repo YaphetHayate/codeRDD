@@ -21,7 +21,7 @@
 
 [CmdletBinding()]
 param(
-    [ValidateSet("start", "graft", "prune", "settle", "conclude", "round-start", "round-end", "status", "resume", "deps")]
+    [ValidateSet("start", "graft", "prune", "redo", "settle", "conclude", "round-start", "round-end", "status", "resume", "deps")]
     [string]$Command = "status",
 
     [string]$RunId,
@@ -45,13 +45,23 @@ param(
     [switch]$GoalRoot,
     [string]$GoalFile,
 
-    # graft / prune / settle
+    # graft / prune / redo / settle
     [string]$Parent,
     [string]$NodeId,
     [string]$Tasks,
     [string]$TasksFile,
     [string]$Reason,
     [string]$Note,
+
+    # redo (inplace-redo-session-reuse): same-stage in-place redo primitive —
+    # returns a reported node to claimed for ITS ORIGINAL holder, preserving the
+    # dsh session binding (the bridge's rejected-delivery reclaim delivers the
+    # redo pointer into that session first, then migrates here — prompt-first
+    # ordering). -FailureRef is mandatory audit input: the rejection's failure
+    # list reference (ledger redo entries never exist without one).
+    [string]$Worker,
+    [string]$FailureRef,
+    [string]$Trigger,
 
     # graft (dependency/ref passthrough; per-task depends_on / ref win over the CLI defaults)
     [string]$DependsOn,
@@ -709,6 +719,10 @@ function Get-LedgerStats {
     param([array]$Entries)
     $stats = @{ total = $Entries.Count; valid = 0; downgraded = 0; invalid = 0; range_failures = 0 }
     foreach ($e in $Entries) {
+        # type-carrying entries are planner-side audit rows (redo), not worker
+        # reports — they carry no callback/validation and never count (the same
+        # guard the plugin watcher applies)
+        if ($e -is [System.Collections.IDictionary] -and $e.Contains('type') -and $e['type']) { continue }
         $st = [string]$e.validation.status
         if ($st -eq "valid") { $stats.valid++ }
         elseif ($st -eq "downgraded") { $stats.downgraded++ }
@@ -1070,6 +1084,23 @@ function Get-BudgetUsage {
 
 # === Report artifacts ===
 
+function Get-RoundEntriesTable {
+    # 本轮回写表（Write-RoundSnapshot 的行块）：type 携带行（redo 审计等）
+    # 已在调用方的筛选层剔除，这里只渲染 worker 报告行。
+    param($RoundEntries)
+    $entries = @($RoundEntries)
+    if ($entries.Count -eq 0) { return @("- （无）") }
+    $rows = @(
+        "| entry | node | worker | verdict | confidence | 校验 |"
+        "|-------|------|--------|---------|------------|------|"
+    )
+    foreach ($e in $entries) {
+        $cb = $e.callback
+        $rows += "| $($e.entry_id) | $($e.node_id) | $($e.worker) | $($cb.verdict) | $($cb.confidence) | $($e.validation.status) |"
+    }
+    return $rows
+}
+
 function Write-RoundSnapshot {
     param([string]$RunDir, $Manifest, $Tree, $Round, [string]$StartedAt, [string]$EndedAt, [string]$SummaryText, [string]$DecisionText, [bool]$Auto)
 
@@ -1077,7 +1108,7 @@ function Write-RoundSnapshot {
     if (-not (Test-Path -LiteralPath $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
 
     $ledger = Read-Ledger $RunDir
-    $roundEntries = @($ledger.entries | Where-Object { [int]$_.round -eq [int]$Round })
+    $roundEntries = @($ledger.entries | Where-Object { [int]$_.round -eq [int]$Round -and -not ($_.Contains('type') -and $_['type']) })
 
     $census = Get-TreeCensus $Tree
     $budget = Get-BudgetUsage $Manifest $Tree @{ last_round = [int]$Round }
@@ -1091,17 +1122,7 @@ function Write-RoundSnapshot {
     $lines += ""
     $lines += "## 本轮回写（$($roundEntries.Count) 条）"
     $lines += ""
-    if ($roundEntries.Count -eq 0) {
-        $lines += "- （无）"
-    }
-    else {
-        $lines += "| entry | node | worker | verdict | confidence | 校验 |"
-        $lines += "|-------|------|--------|---------|------------|------|"
-        foreach ($e in $roundEntries) {
-            $cb = $e.callback
-            $lines += "| $($e.entry_id) | $($e.node_id) | $($e.worker) | $($cb.verdict) | $($cb.confidence) | $($e.validation.status) |"
-        }
-    }
+    $lines += Get-RoundEntriesTable $roundEntries
     $lines += ""
     $lines += "## 规划者整合"
     $lines += ""
@@ -1697,6 +1718,121 @@ function Invoke-Prune {
         return @{
             success = $true
             data    = @{ run_id = $RunId; pruned = $prunedIds; cascade_count = ($prunedIds.Count - 1); reason = $Reason; lock = $lockInfo }
+        }
+    }
+    finally {
+        Exit-RunLock
+    }
+}
+
+# === Command: redo (inplace-redo-session-reuse: reported -> claimed, same holder) ===
+#
+# The lifecycle exception the PLANNER-side reclaim calls after delivering a redo
+# pointer into the ORIGINAL worker session (prompt-first: the bridge prompts,
+# then migrates — a crash between the two leaves a retryable reported node, never
+# a live session holding a claim lock without instructions). Idempotent: a rerun
+# against a node already claimed by the SAME worker is a no-op success (crash-
+# window self-heal); done/pruned reject (terminal), other holders reject.
+# The claims sidecar's claimed_at is renewed so the 60-min dead-claim clock
+# restarts from the new round, while dsh_session_id is preserved verbatim — the
+# original session binding is the whole point of in-place redo (a deliberate
+# leaf-domain file touched from the structure plane; declared in the design's
+# shared-touch list). Ledger gets a type=redo audit entry (node/worker/
+# session_id/failure_ref/trigger) — NOT a worker report: the plugin watcher and
+# Get-LedgerStats skip type-carrying entries.
+
+function Update-RedoClaimSidecar {
+    # redo 的边车刷新（Invoke-Redo 的叶子域步骤）：claimed_at 换新钟，
+    # dsh_session_id 原样保留——复用判定的真相源就在这个字段上。
+    param([string]$RunDir, [string]$Node, [string]$At)
+    $claimsPath = Join-Path (Get-StateDir $RunDir) ("claims\$Node.json")
+    $sessionOfClaim = $null
+    if (Test-Path -LiteralPath $claimsPath -PathType Leaf) {
+        try {
+            $claim = [System.IO.File]::ReadAllText($claimsPath, [System.Text.Encoding]::UTF8) | ConvertFrom-Json
+            if ($claim.PSObject.Properties['dsh_session_id'] -and $claim.dsh_session_id) { $sessionOfClaim = [string]$claim.dsh_session_id }
+            $claim.claimed_at = $At
+            [System.IO.File]::WriteAllText($claimsPath, (ConvertTo-Json $claim -Depth 4), $script:Utf8NoBom)
+        } catch { }
+    }
+    return $sessionOfClaim
+}
+
+function Add-RedoLedgerEntry {
+    # redo 的台账审计行（Invoke-Redo 的留痕步骤）：type=redo 的结构化行——
+    # 不是 worker 报告；下游消费方按 type 字段跳过（Get-LedgerStats /
+    # Write-RoundSnapshot / 插件 parseLedgerEntry）。追加后读回校验。
+    param([string]$RunDir, [int]$Round, $Node, [string]$Worker, [string]$At, $SessionId, [string]$FailureRef, [string]$Trigger)
+    $entryId = "L$((@(Read-Ledger $RunDir).entries).Count + 1)"
+    $entry = [ordered]@{
+        entry_id    = $entryId
+        type        = "redo"
+        round       = $Round
+        node_id     = [string]$Node.id
+        role        = if ($Node.role) { [string]$Node.role } else { $null }
+        worker      = $Worker
+        at          = $At
+        session_id  = $SessionId
+        failure_ref = $FailureRef
+        trigger     = if ([string]::IsNullOrWhiteSpace($Trigger)) { $null } else { $Trigger }
+    }
+    $line = ConvertTo-Json $entry -Depth 8 -Compress
+    [System.IO.File]::AppendAllText((Get-LedgerPath $RunDir), $line + "`n", $script:Utf8NoBom)
+    $all = @([System.IO.File]::ReadAllLines((Get-LedgerPath $RunDir)) | Where-Object { $_.Trim() -ne "" })
+    try { $null = $all[-1] | ConvertFrom-Json } catch { Write-ErrorResult "LEDGER_READBACK_FAILED" "ledger.jsonl last line failed to parse after append" 3 }
+}
+
+function Invoke-Redo {
+    param([string]$RunDir)
+
+    if ([string]::IsNullOrWhiteSpace($NodeId)) { Write-ErrorResult "MISSING_NODE_ID" "-NodeId is required" 1 }
+    if ([string]::IsNullOrWhiteSpace($Worker)) { Write-ErrorResult "MISSING_WORKER" "-Worker (the current claim holder) is required" 1 }
+    if ([string]::IsNullOrWhiteSpace($FailureRef)) { Write-ErrorResult "MISSING_FAILURE_REF" "-FailureRef is required (audit trail: the rejection's failure list reference — a redo without one makes the worker guess)" 1 }
+
+    $lockInfo = Enter-RunLock $RunDir
+    try {
+        $manifest = Read-ManifestEditable $RunDir
+        Assert-Running $manifest
+        $roundState = Get-RoundState $RunDir
+        $round = [int]$roundState.open_round
+        $readBack = Read-TreeEditable $RunDir
+        $tree = $readBack.tree
+
+        $target = Find-Node $tree $NodeId
+        if ($null -eq $target) { Write-ErrorResult "NODE_NOT_FOUND" "Node not found: $NodeId" 2 }
+
+        if ($target.status -eq "claimed") {
+            if ([string]$target.claimed_by -eq $Worker) {
+                return @{
+                    success = $true
+                    data    = @{ run_id = $RunId; node_id = $NodeId; status = "claimed"; idempotent_noop = $true; worker = $Worker; failure_ref = $FailureRef; lock = $lockInfo }
+                }
+            }
+            Write-ErrorResult "REDO_OWNER_MISMATCH" "Node $NodeId is claimed by '$($target.claimed_by)', not '$Worker'. redo returns a reported node to its ORIGINAL holder only (in-place same-session redo); use the leaf claim -Steal channel for ownership changes." 1
+        }
+        if ($target.status -ne "reported") {
+            Write-ErrorResult "REDO_REQUIRES_REPORTED" "Node $NodeId is '$($target.status)'; redo only returns reported nodes to claimed (pending -> claim instead; done/pruned are terminal)." 1
+        }
+
+        # --- migration: reported -> claimed, same holder, fresh clock ---
+        $now = Get-UtcNowIso
+        $target.status = "claimed"
+        $target.reported_at = $null
+        $target.claimed_at = $now
+        # claimed_by / steal_count stay untouched: same-stage redo is not a steal
+        # (the holder never changed; only the round did)
+
+        # --- sidecar refresh (leaf-domain file; see the command header) ---
+        $sessionOfClaim = Update-RedoClaimSidecar -RunDir $RunDir -Node $NodeId -At $now
+
+        Write-TreeFile $RunDir $tree
+
+        # --- ledger audit entry (append-only; type=redo — not a worker report) ---
+        Add-RedoLedgerEntry -RunDir $RunDir -Round $round -Node $target -Worker $Worker -At $now -SessionId $sessionOfClaim -FailureRef $FailureRef -Trigger $Trigger
+
+        return @{
+            success = $true
+            data    = @{ run_id = $RunId; node_id = $NodeId; status = "claimed"; worker = $Worker; session_id = $sessionOfClaim; failure_ref = $FailureRef; trigger = $Trigger; round = $round; lock = $lockInfo }
         }
     }
     finally {
@@ -2311,6 +2447,7 @@ switch ($Command) {
     "start"       { $result = Invoke-Start }
     "graft"       { $runDir = Resolve-RunDir $RunId; $result = Invoke-Graft $runDir }
     "prune"       { $runDir = Resolve-RunDir $RunId; $result = Invoke-Prune $runDir }
+    "redo"        { $runDir = Resolve-RunDir $RunId; $result = Invoke-Redo $runDir }
     "settle"      { $runDir = Resolve-RunDir $RunId; $result = Invoke-Settle $runDir }
     "round-start" { $runDir = Resolve-RunDir $RunId; $result = Invoke-RoundStart $runDir }
     "round-end"   { $runDir = Resolve-RunDir $RunId; $result = Invoke-RoundEnd $runDir }

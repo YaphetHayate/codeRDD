@@ -101,11 +101,16 @@ async function serve(req: IncomingMessage, res: ServerResponse, config: Config, 
 }
 
 /**
- * Serve `GET /rdd-goal-tree/liveness?cwd=…&run=…&node=…`: read-only session
- * liveness for one claimed node — the claims-sidecar session id joined against
- * the agents registry (the SAME source the worker-report callback delivery
- * uses: resolvable = alive). Consumed by the engine bridge's reclaim precheck
- * (RECLAIM_TARGET_ALIVE / unknown fallback); read-only, never starts a turn.
+ * Serve `GET /rdd-goal-tree/liveness?cwd=…&run=…&node=…` — and the session-
+ * keyed variant `?cwd=…&session_id=…`: read-only session liveness against the
+ * agents registry (the SAME source the worker-report callback delivery uses:
+ * resolvable = alive). The node-keyed form resolves the claims-sidecar session
+ * id first (consumed by the engine bridge's reclaim precheck —
+ * RECLAIM_TARGET_ALIVE / unknown fallback); the session-keyed form queries the
+ * registry directly with the caller's id (consumed by the bridge's reuse
+ * resolution — roster candidates are historical dispatches with no live claim
+ * sidecar). Read-only either way, never starts a turn. Without session_id the
+ * behavior is unchanged (byte-identical legacy contract).
  */
 async function serveLiveness(
   req: IncomingMessage,
@@ -122,6 +127,20 @@ async function serveLiveness(
     return
   }
   const url = new URL(req.url ?? '/', 'http://localhost')
+  const sessionIdParam = url.searchParams.get('session_id')
+  if (sessionIdParam !== null && sessionIdParam.trim() !== '') {
+    // session-keyed probe (inplace-redo-session-reuse): registry direct, no
+    // sidecar resolution — the run/node query params are ignored in this form
+    let liveness: 'alive' | 'dead' = 'dead'
+    try {
+      const agent = ctx.agents.get(sessionIdParam as SessionId)
+      liveness = agent !== undefined ? 'alive' : 'dead'
+    } catch {
+      liveness = 'dead'
+    }
+    send(200, { session_id: sessionIdParam, liveness, reason: 'agents registry (session-keyed probe, same source as callback delivery)' })
+    return
+  }
   const run = url.searchParams.get('run')
   const node = url.searchParams.get('node')
   if ((run === null || run.trim() === '') || (node === null || node.trim() === '')) {

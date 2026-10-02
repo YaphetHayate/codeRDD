@@ -614,6 +614,11 @@ function parseLedgerEntry(line: string, runId: string): GoalTreeReportEntry | nu
   const entryId = str(entry.entry_id)
   const nodeId = str(entry.node_id)
   if (entryId === null || nodeId === null) return null
+  // type-carrying entries are planner-side audit rows (type=redo,
+  // inplace-redo-session-reuse), not worker reports — the watcher must not
+  // deliver them as callbacks (the engine's Get-LedgerStats applies the same
+  // guard). Legacy entries carry no type and pass unchanged.
+  if (str(entry.type) !== null) return null
   const callback = (entry.callback ?? {}) as Record<string, unknown>
   const citations = Array.isArray(callback.citations)
     ? (callback.citations as Record<string, unknown>[])
