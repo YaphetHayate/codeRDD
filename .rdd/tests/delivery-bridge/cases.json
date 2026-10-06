@@ -9,7 +9,8 @@
                         "rdd-engine/scripts/rdd-flow.ps1",
                         "rdd-engine/scripts/start-role.ps1",
                         "rdd-engine/references/planner-guide.md",
-                        "rdd-pm/references/requirement-item-template.md"
+                        "rdd-pm/references/requirement-item-template.md",
+                        "rdd-auditor/references/design-review.md"
                     ],
     "testCode":  [
                      ".rdd/tests/delivery-bridge/delivery-bridge-verify.ps1",
@@ -20,9 +21,11 @@
                      "rdd-engine/tests/test-long-task-planning.ps1",
                       "rdd-engine/tests/test-handoff-gate.ps1",
                       ".rdd/tests/delivery-bridge/prescan-gate-qa-verify.ps1",
-                      ".rdd/tests/delivery-bridge/inplace-redo-qa-verify.ps1"
+                      ".rdd/tests/delivery-bridge/inplace-redo-qa-verify.ps1",
+                      "rdd-engine/tests/test-bridge-design-review.ps1",
+                      ".rdd/tests/delivery-bridge/design-review-qa-verify.ps1"
                  ],
-    "lastChange":  "2026-10-01-planner-delivery-efficiency",
+    "lastChange":  "2026-10-02-auditor-independent-review",
     "cases":  [
                   {
                       "id":  "TC-B01",
@@ -2468,6 +2471,189 @@
                                     "goal-tree status 解析"
                                 ],
                       "expected":  "redo 行是审计条目不是报告：统计口径不变，消费方不误读"
+                  },
+                  {
+                      "id":  "TC-B139",
+                      "title":  "设计审查挂接等待全阶段任务越过 DESIGN（首任务 settle 后仍 planned/无树节点/门已武装）",
+                      "type":  "boundary",
+                      "priority":  "P0",
+                      "acceptance":  "ADR-AC-1",
+                      "codeRef":  ".rdd/tests/delivery-bridge/design-review-qa-verify.ps1:231",
+                      "sourceChange":  "2026-10-02-auditor-independent-review",
+                      "status":  "active",
+                      "crossFeature":  [
+                                           "auditor-role"
+                                       ],
+                      "precondition":  "双 CTO 并行设计夹具（-ConventionsFile），PS5.1 生产解释器 + %TEMP% 一次性 git 仓库",
+                      "steps":  [
+                                    "promulgate 断言预算 +K（width 5/nodes 17）与 planned 槽位",
+                                    "仅交付任务 1 的 CTO 并 settle",
+                                    "读 design_review 段与树节点",
+                                    "再交付任务 2 的 CTO 并 settle"
+                                ],
+                      "expected":  "首任务 settle 后 status=planned/node=null/树无 [设计审查·S1] 节点且 DEV claim 已被拒；末任务 settle 后 grafted+节点 title/role=auditor——不阻塞阶段内并行、全 settle 才汇聚"
+                  },
+                  {
+                      "id":  "TC-B140",
+                      "title":  "设计审查门禁码与阶段闸门同族且三触点（claim/dispatch 硬拒 + status 可观测 + AUDITOR 自身不受阻）",
+                      "type":  "negative",
+                      "priority":  "P0",
+                      "acceptance":  "ADR-AC-1",
+                      "codeRef":  ".rdd/tests/delivery-bridge/design-review-qa-verify.ps1:261",
+                      "sourceChange":  "2026-10-02-auditor-independent-review",
+                      "status":  "active",
+                      "crossFeature":  [
+                                           "auditor-role"
+                                       ],
+                      "precondition":  "审查节点已 graft（未过）的隔离 run",
+                      "steps":  [
+                                    "DEV claim 被闸节点（错误码 NODE_BLOCKED_BY_ 前缀族校验）",
+                                    "dispatch 同码硬拒",
+                                    "status 输出含 design_review 面",
+                                    "AUDITOR claim 审查节点自身"
+                                ],
+                      "expected":  "claim/dispatch 均 NODE_BLOCKED_BY_DESIGN_REVIEW（同族前缀）；status 可观测；审查节点自身 claim 不受门禁拦截"
+                  },
+                  {
+                      "id":  "TC-B141",
+                      "title":  "pass 路径总裁定引擎推导（basis 留痕无声明字段）+ DEV 解锁 + pass 路径记账",
+                      "type":  "positive",
+                      "priority":  "P0",
+                      "acceptance":  "ADR-AC-1/ADR-AC-8",
+                      "codeRef":  ".rdd/tests/delivery-bridge/design-review-qa-verify.ps1:271",
+                      "sourceChange":  "2026-10-02-auditor-independent-review",
+                      "status":  "active",
+                      "crossFeature":  [
+                                           "auditor-role"
+                                       ],
+                      "precondition":  "单任务设计审查 run，合法 pass DesignReviewFile（仅 advisory finding）",
+                      "steps":  [
+                                    "AUDITOR claim/report/settle",
+                                    "读 design_review 段（status/verdict/basis）",
+                                    "DEV claim 解锁验证",
+                                    "读 .rdd/review-ledger.jsonl 的 design_review 条目"
+                                ],
+                      "expected":  "settle 过门后 status=passed/verdict=pass/basis=engine-derived；DEV claim 放行；账本含 verdict=pass 汇总条目（advisory_count=1 + dimension_counts 在场）"
+                  },
+                  {
+                      "id":  "TC-B142",
+                      "title":  "DesignReviewFile 契约负向电池：12 种违规形态逐一 SETTLE_EVIDENCE_REJECTED 且拒绝不推导",
+                      "type":  "negative",
+                      "priority":  "P0",
+                      "acceptance":  "ADR-AC-2",
+                      "codeRef":  ".rdd/tests/delivery-bridge/design-review-qa-verify.ps1:292",
+                      "sourceChange":  "2026-10-02-auditor-independent-review",
+                      "status":  "active",
+                      "crossFeature":  [
+                                           "auditor-role"
+                                       ],
+                      "precondition":  "审查节点已 claim+report 的隔离 run；逐形态改写 review/design-review-S1.json 后 settle",
+                      "steps":  [
+                                    "fail 无 blocking / reviewer 非 auditor / stage 错配 / severity 越枚举 / dimension 越枚举 / suggestion 空 / 文档重复列 / 幽灵文档列入 / cross involved_docs 幽灵 / involved_docs 空 / reviewed_at 空 / docs 空漏审——逐一 settle",
+                                    "断言错误码 + 可定位问题串（含 \\u0027 转义还原）",
+                                    "终态写合法 pass 文件再 settle（正控）"
+                                ],
+                      "expected":  "12 形态全部 SETTLE_EVIDENCE_REJECTED 且问题串可定位；期间 design_review 恒 grafted 不推导；合法文件可正常 settle 转 passed"
+                  },
+                  {
+                      "id":  "TC-B143",
+                      "title":  "cross_design blocking：契约合法文件（docs 全 pass）经引擎推导为 fail 并落重做波",
+                      "type":  "positive",
+                      "priority":  "P0",
+                      "acceptance":  "ADR-AC-2/ADR-AC-6",
+                      "codeRef":  ".rdd/tests/delivery-bridge/design-review-qa-verify.ps1:337",
+                      "sourceChange":  "2026-10-02-auditor-independent-review",
+                      "status":  "active",
+                      "crossFeature":  [
+                                           "auditor-role"
+                                       ],
+                      "precondition":  "单任务设计审查 run；DesignReviewFile docs 全 pass + summary.cross_design 带 blocking（involved_docs 在册）",
+                      "steps":  [
+                                    "settle（应过契约门）",
+                                    "读 design_review 段/树/路由/账本",
+                                    "rdd-flow show 验证任务回退"
+                                ],
+                      "expected":  "settle 成功但总裁定=fail（引擎推导不采信声明）：波完成 status 重置 planned、旧审查节点回收、任务回 CTO@DESIGN、重建节点重做上下文含 [cross_design] 文档引用、账本 blocking gap_type=cross_design"
+                  },
+                  {
+                      "id":  "TC-B144",
+                      "title":  "同 dimension blocking 同 run 累计 ≥3 触发 reflux_suggestion 记账（阈值下不出）",
+                      "type":  "boundary",
+                      "priority":  "P0",
+                      "acceptance":  "ADR-AC-8",
+                      "codeRef":  ".rdd/tests/delivery-bridge/design-review-qa-verify.ps1:365",
+                      "sourceChange":  "2026-10-02-auditor-independent-review",
+                      "status":  "active",
+                      "crossFeature":  [
+                                           "auditor-role"
+                                       ],
+                      "precondition":  "单任务设计审查 run（-NodeWidth 8：每轮 fail 波在 goal root 留 done CTO 审计节点，3 轮重做需更宽扇出——预算语义既定边界）",
+                      "steps":  [
+                                    "fail(change_map)→波→重交→再审循环 3 轮",
+                                    "每轮断言账本 blocking 计数与 reflux 缺席",
+                                    "第 3 轮断言 reflux_suggestion 条目出现"
+                                ],
+                      "expected":  "账本 blocking 计数 1/2/3 递增；<3 无 reflux_suggestion；≥3 出现 gap_type=change_map 的回流建议行（只建议不代建）；每轮重做收敛后审查重新 graft（覆盖重产重审）"
+                  },
+                  {
+                      "id":  "TC-B145",
+                      "title":  "多阶段预算 +K（K=2 精确数值）+ 每阶段恰一汇聚审查节点 + 阶段隔离",
+                      "type":  "boundary",
+                      "priority":  "P1",
+                      "acceptance":  "ADR-AC-5",
+                      "codeRef":  ".rdd/tests/delivery-bridge/design-review-qa-verify.ps1:405",
+                      "sourceChange":  "2026-10-02-auditor-independent-review",
+                      "status":  "active",
+                      "crossFeature":  [
+                                           "auditor-role"
+                                       ],
+                      "precondition":  "双阶段（S1/S2 各一 CTO 任务带设计产物）夹具",
+                      "steps":  [
+                                    "promulgate 断言 width 7/nodes 19 与双 planned 槽位",
+                                    "仅交付 S1 的 CTO 并 settle",
+                                    "数树上 S1/S2 审查节点"
+                                ],
+                      "expected":  "预算随阶段数 +K；S1 grafted 时 S2 仍 planned（阶段隔离）；S1 恰一个 [设计审查·S1] 节点、S2 零个——一批一会话/汇聚单节点"
+                  },
+                  {
+                      "id":  "TC-B146",
+                      "title":  "交付契约文档锚点：五查维度/三条边界/记账回流/门禁码/错误码清单落盘一致",
+                      "type":  "positive",
+                      "priority":  "P1",
+                      "acceptance":  "ADR-AC-3/ADR-AC-4",
+                      "codeRef":  ".rdd/tests/delivery-bridge/design-review-qa-verify.ps1:442",
+                      "sourceChange":  "2026-10-02-auditor-independent-review",
+                      "status":  "active",
+                      "crossFeature":  [
+                                           "auditor-role"
+                                       ],
+                      "precondition":  "仓库工作区四份契约文档（design-review.md/SKILL.md/planner-guide.md/requirement-review.md）",
+                      "steps":  [
+                                    "design-review.md 断言五维度枚举 + reflux_suggestion + design-review-S 命名 + 三条边界中文令牌（码点构造）",
+                                    "SKILL.md 断言 design-review.md 引用与 review/ 白名单",
+                                    "planner-guide.md 断言 NODE_BLOCKED_BY_DESIGN_REVIEW + blocked_by_design_review",
+                                    "requirement-review.md 断言三枚 REVIEW_* 错误码"
+                                ],
+                      "expected":  "引擎校验值域与角色卡/协议文档单源一致：五维度、三边界（不评选型/不改设计/不写测试）、门禁码双面、REVIEW_* 清单全部可检索"
+                  },
+                  {
+                      "id":  "TC-B147",
+                      "title":  "AUDITOR claim 上下文完备：kind/docs/design_maps 机械缓存（files 实析）/conventions/criteria_ref 锚/report 路径",
+                      "type":  "positive",
+                      "priority":  "P1",
+                      "acceptance":  "ADR-AC-3",
+                      "codeRef":  ".rdd/tests/delivery-bridge/design-review-qa-verify.ps1:421",
+                      "sourceChange":  "2026-10-02-auditor-independent-review",
+                      "status":  "active",
+                      "crossFeature":  [
+                                           "auditor-role"
+                                       ],
+                      "precondition":  "判据承载归档（mode=criteria）+ 架构约定文件 + 设计文档带合规变更地图（## 变更地图 标题）",
+                      "steps":  [
+                                    "promulgate（-ConventionsFile + 判据锚）→CTO 交付→审查 graft",
+                                    "AUDITOR claim 读 acceptance 段"
+                                ],
+                      "expected":  "acceptance.kind=design_review；docs 为阶段产物清单；design_maps 行含实析文件（src/mod-a.py）；conventions 与 criteria_ref（固定锚 requirements/overview.md#整体验收判据）非空；report=review/design-review-S1.json"
                   }
                ]
 }

@@ -223,21 +223,30 @@ try {
     Assert-True ($r.json.success -eq $false -and $r.json.error.code -eq 'PLAN_BATCH_INVALID') 'L4 dependency edge inside one batch -> PLAN_BATCH_INVALID' ($r.raw)
 
     # ================= L5: budget formula by stage count =================
+    # auditor-design-stage-review: +K（K=阶段数）when AUDITOR is deployed（本仓双探
+    # 必命中 rdd-auditor/）——width 与 max_nodes 均较旧公式 +K；未部署环境回到旧值
+    # （4/16、5/17、7/23）。夹具任务 designDocs=[]（exempt 路径），不影响门语义。
     $arch5a = New-Archive 'lp-l5a' '[{"title":"L5a-1","requirement":"requirements/t1.md","currentOwners":["QA"],"designDocs":[]},{"title":"L5a-2","requirement":"requirements/t2.md","currentOwners":["QA"],"designDocs":[]}]' $Script:DeclaredBlock
     $pf5a = Write-TestPlan (Join-Path $Work 'lp-l5a-plan.json') @(@{ id = 'S1'; tasks = @(1, 2) }) @{}
     $r = Invoke-Bridge @('-Command', 'promulgate', '-TaskJson', ($arch5a + '/task.json'), '-PlanFile', $pf5a, '-NoPush')
-    Assert-True ($r.json.success -eq $true -and [int]$r.json.data.budget.node_width -eq 4 -and [int]$r.json.data.budget.max_nodes -eq 16) 'L5 K=1: width 4 / max_nodes 16 (zero stage increment)' ($r.raw)
+    $deployed5a = if ($r.json.success) { @($r.json.data.plan.stages | Where-Object { $null -ne $_.design_review }).Count -gt 0 } else { $false }
+    $expW5a = if ($deployed5a) { 5 } else { 4 }; $expN5a = if ($deployed5a) { 17 } else { 16 }
+    Assert-True ($r.json.success -eq $true -and [int]$r.json.data.budget.node_width -eq $expW5a -and [int]$r.json.data.budget.max_nodes -eq $expN5a) "L5 K=1: width $expW5a / max_nodes $expN5a (zero stage increment[+K when auditor deployed])" ($r.raw)
 
     $arch5b = New-Archive 'lp-l5b' '[{"title":"L5b-1","requirement":"requirements/t1.md","currentOwners":["QA"],"designDocs":[]},{"title":"L5b-2","requirement":"requirements/t2.md","currentOwners":["QA"],"designDocs":[]}]' $Script:DeclaredBlock
     $pf5b = Write-TestPlan (Join-Path $Work 'lp-l5b-plan.json') @(@{ id = 'S1'; tasks = @(1) }, @{ id = 'S2'; tasks = @(2) }) @{}
     $r = Invoke-Bridge @('-Command', 'promulgate', '-TaskJson', ($arch5b + '/task.json'), '-PlanFile', $pf5b, '-NoPush')
-    Assert-True ($r.json.success -eq $true -and [int]$r.json.data.budget.node_width -eq 5 -and [int]$r.json.data.budget.max_nodes -eq 17) 'L5 K=2: width 5 / max_nodes 17 (stage +1 each)' ($r.raw)
+    $deployed5b = if ($r.json.success) { @($r.json.data.plan.stages | Where-Object { $null -ne $_.design_review }).Count -gt 0 } else { $false }
+    $expW5b = if ($deployed5b) { 7 } else { 5 }; $expN5b = if ($deployed5b) { 19 } else { 17 }
+    Assert-True ($r.json.success -eq $true -and [int]$r.json.data.budget.node_width -eq $expW5b -and [int]$r.json.data.budget.max_nodes -eq $expN5b) "L5 K=2: width $expW5b / max_nodes $expN5b (stage +1 each[+K when auditor deployed])" ($r.raw)
     Assert-True ([int]$r.json.data.plan.revision -eq 1 -and @($r.json.data.plan.stages).Count -eq 2) 'L5 promulgate echoes plan section (revision 1, 2 stages)' ($r.raw)
 
     $arch5c = New-Archive 'lp-l5c' '[{"title":"L5c-1","requirement":"requirements/t1.md","currentOwners":["QA"],"designDocs":[]},{"title":"L5c-2","requirement":"requirements/t2.md","currentOwners":["QA"],"designDocs":[]},{"title":"L5c-3","requirement":"requirements/t3.md","currentOwners":["QA"],"designDocs":[]}]' $Script:DeclaredBlock
     $pf5c = Write-TestPlan (Join-Path $Work 'lp-l5c-plan.json') @(@{ id = 'S1'; tasks = @(1) }, @{ id = 'S2'; tasks = @(2) }, @{ id = 'S3'; tasks = @(3) }) @{}
     $r = Invoke-Bridge @('-Command', 'promulgate', '-TaskJson', ($arch5c + '/task.json'), '-PlanFile', $pf5c, '-NoPush')
-    Assert-True ($r.json.success -eq $true -and [int]$r.json.data.budget.node_width -eq 7 -and [int]$r.json.data.budget.max_nodes -eq 23) 'L5 K=3: width 7 / max_nodes 23 (stage +2 each)' ($r.raw)
+    $deployed5c = if ($r.json.success) { @($r.json.data.plan.stages | Where-Object { $null -ne $_.design_review }).Count -gt 0 } else { $false }
+    $expW5c = if ($deployed5c) { 10 } else { 7 }; $expN5c = if ($deployed5c) { 26 } else { 23 }
+    Assert-True ($r.json.success -eq $true -and [int]$r.json.data.budget.node_width -eq $expW5c -and [int]$r.json.data.budget.max_nodes -eq $expN5c) "L5 K=3: width $expW5c / max_nodes $expN5c (stage +2 each[+K when auditor deployed])" ($r.raw)
 
     # ================= L6: stage gate + [集成验收·S1] lifecycle =================
     $arch6 = New-Archive 'lp-l6' '[{"title":"L6a","requirement":"requirements/t1.md","currentOwners":["QA"],"designDocs":[]},{"title":"L6b","requirement":"requirements/t2.md","currentOwners":["QA"],"designDocs":[]}]' $Script:DeclaredBlock
@@ -472,7 +481,11 @@ try {
     $arch13 = New-Archive 'lp-l13' '[{"title":"L13-1","requirement":"requirements/t1.md","currentOwners":["QA"],"designDocs":[]},{"title":"L13-2","requirement":"requirements/t2.md","currentOwners":["QA"],"designDocs":[]}]' $Script:CriteriaBlock
     $pf13 = Write-TestPlan (Join-Path $Work 'lp-l13-plan.json') @(@{ id = 'S1'; tasks = @(1); slice = 'v1 slice' }, @{ id = 'S2'; tasks = @(2) }) @{} 'smoke: core flow works' 'requirements/overview.md#整体验收判据'
     $r = Invoke-Bridge @('-Command', 'promulgate', '-TaskJson', ($arch13 + '/task.json'), '-PlanFile', $pf13, '-NoPush')
-    Assert-True ($r.json.success -eq $true -and [int]$r.json.data.budget.node_width -eq 5) 'L13 promulgate ok（criteria 模式，宽度预算 5）' ($r.raw)
+    # auditor-design-stage-review: +K 预算增量（K=2 → 旧 5 新 7；未部署回到 5）；
+    # L13 两阶段均 designDocs=[] -> exempt 快速通道（无审查节点、无闸门副作用）。
+    $dep13 = if ($r.json.success) { @($r.json.data.plan.stages | Where-Object { $null -ne $_.design_review }).Count -gt 0 } else { $false }
+    $expW13 = if ($dep13) { 7 } else { 5 }
+    Assert-True ($r.json.success -eq $true -and [int]$r.json.data.budget.node_width -eq $expW13) "L13 promulgate ok（criteria 模式，宽度预算 $expW13）" ($r.raw)
     $b = Read-BridgeJson 'deliver-lp-l13'
     $root13 = [string]$b.goal_root
     $u1 = [string]$b.tasks.'1'.stages.QA; $u2 = [string]$b.tasks.'2'.stages.QA

@@ -246,6 +246,10 @@
 - `delivery-bridge.ps1` 仅检查 ReviewFile 非空 + `verdicts[]` 字段合法性 + 字段约束
 - `reviewer` 字段值（`"auditor"` vs `"planner"`）对消费端透明
 - `reject_return` / `tree_adjudicated` / `pass` 三态处置流程不变
+- **错误码清单**（消费端可预期的确定性反馈，planner-guide「异常处置速查」同源）：
+  - `REVIEW_FILE_INVALID` — ReviewFile 不可解析 / schema 违规 / 字段一致性冲突（pass 带_override|merged、一 verdict 双字段、task_id 重复等），建树前零残留
+  - `REVIEW_TASK_NOT_FOUND` — verdict/override/合并目标指向的 task_id 不在该归档
+  - `REVIEW_EXCLUDED_DEP` — 某任务依赖被驳回排除的任务：依赖不会被静默丢弃，planner 须补裁定该任务（`depends_on_override` 或一并驳回）
 
 **审计追溯**：
 - `bridge.json v2` 顶层 `review` 段落盘（含 `reviewer` 字段，便于区分 AUDITOR 与 PLANNER 形态）

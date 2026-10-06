@@ -202,7 +202,11 @@ try {
     $pf4 = Write-TestPlan (Join-Path $Work 'ba-t4-plan.json') @(@{ id = 'S1'; tasks = @(1, 2) }) @{} 'smoke: core flow works' 'requirements/overview.md#整体验收判据'
     $r = Invoke-Bridge @('-Command', 'promulgate', '-TaskJson', ($arch4 + '/task.json'), '-PlanFile', $pf4, '-NoPush')
     Assert-True ($r.json.success -eq $true) 'T4 criteria promulgate ok' ($r.raw)
-    Assert-True ([int]$r.json.data.budget.node_width -eq 4) 'T4 width formula heads+2 -> 4' ($r.raw)
+    # auditor-design-stage-review: +K 宽度增量（K=1：旧 4 新 5；未部署回到 4）；本夹具
+    # designDocs=[] -> exempt，无审查节点/闸门副作用。
+    $dep4 = if ($r.json.success) { @($r.json.data.plan.stages | Where-Object { $null -ne $_.design_review }).Count -gt 0 } else { $false }
+    $expW4 = if ($dep4) { 5 } else { 4 }
+    Assert-True ([int]$r.json.data.budget.node_width -eq $expW4) "T4 width formula heads+2[+K] -> $expW4" ($r.raw)
     $b = Read-BridgeJson 'deliver-ba-t4'
     Assert-True ([string]$b.acceptance.status -eq 'planned' -and [string]$b.acceptance.criteria_ref -eq 'requirements/overview.md#整体验收判据') 'T4 acceptance planned + criteria_ref anchored'
     Assert-True ($null -eq $b.acceptance.integrate_node -or [string]$b.acceptance.integrate_node -eq '') 'T4 chain NOT grafted at promulgate (timing)'
@@ -306,7 +310,10 @@ try {
     $arch8 = New-Archive 'ba-t8' '[{"title":"T8a","requirement":"requirements/t1.md","currentOwners":["QA"],"designDocs":[]},{"title":"T8b","requirement":"requirements/t2.md","currentOwners":["QA"],"designDocs":[]},{"title":"T8c","requirement":"requirements/t3.md","currentOwners":["QA"],"designDocs":[]}]' $Script:CriteriaBlock
     $pf8 = Write-TestPlan (Join-Path $Work 'ba-t8-plan.json') @(@{ id = 'S1'; tasks = @(1, 2, 3) }) @{} 'smoke: core flow works' 'requirements/overview.md#整体验收判据'
     $r = Invoke-Bridge @('-Command', 'promulgate', '-TaskJson', ($arch8 + '/task.json'), '-PlanFile', $pf8, '-NoPush')
-    Assert-True ($r.json.success -eq $true -and [int]$r.json.data.budget.node_width -eq 5) 'T7 3-task width formula heads+2 -> 5' ($r.raw)
+    # auditor-design-stage-review: +K 宽度增量（K=1：旧 5 新 6；未部署回到 5）
+    $dep7 = if ($r.json.success) { @($r.json.data.plan.stages | Where-Object { $null -ne $_.design_review }).Count -gt 0 } else { $false }
+    $expW7 = if ($dep7) { 6 } else { 5 }
+    Assert-True ($r.json.success -eq $true -and [int]$r.json.data.budget.node_width -eq $expW7) "T7 3-task width formula heads+2[+K] -> $expW7" ($r.raw)
     $b = Read-BridgeJson 'deliver-ba-t8'
     foreach ($k in @('1', '2', '3')) {
         $hn = [string]$b.tasks.$k.stages.QA

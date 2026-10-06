@@ -62,10 +62,10 @@
         "rdd-engine/tests/test-bridge-conflicts.ps1",
         "rdd-engine/tests/test-long-task-planning.ps1"
       ],
-      "activeCount": 138,
+      "activeCount": 147,
       "deprecatedCount": 0,
-      "lastUpdated": "2026-10-02",
-      "lastChange": "2026-10-01-planner-delivery-efficiency"
+      "lastUpdated": "2026-10-06",
+      "lastChange": "2026-10-02-auditor-independent-review"
     },
     {
       "feature": "auditor-role",

@@ -1210,12 +1210,18 @@ function Get-PushCandidates {
     }
     # stage acceptance nodes (long-task-planning): a grafted [集成验收·S<k>]
     # rides the same push path as the R1 chain nodes (tree-level, no TaskId).
+    # stage design-review nodes (auditor-design-stage-review): a grafted
+    # [设计审查·S<k>] rides the same tree-level push path (role=AUDITOR).
     $p = Get-PlanSection $Bridge
     if ($null -ne $p) {
         foreach ($st in @($p['stages'])) {
             $ap = $st['acceptance_point']
             if (([string]$ap['status']) -eq 'grafted' -and -not [string]::IsNullOrWhiteSpace([string]$ap['node'])) {
                 $list += @{ node = [string]$ap['node']; stage = "QA"; task_id = 0; tree_level = $true }
+            }
+            $dr = $st['design_review']
+            if ($null -ne $dr -and ([string]$dr['status']) -eq 'grafted' -and -not [string]::IsNullOrWhiteSpace([string]$dr['node'])) {
+                $list += @{ node = [string]$dr['node']; stage = "AUDITOR"; task_id = 0; tree_level = $true }
             }
         }
     }
@@ -1293,6 +1299,13 @@ function Test-PushCandidate {
         $gateBlockers = Get-PlanGateBlockers $Bridge ([int]$map.task_id)
         if ($gateBlockers.Count -gt 0) {
             return @{ node = $NodeId; reason = "blocked_by_stage_gate"; blocked_by = @($gateBlockers) }
+        }
+        # design-review gate (auditor-design-stage-review; 与阶段闸门/conflict hold
+        # 同路径 AND 栈叠、reason 分列): an open [设计审查·S<k>] holds the post-DESIGN
+        # nodes of tasks carrying on-disk design products (审查未过 IMPL 不解锁).
+        $drBlockers = Get-DesignReviewGateBlockers $Bridge ([int]$map.task_id) ([string]$map.stage)
+        if (@($drBlockers).Count -gt 0) {
+            return @{ node = $NodeId; reason = "blocked_by_design_review"; blocked_by = @($drBlockers) }
         }
     }
     $pushState = Get-NodePushState $Bridge $NodeId
@@ -1438,6 +1451,15 @@ function Invoke-AutoDispatch {
     $planMoves = Update-StageAcceptancePoints $RunDir $Bridge
     $Bridge = $planMoves.bridge
     $grafted += @($planMoves.grafted)
+    # stage design-review state machine (auditor-design-stage-review): same
+    # self-healing placement — grafts [设计审查·S<k>] / exempt / records the
+    # derived verdict / runs the fail wave. Graft & set-route are state, not
+    # pushes: they run even under the no_push isolation gate below; the fail
+    # wave's rebuilt DESIGN nodes reach the push loop of THIS pass when the
+    # wave completes (repush rides the outer candidate enumeration).
+    $drMoves = Update-StageDesignReviews $RunDir $Bridge
+    $Bridge = $drMoves.bridge
+    $grafted += @($drMoves.grafted)
     # Run-level isolation gate (bridge.json no_push, set by promulgate -NoPush):
     # one upfront check makes an isolated run provably zero-backend for its
     # whole lifetime (0923 incident, QA F1). The manual dispatch command stays
@@ -2054,6 +2076,8 @@ function Get-TreeLevelInfo {
     if ($null -ne $info) { return $info }
     $sa = Get-StageAcceptanceNodeInfo $Bridge $NodeId
     if ($null -ne $sa) { return $sa }
+    $dr = Get-DesignReviewNodeInfo $Bridge $NodeId
+    if ($null -ne $dr) { return $dr }
     $node = Read-TreeFullNode $RunDir $NodeId
     if ($null -eq $node -or [string]$node.type -eq 'goal') { return $null }
     $r = ""
@@ -2778,11 +2802,25 @@ function Reset-PlanStageAcceptance {
         Remove-InvalidatedAcceptanceNode $Bridge ([string]$other['acceptance_point']['node']) ([string]$other['id'])
     }
     foreach ($other in @($wave)) {
+        # auditor-design-stage-review: 同波失效 design_review（防闸门虚开——任务回退
+        # 进 DESIGN 后旧审查结论不再代表当前设计）；无段跳过（旧 run 零成本）。
+        $dr = $other['design_review']
+        if ($null -ne $dr -and ([string]$dr['status']) -notin @('', 'planned')) {
+            Remove-InvalidatedDesignReviewNode $Bridge ([string]$dr['node']) ([string]$other['id'])
+        }
+    }
+    foreach ($other in @($wave)) {
         $ap = $other['acceptance_point']
         $oldNode = [string]$ap['node']
         $ap['status'] = 'planned'; $ap['node'] = $null
         $hit = $true
         $null = Add-PlanEvent $RunDir 'deviation' 'acceptance_invalidated' $oldNode $TaskId ([string]$other['id']) @{ trigger = $Trigger; reason = $ReasonText }
+        $dr = $other['design_review']
+        if ($null -ne $dr -and ([string]$dr['status']) -notin @('', 'planned')) {
+            $drOldNode = [string]$dr['node']
+            $dr['status'] = 'planned'; $dr['node'] = $null; $dr['verdict'] = $null; $dr['reviewed_at'] = $null; $dr['basis'] = $null
+            $null = Add-PlanEvent $RunDir 'deviation' 'design_review_invalidated' $drOldNode $TaskId ([string]$other['id']) @{ trigger = $Trigger; reason = $ReasonText }
+        }
     }
     if ($hit) { Write-BridgeFile $RunDir $Bridge | Out-Null }
     return $hit
@@ -2798,6 +2836,785 @@ function Write-PlanRecoveryTail {
     if ($null -ne $stage) { $stageId = [string]$stage['id'] }
     $null = Add-PlanEvent $RunDir 'deviation' $EventName $NodeIdText $TaskId $stageId @{ mode = $ModeText }
     $null = Reset-PlanStageAcceptance $RunDir $Bridge $TaskId $EventName $ModeText
+}
+
+# === Stage design review (auditor-design-stage-review) ===
+#
+# DESIGN→IMPL 阶段边界独立设计审查门（与已交付的 QA 阶段解禁构成「实现前查设计 /
+# 实现后查符合性」独立审查链）。门禁形态 = 方案 B：settle 尾原子性不动，闸门为纯
+# 判定函数叠加在现有三触点（push 候选 skip / claim / dispatch 硬错），与阶段闸门、
+# conflict hold 同路径 AND 栈叠、reason 分列；pass 后下一个 auto-dispatch 触发点自动
+# 放行（自愈免费）——「pass → 才 graft IMPL 链头」以效果语义满足（IMPL 无法开工）。
+# 状态机 plan.stages[k].design_review = { status: planned|grafted|passed|failed|exempt,
+# node, verdict, reviewed_at, basis }（与 acceptance_point 同构同址；无段 = 无门零成本，
+# conflicts/conventions 先例，旧 run 逐字节不变）。审查节点 [设计审查·S<k>] 挂接语义
+# 与 [集成验收·S<k>] 同构（树级·goal 根下·无 TaskId·role=AUDITOR·一批一会话）。
+
+$script:PlanDesignReviewFmt = "[设计审查·{0}]"
+$script:DesignReviewDims = @("alignment", "change_map", "internal_consistency", "completeness", "cross_design")
+$script:DesignReviewReportFmt = "review/design-review-{0}.json"   # 归档相对机读单源（.md 人读镜像同名）
+
+function Test-AuditorDeployed {
+    # 降级双探（验收 7）：engine 包 `rdd-auditor/` 角色卡目录（rdd-engine 同级布局）
+    # + repo `dsh/presets/rdd-auditor/`——任一在即视为已部署；全 miss → promulgate
+    # 警示 + 不落 design_review 段（现行行为：设计不审直接 IMPL），不硬拒建树。
+    # best-effort：探测异常一律按未部署处理。
+    param()
+    $engineRoot = Split-Path (Split-Path $script:ScriptDir -Parent) -Parent
+    $probes = @(
+        (Join-Path $engineRoot "rdd-auditor/SKILL.md")
+        (Join-Path $repoRoot "dsh/presets/rdd-auditor")
+    )
+    foreach ($p in @($probes)) {
+        if (-not [string]::IsNullOrWhiteSpace($p) -and (Test-Path -LiteralPath $p)) { return $true }
+    }
+    return $false
+}
+
+function Set-PlanDesignReviewSlots {
+    # promulgate 落段：AUDITOR 已部署时每个 stage 增 design_review 槽位（planned）。
+    # 未部署 = 不落段 = 无门零节点（逐字节现行行为）。返回 @{ plan; deployed }。
+    param($PlanSec)
+    if (-not (Test-AuditorDeployed)) { return @{ plan = $PlanSec; deployed = $false } }
+    foreach ($st in @($PlanSec['stages'])) {
+        $st['design_review'] = @{
+            status = "planned"; node = $null; verdict = $null
+            reviewed_at = $null; basis = $null
+        }
+    }
+    return @{ plan = $PlanSec; deployed = $true }
+}
+
+function Get-DesignReviewFlowTasks {
+    # per-invocation memo（Get-ConflictFlowTasks 先例）：设计审查闸门逐候选查
+    # task designDocs/phase，memo 让整个 push 循环只跑一次 rdd-flow show。
+    param($Bridge)
+    $key = [string]$Bridge.archive
+    if ($null -ne $script:DesignReviewFlowTasksCache -and ([string]$script:DesignReviewFlowTasksCache.key) -eq $key) {
+        return @($script:DesignReviewFlowTasksCache.tasks)
+    }
+    $flow = Read-ArchiveTasks $key
+    $script:DesignReviewFlowTasksCache = @{ key = $key; tasks = @($flow.tasks) }
+    return @($script:DesignReviewFlowTasksCache.tasks)
+}
+
+function Get-StageDesignDocs {
+    # 阶段全部落盘设计产物（审查对象面）：阶内在册任务的 designDocs 中真实存在的
+    # 文档（归档相对路径，'/' 规整）。返回 @{ docs; doc_tasks }（doc -> @([int] task)）。
+    param($Bridge, $Stage, $FlowTasks)
+    $docs = @()
+    $docTasks = @{}
+    foreach ($tid in @($Stage['task_ids'])) {
+        if (-not $Bridge.tasks.Contains("$tid")) { continue }
+        $task = Find-ArchiveTask $FlowTasks ([int]$tid)
+        if ($null -eq $task) { continue }
+        foreach ($d in @(Convert-ToSafeArray $task.designDocs)) {
+            $rel = (([string]$d.path) -replace '\\', '/')
+            if ([string]::IsNullOrWhiteSpace($rel)) { continue }
+            $abs = Join-Path ([string]$Bridge.archive) ($rel -replace '/', '\')
+            if (-not (Test-Path -LiteralPath $abs -PathType Leaf)) { continue }
+            if ($docs -notcontains $rel) { $docs += $rel }
+            if (-not $docTasks.Contains($rel)) { $docTasks[$rel] = @() }
+            if ($docTasks[$rel] -notcontains [int]$tid) { $docTasks[$rel] += [int]$tid }
+        }
+    }
+    return @{ docs = @($docs); doc_tasks = $docTasks }
+}
+
+function Test-StageTaskPastDesign {
+    # 越过 DESIGN 判定：phase ∈ {IMPL, VERIFY} 或 lifecycle 终态；legacy 空 phase 按
+    # bridge 链推导（已挂 DEV 节点 = 已越过；QA 单角色歧义按未越过保守处理——设计
+    # 组未收敛，审查等待，无死锁：QA settle 后 phase 推进或任务终态自愈）。
+    param($Task, $BridgeTask)
+    if ($script:PlanTerminalLifecycles -contains ([string]$Task.lifecycle)) { return $true }
+    $ph = $null
+    if (Test-PropPresent $Task 'phase') { $ph = [string]$Task.phase }
+    if (-not [string]::IsNullOrWhiteSpace($ph)) { return (@('IMPL', 'VERIFY') -contains $ph) }
+    if ($null -ne $BridgeTask -and $BridgeTask.Contains('stages') -and $null -ne $BridgeTask['stages']) {
+        if ($BridgeTask['stages'].Contains('DEV')) { return $true }
+    }
+    return $false
+}
+
+function Test-StageDesignTrigger {
+    # 触发判据（验收 1/5）：阶段内全部在册任务越过 DESIGN 且 ≥1 落盘设计产物 →
+    # graft；全阶段无设计产物 / 阶段内无任何 DESIGN 节点（本 run 没做过设计工作，
+    # 如全 DEV 起步的既有产物任务）→ exempt 快速通道；「存在 DESIGN 节点即审」
+    # （v1 全量触发）。无产物任务不占闸门也不阻塞触发。
+    param($Bridge, $Stage, $FlowTasks)
+    $dd = Get-StageDesignDocs $Bridge $Stage $FlowTasks
+    $hasDesignWork = $false
+    foreach ($tid in @($Stage['task_ids'])) {
+        if (-not $Bridge.tasks.Contains("$tid")) { continue }
+        $bTask = $Bridge.tasks["$tid"]
+        if ($null -ne $bTask -and $bTask.Contains('stages') -and $null -ne $bTask['stages']) {
+            foreach ($role in @($script:PhaseRoles['DESIGN'])) {
+                if ($bTask['stages'].Contains($role)) { $hasDesignWork = $true }
+            }
+        }
+    }
+    if (-not $hasDesignWork) {
+        return @{ mode = "exempt"; reason = "no design-stage nodes in this run (no in-run design work to review)"; docs = @(); doc_tasks = $dd.doc_tasks }
+    }
+    if (@($dd.docs).Count -eq 0) {
+        return @{ mode = "exempt"; reason = "no on-disk design artifacts (无设计产物任务快速通道豁免)"; docs = @(); doc_tasks = $dd.doc_tasks }
+    }
+    foreach ($tid in @($Stage['task_ids'])) {
+        $task = Find-ArchiveTask $FlowTasks ([int]$tid)
+        if ($null -eq $task) { continue }
+        $bTask = $null
+        if ($Bridge.tasks.Contains("$tid")) { $bTask = $Bridge.tasks["$tid"] }
+        if (-not (Test-StageTaskPastDesign $task $bTask)) {
+            return @{ mode = "wait"; reason = "task #$tid still inside DESIGN"; docs = @(); doc_tasks = $dd.doc_tasks }
+        }
+    }
+    return @{ mode = "graft"; reason = "all stage tasks past DESIGN with on-disk design artifacts"; docs = @($dd.docs); doc_tasks = $dd.doc_tasks }
+}
+
+function New-StageDesignReviewSpec {
+    # [设计审查·S<k>] node spec：role=AUDITOR 树级节点（goal 根下、无 TaskId），挂接
+    # 语义与 [集成验收·S<k>] 同构；task text 携带五查维度 + DesignReviewFile 契约落点。
+    param($Stage, [string]$ReqRel, [string]$RunIdText, [string[]]$DocRels, [string]$AcceptanceRef)
+    $title = $script:PlanDesignReviewFmt -f ([string]$Stage['id'])
+    $reportRel = $script:DesignReviewReportFmt -f ([string]$Stage['id'])
+    $docsJoined = (@($DocRels) | ForEach-Object { [string]$_ }) -join '；'
+    $mission = "使命：汇聚审查阶段「$([string]$Stage['goal'])」全部设计产物（一批一会话，禁止逐设计串行）——审查对象：$docsJoined。五查维度：$($script:DesignReviewDims -join ' / ')（变更地图维度消费 bridge.json design_maps 机械缓存，DESIGN_MAP_INVALID 警示为裁定输入；跨设计项落 summary 专节）。产出 DesignReviewFile（机读单源 $reportRel + 人读镜像 .md；总裁定由引擎推导——pass ⇔ 全文档 pass 且全局零 blocking）。三条边界：不评技术选型对错 / 不修改设计（只报不改）/ 不写测试。"
+    $spec = @{ title = $title; role = "AUDITOR"; mission = $mission }
+    $item = New-AcceptanceChainGraftItem $spec $ReqRel $AcceptanceRef $RunIdText
+    return @{ title = $title; item = $item }
+}
+
+function Set-DesignReviewState {
+    # design_review transition → persist bridge → plan-log progress event（与
+    # Set-PlanAcceptanceState 同构；node 为空串/null 归一为 null）。
+    param([string]$RunDir, $Bridge, $Stage, [string]$Status, $Node, [string]$EventName, $Detail)
+    $dr = $Stage['design_review']
+    $dr['status'] = $Status
+    $dr['node'] = $(if ([string]::IsNullOrWhiteSpace($Node)) { $null } else { [string]$Node })
+    Write-BridgeFile $RunDir $Bridge | Out-Null
+    $null = Add-PlanEvent $RunDir 'progress' $EventName ([string]$dr['node']) $null ([string]$Stage['id']) $Detail
+    return $Bridge
+}
+
+function Get-DesignReviewNodeInfo {
+    # tree-level recognition for [设计审查·S<k>] nodes（claim/settle tree-level
+    # 分支；Get-StageAcceptanceNodeInfo 同形）。docs 清单由 claim 上下文构造侧按
+    # 当前盘面现算（这里只认节点归属）。
+    param($Bridge, [string]$NodeId)
+    $p = Get-PlanSection $Bridge
+    if ($null -eq $p) { return $null }
+    foreach ($st in @($p['stages'])) {
+        $dr = $st['design_review']
+        if ($null -ne $dr -and -not [string]::IsNullOrWhiteSpace([string]$dr['node']) -and ([string]$dr['node']) -eq $NodeId) {
+            return @{ kind = "design_review"; role = "AUDITOR"; chain = $true; stage_id = [string]$st['id'] }
+        }
+    }
+    return $null
+}
+
+function Read-DesignReviewFile {
+    # DesignReviewFile 机读单源读取：@{ ok; path; data; error }——ok=$false 时
+    # data=$null + error 说明（settle 门与状态机共用的单一读入面）。
+    param([string]$ArchivePath, [string]$StageId)
+    $rel = $script:DesignReviewReportFmt -f $StageId
+    $abs = Join-Path $ArchivePath ($rel -replace '/', '\')
+    if (-not (Test-Path -LiteralPath $abs -PathType Leaf)) {
+        return @{ ok = $false; path = $abs; data = $null; error = "DesignReviewFile 不存在：<archive>/$rel（AUDITOR 须产出机读单源 + 人读镜像）" }
+    }
+    try {
+        $data = Convert-PSObjectToHashtable ([System.IO.File]::ReadAllText($abs, [System.Text.Encoding]::UTF8) | ConvertFrom-Json)
+    }
+    catch {
+        return @{ ok = $false; path = $abs; data = $null; error = "DesignReviewFile 不可解析：$rel（$($_.Exception.Message)）" }
+    }
+    return @{ ok = $true; path = $abs; data = $data; error = $null }
+}
+
+function Get-DesignReviewVerdict {
+    # 总裁定推导（验收 2：引擎推导，不采信声明值）：pass ⇔ 全文档 verdict=pass 且
+    # 全局（docs[].findings + summary.cross_design）零 blocking。blocking 清单
+    # （cross_design 项按 involved_docs 展开）供 fail 波与记账消费。
+    param($ReviewData)
+    $verdict = "pass"
+    $blocking = @()
+    foreach ($d in @(Convert-ToSafeArray $ReviewData['docs'])) {
+        if (([string]$d['verdict']) -ne 'pass') { $verdict = "fail" }
+        foreach ($f in @(Convert-ToSafeArray $d['findings'])) {
+            if (([string]$f['severity']) -eq 'blocking') {
+                $verdict = "fail"
+                $blocking += @{ doc = [string]$d['doc']; dimension = [string]$f['dimension']; item = [string]$f['item']; suggestion = [string]$f['suggestion'] }
+            }
+        }
+    }
+    $summary = $ReviewData['summary']
+    if ($null -ne $summary) {
+        foreach ($f in @(Convert-ToSafeArray $summary['cross_design'])) {
+            if (([string]$f['severity']) -eq 'blocking') {
+                $verdict = "fail"
+                foreach ($doc in @(Convert-ToSafeArray $f['involved_docs'])) {
+                    $blocking += @{ doc = [string]$doc; dimension = "cross_design"; item = [string]$f['item']; suggestion = [string]$f['suggestion'] }
+                }
+            }
+        }
+    }
+    return @{ verdict = $verdict; blocking = @($blocking) }
+}
+
+function Test-DesignReviewDocEntry {
+    # 单条 docs[] 条目机械校验（Test-DesignReviewFile 子过程）：归属在册 / 重复 /
+    # verdict 枚举 / verdict-findings 一致 / finding 四字段完备 + 枚举值域。
+    param($DocEntry, [string]$StageId, [string[]]$Expected)
+    $problems = @()
+    $rel = [string]$DocEntry['doc']
+    if ([string]::IsNullOrWhiteSpace($rel)) { return @("design_review check: docs[] entry carries an empty doc") }
+    if ($Expected -notcontains $rel) { $problems += "design_review check: docs[] lists '$rel' which is not an on-disk design doc of stage $StageId（阶段设计文档全覆盖 + 归属在册）" }
+    $v = [string]$DocEntry['verdict']
+    if (@('pass', 'fail') -notcontains $v) { $problems += "design_review check: doc '$rel' verdict '$v' not in pass|fail" }
+    $findings = @(Convert-ToSafeArray $DocEntry['findings'])
+    $blockingN = @($findings | Where-Object { ([string]$_['severity']) -eq 'blocking' }).Count
+    if ($v -eq 'fail' -and $blockingN -eq 0) { $problems += "design_review check: doc '$rel' verdict=fail but carries no blocking finding（fail 必有 blocking）" }
+    if ($v -eq 'pass' -and $blockingN -gt 0) { $problems += "design_review check: doc '$rel' verdict=pass but carries $blockingN blocking finding(s)（pass 必无）" }
+    $i = 0
+    foreach ($f in @($findings)) {
+        $i++
+        $sev = [string]$f['severity']
+        if (@('blocking', 'advisory') -notcontains $sev) { $problems += "design_review check: doc '$rel' finding #$i severity '$sev' not in blocking|advisory" }
+        $dim = [string]$f['dimension']
+        if ($script:DesignReviewDims -notcontains $dim) { $problems += "design_review check: doc '$rel' finding #$i dimension '$dim' not in $($script:DesignReviewDims -join '/')" }
+        if ([string]::IsNullOrWhiteSpace([string]$f['item'])) { $problems += "design_review check: doc '$rel' finding #$i item is empty（finding 四字段完备）" }
+        if ([string]::IsNullOrWhiteSpace([string]$f['suggestion'])) { $problems += "design_review check: doc '$rel' finding #$i suggestion is empty（finding 四字段完备）" }
+    }
+    return $problems
+}
+
+function Test-DesignReviewSummaryBlock {
+    # summary.cross_design 专节机械校验（Test-DesignReviewFile 子过程）：四字段 +
+    # involved_docs 非空且归属在册。
+    param($Summary, [string]$StageId, [string[]]$Expected)
+    $problems = @()
+    if ($null -eq $Summary) { return @("design_review check: summary is absent（汇总段必带 cross_design 专节）") }
+    $j = 0
+    foreach ($f in @(Convert-ToSafeArray $Summary['cross_design'])) {
+        $j++
+        $sev = [string]$f['severity']
+        if (@('blocking', 'advisory') -notcontains $sev) { $problems += "design_review check: summary.cross_design #$j severity '$sev' not in blocking|advisory" }
+        if ([string]::IsNullOrWhiteSpace([string]$f['item'])) { $problems += "design_review check: summary.cross_design #$j item is empty" }
+        if ([string]::IsNullOrWhiteSpace([string]$f['suggestion'])) { $problems += "design_review check: summary.cross_design #$j suggestion is empty" }
+        $involved = @(Convert-ToSafeArray $f['involved_docs'])
+        if ($involved.Count -eq 0) { $problems += "design_review check: summary.cross_design #$j involved_docs is empty（跨设计项必附涉及文档）" }
+        foreach ($doc in @($involved)) {
+            if ($Expected -notcontains [string]$doc) { $problems += "design_review check: summary.cross_design #$j involved_docs lists '$doc' which is not an on-disk design doc of stage $StageId" }
+        }
+    }
+    return $problems
+}
+
+function Test-DesignReviewFile {
+    # AUDITOR settle 门校验器（注册表派发——注册行在 verbatim 同步块之外，见
+    # $script:RoleHandoffValidators 之后的一行；DEV 先例 Test-DevQualityScan 模式）。
+    # GatePayload 桥接形态 { scenario; run_id; node_id }。机械校验（验收 2）：
+    #   - 阶段设计文档全覆盖（docs[] ↔ 阶段落盘设计产物双向逐一致）
+    #   - verdict-findings 一致（fail 必有 blocking / pass 必无）
+    #   - finding 四字段完备（severity/dimension/item/suggestion）+ 枚举值域
+    #   - blocking 的 doc 归属在册 + cross_design 项 involved_docs 归属在册
+    # 返回 problems[]（空 = 过）。文件层面的问题（缺文件/不可解析）也是 problems——
+    # 四查通道统一拒不合格交付。逐条目校验拆分至两个子过程。
+    param($GatePayload)
+    $problems = @()
+    if ($null -eq $GatePayload -or -not ($GatePayload -is [System.Collections.IDictionary])) {
+        return @("design_review check: gate payload missing (bridge scenario form: run_id + node_id)")
+    }
+    $runId = [string]$GatePayload['run_id']
+    $nodeId = [string]$GatePayload['node_id']
+    if ([string]::IsNullOrWhiteSpace($runId) -or [string]::IsNullOrWhiteSpace($nodeId)) {
+        return @("design_review check: gate payload missing run_id/node_id (bridge-only validator)")
+    }
+    $runDir = Get-BridgeRunDir $runId
+    $bridge = Read-Bridge $runDir
+    if ($null -eq $bridge) { return @("design_review check: run $runId not found (bridge.json unreadable)") }
+    $p = Get-PlanSection $bridge
+    if ($null -eq $p) { return @("design_review check: run $runId carries no plan section") }
+    $stage = $null
+    foreach ($st in @($p['stages'])) {
+        $dr = $st['design_review']
+        if ($null -ne $dr -and ([string]$dr['node']) -eq $nodeId) { $stage = $st; break }
+    }
+    if ($null -eq $stage) { return @("design_review check: node $nodeId is not a [设计审查·S<k>] node of run $runId") }
+    $stageId = [string]$stage['id']
+    $flow = Read-ArchiveTasks $bridge.archive
+    $dd = Get-StageDesignDocs $bridge $stage $flow.tasks
+    $expected = @($dd.docs)
+    if ($expected.Count -eq 0) { return @("design_review check: stage $stageId has no on-disk design products — its review node should not exist (replan recovered it)") }
+    $rv = Read-DesignReviewFile ([string]$bridge.archive) $stageId
+    if (-not $rv.ok) { return @("design_review check: $($rv.error)") }
+    $data = $rv.data
+    if ([string]::IsNullOrWhiteSpace([string]$data['reviewed_at'])) { $problems += "design_review check: reviewed_at is absent/empty" }
+    if (([string]$data['reviewer']) -ne 'auditor') { $problems += "design_review check: reviewer must be 'auditor' (got '$([string]$data['reviewer'])')" }
+    if (([string]$data['stage']) -ne $stageId) { $problems += "design_review check: stage field '$([string]$data['stage'])' does not match the reviewed stage '$stageId'" }
+    $docs = @(Convert-ToSafeArray $data['docs'])
+    if ($docs.Count -eq 0) { $problems += "design_review check: docs[] is empty（阶段设计文档全覆盖）" }
+    $seen = @()
+    foreach ($d in @($docs)) {
+        $rel = [string]$d['doc']
+        if ([string]::IsNullOrWhiteSpace($rel)) { $problems += "design_review check: docs[] entry carries an empty doc"; continue }
+        if ($seen -contains $rel) { $problems += "design_review check: docs[] lists '$rel' more than once" }
+        $seen += $rel
+        $problems += @(Test-DesignReviewDocEntry $d $stageId $expected)
+    }
+    foreach ($rel in @($expected)) {
+        if ($seen -notcontains $rel) { $problems += "design_review check: on-disk design doc '$rel' is not covered by docs[]（阶段设计文档全覆盖）" }
+    }
+    $problems += @(Test-DesignReviewSummaryBlock $data['summary'] $stageId $expected)
+    return $problems
+}
+
+function Get-DesignReviewDimCounts {
+    # 审查数据维度统计（Add-DesignReviewLedger 子过程）：blocking 按 dimension 计数
+    # （cross_design 项归 cross_design 维）+ advisory 总数。ReviewData=$null → 全零。
+    param($ReviewData)
+    $dims = @{}
+    $advisory = 0
+    if ($null -eq $ReviewData) { return @{ dims = $dims; advisory = 0 } }
+    foreach ($d in @(Convert-ToSafeArray $ReviewData['docs'])) {
+        foreach ($f in @(Convert-ToSafeArray $d['findings'])) {
+            if (([string]$f['severity']) -eq 'blocking') {
+                $dim = [string]$f['dimension']
+                if (-not $dims.Contains($dim)) { $dims[$dim] = 0 }
+                $dims[$dim] = [int]$dims[$dim] + 1
+            }
+            else { $advisory++ }
+        }
+    }
+    foreach ($f in @(Convert-ToSafeArray $ReviewData['summary']['cross_design'])) {
+        if (([string]$f['severity']) -eq 'blocking') {
+            if (-not $dims.Contains('cross_design')) { $dims['cross_design'] = 0 }
+            $dims['cross_design'] = [int]$dims['cross_design'] + 1
+        }
+        else { $advisory++ }
+    }
+    return @{ dims = $dims; advisory = $advisory }
+}
+
+function New-DesignReviewRefluxLines {
+    # 回流建议行构造（Add-DesignReviewLedger 子过程）：同 dimension blocking 同
+    # run（账本既有条目 + 本次计数）累计 ≥3 → kind=reflux_suggestion 建议行（只建
+    # 议不代建）。best-effort：读账本失败返回空。
+    param($Bridge, [string]$StageId, [string]$At, $DimCounts)
+    $lines = @()
+    try {
+        $ledgerPath = Join-Path $repoRoot ".rdd/review-ledger.jsonl"
+        $perDim = @{}
+        $runTag = '"run_id":"' + [string]$Bridge.run_id + '"'
+        if (Test-Path -LiteralPath $ledgerPath -PathType Leaf) {
+            foreach ($line in @([System.IO.File]::ReadAllLines($ledgerPath))) {
+                if ([string]::IsNullOrWhiteSpace($line) -or ($line -notlike '*"kind":"blocking"*') -or ($line -notlike "*$runTag*")) { continue }
+                try {
+                    $g = [string]($line | ConvertFrom-Json).gap_type
+                    if (-not [string]::IsNullOrWhiteSpace($g)) {
+                        if (-not $perDim.Contains($g)) { $perDim[$g] = 0 }
+                        $perDim[$g] = [int]$perDim[$g] + 1
+                    }
+                } catch { }
+            }
+        }
+        foreach ($k in @($DimCounts.Keys)) {
+            $total = [int]$DimCounts[$k] + $(if ($perDim.Contains($k)) { [int]$perDim[$k] } else { 0 })
+            if ($total -ge 3) {
+                $lines += (ConvertTo-PortableJson ([ordered]@{
+                    at = $At; archive = [string]$Bridge.archive_rel; reviewer = "auditor"; kind = "reflux_suggestion"
+                    gap_type = $k; run_id = [string]$Bridge.run_id; stage = $StageId
+                    detail = "同 dimension blocking 同 run 累计 $total 次（≥3）——建议生成 CTO 模板/流程改进需求（只建议不代建）"
+                }) -Depth 6)
+            }
+        }
+    }
+    catch { }
+    return @($lines)
+}
+
+function Add-DesignReviewLedger {
+    # 触发记账（验收 8）：审查结论明细入 `.rdd/review-ledger.jsonl`（全局单文件
+    # JSONL，账本范式追加不重写）——kind=design_review 汇总条目（含维度分布）+
+    # fail 时逐 blocking 条目（kind=blocking，gap_type=dimension）；同 dimension 同
+    # run blocking ≥3 次 → 追加回流建议条目（只建议不代建）。best-effort：追加失败
+    # 只落 plan-log 警示，不阻塞流转。统计/回流判定拆分至两个子过程。
+    # 返回 $Bridge（链式透传，桥内容不变）。
+    param([string]$RunDir, $Bridge, $Stage, $ReviewData, [string]$Verdict, $Blocking)
+    $at = Get-UtcNowIso
+    $stageId = [string]$Stage['id']
+    $counts = Get-DesignReviewDimCounts $ReviewData
+    $dimCounts = @{}
+    foreach ($k in @($counts.dims.Keys)) { $dimCounts[$k] = [int]$counts.dims[$k] }
+    # 审查对象面（doc -> tasks 归属，gap 定位用；best-effort 不失败）
+    $dd = @{ docs = @(); doc_tasks = @{} }
+    try {
+        $flow = Read-ArchiveTasks $Bridge.archive
+        $dd = Get-StageDesignDocs $Bridge $Stage $flow.tasks
+    } catch { }
+    $lines = @()
+    $lines += (ConvertTo-PortableJson ([ordered]@{
+        at = $at; archive = [string]$Bridge.archive_rel; reviewer = "auditor"; kind = "design_review"
+        run_id = [string]$Bridge.run_id; stage = $stageId; verdict = $Verdict
+        docs_count = @(Convert-ToSafeArray $ReviewData['docs']).Count
+        blocking_count = @($Blocking).Count; advisory_count = [int]$counts.advisory; dimension_counts = $dimCounts
+    }) -Depth 6)
+    foreach ($b in @($Blocking)) {
+        # doc 归属任务取审查对象面的第一个在册归属（gap 定位用，非路由语义）
+        $tid = $null
+        $owners = @($dd.doc_tasks[[string]$b['doc']])
+        if ($owners.Count -gt 0) { $tid = [int]$owners[0] }
+        $lines += (ConvertTo-PortableJson ([ordered]@{
+            at = $at; archive = [string]$Bridge.archive_rel; reviewer = "auditor"; kind = "blocking"
+            gap_type = [string]$b['dimension']; task_id = $tid; run_id = [string]$Bridge.run_id; stage = $stageId
+            detail = [ordered]@{ doc = [string]$b['doc']; item = [string]$b['item']; suggestion = [string]$b['suggestion'] }
+        }) -Depth 6)
+    }
+    $lines += @(New-DesignReviewRefluxLines $Bridge $stageId $at $dimCounts)
+    try {
+        $ledgerPath = Join-Path $repoRoot ".rdd/review-ledger.jsonl"
+        $dir = Split-Path $ledgerPath -Parent
+        if (-not (Test-Path -LiteralPath $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
+        foreach ($ln in @($lines)) { [System.IO.File]::AppendAllText($ledgerPath, $ln + "`n", $script:Utf8NoBom) }
+    }
+    catch {
+        $null = Add-PlanEvent $RunDir 'deviation' 'design_review_ledger_failed' ([string]$Stage['design_review']['node']) $null $stageId @{ error = [string]$_.Exception.Message }
+    }
+    return $Bridge
+}
+
+function Get-DesignReviewDocRoles {
+    # 重做目标角色映射（后缀精确映射，技术方案）：`<name>-cto.md`→CTO / `-ux.md`→UX /
+    # `-qa.md`→QA；无后缀命中 → 任务在本 run 内做过的 DESIGN 角色（bridge 链记录）；
+    # 仍空 → CTO（设计默认责任）。
+    param([string]$DocRel, $BridgeTask)
+    $base = [System.IO.Path]::GetFileName([string]$DocRel)
+    if ($base -match '-cto\.md$') { return @('CTO') }
+    if ($base -match '-ux\.md$') { return @('UX') }
+    if ($base -match '-qa\.md$') { return @('QA') }
+    if ($null -ne $BridgeTask -and $BridgeTask.Contains('stages') -and $null -ne $BridgeTask['stages']) {
+        $roles = @()
+        foreach ($role in @($script:PhaseRoles['DESIGN'])) {
+            if ($BridgeTask['stages'].Contains($role) -and $roles -notcontains $role) { $roles += $role }
+        }
+        if ($roles.Count -gt 0) { return @($roles) }
+    }
+    return @('CTO')
+}
+
+function Resolve-DesignReviewGraftParent {
+    # 兄弟挂接锚点（rollback 原语 Resolve-RollbackGraftParent 同构）：任务在本 run
+    # 内的 DESIGN 阶段节点（done 审计痕保留）的 parent；无记录 → goal root（链头层
+    # ——promulgate 不变量）。
+    param([string]$RunId, $Bridge, [int]$TaskId)
+    $goalRoot = [string]$Bridge.goal_root
+    if ([string]::IsNullOrWhiteSpace($goalRoot)) { $goalRoot = "n1" }
+    if (-not $Bridge.tasks.Contains("$TaskId")) { return $goalRoot }
+    $bTask = $Bridge.tasks["$TaskId"]
+    if (-not ($bTask.Contains('stages') -and $null -ne $bTask['stages'])) { return $goalRoot }
+    foreach ($role in @($script:PhaseRoles['DESIGN'])) {
+        if (-not $bTask['stages'].Contains($role)) { continue }
+        $nid = [string]$bTask['stages'][$role]
+        if ([string]::IsNullOrWhiteSpace($nid)) { continue }
+        $parent = Get-NodeParentSafe $RunId $nid
+        if (-not [string]::IsNullOrWhiteSpace($parent)) { return $parent }
+    }
+    return $goalRoot
+}
+
+function Get-DesignReviewTaskBlockers {
+    # blocking -> 受影响任务映射（Invoke-DesignReviewFailWave 子过程）：tid -> @(
+    # blocking)；文件不可读时全部有产物任务按审查失败整体回退（空 blocking 列表）。
+    param($ReviewRead, $StageDocs)
+    $taskBlockers = @{}
+    if ($ReviewRead.ok) {
+        $dv = Get-DesignReviewVerdict $ReviewRead.data
+        foreach ($b in @($dv.blocking)) {
+            foreach ($tid in @($StageDocs.doc_tasks[[string]$b['doc']])) {
+                $t = [int]$tid
+                if (-not $taskBlockers.Contains($t)) { $taskBlockers[$t] = @() }
+                $taskBlockers[$t] += ,$b
+            }
+        }
+    }
+    else {
+        foreach ($rel in @($StageDocs.docs)) {
+            foreach ($tid in @($StageDocs.doc_tasks[$rel])) {
+                if (-not $taskBlockers.Contains([int]$tid)) { $taskBlockers[[int]$tid] = @() }
+            }
+        }
+    }
+    return $taskBlockers
+}
+
+function Invoke-DesignReviewFailPrune {
+    # 单任务波第 1 步（Invoke-DesignReviewFailTask 子过程）：prune 活跃 DESIGN 后
+    # 节点（DESIGN done 节点保留为审计痕；幂等：pruned/missing 容忍，其他失败仅告警
+    # ——下一触发点自愈重入）。返回 warnings[]。
+    param($Bridge, $BridgeTask, [int]$TaskId, [string]$PruneReason)
+    $warnings = @()
+    if ($null -eq $BridgeTask -or -not ($BridgeTask.Contains('stages') -and $null -ne $BridgeTask['stages'])) { return @() }
+    $treeData = Get-TreeStatusView ([string]$Bridge.run_id)
+    foreach ($role in @($BridgeTask['stages'].Keys)) {
+        if (@($script:PhaseRoles['DESIGN']) -contains $role) { continue }
+        $nid = [string]$BridgeTask['stages'][$role]
+        if ([string]::IsNullOrWhiteSpace($nid)) { continue }
+        $node = Get-NodeFromTree $treeData $nid
+        $st = if ($node) { [string]$node.status } else { "missing" }
+        if ($st -notin @('pending', 'claimed', 'reported')) { continue }
+        $rp = Invoke-GoalTree @("-Command", "prune", "-RunId", ([string]$Bridge.run_id), "-NodeId", $nid, "-Reason", $PruneReason)
+        $code = ""
+        if ($rp.exit -ne 0 -and $null -ne $rp.json -and $null -ne $rp.json.error) { $code = [string]$rp.json.error.code }
+        if ($rp.exit -ne 0 -and $code -notin @('ALREADY_PRUNED', 'NODE_NOT_FOUND')) {
+            $warnings += "fail-wave prune of $role node $nid (task #$TaskId) failed: $($rp.text)"
+        }
+    }
+    return @($warnings)
+}
+
+function Invoke-DesignReviewFailTask {
+    # 单任务波（Invoke-DesignReviewFailWave 子过程；rollback 原语语义，复用原语
+    # 函数不复用 rollback CLI 守卫）：目标角色 = blocking docs 后缀精确映射（union，
+    # 兜底 CTO）→ 1) Invoke-DesignReviewFailPrune → 2) set-route 回 DESIGN（失败 →
+    # pending_sync + defer，不挂接不推送；skip 凭据诚实声明——同 rollback disposal
+    # 纪律）→ 3) 兄弟挂接重建 DESIGN 组（blocking 合并注入重做上下文；活跃即跳过 =
+    # 波重入幂等）。返回 @{ bridge; rolled; deferred; warnings }。
+    param([string]$RunDir, $Bridge, $Stage, [string]$StageId, $Task, $BridgeTask, $TaskBlockers)
+    $tid = [int]$Task.id
+    $roles = @()
+    foreach ($b in @($TaskBlockers)) {
+        foreach ($r in @(Get-DesignReviewDocRoles ([string]$b['doc']) $BridgeTask)) {
+            if ($roles -notcontains $r) { $roles += $r }
+        }
+    }
+    if ($roles.Count -eq 0) { $roles = @('CTO') }
+    $problems = @()
+    foreach ($b in @($TaskBlockers)) {
+        $problems += "[$([string]$b['dimension'])] $([string]$b['doc'])：$([string]$b['item'])（建议：$([string]$b['suggestion'])）"
+    }
+    if ($problems.Count -eq 0) {
+        $problems = @("设计审查否决：[设计审查·$StageId] verdict=fail——设计产物未过汇聚五查，重产设计（明细见 review/design-review-$StageId.md）")
+    }
+    $pruneReason = "design review veto: [设计审查·$StageId] fail (task #$tid) — blocking: $($problems[0])"
+    $warnings = @(Invoke-DesignReviewFailPrune $Bridge $BridgeTask $tid $pruneReason)
+    $scanFile = Write-RollbackScanSkipFile $RunDir "design-review fail-wave disposal: [设计审查·$StageId] verdict=fail 否决当前设计 (delivery-bridge design review); not a DEV completion handoff"
+    $toJoined = $roles -join '+'
+    $r3 = Invoke-RddFlow @("-Command", "set-route", "-TaskId", "$tid", "-To", $toJoined, "-Phase", "DESIGN", "-Archive", $Bridge.archive, "-QualityScanFile", $scanFile)
+    if ($r3.exit -ne 0 -or $null -eq $r3.json -or -not $r3.json.success) {
+        $warnings += "fail-wave set-route failed for task #$tid — recorded as pending_sync (status touch retries, then the wave re-enters): $($r3.text)"
+        $Bridge = Add-PendingSync $RunDir $Bridge ([string]$Stage['design_review']['node']) "set-route" "IMPL" $toJoined ($r3.text) -PhaseArg "DESIGN" -ScanEvidence $scanFile
+        return @{ bridge = $Bridge; rolled = $null; deferred = $tid; warnings = @($warnings) }
+    }
+    $graftParent = Resolve-DesignReviewGraftParent ([string]$Bridge.run_id) $Bridge $tid
+    $redo = @{ from_stage = "[设计审查·$StageId]"; reason = "设计审查否决：[设计审查·$StageId] verdict=fail"; problems = $problems }
+    $rebuilt = @()
+    $graftFailed = $false
+    foreach ($role in @($roles)) {
+        $live = Find-RollbackExistingGraft $Bridge $tid $role
+        if ($null -ne $live) { $rebuilt += $live; continue }
+        $g = Invoke-GraftNextStage $RunDir $Bridge $Task $graftParent $role -RedoContext $redo
+        if ($g.success) { $Bridge = $g.bridge; $rebuilt += $g.node_id }
+        else { $graftFailed = $true; $warnings += "fail-wave rebuilt $role node graft failed for task #$tid (retried on the next trigger): $($g.error)" }
+    }
+    if ($graftFailed) { return @{ bridge = $Bridge; rolled = $null; deferred = $tid; warnings = @($warnings) } }
+    $rolled = @{ task_id = $tid; roles = @($roles); nodes = @($rebuilt); problems = @($problems) }
+    return @{ bridge = $Bridge; rolled = $rolled; deferred = $null; warnings = @($warnings) }
+}
+
+function Invoke-DesignReviewFailWave {
+    # fail 波（验收 1；settle 尾自动、lease 内）：逐受影响任务执行 rollback **原语**
+    # 语义——审查否决 ≠ 交付不合格（单任务波体见 Invoke-DesignReviewFailTask）。
+    # 全部受影响任务完成 → design_review 重置 planned + 旧审查节点回收（F6 槽位复用）
+    # → 重做收敛后再审（覆盖重产重审）。任一步失败 → 状态留在 failed，下一触发点自愈重入
+    # （prune 幂等 / set-route 幂等 / graft 活跃跳过）。重推由外层 auto-dispatch 同趟完成
+    # （原作者会话 in-place redo 优先——AllowReuse 按触发点透传）。
+    param([string]$RunDir, $Bridge, $Stage, $FlowTasks)
+    $stageId = [string]$Stage['id']
+    $rv = Read-DesignReviewFile ([string]$Bridge.archive) $stageId
+    $dd = Get-StageDesignDocs $Bridge $Stage $FlowTasks
+    $warnings = @(); $rolled = @(); $deferred = @()
+    if (-not $rv.ok) {
+        $warnings += "DesignReviewFile 不可读（$($rv.error)）——全部有产物任务按审查失败整体回退"
+    }
+    $taskBlockers = Get-DesignReviewTaskBlockers $rv $dd
+    foreach ($tidKey in @($taskBlockers.Keys)) {
+        $tid = [int]$tidKey
+        $task = Find-ArchiveTask $FlowTasks $tid
+        if ($null -eq $task) { continue }
+        $bTask = $null
+        if ($Bridge.tasks.Contains("$tid")) { $bTask = $Bridge.tasks["$tid"] }
+        $one = Invoke-DesignReviewFailTask $RunDir $Bridge $Stage $stageId $task $bTask @($taskBlockers[$tid])
+        $Bridge = $one.bridge
+        $warnings += @($one.warnings)
+        if ($null -ne $one.deferred) { $deferred += [int]$one.deferred }
+        if ($null -ne $one.rolled) { $rolled += $one.rolled }
+    }
+    if (@($deferred).Count -eq 0) {
+        # 全部受影响任务完成 → 重置 planned + 旧审查节点回收（F6）→ 覆盖重产重审
+        $dr = $Stage['design_review']
+        $oldNode = [string]$dr['node']
+        Remove-InvalidatedDesignReviewNode $Bridge $oldNode $stageId
+        $dr['status'] = 'planned'; $dr['node'] = $null; $dr['verdict'] = $null; $dr['reviewed_at'] = $null; $dr['basis'] = $null
+        $null = Add-PlanEvent $RunDir 'deviation' 'design_review_invalidated' $oldNode $null $stageId @{ trigger = 'design_review_fail_wave'; reason = "review failed — designs rolled back to DESIGN for rework; re-review on next convergence" }
+        Write-BridgeFile $RunDir $Bridge | Out-Null
+    }
+    return @{ bridge = $Bridge; rolled = @($rolled); deferred = @($deferred); warnings = @($warnings) }
+}
+
+function Update-DesignReviewPlanned {
+    # planned 态推进（Update-StageDesignReviews 子过程）：触发判据 → wait 不动 /
+    # exempt 快速通道 / graft [设计审查·S<k>]（失败下一触发点重试）。
+    # 返回 @{ bridge; grafted }（grafted = $null 表示无进展）。
+    param([string]$RunDir, $Bridge, $Stage, $FlowTasks)
+    $trig = Test-StageDesignTrigger $Bridge $Stage $FlowTasks
+    if ($trig.mode -eq 'wait') { return @{ bridge = $Bridge; grafted = $null } }
+    if ($trig.mode -eq 'exempt') {
+        $Bridge = Set-DesignReviewState $RunDir $Bridge $Stage 'exempt' $null 'design_review_exempt' @{ basis = $trig.reason }
+        return @{ bridge = $Bridge; grafted = $null }
+    }
+    $accRef = $null
+    $a = Get-AcceptanceSection $Bridge
+    if ($null -ne $a) { $accRef = [string]$a['criteria_ref'] }
+    $spec = New-StageDesignReviewSpec $Stage (Get-PlanStageReqRel $Bridge $Stage) ([string]$Bridge.run_id) @($trig.docs) $accRef
+    $g = Invoke-GraftOne ([string]$Bridge.run_id) ([string]$Bridge.goal_root) $spec.item
+    if (-not $g.ok) { return @{ bridge = $Bridge; grafted = $null } }   # retried on the next trigger
+    $Bridge = Set-DesignReviewState $RunDir $Bridge $Stage 'grafted' $g.node_id 'design_review_grafted' @{ title = $spec.title; docs = @($trig.docs) }
+    return @{ bridge = $Bridge; grafted = @{ node = $g.node_id; title = $spec.title; stage = [string]$Stage['id'] } }
+}
+
+function Update-DesignReviewGrafted {
+    # grafted 态推进（Update-StageDesignReviews 子过程）：节点 done → 从
+    # DesignReviewFile 推导总裁定（引擎推导不采信声明值）→ 记账 → passed / failed
+    # （failed 同趟落波——settle 尾租约内确定性完成）。返回 @{ bridge; wave }。
+    param([string]$RunDir, $Bridge, $Stage, $FlowTasks)
+    $dr = $Stage['design_review']
+    $node = Get-NodeFromTree (Get-TreeStatusView ([string]$Bridge.run_id)) ([string]$dr['node'])
+    if ($null -eq $node -or ([string]$node.status) -ne 'done') { return @{ bridge = $Bridge; wave = $null } }
+    $rv = Read-DesignReviewFile ([string]$Bridge.archive) ([string]$Stage['id'])
+    $verdict = 'fail'
+    $blocking = @()
+    if ($rv.ok) {
+        $dv = Get-DesignReviewVerdict $rv.data
+        $verdict = $dv.verdict
+        $blocking = @($dv.blocking)
+    }
+    $Bridge = Add-DesignReviewLedger $RunDir $Bridge $Stage $(if ($rv.ok) { $rv.data } else { $null }) $verdict $blocking
+    # 裁定明细落段（verdict/reviewed_at/basis 与 status 同步持久化）
+    $dr['verdict'] = $verdict
+    $dr['reviewed_at'] = $(if ($rv.ok) { [string]$rv.data['reviewed_at'] } else { $null })
+    if ($verdict -eq 'pass') {
+        $dr['basis'] = "all docs pass with zero blocking findings (engine-derived)"
+        $Bridge = Set-DesignReviewState $RunDir $Bridge $Stage 'passed' ([string]$dr['node']) 'design_review_passed' @{
+            verdict = 'pass'; reviewed_at = $dr['reviewed_at']
+            basis = "all docs pass with zero blocking findings (engine-derived)"
+        }
+        return @{ bridge = $Bridge; wave = $null }
+    }
+    $Bridge = Set-DesignReviewState $RunDir $Bridge $Stage 'failed' ([string]$dr['node']) 'design_review_failed' @{
+        verdict = 'fail'; blocking_count = @($blocking).Count
+        note = $(if (-not $rv.ok) { $rv.error } else { $null })
+    }
+    $wave = Invoke-DesignReviewFailWave $RunDir $Bridge $Stage $FlowTasks
+    return @{ bridge = $wave.bridge; wave = $wave }
+}
+
+function Update-StageDesignReviews {
+    # Stage design-review state machine——随每个 auto-dispatch 触发点重评（自愈，与
+    # Update-StageAcceptancePoints 同放置位；graft/set-route 是状态非推送，no_push
+    # 隔离下照常运行）：
+    #   planned → 触发判据（全越过 DESIGN + ≥1 落盘产物 + 阶段有 DESIGN 节点）→
+    #             graft [设计审查·S<k>] / exempt（快速通道）—— Update-DesignReviewPlanned
+    #   grafted → 节点 done → 从 DesignReviewFile 推导总裁定 → passed / failed（记账）
+    #             —— Update-DesignReviewGrafted（failed 同趟落波）
+    #   failed  → fail 波进行中（可重入；完成 → planned 重置 + 旧节点回收）
+    param([string]$RunDir, $Bridge)
+    $out = @{ bridge = $Bridge; grafted = @(); wave = $null }
+    $p = Get-PlanSection $Bridge
+    if ($null -eq $p) { return $out }
+    $pending = @($p['stages'] | Where-Object {
+        $null -ne $_['design_review'] -and @('passed', 'exempt') -notcontains ([string]$_['design_review']['status'])
+    })
+    if ($pending.Count -eq 0) { return $out }
+    $flow = Read-ArchiveTasks $Bridge.archive
+    foreach ($st in @($pending)) {
+        $status = [string]$st['design_review']['status']
+        if ($status -eq 'planned') {
+            $one = Update-DesignReviewPlanned $RunDir $out.bridge $st $flow.tasks
+            $out.bridge = $one.bridge
+            if ($null -ne $one.grafted) { $out.grafted += $one.grafted }
+        }
+        elseif ($status -eq 'grafted') {
+            $one = Update-DesignReviewGrafted $RunDir $out.bridge $st $flow.tasks
+            $out.bridge = $one.bridge
+            if ($null -ne $one.wave) { $out.wave = $one.wave }
+        }
+        elseif ($status -eq 'failed') {
+            $wave = Invoke-DesignReviewFailWave $RunDir $out.bridge $st $flow.tasks
+            $out.bridge = $wave.bridge
+            $out.wave = $wave
+        }
+    }
+    return $out
+}
+
+function Remove-InvalidatedDesignReviewNode {
+    # 失效回收（F6 同构）：失效波解绑 design_review 时旧 [设计审查·S<k>] 节点归还
+    # goal-root 子位。幂等：missing/already-pruned = 槽位已还；其他 prune 失败硬错
+    # （rerun-safe：未解绑前不动状态）。审计：pruned_reason 留痕。
+    param($Bridge, [string]$NodeId, [string]$StageId)
+    if ([string]::IsNullOrWhiteSpace($NodeId)) { return }
+    $rp = Invoke-GoalTree @("-Command", "prune", "-RunId", ([string]$Bridge.run_id), "-NodeId", $NodeId, "-Reason", "design review invalidated: $StageId")
+    if ($rp.exit -eq 0 -and $null -ne $rp.json -and $rp.json.success) { return }
+    $code = ""
+    if ($null -ne $rp.json -and $null -ne $rp.json.error) { $code = [string]$rp.json.error.code }
+    if ($code -eq "ALREADY_PRUNED" -or $code -eq "NODE_NOT_FOUND") { return }
+    Write-ErrorResult "INVALIDATION_PRUNE_FAILED" "invalidation wave could not reclaim stale design review node $NodeId (stage $StageId): $($rp.text)" 1
+}
+
+function Get-DesignReviewGateBlockers {
+    # 设计审查闸门（验收 1：审查未过 IMPL 不解锁）：任务所在阶段的 design_review
+    # 未 passed/exempt 且（a）节点角色为 DESIGN 后角色（DEV；QA 仅在任务 phase 已到
+    # IMPL/VERIFY——DESIGN 内测试先行 QA 不占闸门）且（b）任务携带落盘设计产物
+    # （无产物任务不占闸门）→ 阻塞。返回 @(stage id)；空 = 门开（旧 run 无段零成本）。
+    param($Bridge, [int]$TaskId, [string]$StageRole)
+    if ([string]::IsNullOrWhiteSpace($StageRole)) { return @() }
+    if (@('DEV', 'QA') -notcontains $StageRole) { return @() }
+    $p = Get-PlanSection $Bridge
+    if ($null -eq $p) { return @() }
+    $st = Get-PlanStageOfTask $p $TaskId
+    if ($null -eq $st) { return @() }
+    $dr = $st['design_review']
+    if ($null -eq $dr) { return @() }
+    if (@('passed', 'exempt') -contains ([string]$dr['status'])) { return @() }
+    $task = $null
+    foreach ($t in @(Get-DesignReviewFlowTasks $Bridge)) {
+        if ([int]$t.id -eq $TaskId) { $task = $t; break }
+    }
+    if ($null -eq $task) { return @() }
+    $hasDoc = $false
+    foreach ($d in @(Convert-ToSafeArray $task.designDocs)) {
+        $rel = (([string]$d.path) -replace '\\', '/')
+        if ([string]::IsNullOrWhiteSpace($rel)) { continue }
+        if (Test-Path -LiteralPath (Join-Path ([string]$Bridge.archive) ($rel -replace '/', '\')) -PathType Leaf) { $hasDoc = $true; break }
+    }
+    if (-not $hasDoc) { return @() }
+    if ($StageRole -eq 'QA') {
+        $ph = $null
+        if (Test-PropPresent $task 'phase') { $ph = [string]$task.phase }
+        if ($ph -notin @('IMPL', 'VERIFY')) { return @() }
+    }
+    return @([string]$st['id'])
+}
+
+function Assert-DesignReviewGateOpen {
+    # NODE_BLOCKED_BY_DESIGN_REVIEW——与 NODE_BLOCKED_BY_GATE 同族（验收 1）：
+    # [设计审查·S<k>] 未过（pass/exempt）时有设计产物在册任务的 IMPL/VERIFY 节点
+    # 认领/分发硬拒；push 候选 skip 同因（reason 分列，AND 栈叠）。pass 后下一触发
+    # 点自动放行（自愈免费）；无 Force 旁路。
+    param($Bridge, [int]$TaskId, [string]$StageRole)
+    $blockers = Get-DesignReviewGateBlockers $Bridge $TaskId $StageRole
+    if (@($blockers).Count -gt 0) {
+        Write-ErrorResult "NODE_BLOCKED_BY_DESIGN_REVIEW" "Task #$TaskId ($StageRole) sits behind an open design review — stage(s): [$($blockers -join ', ')]. Settle the [设计审查·S<k>] node with a passing DesignReviewFile (pass 才放行 IMPL；fail 自动触发重做波), or replan to re-scope the stage; no force bypass." 1
+    }
 }
 
 function Test-PlanEventSeen {
@@ -2857,6 +3674,10 @@ function Write-PlanSettleTail {
         $sa = Get-StageAcceptanceNodeInfo $Bridge $NodeIdText
         if ($null -ne $sa) {
             $null = Add-PlanEvent $RunDir 'progress' 'acceptance_node_settled' $NodeIdText $null ([string]$sa.stage_id) @{ note = "stage acceptance node settled — the state machine records the pass" }
+        }
+        $dr = Get-DesignReviewNodeInfo $Bridge $NodeIdText
+        if ($null -ne $dr) {
+            $null = Add-PlanEvent $RunDir 'progress' 'design_review_node_settled' $NodeIdText $null ([string]$dr.stage_id) @{ note = "design review node settled — the state machine derives the verdict from the DesignReviewFile (pass 放行 / fail 波)" }
         }
         return
     }
@@ -2951,6 +3772,24 @@ function Merge-PlanRevision {
             Remove-InvalidatedAcceptanceNode $Bridge ([string]$old['acceptance_point']['node']) $sid
             $null = Add-PlanEvent $RunDir 'deviation' 'acceptance_invalidated' ([string]$old['acceptance_point']['node']) $null $sid @{ trigger = 'replan'; reason = "stage content changed after acceptance" }
         }
+        # auditor-design-stage-review: design_review 槽位随 replan 承载（旧段存在才
+        # 落新段——部署状态以 promulgate 时为准，不做中途翻转）；内容未变承载运行态，
+        # 内容已变重置 planned + 旧审查节点回收（覆盖重产重审，验收 7 失效波语义）。
+        if ($null -ne $old['design_review']) {
+            $st['design_review'] = @{ status = 'planned'; node = $null; verdict = $null; reviewed_at = $null; basis = $null }
+            $oldDrStatus = [string]$old['design_review']['status']
+            if ($contentSame -and $oldDrStatus -notin @('', 'planned')) {
+                $st['design_review']['status'] = $oldDrStatus
+                $st['design_review']['node'] = $old['design_review']['node']
+                $st['design_review']['verdict'] = $old['design_review']['verdict']
+                $st['design_review']['reviewed_at'] = $old['design_review']['reviewed_at']
+                $st['design_review']['basis'] = $old['design_review']['basis']
+            }
+            elseif (-not $contentSame -and $oldDrStatus -notin @('', 'planned', 'exempt')) {
+                Remove-InvalidatedDesignReviewNode $Bridge ([string]$old['design_review']['node']) $sid
+                $null = Add-PlanEvent $RunDir 'deviation' 'design_review_invalidated' ([string]$old['design_review']['node']) $null $sid @{ trigger = 'replan'; reason = "stage content changed after design review" }
+            }
+        }
     }
     $Bridge['plan'] = $newSec
     Write-BridgeFile $RunDir $Bridge | Out-Null
@@ -2967,7 +3806,7 @@ function New-PlanStageRow {
         if ($null -eq $task -or ($script:PlanTerminalLifecycles -contains ([string]$task.lifecycle))) { $done++ }
     }
     $ap = $Stage['acceptance_point']
-    return [ordered]@{
+    $row = [ordered]@{
         id         = [string]$Stage['id']
         goal       = [string]$Stage['goal']
         milestone  = [string]$Stage['milestone']
@@ -2982,6 +3821,17 @@ function New-PlanStageRow {
             slice          = [string]$ap['slice']
         }
     }
+    # auditor-design-stage-review: 审查状态透出（无段 = $null，旧 run 视图不变）
+    if ($null -ne $Stage['design_review']) {
+        $dr = $Stage['design_review']
+        $row['design_review'] = [ordered]@{
+            status      = [string]$dr['status']
+            node        = $(if (-not [string]::IsNullOrWhiteSpace([string]$dr['node'])) { [string]$dr['node'] } else { $null })
+            verdict     = $(if ($null -ne $dr['verdict']) { [string]$dr['verdict'] } else { $null })
+            reviewed_at = $(if ($null -ne $dr['reviewed_at']) { [string]$dr['reviewed_at'] } else { $null })
+        }
+    }
+    return $row
 }
 
 function Get-PlanView {
@@ -3028,14 +3878,20 @@ function Add-PlanAnnexLines {
     $log = Read-PlanLogEntries $RunDir
     $lines += "- 计划载体：$([string]$p['source'])（revision $([int]$p['revision'])）；进度/风险/偏差/修正账本：plan-log.jsonl"
     $lines += ""
-    $lines += "| 阶段 | 目标 | 里程碑 | 任务 | 完成度 | 集成验收点 |"
-    $lines += "|------|------|--------|------|--------|------------|"
+    $lines += "| 阶段 | 目标 | 里程碑 | 任务 | 完成度 | 集成验收点 | 设计审查 |"
+    $lines += "|------|------|--------|------|--------|------------|----------|"
     foreach ($st in @($p['stages'])) {
         $row = New-PlanStageRow $st $Bridge $FlowTasks
         $ap = $st['acceptance_point']
         $nodeNote = ""
         if (-not [string]::IsNullOrWhiteSpace([string]$ap['node'])) { $nodeNote = " ($([string]$ap['node']))" }
-        $lines += "| $($st['id']) | $($st['goal']) | $($st['milestone']) | $(@($st['task_ids']) -join ', ') | $($row.progress) | $([string]$ap['status'])$nodeNote |"
+        # auditor-design-stage-review: 设计审查列（无段 = '-'，旧 run 行式一致）
+        $drText = "-"
+        if ($null -ne $st['design_review']) {
+            $drText = [string]$st['design_review']['status']
+            if (-not [string]::IsNullOrWhiteSpace([string]$st['design_review']['verdict'])) { $drText = "$drText/$([string]$st['design_review']['verdict'])" }
+        }
+        $lines += "| $($st['id']) | $($st['goal']) | $($st['milestone']) | $(@($st['task_ids']) -join ', ') | $($row.progress) | $([string]$ap['status'])$nodeNote | $drText |"
     }
     $lines += ""
     $lines += "- 修正记录：$(@($log.entries | Where-Object { ([string]$_['kind']) -eq 'revision' }).Count) 次 replan；偏差事件：$(@($log.entries | Where-Object { ([string]$_['kind']) -eq 'deviation' }).Count) 条（详见 plan-log.jsonl）"
@@ -3054,6 +3910,12 @@ function Get-PlanConcludeVerdict {
     foreach ($st in @($p['stages'])) {
         $status = [string]$st['acceptance_point']['status']
         if ($status -ne 'passed') { $pending += "$([string]$st['id'])=$status" }
+        # auditor-design-stage-review: 审查未过（pass/exempt 之外）不得结案——同
+        # STAGE_ACCEPTANCE_PENDING 硬门（无段跳过，旧 run 不变）。
+        $dr = $st['design_review']
+        if ($null -ne $dr -and @('passed', 'exempt') -notcontains ([string]$dr['status'])) {
+            $pending += "$([string]$st['id'])=design_review:$([string]$dr['status'])"
+        }
     }
     if ($pending.Count -gt 0) {
         return @{
@@ -3302,6 +4164,13 @@ function New-PromulgateInitialPush {
     #    the persisted run-level flag is re-asserted by every later trigger.
     param([string]$RunDir, $Bridge)
     if ($NoPush) {
+        # auditor-design-stage-review: even an isolated run evaluates the
+        # design-review state machine ONCE here (same placement as the push
+        # path's auto-dispatch head) — at promulgate time a fresh run can only
+        # transition exempt/wait (no task is past DESIGN yet), so the fast-lane
+        # stages read exempt right away instead of lingering 'planned'.
+        $drMoves = Update-StageDesignReviews $RunDir $Bridge
+        $Bridge = $drMoves.bridge
         return @{ push = @{ trigger = "promulgate (-NoPush)"; considered = 0; pushed = @(); skipped = @(); failed = @() }; bridge = $Bridge }
     }
     $push = Invoke-AutoDispatch $RunDir $Bridge "promulgate"
@@ -3475,7 +4344,9 @@ function New-PlanResultSummary {
         source   = [string]$PlanSec['source']
         stages   = @($PlanSec['stages'] | ForEach-Object {
             $pst = $_
-            @{ id = [string]$pst['id']; goal = [string]$pst['goal']; milestone = [string]$pst['milestone']; task_ids = @($pst['task_ids']); batches = @($pst['batches']) }
+            $stageRow = @{ id = [string]$pst['id']; goal = [string]$pst['goal']; milestone = [string]$pst['milestone']; task_ids = @($pst['task_ids']); batches = @($pst['batches']) }
+            if ($null -ne $pst['design_review']) { $stageRow['design_review'] = @{ status = [string]$pst['design_review']['status'] } }
+            $stageRow
         })
         risks    = @($PlanSec['risks'])
     }
@@ -3520,6 +4391,12 @@ function New-PromulgateResult {
                 }
             } else { $null })
             budget       = @{ max_rounds = $MaxRounds; node_width = $EffWidth; max_nodes = $EffMaxNodes }
+            # auditor-design-stage-review: 部署状态回显（未部署 = 降级警示，现行行为）
+            design_review = $(if (@(@($PlanSec['stages']) | Where-Object { $null -ne $_['design_review'] }).Count -gt 0) {
+                @{ deployed = $true; note = "DESIGN 全 settle 后自动 graft [设计审查·S<k>]（AUDITOR 汇聚五查，一批一会话）；pass 才放行 IMPL（闸门三触点：push skip / claim / dispatch 硬拒）" }
+            } else {
+                @{ deployed = $false; note = "AUDITOR 未部署——降级为现行行为（设计不审直接 IMPL），不落 design_review 段；安装 rdd-auditor 后新 run 生效" }
+            })
             lease        = @{ holder = (Get-LeaseState $RunDir).holder }
             auto_push    = @{ trigger = $Push.trigger; pushed = @($Push.pushed); blocked = @($Push.skipped | Where-Object { $_.reason -eq 'blocked_by_deps' } | ForEach-Object { $_.node }); failed = @($Push.failed) }
             next_step    = "initial pushes are automatic (pushed: [$(@($Push.pushed) -join ', ')]; dep-blocked nodes push when their dependencies settle). Workers start with: delivery-bridge.cmd -Command claim -RunId $RunId -NodeId <id> -Role <stage>."
@@ -3560,9 +4437,13 @@ function Get-PromulgateBudget {
     $headCount = 0
     foreach ($p in $Plan) { $headCount += @($p.group).Count }
     $extra = [Math]::Max(0, $StageCount - 1)
+    # auditor-design-stage-review: +K（K=阶段数，单阶段 run 即「+1」）——每阶段最多
+    # 1 个 [设计审查·S<k>] goal-root 子位；仅 AUDITOR 已部署时计入（未部署零节点）。
+    $extraReview = 0
+    if (Test-AuditorDeployed) { $extraReview = $StageCount }
     return @{
-        width     = $(if ($NodeWidth -gt 0) { $NodeWidth } else { [Math]::Max(4, $headCount + 2 + $extra) })
-        max_nodes = $(if ($MaxNodes -gt 0) { $MaxNodes } else { (@($Plan).Count * 5 + 6 + $extra) })
+        width     = $(if ($NodeWidth -gt 0) { $NodeWidth } else { [Math]::Max(4, $headCount + 2 + $extra + $extraReview) })
+        max_nodes = $(if ($MaxNodes -gt 0) { $MaxNodes } else { (@($Plan).Count * 5 + 6 + $extra + $extraReview) })
     }
 }
 
@@ -3656,6 +4537,10 @@ function Invoke-Promulgate {
     # criteria anchor rules; only then is the plan injected as bridge state.
     Test-PlanPromulgateFit $planParsed $plan $allIds $criteria
     $planSec = New-PlanSection $planParsed $PlanFile
+    # auditor-design-stage-review: AUDITOR 已部署 → 每 stage 落 design_review 槽位
+    # （未部署 = 无段无门零成本，现行行为；警示随结果回显）。
+    $drSlots = Set-PlanDesignReviewSlots $planSec
+    $planSec = $drSlots.plan
     $budget = Get-PromulgateBudget $plan (@($planParsed.stages).Count)
 
     # parallel-coordination conventions gate (zero residue — fires before ANY run
@@ -3719,8 +4604,12 @@ function Get-DispatchTaskAnchorArgs {
 function Assert-DispatchStageGate {
     # stage gate (long-task-planning, 不设 Force 旁路): manual dispatch obeys
     # the same gate as auto-push — deterministic NODE_BLOCKED_BY_GATE feedback.
+    # design-review gate (auditor-design-stage-review): AND-stacked on the same
+    # dispatch gate path, reason kept apart (NODE_BLOCKED_BY_DESIGN_REVIEW) —
+    # manual dispatch must not push an IMPL node through an open design review.
     param($Bridge, $Mapping)
     Assert-PlanGateOpen $Bridge ([int]$Mapping.task_id)
+    Assert-DesignReviewGateOpen $Bridge ([int]$Mapping.task_id) ([string]$Mapping.stage)
 }
 
 function Assert-DispatchConflictGate {
@@ -3973,10 +4862,33 @@ function Invoke-ClaimWrites {
     return @{ tree = $r1.json.data; flow = $r2.json.data }
 }
 
+function Get-DesignReviewClaimMaps {
+    # 审查对象面 + design_maps 行构造（Add-ClaimTreeLevelContext 子过程）：docs 清单
+    # + 逐 doc 的 files/warnings（机械缓存刷新——文档可能刚落盘，原地更新
+    # $Bridge.design_maps）。返回 @{ docs; map_rows }。
+    param([string]$RunDir, $Bridge, $Stage)
+    $docs = @(); $mapRows = @()
+    if ($null -eq $Stage) { return @{ docs = @($docs); map_rows = @($mapRows) } }
+    $flowTasks = @(Get-DesignReviewFlowTasks $Bridge)
+    $dd = Get-StageDesignDocs $Bridge $Stage $flowTasks
+    $docs = @($dd.docs)
+    $mapsRes = Get-DesignMaps $RunDir $Bridge $flowTasks
+    foreach ($rel in @($docs)) {
+        $m = $null
+        if ($mapsRes.maps -is [System.Collections.IDictionary] -and $mapsRes.maps.Contains($rel)) { $m = $mapsRes.maps[$rel] }
+        $mapRows += @{
+            doc = $rel
+            files = @($(if ($null -ne $m) { Convert-ToSafeArray $m['files'] | ForEach-Object { [string]$_.path } } else { @() }))
+            warnings = @($(if ($null -ne $m) { Convert-ToSafeArray $m['warnings'] } else { @() }))
+        }
+    }
+    return @{ docs = @($docs); map_rows = @($mapRows) }
+}
+
 function Add-ClaimTreeLevelContext {
     # tree-level claim context (R1 acceptance chain / stage acceptance point /
-    # in-tree repair node): mutates $Data with tree_level + acceptance +
-    # start_context per kind.
+    # design review node / in-tree repair node): mutates $Data with tree_level +
+    # acceptance + start_context per kind.
     param($Data, $Target, $Bridge)
     $Data['tree_level'] = $true
     $kind = [string]$Target.acceptance.kind
@@ -3990,6 +4902,30 @@ function Add-ClaimTreeLevelContext {
             slice          = [string]$sa.slice
         }
         $Data['start_context'] = "stage acceptance node ($([string]$sa.stage_id)): 集成验收点判据子集 + 可运行切片形态 in node.task (claim 输出全文); 交付记录 = 验证摘要 + 切片运行证据 (extras.verification)"
+        return
+    }
+    if ($kind -eq 'design_review') {
+        # AUDITOR 设计汇聚审查节点（auditor-design-stage-review）：claim 注入新形态
+        # design_review——阶段设计文档清单 + design_maps 机械缓存引用（DESIGN_MAP_INVALID
+        # 警示为裁定输入）+ 架构约定引用 + 整体验收判据 ref（DESIGN 链头注入同构）。
+        $drInfo = $Target.acceptance
+        $p = Get-PlanSection $Bridge
+        $stage = $null
+        if ($null -ne $p) {
+            foreach ($st in @($p['stages'])) { if (([string]$st['id']) -eq ([string]$drInfo.stage_id)) { $stage = $st; break } }
+        }
+        $face = Get-DesignReviewClaimMaps (Get-BridgeRunDir ([string]$Bridge.run_id)) $Bridge $stage
+        $a = Get-AcceptanceSection $Bridge
+        $Data['acceptance'] = @{
+            kind         = 'design_review'
+            stage_id     = [string]$drInfo.stage_id
+            docs         = @($face.docs)
+            design_maps  = @($face.map_rows)
+            conventions  = Get-ConventionsRef $Bridge
+            criteria_ref = $(if ($null -ne $a) { [string]$a['criteria_ref'] } else { $null })
+            report       = ($script:DesignReviewReportFmt -f ([string]$drInfo.stage_id))
+        }
+        $Data['start_context'] = "design review node ($([string]$drInfo.stage_id)): 五查汇聚审查本阶段全部设计产物 — docs in acceptance.docs (claim 输出全文); design_maps 机械缓存 + DESIGN_MAP_INVALID 警示为 change_map 维裁定输入; 变更地图/交互说明类对象缺产物即 fail; 产出 DesignReviewFile: $($script:DesignReviewReportFmt -f ([string]$drInfo.stage_id)) (+同名 .md 人读镜像), 总裁定由引擎推导(pass ⇔ 全文档 pass 且全局零 blocking)"
         return
     }
     if ([bool]$Target.acceptance.chain) {
@@ -4045,7 +4981,12 @@ function Invoke-BridgeClaim {
     $target = Resolve-ClaimTarget $bridge $Role $runDir
     # stage gate (long-task-planning): tree-level nodes carry no stage, only
     # mapped delivery claims wait on earlier stages' acceptance points.
-    if (-not $target.tree_level) { Assert-PlanGateOpen $bridge ([int]$target.task_id) }
+    # design-review gate (auditor-design-stage-review): same tree-level
+    # exemption — the [设计审查·S<k>] node itself claims as AUDITOR freely.
+    if (-not $target.tree_level) {
+        Assert-PlanGateOpen $bridge ([int]$target.task_id)
+        Assert-DesignReviewGateOpen $bridge ([int]$target.task_id) ([string]$target.stage)
+    }
     $ts = Test-ClaimTreeState $bridge $NodeId $runDir
     $flowForce = $false
     if (-not $target.tree_level) {
@@ -4287,6 +5228,51 @@ function Invoke-ReclaimDeadClaim {
     }
 }
 
+function Invoke-ReclaimDesignReviewNode {
+    # tree-level design-review dead-claim recovery (auditor-design-stage-review;
+    # Invoke-BridgeReclaim 分支体): no task.json flow side — steal the dead claim,
+    # flag for re-push, auto-dispatch. A reported review node is NOT reclaimable
+    # here (its delivery is adjudicated by the settle gate; the AUDITOR session
+    # re-reports or the planner waits).
+    param([string]$RunDir, $Bridge, [string]$NodeId)
+    $leafStatus = Invoke-GoalTreeLeaf @("-Command", "status", "-RunId", $RunId, "-NodeId", $NodeId)
+    if ($leafStatus.exit -ne 0 -or $null -eq $leafStatus.json -or -not $leafStatus.json.success) {
+        Write-ErrorResult "NODE_STATUS_FAILED" "leaf status failed: $($leafStatus.text)" 2
+    }
+    $drNode = $leafStatus.json.data.node
+    if (([string]$drNode.status) -eq "reported") {
+        Write-ErrorResult "RECLAIM_NOT_POSSIBLE" "Design review node $NodeId is reported — adjudicate it via settle (four evidence checks + DesignReviewFile contract gate); reclaim only recovers dead claims." 1
+    }
+    if (([string]$drNode.status) -in @("done", "pruned")) {
+        Write-ErrorResult "RECLAIM_NOT_POSSIBLE" "Node $NodeId is '$([string]$drNode.status)' — terminal; nothing to reclaim." 1
+    }
+    if (([string]$drNode.status) -eq "pending") {
+        Write-ErrorResult "RECLAIM_NOT_NEEDED" "Node $NodeId is pending (nobody claimed it) — a plain bridge claim is enough." 1
+    }
+    $null = Test-ReclaimLiveness $RunId $NodeId $drNode
+    $worker = "planner-reclaim"
+    $r1 = Invoke-GoalTreeLeaf @("-Command", "claim", "-RunId", $RunId, "-NodeId", $NodeId, "-Worker", $worker, "-Steal")
+    if ($r1.exit -ne 0 -or -not $r1.json.success) {
+        Write-ErrorResult "RECLAIM_TREE_FAILED" "leaf steal failed: $($r1.text)" 1
+    }
+    $Bridge = Set-NodeRepushFlag $RunDir $Bridge $NodeId
+    $push = Invoke-AutoDispatch $RunDir $Bridge "reclaim" (-not [bool]$NoReuse)
+    return @{
+        success = $true
+        data    = @{
+            run_id     = $RunId
+            node_id    = $NodeId
+            task_id    = $null
+            stage      = "AUDITOR"
+            reclaimed  = $true
+            mode       = "dead-claim (tree-level design review node)"
+            steal_count = $r1.json.data.node.steal_count
+            auto_push  = @{ trigger = $push.trigger; pushed = @($push.pushed); failed = @($push.failed) }
+            next_step  = $(if (@($push.pushed) -contains $NodeId) { "fresh AUDITOR session auto-pushed for the parked review node" } else { "review node parked as '$worker' — re-push via status touch or dispatch -NodeId $NodeId" })
+        }
+    }
+}
+
 function Invoke-BridgeReclaim {
     # composite recovery (dead claims AND rejected deliveries) — orchestrator
     # over the two mode helpers (QA function-size gate decomposition; messages
@@ -4298,7 +5284,14 @@ function Invoke-BridgeReclaim {
     $null = Enter-PlannerLease $runDir
 
     $mapping = Get-NodeTaskStage $bridge $NodeId
-    if ($null -eq $mapping) { Write-ErrorResult "NODE_NOT_MAPPED" "Node $NodeId is not in this run's bridge mapping" 2 }
+    if ($null -eq $mapping) {
+        # tree-level design-review node (auditor-design-stage-review; 边界与异常:
+        # 审查节点自身失败走既有 reclaim dead-claim 通道)——分支体见
+        # Invoke-ReclaimDesignReviewNode（本函数行数预算拆分）。
+        $drInfo = Get-DesignReviewNodeInfo $bridge $NodeId
+        if ($null -eq $drInfo) { Write-ErrorResult "NODE_NOT_MAPPED" "Node $NodeId is not in this run's bridge mapping" 2 }
+        return Invoke-ReclaimDesignReviewNode $runDir $bridge $NodeId
+    }
     $stage = [string]$mapping.stage
     $taskId = [int]$mapping.task_id
 
@@ -4921,9 +5914,18 @@ function Get-SettleGateRoles {
         }
     }
     $r = [string]$Node.role
-    if (-not [string]::IsNullOrWhiteSpace($r)) { return @($r) }
+    if (-not [string]::IsNullOrWhiteSpace($r)) { return @($r.ToUpper()) }
     return @()
 }
+
+# design-review settle gate registration (auditor-design-stage-review): the
+# AUDITOR validator joins the registry OUTSIDE the verbatim-synced gate block
+# above (this sits past the `# === Settle evidence gate` section marker) —
+# rdd-flow.ps1 never dispatches it (AUDITOR is not a task.json route role; the
+# chain scenario has no bridge context to read the DesignReviewFile from), so
+# the two synced copies stay byte-identical. Bridge-scenario GatePayload form:
+# { scenario; run_id; node_id }.
+$script:RoleHandoffValidators["AUDITOR"] = ${function:Test-DesignReviewFile}
 
 function Write-QualityScanTempFile {
     # Materialize the accepted callback's quality_scan credential as a temp
@@ -4954,9 +5956,11 @@ function Write-RollbackScanSkipFile {
     # is a trusted declaration by design (no reconciliation source there), so
     # the engine states the disposal honestly and the gate passes it. The
     # rebuilt upstream chain faces the full gate again on ITS completion.
-    param([string]$RunDir)
+    # -ReasonText: the design-review fail wave (auditor-design-stage-review)
+    # reuses this disposal channel with its own honest wording.
+    param([string]$RunDir, [string]$ReasonText = 'cross-stage rollback disposal: recycling a failed delivery (delivery-bridge rollback); not a DEV completion handoff')
     $path = Join-Path (Join-Path $RunDir 'state') ('quality-scan-rollback-' + [guid]::NewGuid().ToString('N').Substring(0, 8) + '.json')
-    $skip = @{ skip = $true; reason = 'cross-stage rollback disposal: recycling a failed delivery (delivery-bridge rollback); not a DEV completion handoff' }
+    $skip = @{ skip = $true; reason = $ReasonText }
     ConvertTo-PortableJson $skip -Depth 3 | Out-File -FilePath $path -Encoding utf8
     return $path
 }
@@ -5009,7 +6013,7 @@ function Test-SettleEvidence {
             if ((Test-PropPresent $cb.callback 'extras') -and $null -ne $cb.callback.extras -and (Test-PropPresent $cb.callback.extras 'quality_scan')) {
                 $qs = $cb.callback.extras.quality_scan
             }
-            $problems += @(Invoke-RoleHandoffGate -Roles $gateRoles -GatePayload @{ scenario = 'bridge'; quality_scan = $qs; citations = $cits })
+            $problems += @(Invoke-RoleHandoffGate -Roles $gateRoles -GatePayload @{ scenario = 'bridge'; run_id = $RunId; node_id = $NodeId; quality_scan = $qs; citations = $cits })
         }
     }
     return $problems
@@ -5946,6 +6950,16 @@ function Add-PlanStatusWarnings {
         if (([string]$st.acceptance.status) -eq 'grafted') {
             $w += "stage $($st.id) acceptance point node $($st.acceptance.node) awaiting settle — downstream stage gates stay closed until it passes"
         }
+        # auditor-design-stage-review: 审查节点待 settle / 审查未过提示（无段视图零增）
+        if ($null -ne $st.design_review) {
+            $drs = [string]$st.design_review.status
+            if ($drs -eq 'grafted') {
+                $w += "stage $($st.id) design review node $($st.design_review.node) awaiting settle — IMPL 节点闸门关闭至 DesignReviewFile verdict 落地（pass 放行 / fail 触发重做波）"
+            }
+            elseif (@('planned', 'failed') -contains $drs) {
+                $w += "stage $($st.id) design review is '$drs' — 有设计产物在册任务的 IMPL 节点被闸（NODE_BLOCKED_BY_DESIGN_REVIEW 同族）"
+            }
+        }
     }
     foreach ($key in @($Bridge.tasks.Keys)) {
         $blockers = Get-PlanGateBlockers $Bridge ([int]$key)
@@ -6057,6 +7071,11 @@ function New-PlanResumeSteps {
         $ap = $st['acceptance_point']
         if (([string]$ap['status']) -eq 'grafted') {
             $steps += "Stage $($st['id']) acceptance node $($ap['node']) awaiting settle — run 'delivery-bridge.cmd -Command settle -RunId $RunId -NodeId $($ap['node'])' (阶段集成验收点真实执行); downstream stage gates stay closed until it passes."
+        }
+        # auditor-design-stage-review: 审查节点待 settle 续跑步骤（无段零增）
+        $dr = $st['design_review']
+        if ($null -ne $dr -and ([string]$dr['status']) -eq 'grafted' -and -not [string]::IsNullOrWhiteSpace([string]$dr['node'])) {
+            $steps += "Stage $($st['id']) design review node $($dr['node']) awaiting settle — the AUDITOR session reports its DesignReviewFile then run 'delivery-bridge.cmd -Command settle -RunId $RunId -NodeId $($dr['node'])'; pass 放行 IMPL，fail 自动触发重做波."
         }
     }
     foreach ($key in @($Bridge.tasks.Keys)) {
