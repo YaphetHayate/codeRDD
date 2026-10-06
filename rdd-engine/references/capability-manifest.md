@@ -19,6 +19,7 @@
 | 节点依赖管理 | `goal-tree.cmd -Command deps` | `$rdd = ...同上定位链...; & "$rdd\scripts\goal-tree.cmd" -Command deps -DepAction add -RunId <id> -NodeId <n> -On <m>` | 树内节点声明/解除依赖（DAG 机械校验 + 认领门禁 + 审计）；规划者 编排跨角色依赖场景 |
 | 交付编排桥接（规划者） | `delivery-bridge.cmd` | `$rdd = ...同上定位链...; & "$rdd\scripts\delivery-bridge.cmd" -Command promulgate -TaskJson <归档 task.json>` | PM 归档较重时启动 规划者 接管整批交付：颁布节点（任务×阶段）→ 调动角色会话 → settle 唯一流转通道 → 结案报告。协议见 `planner-guide.md` |
 | 代码度量（客观指标） | `code-metrics.cmd -Command scan` | `$rdd = ...同上定位链...; & "$rdd\scripts\code-metrics.cmd" -Command scan [-Base <ref>] [-Files <清单>] [-MaxFunctionLines 50] [-MaxNestingDepth 5]` | QA 验证模式硬性项 #4/#5（函数行数/嵌套深度）确定性检查、DEV 自测前置拦截（本期 PowerShell） |
+| tips 记录/查询 | `tips.cmd -Command add` / `-Command list` | `$rdd = ...同上定位链...; & "$rdd\scripts\tips.cmd" -Command add -By <ROLE> [-Title -Problem -Avoidance -Roles "DEV,QA" \| -File <payload.json>]`；`& "$rdd\scripts\tips.cmd" -Command list [-Role <R>]` | 任意角色会话把可复用坑/陷阱/约定沉淀为结构化 tip（`.rdd/tips/entries/` 一条目一 JSON，git 跟踪）；`list -Role` 输出供 start-role B2 摘要消费。中文内容走 `-File` 通道（inline 非 ASCII 机械硬拒） |
 
 ---
 
@@ -156,6 +157,20 @@ $rdd = $null; $t = $null; try { $t = git rev-parse --show-toplevel } catch { }; 
 - **退化**：无 git / Base 不可得时要求显式 `-Files`，报告标注「无基线」（全部函数视为本次触及）；AST 解析失败即报（兼作 .ps1 无 lint/build 配置时的 #1 语法兜底）
 - **退出码**：`0=无违规 / 1=存在硬性违规 / 2=运行错误`
 - 验收测试：`rdd-engine/tests/test-code-metrics.ps1`（48 断言，临时 git 仓库 + 固定基准样本 `tests/fixtures/code-metrics/`）
+
+---
+
+## tips 记录/查询（tips.ps1）
+
+项目级角色 tips 沉淀能力——任意角色会话一条命令把可复用的坑/陷阱/约定记录为结构化条目，与 task.json 需求流转完全解耦（独立入口镜像解耦语义；归档 `2026-10-06-role-tips-mechanism`）。自包含叶脚本：不读不写 task.json、不碰 exploration 区。
+
+- **存储**：`.rdd/tips/entries/` 一条目一 JSON（schema `rdd-tip/1`，UTF-8 无 BOM，git 跟踪——人工知识随仓分发）；ID=`<UTC时间戳>-<角色>-<4hex>`，纯 ASCII 文件名字典序=时间序，免疫并行/跨克隆合并冲突；`deprecated` 为预留字段恒 false
+- **add**：`-By <ROLE> [-Title -Problem -Avoidance -Roles "DEV,QA" | -File <payload.json>]`——inline 与 -File 互斥（同给报 `DUAL_CHANNEL`）；inline 参数机械拒绝非 ASCII（`NON_ASCII_INLINE`，封死 §6.4 cmd 传参乱码入口），中文内容唯一正道 = `-File` UTF-8 payload `{title, problem, avoidance, roles[]}`（建议暂存 `.rdd/tmp/`，未知键拒绝）；角色大小写不敏感归一到白名单规范形
+- **list**：`[-Role <R>]`——roles∋R 或 roles∋ALL 命中；不传=全量；新→旧；不截断（条目数上限/截断策略归消费方）；空库 `count=0` 非 error。每条含 `title` + `path`（repo 相对路径指针，Read 可达）——start-role B2 摘要行原料
+- **校验 fail-loud**：必填缺失（`MISSING_TITLE/PROBLEM/AVOIDANCE/ROLES/BY`）、角色非法（`INVALID_ROLE`）、ALL 混用（`ALL_MIXED`）、payload 非法（`PAYLOAD_INVALID`/`PAYLOAD_NOT_FOUND`）→ 显式错误码、exit 1、不落盘；读取侧半损坏条目 `CORRUPT_ENTRY` exit 3 指名文件
+- **退出码/信封**：0 成功 / 1 调用与校验错 / 2 环境错 / 3 数据损坏（对齐 rdd-flow 分层）；输出统一 `{success,data}` / `{success:false,error:{code,message}}` JSON 信封
+- **角色白名单**：`PM/CTO/UX/DEV/QA/EVAL/PSE/PLANNER/AUDITOR`（对齐 start-role.ps1 `-Role` ValidateSet 单源，漂移为 QA 核对项）+ `ALL` 哨兵（仅目标角色、仅允许唯一元素）；`-By` 为记录角色（9 角色之一）
+- 验收测试：`rdd-engine/tests/test-tips.ps1`（48 断言：验收 1-5 + 空库 + 损坏 fail-loud + BOM 自举断言；`RDD_PROJECT_ROOT` 指向 %TEMP% 一次性根完全隔离）
 
 ---
 

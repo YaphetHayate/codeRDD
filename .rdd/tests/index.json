@@ -192,6 +192,22 @@
       "deprecatedCount": 0,
       "lastUpdated": "2026-09-28",
       "lastChange": "2026-09-27-session-list-recency-wakeful-callback"
+    },
+    {
+      "feature": "tips-store-cli",
+      "relatedCode": [
+        "rdd-engine/scripts/tips.ps1",
+        "rdd-engine/scripts/tips.cmd",
+        "rdd-engine/references/capability-manifest.md"
+      ],
+      "testCode": [
+        "rdd-engine/tests/test-tips.ps1",
+        ".rdd/tests/tips-store-cli/tips-store-cli-qa-verify.ps1"
+      ],
+      "activeCount": 18,
+      "deprecatedCount": 0,
+      "lastUpdated": "2026-10-06",
+      "lastChange": "2026-10-06-role-tips-mechanism"
     }
   ]
 }
