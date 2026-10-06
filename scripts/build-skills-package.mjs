@@ -6,9 +6,9 @@
  *   1. 先跑 build-dsh-presets.mjs 保证 preset 与技能源新鲜（生成物零漂移）
  *   2. 组装 dist/skills-staging/（gitignored）：
  *        package.json   @coderrdd/rdd-skills（files: skills/ + presets/）
- *        skills/        8 个角色技能目录（rdd-engine 仅 SKILL.md——协议文档经
+ *        skills/        9 个角色技能目录（rdd-engine 仅 SKILL.md——协议文档经
  *                       引擎三级定位链解析到引擎侧，与脚本同版本，不随包重复）
- *        presets/       8 组 dsh 生成物（7 角色 + rdd-planner 引导 preset）
+ *        presets/       9 组 dsh 生成物（8 角色 + rdd-planner 引导 preset）
  *   3. npm pack → 双产物：
  *        dist/skills/rdd-skills.tgz               # 固定名（Release latest 直链）
  *        dist/skills/rdd-skills-<version>.tgz     # 带版本名归档
@@ -20,7 +20,7 @@
  *   S1 技能源 junction fail-loud（codeRDD v1 junction 布局携带链接目录 = 拷贝失真）
  *   S2 rdd-engine 子树仅 SKILL.md（references/ 泄漏 = 与引擎脚本版本脱钩）
  *   S3 tarball 文件名与 package.json name/version 推导一致
- *   S4 包内条目全部位于 package/ 前缀下；契约成员（8×SKILL.md + 8×agent.cordis.yml）齐全
+ *   S4 包内条目全部位于 package/ 前缀下；契约成员（9×SKILL.md + 9×agent.cordis.yml）齐全
  *
  * --check（CI）：S1 + S2 + preset 新鲜度（委托 build-dsh-presets.mjs --check）+
  *   staging 结构完整性，不 pack、不落盘。
@@ -48,11 +48,11 @@ const checkMode = process.argv.includes('--check')
 const toPosix = p => p.split('\\').join('/')
 const fail = msg => { console.error(`✗ ${msg}`); process.exit(1) }
 
-/** 8 个角色技能目录（7 流程角色 + rdd-engine）。 */
-const SKILL_ROLES = ['rdd-pm', 'rdd-cto', 'rdd-ux', 'rdd-dev', 'rdd-qa', 'rdd-eval', 'rdd-pse', 'rdd-engine']
+/** 9 个角色技能目录（8 流程角色 + rdd-engine）。 */
+const SKILL_ROLES = ['rdd-pm', 'rdd-cto', 'rdd-ux', 'rdd-dev', 'rdd-qa', 'rdd-eval', 'rdd-pse', 'rdd-auditor', 'rdd-engine']
 
-/** 8 组 preset 生成物（7 流程角色 + rdd-planner 引导 preset；engine 职能由 rdd-explore 插件 + CLI 承接，无 preset）。 */
-const PRESET_ROLES = ['rdd-pm', 'rdd-cto', 'rdd-ux', 'rdd-dev', 'rdd-qa', 'rdd-eval', 'rdd-pse', 'rdd-planner']
+/** 9 组 preset 生成物（8 流程角色 + rdd-planner 引导 preset；engine 职能由 rdd-explore 插件 + CLI 承接，无 preset）。 */
+const PRESET_ROLES = ['rdd-pm', 'rdd-cto', 'rdd-ux', 'rdd-dev', 'rdd-qa', 'rdd-eval', 'rdd-pse', 'rdd-auditor', 'rdd-planner']
 
 const SKILLS_VERSION = '1.0.0'
 const PKG_NAME = '@coderrdd/rdd-skills'
@@ -135,13 +135,13 @@ for (const role of PRESET_ROLES) {
 {
   const skillsDirs = readdirSync(join(stagingRoot, 'skills'))
   const presetDirs = readdirSync(join(stagingRoot, 'presets'))
-  if (skillsDirs.length !== 8 || !SKILL_ROLES.every(r => skillsDirs.includes(r))) fail(`staging skills/ 子树不完整: ${skillsDirs.join(', ')}`)
-  if (presetDirs.length !== 8 || !PRESET_ROLES.every(r => presetDirs.includes(r))) fail(`staging presets/ 子树不完整: ${presetDirs.join(', ')}`)
+  if (skillsDirs.length !== 9 || !SKILL_ROLES.every(r => skillsDirs.includes(r))) fail(`staging skills/ 子树不完整: ${skillsDirs.join(', ')}`)
+  if (presetDirs.length !== 9 || !PRESET_ROLES.every(r => presetDirs.includes(r))) fail(`staging presets/ 子树不完整: ${presetDirs.join(', ')}`)
   const engineSubtree = readdirSync(join(stagingRoot, 'skills', 'rdd-engine'))
   if (engineSubtree.length !== 1 || engineSubtree[0] !== 'SKILL.md') {
     fail(`skills/rdd-engine 子树必须仅含 SKILL.md（实际: ${engineSubtree.join(', ')}）——协议文档经引擎定位链解析，不随技能包重复`)
   }
-  console.log(`ok - staging assembled: 8 skills + 8 presets (${copied.length} files)`)
+  console.log(`ok - staging assembled: 9 skills + 9 presets (${copied.length} files)`)
 }
 
 if (checkMode) {

@@ -147,17 +147,30 @@ $rdd = $null; $t = $null; try { $t = git rev-parse --show-toplevel } catch { }; 
 
 **并行交接**：同一归档需要同时交多个角色时（如 PM 同时交 CTO+QA），上游 agent 循环调用脚本，每次指定不同 `-Role`，各自开独立窗口 / 各自建独立对话。TaskId 相同时多角色共享同一 task.json 指针。
 
-### 交接类型：planner-takeover（PM 可选分支）
+### 交接类型：planner-takeover（PM 可选分支，两段式）
 
-PM 归档完成后 `rdd-flow next` 输出 `longTask.triggered=true`（归档含 ≥2 条非 deprecated 子需求且 ≥1 条进行中——原始需求被拆分为多条子需求的长程任务显式信号，机械可判、每次 next 现算）时，可不逐条交接下游，而是把整批交付交给规划者（PLANNER，引擎编排形态，非第六角色）。推荐话术（N/M 取 next 输出 `longTask.totalTaskCount`/`activeTaskCount`）：
+PM 归档完成后 `rdd-flow next` 输出 `longTask.triggered=true`（归档含 ≥2 条非 deprecated 子需求且 ≥1 条进行中——原始需求被拆分为多条子需求的长程任务显式信号，机械可判、每次 next 现算）时，可不逐条交接下游，而是把整批交付交给规划者（PLANNER，引擎编排形态，非第六角色）。**两段式话术**：先审视后启规划者（AUDITOR 事前把关 → PLANNER 机械消费 ReviewFile）。
 
-> 该原始需求被拆分为 N 条子需求（M 条进行中），属长程任务，建议交规划者（PLANNER）接管整批交付。确认后执行 `start-role.cmd -Role PLANNER -TaskJson <task.json>`；不采纳则按 4 步硬流程逐条交接，行为不变。
+推荐话术（N/M 取 next 输出 `longTask.totalTaskCount`/`activeTaskCount`）：
+
+> 该原始需求被拆分为 N 条子需求（M 条进行中），属长程任务，建议走**两段式接管**：
+>
+> ① 先建议审视（事前把关，可选）：执行 `start-role.cmd -Role AUDITOR -TaskJson <task.json>`——AUDITOR 独立审视产出 ReviewFile（reviewer: "auditor"），结论呈现用户（最终裁决权在用户）；
+> ② 用户确认审视结论后再启动规划者：执行 `start-role.cmd -Role PLANNER -TaskJson <task.json>`，规划者机械消费 ReviewFile 接管整批交付。
+>
+> 跳过审视时（AUDITOR 未部署 / 用户裁定跳过）直接走步骤 ②，规划者自产审查（reviewer: "planner"），行为逐字节不变；不采纳接管分支则按 4 步硬流程逐条交接，行为不变。
 
 ```powershell
-$rdd = $null; $t = $null; try { $t = git rev-parse --show-toplevel } catch { }; foreach ($c in @($env:RDD_ENGINE_HOME; if ($t) { (Get-ChildItem $t -Recurse -Directory -Depth 3 -Filter 'rdd-engine').FullName }; "$HOME\.rdd\engine\current")) { if ($c -and (Test-Path "$c\scripts\rdd-flow.cmd")) { $rdd = $c; break } }; if (-not $rdd) { throw "rdd-engine 未定位" }; & "$rdd\scripts\start-role.cmd" -Role PLANNER -TaskJson <归档 task.json>
+# 步骤 ①（可选：AUDITOR 审视）
+$rdd = $null; $t = $null; try { $t = git rev-parse --show-toplevel } catch { }; foreach ($c in @($env:RDD_ENGINE_HOME; if ($t) { (Get-ChildItem $t -Recurse -Directory -Depth 3 -Filter 'rdd-engine').FullName }; "$HOME\.rdd\engine\current")) { if ($c -and (Test-Path "$c\scripts\rdd-flow.cmd")) { $rdd = $c; break } }; if (-not $rdd) { throw "rdd-engine 未定位" }; & "$rdd\scripts\start-role.cmd" -Role AUDITOR -TaskJson <归档 task.json>
+
+# 步骤 ②（PLANNER 接管，机械消费 ReviewFile）
+& "$rdd\scripts\start-role.cmd" -Role PLANNER -TaskJson <归档 task.json>
 ```
 
-- 脚本投递的是**自举式指针消息**（"请以规划者（PLANNER）身份接管 … 先读 planner-guide.md，随后执行 delivery-bridge promulgate …"）——规划者无角色卡，身份由消息 + `rdd-engine/references/planner-guide.md` 装载；三后端（CLI/Plus/dsh）一致。dsh 后端需 preset `rdd-planner`（部署前提见 planner-guide）。
+- **步骤 ① 启动 AUDITOR**：脚本投递的是 B2 通用归档级指针消息（"请处理 .rdd/changes/archive/<name>/ 下的需求。"）——AUDITOR 无 TaskId 路由语义（task.json currentOwners 不含 AUDITOR 枚举；非路由角色），按 B2 路径主动拉取归档并落盘 ReviewFile。三后端（CLI/Plus/dsh）一致；dsh 后端需 preset `rdd-auditor`（部署前提见 `rdd-auditor/SKILL.md`）。
+- **步骤 ② 启动 PLANNER**：脚本投递的是**自举式指针消息**（"请以规划者（PLANNER）身份接管 … 先读 planner-guide.md，随后执行 delivery-bridge promulgate …"）——规划者无角色卡，身份由消息 + `rdd-engine/references/planner-guide.md` 装载；三后端（CLI/Plus/dsh）一致。dsh 后端需 preset `rdd-planner`（部署前提见 planner-guide）。规划者经 `promulgate -ReviewFile <归档>/review/requirement-review.json` 机械消费。
+- **降级路径**：AUDITOR 未部署 / 用户裁定跳过 → 直接走步骤 ②，规划者自产审查，行为逐字节不变（与引入 AUDITOR 前一致）。
 - 中断续跑：`start-role.cmd -Role PLANNER -RunId <run-id>`。
 - 该分支**纯可选**：未采用时按正常 4 步硬流程逐条交接，行为不变。任务路由仍先按 Step 1 推进到首个下游角色（promulgate 按当前 currentOwners 建阶段节点）。
 

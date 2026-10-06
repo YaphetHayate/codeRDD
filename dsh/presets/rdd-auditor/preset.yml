@@ -1,0 +1,3 @@
+name: RDD-AUDITOR
+description: 审视员模式。 上游产物独立审视员（事前把关：需求集进规划建树前 / 设计汇聚进实现前的二次过滤）。 落地形态：归档含 ≥2 条非 deprecated 子需求时（与 longTask 信号同判据）由 PM 建议前置 或 PLANNER 接管首动作派出；产出 ReviewFile JSON（机械消费）+ 人读镜像，被动消费端 （delivery-bridge promulgate -ReviewFile）契约现成零改动。
+order: 9

@@ -80,7 +80,7 @@
 | `tasks[].id` | number | 任务序号，归档内唯一，从 1 递增 |
 | `tasks[].title` | string | 需求标题（对应需求文档的一级标题） |
 | `tasks[].requirement` | string | 需求文件路径，repo-relative，`/` 分隔（如 `requirements/fix-login-bug.md`） |
-| `tasks[].currentOwners` | string[] | 当前责任人角色数组。单元素 = 单角色；多元素 = 并行。取值：`PM`/`CTO`/`UX`/`DEV`/`QA` |
+| `tasks[].currentOwners` | string[] | 当前责任人角色数组。单元素 = 单角色；多元素 = 并行。取值：`PM`/`CTO`/`UX`/`DEV`/`QA`（五角色枚举）——`AUDITOR` 是**非路由角色**，不进入 `currentOwners`，只经 ReviewFile 契约参与审视（见 `rejection-protocol.md`「AUDITOR 发起的驳回」） |
 | `tasks[].phase` | string \| null | 阶段（phase-model）：`REQ`/`DESIGN`/`IMPL`/`VERIFY`。`lifecycle=active` 时必有值；`completed`/`deprecated` 时为 `null`；旧归档缺省 = `null`（保守降级）。硬不变量：`currentOwners ⊆ PhaseRoles[phase]` |
 | `tasks[].designDocs` | object[] | 关联设计文档集合。每项含 `path`（repo-relative）和 `status`（`pending`/`ready`）。无设计文档时为空数组 `[]` |
 | `tasks[].currentWorker` | object[] | 认领记录（工作状态 running 的存储单源）。每项为单键对象 `{ "<角色>": "<认领时间>" }`；每角色至多一条；同一任务可多条（并行责任人各自认领）。空数组 `[]` 或字段缺省 = 空闲。由 CLI `claim` 写入、流转命令自动剔除，角色不手填 |
@@ -379,7 +379,8 @@ task.json 此前只有 `lifecycle`（生命周期）与 `currentOwners`（路由
 | **QA** | 验证通过闭环 | `complete` |
 | **QA** | 发现问题回退 | `reopen -To DEV`（桥接 run 进行中改走 `delivery-bridge -Command rollback`，见 reopen 条目注记） |
 | **任意角色** | 发起驳回 | `reject -From <自己> -To <被驳回方> -Reason` |
-| **PLANNER** | 需求审查门驳回回流（建树前） | `reject -From PLANNER -To PM -Reason`（见 `rejection-protocol.md`「PLANNER 发起的驳回」） |
+| **PLANNER** | 需求审查门驳回回流（建树前，AUDITOR 未部署 / 用户裁定跳过时的主路径） | `reject -From PLANNER -To PM -Reason`（见 `rejection-protocol.md`「PLANNER 发起的驳回」） |
+| **AUDITOR** | 需求审视驳回回流（建树前，AUDITOR 已部署时的**主路径**，事前把关角色） | `reject -From AUDITOR -To PM -Reason`（见 `rejection-protocol.md`「AUDITOR 发起的驳回」；`-From AUDITOR` 是自由字符串，非五角色枚举——AUDITOR 非路由角色） |
 | **EVAL/PSE** | 只读了解状态 | `show` |
 
 ---

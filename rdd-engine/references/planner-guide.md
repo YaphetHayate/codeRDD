@@ -18,8 +18,10 @@
 
 ```
 PM 归档（longTask 信号触发）→ start-role -Role PLANNER -TaskJson ...（或用户直接启动）
-  1. review      需求审查门（建树前，推荐）：逐条审视子需求独立性与合理性 → 三级处置
-                  （通过 / 树内裁定 / 驳回回流）产出 ReviewFile，结论呈现用户（最终裁决权在用户）
+  1. review      需求审查门（建树前，推荐）：归档含 ≥2 条非 deprecated 子需求（与 longTask 信号同判据）
+                  → 由 AUDITOR 审视员独立审视（事前把关），产出 ReviewFile（reviewer: "auditor"）→ 机械消费；
+                  AUDITOR 未部署 / 用户裁定跳过 → 规划者自产审查（reviewer: "planner"），行为逐字节不变。
+                  三级处置：通过 / 树内裁定 / 驳回回流，结论呈现用户（最终裁决权在用户）
   1.5 规划        长程规划（long-task-planning，必做）：从 task.json 产出**规划文件 PlanFile**
                   （阶段/批次/集成验收点/风险取舍）→ 随 promulgate -PlanFile 颁布（缺 PLAN_MISSING 硬门）
                   —— 见「长程规划与滚动追踪」节
@@ -157,7 +159,11 @@ PM 归档（longTask 信号触发）→ start-role -Role PLANNER -TaskJson ...�
 3. **规划者变更操作需持租约**：promulgate/dispatch/settle/reclaim/rollback/conclude 要求 planner-lease（自动获取/刷新；他人持新鲜租约时报 `LEASE_HELD`，`-Takeover` 强制接管留痕）。worker 的 `claim` 免租约。
 4. **中断恢复不重复消费**：已 settle 的 report 不重复消费；规划者显式 redo 指令可将 reported 退回 claimed（同会话 + ledger 留痕）——reclaim rejected-delivery 在原 claim 会话存活时走 in-place 重做（不剪枝不重建，重做指针直投原会话，`goal-tree redo` 迁移 + `type=redo` 账目），死/不可证实回落剪枝+重建；死 claim 用 reclaim 统一出口。
 5. **轮次纪律由桥接承担**：promulgate 开第 1 轮并保持开放至 conclude（conclude 自动收轮）；规划者不手工 round-start/end。
-6. **建树前需求审查门（`-ReviewFile`）**：规划者接管归档时先审查后建树——读 task.json + 全部需求文档 + overview，逐条判定子需求的独立性与合理性（与根目标一致性、粒度、依赖标注真实度），结论分级：**通过**（正常建树）/ **树内裁定**（轻度问题：依赖错标 → `depends_on_override`；同一改动两个侧面 → `merged_into_task_id` 合并剪枝，留审计痕、不阻断其余需求交付）/ **驳回回流**（文档级不合理 → 先按驳回协议处置再 promulgate，见 `rejection-protocol.md`「PLANNER 发起的驳回」）。审查是规划者会话的语义判断，脚本层不硬拦（`-ReviewFile` 缺省不阻塞再 promulgate/自动化）；ReviewFile 契约（精确模板）：
+6. **建树前需求审查门（`-ReviewFile`）**：规划者接管归档时先审查后建树——读 task.json + 全部需求文档 + overview，逐条判定子需求的独立性与合理性（与根目标一致性、粒度、依赖标注真实度、验收标准可测性），结论分级：**通过**（正常建树）/ **树内裁定**（轻度问题：依赖错标 → `depends_on_override`；同一改动两个侧面 → `merged_into_task_id` 合并剪枝，留审计痕、不阻断其余需求交付）/ **驳回回流**（文档级不合理 → 先按驳回协议处置再 promulgate，见 `rejection-protocol.md`「PLANNER / AUDITOR 发起的驳回」）。**语义审查归属**：
+   - **AUDITOR 已部署**（preset `rdd-auditor` 注册就位 + 归档含 ≥2 条非 deprecated 子需求 = longTask 信号）：由 AUDITOR 独立审视（事前把关角色），规划者**仅机械消费**其产出的 ReviewFile（`reviewer: "auditor"`），不自产审查——保持规划者的「机械转发审视产物」分工定位；PLANNER 形态的 review 仅作 AUDITOR 缺席时的降级路径
+   - **AUDITOR 未部署 / 用户裁定跳过**：规划者自产审查（`reviewer: "planner"`），行为逐字节不变（与引入 AUDITOR 前一致）
+   - **缺席提示**（PLANNER 接管时归档无 `review/` 且 AUDITOR 已部署）：规划者向用户提示审视缺席（不硬拒——与未部署时无 ReviewFile 可产的硬拒死锁相悖，缺席提示即可留痕）
+   - 脚本层不硬拦（`-ReviewFile` 缺省不阻塞再 promulgate/自动化）；ReviewFile 契约（精确模板）：
 
    ```json
    {
@@ -175,7 +181,7 @@ PM 归档（longTask 信号触发）→ start-role -Role PLANNER -TaskJson ...�
    ```
 
    - `verdict` 枚举 `pass / tree_adjudicated / reject_return`；未列出的任务 = 隐式通过。`pass` 不得携带 `depends_on_override`/`merged_into_task_id`；两者也不得同现于一条 verdict（合并任务不建节点）；同任务重复 verdict、指向不在归档的任务均拒。
-   - **前置动作**（脚本消费前规划者必须完成）：`reject_return` → 需求文档「## 驳回记录」追加行 + `rdd-flow reject -From PLANNER -To PM`；`merged_into_task_id` → `rdd-flow deprecate -TaskId <被并入方>`（误判经 `reopen` 可恢复；ReviewFile 对已 deprecate 的被并入方记 merged_into 即为其留痕）。
+   - **前置动作**（脚本消费前审视方必须完成）：`reject_return` → 需求文档「## 驳回记录」追加行 + `rdd-flow reject -From <PLANNER/AUDITOR> -To PM`（PLANNER 形态见 `rejection-protocol.md`「PLANNER 发起的驳回」；AUDITOR 形态见 `rejection-protocol.md`「AUDITOR 发起的驳回」）；`merged_into_task_id` → `rdd-flow deprecate -TaskId <被并入方>`（误判经 `reopen` 可恢复；ReviewFile 对已 deprecate 的被并入方记 merged_into 即为其留痕）。
    - **机械消费保证**：排除任务不建节点、不进 bridge.tasks、不被推送（`skipped_review` 与既有 `skipped_deprecated` 并列入 promulgate 返回值）；依赖被合并排除的任务重定向到并入方；依赖悬空于驳回排除任务硬拒 `REVIEW_EXCLUDED_DEP`（**禁止静默丢弃依赖**——静默丢弃会让依赖方被过早推送，正是审查门要消灭的错序 bug 类）；审查显式依赖（override/重定向）指向后位任务时经 `deps add` 延后缝合（DAG 校验 + deps-log 审计）。
    - **确定性错误码三枚**：`REVIEW_FILE_INVALID`（解析/schema/字段一致性）、`REVIEW_TASK_NOT_FOUND`（task_id/override/merge 指向不在归档）、`REVIEW_EXCLUDED_DEP`（依赖悬空于驳回排除任务）。
    - **结论呈现**：`report/review.md`（人读逐条结论表：结论/理由/处置/时间）+ promulgate 返回值 `review` 段 + bridge.json `review` 段（机器可读审计）。用户可随时干预或推翻裁定（**最终裁决权在用户**），推翻处置见异常处置速查。

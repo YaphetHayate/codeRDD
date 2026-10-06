@@ -49,7 +49,7 @@ const LEGACY_SNIPPET = "$rdd = (Get-ChildItem (git rev-parse --show-toplevel)"
 
 /** 残留扫描作用域：这些目录（及 README.md）下的 .md/.yml 不允许出现旧 snippet（含隐藏 dot 目录内的子代理 prompt）。 */
 const RESIDUE_SCOPES = [
-  'rdd-engine', 'rdd-pm', 'rdd-cto', 'rdd-ux', 'rdd-dev', 'rdd-qa', 'rdd-eval', 'rdd-pse',
+  'rdd-engine', 'rdd-pm', 'rdd-cto', 'rdd-ux', 'rdd-dev', 'rdd-qa', 'rdd-eval', 'rdd-pse', 'rdd-auditor',
   join('dsh', 'presets'), 'docs',
   join('.claude', 'agents'), join('.opencode', 'agent'), join('.zcode', 'agents'),
 ]

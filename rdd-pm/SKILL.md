@@ -97,7 +97,7 @@ description: >
 
 归档完成 → **必须**按 `rdd-engine/references/transition-guide.md` 上游协议 4 步硬流程执行交接（advance 路由 → next → 推荐 → start/handoff）。未完成交接不得响应模式切换。
 
-> **可选分支（planner-takeover）**：`rdd-flow next` 输出 `longTask.triggered=true`（归档含 ≥2 条非 deprecated 子需求且 ≥1 条进行中——原始需求被拆分为多条子需求的长程任务显式信号，机械可判）时，完成 Step 1 路由推进后建议改走规划者（PLANNER）接管。推荐话术（N/M 取 next 输出 `longTask.totalTaskCount`/`activeTaskCount`）：「该原始需求被拆分为 N 条子需求（M 条进行中），属长程任务，建议交规划者（PLANNER）接管整批交付。确认后执行 `start-role.cmd -Role PLANNER -TaskJson <task.json>`；不采纳则按 4 步硬流程逐条交接，行为不变。」适用前提：该归档尚无活跃桥接 run——若启动报 `PLANNER_RUN_ACTIVE`（说明 run 已存续），不重复启动规划者，改指引 `delivery-bridge.cmd -Command status/resume -RunId deliver-<归档名>` 查看或续跑既有 run。见 transition-guide「planner-takeover」。
+> **可选分支（planner-takeover，升级为两段式）**：`rdd-flow next` 输出 `longTask.triggered=true`（归档含 ≥2 条非 deprecated 子需求且 ≥1 条进行中——原始需求被拆分为多条子需求的长程任务显式信号，机械可判）时，完成 Step 1 路由推进后建议改走**两段式接管**（AUDITOR 事前把关 → PLANNER 机械消费 ReviewFile）。推荐话术（N/M 取 next 输出 `longTask.totalTaskCount`/`activeTaskCount`）：「该原始需求被拆分为 N 条子需求（M 条进行中），属长程任务，建议走两段式接管：① 先建议审视（事前把关，可选）：执行 `start-role.cmd -Role AUDITOR -TaskJson <task.json>`——AUDITOR 独立审视产出 ReviewFile，结论呈现用户；② 用户确认审视结论后再启动规划者：执行 `start-role.cmd -Role PLANNER -TaskJson <task.json>`，规划者机械消费 ReviewFile 接管整批交付。**跳过审视时**（AUDITOR 未部署 / 用户裁定跳过）直接走步骤 ②，规划者自产审查（reviewer: "planner"），行为逐字节不变；不采纳接管分支则按 4 步硬流程逐条交接，行为不变。」适用前提：该归档尚无活跃桥接 run——若启动报 `PLANNER_RUN_ACTIVE`（说明 run 已存续），不重复启动规划者，改指引 `delivery-bridge.cmd -Command status/resume -RunId deliver-<归档名>` 查看或续跑既有 run。详见 `rdd-engine/references/transition-guide.md`「planner-takeover」。
 
 ## 执行（委托）
 

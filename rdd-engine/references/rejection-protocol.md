@@ -88,9 +88,9 @@
 
 ---
 
-## PLANNER 发起的驳回（需求审查门）
+## PLANNER 发起的驳回（需求审查门，PLANNER 形态）
 
-规划者接管归档时的需求审查门（`rdd-engine/references/planner-guide.md` 硬约束 6，建树前）判定某子需求**文档级不合理**（需求本身有问题、需合并或拆分需求文档）时，按本协议发起驳回。与通用第一步的差异只在发起方与记录边界：
+规划者接管归档时的需求审查门（`rdd-engine/references/planner-guide.md` 硬约束 6，建树前）判定某子需求**文档级不合理**（需求本身有问题、需合并或拆分需求文档）时，按本协议发起驳回——仅在 **AUDITOR 未部署 / 用户裁定跳过**时由规划者自产审查并发起驳回（AUDITOR 已部署时规划者只机械消费审视产物，不自产驳回）。与通用第一步的差异只在发起方与记录边界：
 
 1. 在该需求文档的 `## 驳回记录` 表格中**追加一行**（仅追加；发起方 = `PLANNER`、状态 = `待回应`）——不改写需求文档其余内容本体，**包括遗留的 `## 流转控制 > 当前责任人` 字段**（内容本体归 PM，路由事实以 task.json 为准）
 2. 更新路由：`rdd-flow.cmd -Command reject -Archive <归档> -TaskId <n> -From PLANNER -To PM -Reason "<理由>"`
@@ -98,6 +98,29 @@
 4. 告知用户（逐条审查结论呈现，最终裁决权在用户）
 
 后续流转（PM 响应辩解 / 人工裁决 / 文档生命周期）沿用通用规则。**驳回修订后的需求不回流本轮 run**——由后续 run 或正常流程承接。
+
+---
+
+## AUDITOR 发起的驳回（需求审查门，AUDITOR 形态，主路径）
+
+AUDITOR（AUDITOR 审视员，事前把关角色）对归档需求集做四维独立审视（`rdd-auditor/references/requirement-review.md`）后，判定某子需求**文档级不合理**时，按本协议发起驳回——AUDITOR 已部署时的**主路径**（planner-guide 硬约束 6 语义审查归属 AUDITOR）。与 PLANNER 形态的差异只在发起方与角色边界：
+
+**角色边界差异**：
+
+- AUDITOR 是**非路由角色**（不进 task.json `currentOwners` 枚举、不进 `rdd-flow -Role` ValidateSet）——`reject` 命令的 `-From AUDITOR` 是**自由字符串**（rdd-flow 解析 `-From` 为发起方标识，约束为非空，不绑定枚举），`rejection-protocol.md` 协议层接受任意 `-From` 字符串（仅约束非空 + 落账可见）
+- **三禁纪律**（`rdd-auditor/SKILL.md` 宪法层）：只审不改、不代用户裁决、产物契约化——驳回由 AUDITOR 发起（机械执行审查结论），但**最终裁决权仍在用户**
+
+**操作**（与 PLANNER 形态同族，仅发起方不同）：
+
+1. 在该需求文档的 `## 驳回记录` 表格中**追加一行**（仅追加；发起方 = `AUDITOR`、状态 = `待回应`）——不改写需求文档其余内容本体，**包括遗留的 `## 流转控制 > 当前责任人` 字段**（内容本体归 PM，路由事实以 task.json 为准）
+2. 更新路由：`rdd-flow.cmd -Command reject -Archive <归档> -TaskId <n> -From AUDITOR -To PM -Reason "<理由>"`
+3. 在 ReviewFile 中将该任务记为 `reject_return`（`reviewer: "auditor"`，reviewer 字段值对消费端透明——`delivery-bridge` 仅查非空 + `verdicts[]` 合法性，值域零改动）后 promulgate：该任务不建节点、不进本轮交付；conclude 门禁豁免该任务（active@PM 为真实状态），结案附录如实呈现「部分达成（N 条驳回回流 PM）」
+4. **记账追加** `.rdd/review-ledger.jsonl`（全局单文件 JSONL，账本范式不重写；格式 `{at, archive, reviewer:"auditor", kind:"gap", task_id, gap_type:"untestable_acceptance"|"coverage_hole"|"orphan_requirement"|"dependency_mislabel"|"merge_candidate", detail}`）——审计追溯 + 同类 gap_type 累计 ≥3 次回流判定（详见 `rdd-auditor/references/requirement-review.md#记账规范`）
+5. 告知用户（逐条审查结论呈现，最终裁决权在用户）
+
+后续流转（PM 响应辩解 / 人工裁决 / 文档生命周期）沿用通用规则。**驳回修订后的需求不回流本轮 run**——由后续 run 或正常流程承接；本归档若重启审视，**覆盖重产**归档 `review/requirement-review.json`（旧结论不重用，详见 `rdd-auditor/SKILL.md` 完成前置硬检查）。
+
+> **设计侧驳回**（同批 #2 落地后）：AUDIOTR 对设计汇聚做五查维度独立审视，产出 DesignReviewFile；`reject_return` 同族流程，从设计文档「## 驳回记录」追加行 + `rdd-flow reject -From AUDITOR -To CTO`（被驳回方 = CTO 而非 PM）。
 
 ---
 

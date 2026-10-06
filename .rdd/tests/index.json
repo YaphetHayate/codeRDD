@@ -68,6 +68,33 @@
       "lastChange": "2026-10-01-planner-delivery-efficiency"
     },
     {
+      "feature": "auditor-role",
+      "relatedCode": [
+        "rdd-auditor/SKILL.md",
+        "rdd-auditor/references/requirement-review.md",
+        "dsh/presets/rdd-auditor/preset.yml",
+        "dsh/presets/rdd-auditor/agent.cordis.yml",
+        "rdd-engine/scripts/start-role.ps1",
+        "rdd-engine/references/planner-guide.md",
+        "rdd-engine/references/rejection-protocol.md",
+        "rdd-engine/references/transition-guide.md",
+        "rdd-engine/references/task-routing.md",
+        "rdd-pm/SKILL.md",
+        "rdd-pm/references/requirement-item-template.md",
+        "scripts/build-dsh-presets.mjs",
+        "scripts/build-skills-package.mjs",
+        "scripts/build-engine-package.mjs",
+        "scripts/dsh-preset-template.yml"
+      ],
+      "testCode": [
+        ".rdd/tests/auditor-role/auditor-role-qa-verify.ps1"
+      ],
+      "activeCount": 35,
+      "deprecatedCount": 0,
+      "lastUpdated": "2026-10-06",
+      "lastChange": "2026-10-02-auditor-independent-review"
+    },
+    {
       "feature": "investigation-role-cards",
       "relatedCode": [
         "rdd-engine/references/investigation-roles.md",
@@ -144,6 +171,26 @@
       "deprecatedCount": 0,
       "lastUpdated": "2026-09-24",
       "lastChange": "2026-09-24-qa-metric-tooling"
+    },
+    {
+      "feature": "session-list-recency",
+      "relatedCode": [
+        "../dsh/deepseek-harness/packages/host/apiproxy/src/api/session-activity.ts",
+        "../dsh/deepseek-harness/packages/host/apiproxy/src/api-proxy.ts",
+        "../dsh/deepseek-harness/packages/client/runtime/src/client/sessions/manager.ts",
+        "../dsh/deepseek-harness/packages/client/ui-workspace/src/client/WorkspaceBrowser.tsx"
+      ],
+      "testCode": [
+        "../dsh/deepseek-harness/packages/host/apiproxy/tests/session-activity.spec.ts",
+        "../dsh/deepseek-harness/packages/host/apiproxy/tests/api-proxy-projections.spec.ts",
+        "../dsh/deepseek-harness/packages/host/apiproxy/tests/api-proxy-cold.spec.ts",
+        "../dsh/deepseek-harness/packages/client/runtime/tests/sessions-service.client.spec.ts",
+        "../dsh/deepseek-harness/packages/client/ui-workspace/tests/workspace-browser.client.spec.tsx"
+      ],
+      "activeCount": 8,
+      "deprecatedCount": 0,
+      "lastUpdated": "2026-09-28",
+      "lastChange": "2026-09-27-session-list-recency-wakeful-callback"
     }
   ]
 }

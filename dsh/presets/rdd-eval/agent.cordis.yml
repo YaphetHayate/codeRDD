@@ -282,7 +282,7 @@
         registerMode: plugin
         # 硬拒绝经 skill 工具加载 rdd-* 系列：本角色正文已在 persona，engine 职能由
         # rdd_explore 工具与 CLI 承接；references 仍可经 read 工具读取。
-        forbiddenSkills: ['rdd-engine', 'rdd-pm', 'rdd-cto', 'rdd-ux', 'rdd-dev', 'rdd-qa', 'rdd-eval', 'rdd-pse']
+        forbiddenSkills: ['rdd-engine', 'rdd-pm', 'rdd-cto', 'rdd-ux', 'rdd-dev', 'rdd-qa', 'rdd-eval', 'rdd-pse', 'rdd-auditor']
         # worker 是纯研究者：探索结果经结构化输出返回，落盘与注册全由插件可信
         # 代码完成——因此不需要 write 工具，与任意会话沙箱模式正交。
         toolFilter:

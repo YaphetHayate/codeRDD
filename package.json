@@ -37,6 +37,7 @@
     "rdd-qa/",
     "rdd-eval/",
     "rdd-pse/",
+    "rdd-auditor/",
     "docs/code-quality.md",
     ".opencode/agent/rdd-explore.md",
     ".opencode/package.json",

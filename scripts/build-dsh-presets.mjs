@@ -31,7 +31,7 @@ import { fileURLToPath } from 'node:url'
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..')
 
 /** 生成目标角色（engine 除外：其职能在 dsh 中由 rdd-explore 插件 + CLI 脚本承接）。 */
-const ROLES = ['rdd-pm', 'rdd-cto', 'rdd-ux', 'rdd-dev', 'rdd-qa', 'rdd-eval', 'rdd-pse']
+const ROLES = ['rdd-pm', 'rdd-cto', 'rdd-ux', 'rdd-dev', 'rdd-qa', 'rdd-eval', 'rdd-pse', 'rdd-auditor']
 
 /**
  * 规划者引导 preset（rdd-planner）：规划者（PLANNER）是引擎编排形态而非角色卡（无 SKILL.md），
@@ -70,6 +70,10 @@ function assemblePlannerPersona() {
 const ROLE_POLICY = {
   'rdd-pm': { writePrefixes: ['.rdd/'] },
   'rdd-cto': { writePrefixes: ['.rdd/'] },
+  // AUDITOR 写前缀 = 归档 review/ + 全局账本；比 PM/CTO 窄（不可写 requirements/
+  // 本体、design/、tests/、goal-trees/；驳回记录追加行在 archive/ 前缀内可用，
+  // 「仅追加不改本体」由角色卡纪律约束）
+  'rdd-auditor': { writePrefixes: ['.rdd/changes/archive/', '.rdd/review-ledger.jsonl'] },
 }
 
 /** 模板中 persona 文本占位符（每角色被缩进 6 空格的正文替换）。 */
