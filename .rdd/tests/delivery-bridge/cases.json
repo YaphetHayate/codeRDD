@@ -23,7 +23,8 @@
                       ".rdd/tests/delivery-bridge/prescan-gate-qa-verify.ps1",
                       ".rdd/tests/delivery-bridge/inplace-redo-qa-verify.ps1",
                       "rdd-engine/tests/test-bridge-design-review.ps1",
-                      ".rdd/tests/delivery-bridge/design-review-qa-verify.ps1"
+                      ".rdd/tests/delivery-bridge/design-review-qa-verify.ps1",
+                      ".rdd/tests/delivery-bridge/independent-review-chain-e2e.ps1"
                  ],
     "lastChange":  "2026-10-02-auditor-independent-review",
     "cases":  [
@@ -2654,6 +2655,110 @@
                                     "AUDITOR claim 读 acceptance 段"
                                 ],
                       "expected":  "acceptance.kind=design_review；docs 为阶段产物清单；design_maps 行含实析文件（src/mod-a.py）；conventions 与 criteria_ref（固定锚 requirements/overview.md#整体验收判据）非空；report=review/design-review-S1.json"
+                  },
+                  {
+                      "id":  "TC-B148",
+                      "title":  "[集成/联调] 建树前审视闭环消费：同一 lab run 内 ReviewFile（merge+override+排除）经 promulgate -ReviewFile 机械消费，触发判据先行",
+                      "type":  "integration",
+                      "priority":  "P1",
+                      "acceptance":  "OV-AC-1",
+                      "codeRef":  ".rdd/tests/delivery-bridge/independent-review-chain-e2e.ps1:253",
+                      "sourceChange":  "2026-10-02-auditor-independent-review",
+                      "status":  "active",
+                      "crossFeature":  [
+                                           "auditor-role"
+                                       ],
+                      "precondition":  "lab 夹具归档 chain-e2e（3 条子需求：1 干净 / 2 依赖错标 / 3 合并候选）+ 归档 review/ 落 AUDITOR 三件套（ReviewFile+人读镜像+账本 gap 行）",
+                      "steps":  [
+                                    "rdd-flow next 断言 longTask triggered（审视必经判据）",
+                                    "promulgate -ReviewFile -NoPush 消费（规划者零语义判断）",
+                                    "断言 skipped_review/树映射/review 段/override 整体替代/人读镜像四处置"
+                                ],
+                      "expected":  "skipped_review=[3]；bridge.tasks keys=1,2；review 段 reviewer=auditor；#2 依赖被 override 清空；run report/review.md 含合并/覆盖/审查者行"
+                  },
+                  {
+                      "id":  "TC-B149",
+                      "title":  "[集成/联调] DESIGN 汇聚挂接与门禁中态：首个 settle 仍 planned、DEV 硬拒、全 settle 挂接、claim 上下文=Layer1 幸存集",
+                      "type":  "integration",
+                      "priority":  "P1",
+                      "acceptance":  "OV-AC-2",
+                      "codeRef":  ".rdd/tests/delivery-bridge/independent-review-chain-e2e.ps1:282",
+                      "sourceChange":  "2026-10-02-auditor-independent-review",
+                      "status":  "active",
+                      "crossFeature":  [
+                                           "auditor-role"
+                                       ],
+                      "precondition":  "TC-B148 消费后的 lab run（两条幸存 CTO 链均带落盘设计产物）",
+                      "steps":  [
+                                    "仅 settle 首条 CTO 链 → 断言 design_review 仍 planned 且树上零审查节点",
+                                    "DEV claim → 断言 NODE_BLOCKED_BY_DESIGN_REVIEW（门已武装）",
+                                    "settle 第二条 CTO 链 → 断言聚合审查节点挂接（恰一个）",
+                                    "AUDITOR claim → 断言 docs==幸存集（合并任务零设计产物）+ design_maps/conventions/判据锚/report 路径"
+                                ],
+                      "expected":  "挂接等待全阶段越过 DESIGN；门禁码与阶段闸门同族；Layer1 排除结果真实流入 Layer2 审查对象清单"
+                  },
+                  {
+                      "id":  "TC-B150",
+                      "title":  "[集成/联调] fail 重做波→再审收敛→pass 解锁：blocking 自动进重做上下文、引擎推导总裁定、DEV 先拒后放",
+                      "type":  "integration",
+                      "priority":  "P1",
+                      "acceptance":  "OV-AC-2",
+                      "codeRef":  ".rdd/tests/delivery-bridge/independent-review-chain-e2e.ps1:305",
+                      "sourceChange":  "2026-10-02-auditor-independent-review",
+                      "status":  "active",
+                      "crossFeature":  [
+                                           "auditor-role"
+                                       ],
+                      "precondition":  "TC-B149 挂接后的审查节点（已 claim+report）",
+                      "steps":  [
+                                    "落契约合法 fail 文件（d1 fail 带 blocking change_map）→ settle → 断言引擎推导 FAIL 复位 planned",
+                                    "断言受影响任务路由回 CTO@DESIGN、重做节点 task 携带 [change_map] blocking 标记、账本 fail 汇总+gap 条目",
+                                    "CTO 重交→再审重挂（新节点）→ pass 文件 settle → 断言 passed+engine-derived basis",
+                                    "DEV claim → 断言解锁（对照 TC-B149 的硬拒）"
+                                ],
+                      "expected":  "fail 波 prune/set-route/兄弟挂接/审查节点回收全链生效；重做上下文机械注入 blocking；pass 后闸门开放"
+                  },
+                  {
+                      "id":  "TC-B151",
+                      "title":  "[集成/联调] Layer3 QA 验证收口：DEV/QA 全链终态→lifecycle=completed→run 级集成节点自动挂接（末阶段乘验收链）",
+                      "type":  "integration",
+                      "priority":  "P1",
+                      "acceptance":  "OV-AC-3",
+                      "codeRef":  ".rdd/tests/delivery-bridge/independent-review-chain-e2e.ps1:349",
+                      "sourceChange":  "2026-10-02-auditor-independent-review",
+                      "status":  "active",
+                      "crossFeature":  [
+                                           "auditor-role"
+                                       ],
+                      "precondition":  "TC-B150 pass 解锁后的 lab run",
+                      "steps":  [
+                                    "两条任务链 DEV 交付 settle",
+                                    "两条任务链 QA 验证 settle（extras.verification 携验证结论）",
+                                    "断言 task.json 两任务 lifecycle=completed",
+                                    "断言 run 级 [集成/联调] 节点自动挂接 + acceptance.integrate_node 绑定"
+                                ],
+                      "expected":  "实现符合性层（第一批 QA 机制）在同一 run 收口；末阶段验收乘 R1 链（集成/联调→整体验收）而非重复挂阶段节点"
+                  },
+                  {
+                      "id":  "TC-B152",
+                      "title":  "[集成/联调] 独立审查链贯穿：三层产物独立可审计 + AUDITOR 白名单互不侵入（requirements 字节不变）+ 双层记账同一账本可查 + 角色可派遣",
+                      "type":  "integration",
+                      "priority":  "P1",
+                      "acceptance":  "OV-AC-3",
+                      "codeRef":  ".rdd/tests/delivery-bridge/independent-review-chain-e2e.ps1:372",
+                      "sourceChange":  "2026-10-02-auditor-independent-review",
+                      "status":  "active",
+                      "crossFeature":  [
+                                           "auditor-role"
+                                       ],
+                      "precondition":  "全链走完的 lab run（TC-B148~B151）+ 链前 requirements/*.md 字节快照",
+                      "steps":  [
+                                    "start-role -Role AUDITOR dsh 后端 DryRun（preset 绑定+归档指针）",
+                                    "断言归档 review/ 恰四文件（requirement-review.json/.md + design-review-S1.json/.md）",
+                                    "断言 requirements 字节逐文件不变、无 tests/ 写入",
+                                    "断言 run 账本含 QA verification 条目、review-ledger.jsonl 同时含 kind=gap（Layer1）与 kind=design_review（Layer2）条目"
+                                ],
+                      "expected":  "三层产物（ReviewFile/DesignReviewFile/QA 验证结论）各自独立可审计；AUDITOR 只写 review/；触发记账回流有账可查（≥3 阈值路径由 TC-B144 回归覆盖）"
                   }
                ]
 }

@@ -60,9 +60,10 @@
         "rdd-engine/tests/test-phase-model.ps1",
         "rdd-engine/tests/test-bridge-acceptance.ps1",
         "rdd-engine/tests/test-bridge-conflicts.ps1",
-        "rdd-engine/tests/test-long-task-planning.ps1"
+        "rdd-engine/tests/test-long-task-planning.ps1",
+        ".rdd/tests/delivery-bridge/independent-review-chain-e2e.ps1"
       ],
-      "activeCount": 147,
+      "activeCount": 152,
       "deprecatedCount": 0,
       "lastUpdated": "2026-10-06",
       "lastChange": "2026-10-02-auditor-independent-review"
