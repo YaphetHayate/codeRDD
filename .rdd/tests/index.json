@@ -87,9 +87,10 @@
         "scripts/dsh-preset-template.yml"
       ],
       "testCode": [
-        ".rdd/tests/auditor-role/auditor-role-qa-verify.ps1"
+        ".rdd/tests/auditor-role/auditor-role-qa-verify.ps1",
+        ".rdd/tests/auditor-role/stage-acceptance-s1-verify.ps1"
       ],
-      "activeCount": 35,
+      "activeCount": 75,
       "deprecatedCount": 0,
       "lastUpdated": "2026-10-06",
       "lastChange": "2026-10-02-auditor-independent-review"
