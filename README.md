@@ -88,7 +88,8 @@ coderdd init . --roles pm,cto,dev --yes       # 只装部分角色（engine 必�
 register 的行为与约定：
 
 - **改源码即时生效**：全局命令始终执行本仓 `dist/`，`npm run build` 后所有目标项目即用新版
-- **升级**：源仓 `git pull && npm run build` → 目标项目里 `coderdd update .`
+- **更新后一键本地构建**：`git pull` 后跑 `npm run build:local`——依赖刷新 + coderdd CLI（tsc）+ 三组件发布产物（engine/插件/skills tarball，内含 preset 再生成）+ 跟踪态 preset 产物漂移检查一次完成（`--commit` 自动提交漂移产物，防「改卡忘重建」；`--with-goal-tree` 附带 goal-tree 插件 tarball）
+- **升级**：源仓 `git pull && npm run build:local` → 目标项目里 `coderdd update .`
 - **移除全局命令**：仓根 `npm run unregister`
 - **源仓移动/重命名后链接失效**：回仓根重新 `npm run register`
 - 与 `npm i -g coderdd` 占用同一命令槽位，后装者覆盖；历史命令名 `coderrdd` 保留为 bin 别名（等价 `coderdd`）
