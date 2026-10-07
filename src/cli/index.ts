@@ -16,7 +16,7 @@ program
   .description('在目标目录安装 RDD 工作流（交互式，或用 --tools/--roles 非交互）')
   .argument('[target]', '目标项目目录', '.')
   .option('--tools <tools>', '要适配的客户端，逗号分隔（opencode,claude）')
-  .option('--roles <roles>', '要安装的角色，逗号分隔（engine,pm,cto,ux,dev,qa,eval,pse）')
+  .option('--roles <roles>', '要安装的角色，逗号分隔（engine,pm,cto,ux,dev,qa,eval,pse,auditor）')
   .option('--force', '内容不同的受管理文件直接覆盖')
   .option('--yes', '跳过交互确认，使用默认值（全部角色，opencode）')
   .action(async (target: string, opts) => {

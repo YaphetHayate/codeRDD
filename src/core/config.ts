@@ -6,7 +6,7 @@ export const SOURCE_ROOT = path.resolve(__dirname, '..', '..');
 export const VERSION = require(path.join(SOURCE_ROOT, 'package.json')).version;
 
 /** 可安装的角色，engine 为必装核心 */
-export const ROLES = ['engine', 'pm', 'cto', 'ux', 'dev', 'qa', 'eval', 'pse'] as const;
+export const ROLES = ['engine', 'pm', 'cto', 'ux', 'dev', 'qa', 'eval', 'pse', 'auditor'] as const;
 export type Role = (typeof ROLES)[number];
 
 export const MANDATORY_ROLES: Role[] = ['engine'];
