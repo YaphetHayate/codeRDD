@@ -205,7 +205,30 @@
         "rdd-engine/tests/test-tips.ps1",
         ".rdd/tests/tips-store-cli/tips-store-cli-qa-verify.ps1"
       ],
-      "activeCount": 18,
+      "activeCount": 22,
+      "deprecatedCount": 3,
+      "lastUpdated": "2026-10-06",
+      "lastChange": "2026-10-06-role-tips-mechanism"
+    },
+    {
+      "feature": "tips-startup-injection",
+      "relatedCode": [
+        "rdd-engine/scripts/start-role.ps1",
+        "rdd-pm/SKILL.md",
+        "rdd-cto/SKILL.md",
+        "rdd-ux/SKILL.md",
+        "rdd-dev/SKILL.md",
+        "rdd-qa/SKILL.md",
+        "rdd-eval/SKILL.md",
+        "rdd-pse/SKILL.md",
+        "scripts/build-dsh-presets.mjs",
+        "scripts/build-skills-package.mjs",
+        "rdd-engine/references/transition-guide.md"
+      ],
+      "testCode": [
+        ".rdd/tests/tips-startup-injection/tips-injection-qa-verify.ps1"
+      ],
+      "activeCount": 11,
       "deprecatedCount": 0,
       "lastUpdated": "2026-10-06",
       "lastChange": "2026-10-06-role-tips-mechanism"

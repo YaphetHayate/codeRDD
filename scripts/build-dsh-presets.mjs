@@ -11,6 +11,7 @@
  * - 「## rdd-engine 能力（工作前必读）」boilerplate 节替换为 dsh 版（explore.cmd → rdd_explore 工具）
  * - persona 头部附加 dsh 环境适配声明（路径基准 / 角色切换机制 / 无通用 subagent）
  * - 生成前断言 persona 携带 start-role.cmd 交接指引且无旧式人工指引（加固闸②）
+ * - 生成前断言 7 份流程角色卡 persona 携带「项目 tips 双向规则」小节（tips-startup-injection 闸）
  * - persona 尾部附加防重复加载声明
  *
  * rdd-planner 特例：规划者（PLANNER）是引擎编排形态（无 SKILL.md），persona 为自举指针
@@ -151,12 +152,19 @@ function adaptEngineSection(body) {
  * 规划者，不走 4 步直交）——漏改会让桥接 run 内的 worker 会话惯性直交下游。
  * rdd-pm / rdd-eval / rdd-pse / rdd-planner 非桥接 worker 角色，不受此正向断言
  * 约束（确认无误伤：四角色正文不含分支话术，闸不拒绝）。
+ * tips 双向规则同口径守护（tips-startup-injection）：7 张流程角色卡（PM/CTO/
+ * UX/DEV/QA/EVAL/PSE）的 persona 必须携带「项目 tips 双向规则」小节（开工读注入 /
+ * 随手沉淀 / 复用优先）——SKILL.md 是 7 处独立手改来源，机械防漏改。rdd-auditor
+ * （注入侧经通用 B2 分支天然覆盖，记录侧 CLI 对任意角色可用）与 rdd-planner
+ * （编排形态，B2 分支早退不注入）不受此断言约束。
  * @param {string} persona - 组装完成的 persona 全文。
  * @param {string} role - 角色目录名（失败信息用）。
  * @returns {void}
  */
 const BRIDGE_WORKER_ROLES = new Set(['rdd-cto', 'rdd-ux', 'rdd-dev', 'rdd-qa'])
 const GOAL_TREE_BRANCH_PHRASE = 'goal-tree 模式分支（桥接 run）'
+const TIPS_RULE_ROLES = new Set(['rdd-pm', 'rdd-cto', 'rdd-ux', 'rdd-dev', 'rdd-qa', 'rdd-eval', 'rdd-pse'])
+const TIPS_RULE_PHRASE = '项目 tips 双向规则'
 
 function assertHandoffGuidance(persona, role) {
   if (!persona.includes('start-role.cmd')) {
@@ -178,6 +186,9 @@ function assertHandoffGuidance(persona, role) {
   }
   if (BRIDGE_WORKER_ROLES.has(role) && !persona.includes(GOAL_TREE_BRANCH_PHRASE)) {
     throw new Error(`${role} persona 未携带 goal-tree 分支摘要「${GOAL_TREE_BRANCH_PHRASE}」——桥接 run 内完成即回调规划者（leaf report 含产物位置），除用户显式直交外不走 4 步；请同步 SKILL.md「完成前置硬检查」`)
+  }
+  if (TIPS_RULE_ROLES.has(role) && !persona.includes(TIPS_RULE_PHRASE)) {
+    throw new Error(`${role} persona 未携带「${TIPS_RULE_PHRASE}」小节——7 份流程角色卡 SKILL.md 需在「rdd-engine 能力」节后统一新增（rdd-auditor/rdd-planner 除外），漏改会让该角色会话丢失 tips 双向规则`)
   }
 }
 

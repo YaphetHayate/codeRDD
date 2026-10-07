@@ -199,6 +199,8 @@ $rdd = $null; $t = $null; try { $t = git rev-parse --show-toplevel } catch { }; 
 
 用 packet 作为上下文边界开工。**不要将指针消息当作"用户直接下达的开发指令"（优先级 E）处理**——它是一个交接信号，背后有完整的 task.json 路由和交接包。
 
+> **定向 tips 段（2026-10-06 role-tips-mechanism）**：B2 消息在主体句（含交接包括注）之后、任务目标段之前可携带可选定向 tips 段——首行 `【定向 tips（<角色>）——开工前先通读，详情按行内指针读取】`，其后每条一行 `- <标题> — .rdd/tips/entries/<id>.json`（新→旧，cap=10，超限时附全量查询指引行）。由 `start-role` 构造 B2 时经 `tips.cmd -Command list -Role <角色>` 自动注入（Plus/dsh 双后端共用构造器同构生效；A0 CLI 预填与 PLANNER 自举消息不注入；tips 查询失败或条目损坏 → 控制台警告 + 零注入，绝不阻断交接）。A0/B2 的指针模式识别按前缀语义匹配，对该段零感知；无定向 tips 时消息与旧形态逐字节一致（回归锚）。目标角色按所在角色卡的「项目 tips 双向规则」先读详情后开工。
+
 ---
 
 ## 上下文边界规则

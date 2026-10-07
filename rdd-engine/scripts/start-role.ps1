@@ -281,6 +281,86 @@ function Get-AppendixSegment {
     return " $Appendix"
 }
 
+# === targeted tips (tips-startup-injection) ===================================
+# Zero config (same policy as the tips CLI): the summary cap and the segment
+# copy are embedded constants — no switch, no env var, no new start-role param.
+$TipsSummaryCap = 10
+
+function Write-TipsDegradedWarning {
+    # tips are a prompt-layer gain, never a mission parameter: ANY fetch
+    # failure degrades to this console warning + zero injection and never
+    # blocks the handoff (same display-layer-degradation family as the
+    # title/badge pins; task params stay fail-loud on purpose).
+    param([string]$Reason)
+    Write-Host "[!] 定向 tips 注入降级：$Reason——本次指针消息不携带 tips 段，交接不受影响" -ForegroundColor Yellow
+}
+
+function Get-RoleTips {
+    # Black-box fetch of the entries targeted at $TargetRole through the
+    # public CLI — same child-process probe style as Test-ActiveDeliveryRun
+    # (goal-tree probe). Both sides pin UTF-8 (tips.cmd chcp 65001 + tips.ps1
+    # console encoding; this script's own UTF-8 console decodes the child
+    # stdout), so CJK titles survive the capture intact. Returns the entries
+    # array; ANY failure (missing CLI, empty output, non-JSON, success=false —
+    # incl. CORRUPT_ENTRY exit 3, whose message names the broken file)
+    # degrades to a warning + empty array.
+    param([string]$TargetRole)
+    $tipsCmd = Join-Path $PSScriptRoot "tips.cmd"
+    if (-not (Test-Path -LiteralPath $tipsCmd -PathType Leaf)) {
+        Write-TipsDegradedWarning ("tips CLI 缺失（{0}，引擎安装不完整）" -f $tipsCmd)
+        return @()
+    }
+    $output = ""
+    try {
+        # stdout only: the CLI emits its JSON envelope (success AND error
+        # shapes alike) on stdout and signals via exit code.
+        $output = (& $tipsCmd -Command list -Role $TargetRole) -join "`n"
+    }
+    catch {
+        Write-TipsDegradedWarning ("tips 查询子进程失败（{0}）" -f $_.Exception.Message)
+        return @()
+    }
+    if ([string]::IsNullOrWhiteSpace($output)) {
+        Write-TipsDegradedWarning "tips 查询无 stdout 输出"
+        return @()
+    }
+    $parsed = $null
+    try { $parsed = $output | ConvertFrom-Json } catch { }
+    if (-not $parsed) {
+        Write-TipsDegradedWarning "tips 查询输出不是 JSON 信封"
+        return @()
+    }
+    if (-not [bool]$parsed.success) {
+        Write-TipsDegradedWarning ("tips 查询失败（{0}: {1}）" -f [string]$parsed.error.code, [string]$parsed.error.message)
+        return @()
+    }
+    if ($null -eq $parsed.data -or $null -eq $parsed.data.entries) { return @() }
+    return @($parsed.data.entries)
+}
+
+function Get-TipsSegment {
+    # Pointer-message targeted-tips segment (tips-startup-injection):
+    # injected after the base sentence + handoff pointer and BEFORE the task
+    # brief; the goal-tree marker keeps its trailing-anchor position. One
+    # line per entry (title — repo-relative detail pointer), newest first,
+    # capped at $TipsSummaryCap with an overflow hint only when more exist.
+    # Empty input returns "" so tip-less projects keep the message
+    # byte-for-byte identical (regression anchor, same contract as
+    # Get-TaskBriefSegment).
+    param([array]$Entries, [string]$TargetRole)
+    if (-not $Entries -or @($Entries).Count -eq 0) { return "" }
+    $shown = @($Entries | Select-Object -First $TipsSummaryCap)
+    $total = @($Entries).Count
+    $lines = @(("【定向 tips（{0}）——开工前先通读，详情按行内指针读取】" -f $TargetRole))
+    foreach ($entry in $shown) {
+        $lines += ("- {0} — {1}" -f ([string]$entry.title), ([string]$entry.path))
+    }
+    if ($total -gt $shown.Count) {
+        $lines += ("（另有 {0} 条更早定向 tips 未列出，可经 tips.cmd -Command list -Role {1} 查看全量）" -f ($total - $shown.Count), $TargetRole)
+    }
+    return "`n" + ($lines -join "`n") + "`n"
+}
+
 function ConvertTo-RunShortName {
     # planner-session-roster: sidebar-friendly short name of a delivery run —
     # "deliver-2026-09-20-planner-session-roster" -> "planner-session-roster"
@@ -556,6 +636,11 @@ function Build-PointerMessage {
             $msg += "（交接包: $handoffRel）"
         }
     }
+    # targeted tips (tips-startup-injection): one line per entry (title —
+    # repo-relative pointer) between the handoff pointer and the task brief;
+    # PLANNER branches above return early un-injected — the planner is the
+    # callback target, not a tips consumer
+    $msg += Get-TipsSegment -Entries (Get-RoleTips -TargetRole $Role) -TargetRole $Role
     # task brief (dispatch-task-goal-anchoring): goal-first statement ahead of
     # the marker; PLANNER branches above return early unbriefed — the planner
     # is the callback target, not a bridge leaf

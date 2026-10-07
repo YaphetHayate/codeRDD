@@ -9,22 +9,29 @@
 # task.json and never touches the exploration zone.
 #
 # Interface:
-#   tips.cmd -Command add -By <ROLE> [-Title -Problem -Avoidance -Roles "DEV,QA"
+#   tips.cmd -Command add -By <ROLE> [-Title -Problem -Avoidance
 #                                     | -File <payload.json>]
 #   tips.cmd -Command list [-Role <R>]
+#   tips.cmd -Command target -Id <tip-id> -By <ROLE>
 #
-#     add   record one tip. Inline params and -File are mutually exclusive.
-#           Inline values must be pure ASCII: the cmd -> powershell arg chain
+#     add   record one tip. Record-then-own semantics (2026-10-06 user
+#           ruling): a new entry is ALWAYS targeted at the recording role
+#           (roles = [-By]) — there is no target-role input on either
+#           channel. Inline params and -File are mutually exclusive. Inline
+#           values must be pure ASCII: the cmd -> powershell arg chain
 #           garbles CJK into LEGAL Unicode that no content validator can
 #           detect (docs/code-quality.md section 6.4), so the channel itself
 #           is rejected mechanically (NON_ASCII_INLINE). Chinese content goes
-#           through -File: a UTF-8 payload {title, problem, avoidance,
-#           roles[]}, staged e.g. under .rdd/tmp/; unknown keys are rejected.
+#           through -File: a UTF-8 payload {title, problem, avoidance},
+#           staged e.g. under .rdd/tmp/; unknown keys are rejected (a legacy
+#           "roles" key is rejected too — record-then-own owns targeting).
 #     list  query entries, newest first, never truncated (start-role B2
 #           summaries consume this output; count caps belong to the
-#           consumer). -Role R matches entries whose roles contain R or the
-#           ALL sentinel; no filter = every entry; empty store is count=0,
-#           not an error.
+#           consumer). -Role R matches entries whose roles contain R; no
+#           filter = every entry; empty store is count=0, not an error.
+#     target organic spread: attach -By (the CURRENT role) to an existing
+#           entry's roles — reuse a matching tip instead of re-recording it.
+#           Idempotent: an already-member role succeeds WITHOUT a rewrite.
 #
 # Entry schema (rdd-tip/1):
 #   {schema, id, title, problem, avoidance, roles[], recordedBy, recordedAt,
@@ -34,8 +41,9 @@
 #
 # Role whitelist mirrors start-role.ps1's -Role ValidateSet (single source;
 # drift is a QA checklist item — runtime cross-script parsing would be a
-# fragile coupling, design decision #6). ALL is a target-role-only sentinel
-# and must be the sole element when used (ALL_MIXED otherwise).
+# fragile coupling, design decision #6). Targeting is record-then-own only:
+# add stamps roles = [-By], target extends an entry role by role; the former
+# ALL sentinel is gone (no natural producer left — archive decision #4).
 #
 # Exit codes (rdd-flow layering): 0 success / 1 invocation & validation
 # error / 2 environment error / 3 data corruption (half-broken entry named
@@ -52,9 +60,9 @@ param(
     [string]$Title,
     [string]$Problem,
     [string]$Avoidance,
-    [string]$Roles,
     [string]$File,
-    [string]$Role
+    [string]$Role,
+    [string]$Id
 )
 
 $ErrorActionPreference = "Stop"
@@ -98,7 +106,6 @@ $repoRoot = Resolve-RepoRoot
 # === Constants (zero config: embedded whitelist, fixed path conventions) ===
 $TipSchema = "rdd-tip/1"
 $RecorderRoles = @("PM", "CTO", "UX", "DEV", "QA", "EVAL", "PSE", "PLANNER", "AUDITOR")
-$AllSentinel = "ALL"
 
 # === JSON envelope ===
 
@@ -156,42 +163,6 @@ function Get-CanonicalRole {
     return $null
 }
 
-function ConvertTo-RoleList {
-    # Accepts the inline comma/semicolon string OR a payload JSON array;
-    # trims, drops empties, dedupes case-insensitively (canonicalized later).
-    param($Value)
-    if (-not $Value) { return @() }
-    if ($Value -is [string]) { $items = ($Value -split "[,;]") } else { $items = @($Value) }
-    $list = @()
-    foreach ($item in $items) {
-        $trimmed = ([string]$item).Trim()
-        if ($trimmed -ne "" -and $list -notcontains $trimmed) { $list += $trimmed }
-    }
-    return $list
-}
-
-function Resolve-TargetRoles {
-    # -> @{ error = $null; roles = <canonical array> } or @{ error = @{ code; message } }
-    param($Value)
-    $given = @(ConvertTo-RoleList $Value)
-    if ($given.Count -eq 0) {
-        return @{ error = @{ code = "MISSING_ROLES"; message = "at least one target role is required (valid: $((@($RecorderRoles) + @($AllSentinel)) -join ', '))" } }
-    }
-    $valid = @($RecorderRoles) + @($AllSentinel)
-    $canonical = @()
-    foreach ($role in $given) {
-        $mapped = Get-CanonicalRole $role $valid
-        if ($null -eq $mapped) {
-            return @{ error = @{ code = "INVALID_ROLE"; message = "unknown target role '$role' (valid: $($valid -join ', '))" } }
-        }
-        if ($canonical -notcontains $mapped) { $canonical += $mapped }
-    }
-    if ($canonical -contains $AllSentinel -and $canonical.Count -gt 1) {
-        return @{ error = @{ code = "ALL_MIXED"; message = "$AllSentinel targets every role and must be the only element (got: $($canonical -join ', '))" } }
-    }
-    return @{ error = $null; roles = $canonical }
-}
-
 # === add: content channels ===
 
 function Get-InlineTipContent {
@@ -212,13 +183,6 @@ function Get-InlineTipContent {
         }
         $content[$field.name.ToLowerInvariant()] = $field.value.Trim()
     }
-    if ([string]::IsNullOrWhiteSpace($Roles)) {
-        Write-ErrorResult "MISSING_ROLES" "-Roles is required for add (inline channel, comma-separated, e.g. DEV,QA)" 1
-    }
-    if (-not (Test-AsciiOnly $Roles)) {
-        Write-ErrorResult "NON_ASCII_INLINE" "-Roles carries non-ASCII characters; use the -File channel for non-ASCII content" 1
-    }
-    $content["roles"] = $Roles
     return $content
 }
 
@@ -239,11 +203,14 @@ function Read-TipPayload {
         Write-ErrorResult "PAYLOAD_INVALID" "payload is not valid JSON: $($_.Exception.Message)" 1
     }
     if ($null -eq $payload) {
-        Write-ErrorResult "PAYLOAD_INVALID" "payload must be a JSON object with title, problem, avoidance, roles" 1
+        Write-ErrorResult "PAYLOAD_INVALID" "payload must be a JSON object with title, problem, avoidance" 1
     }
     foreach ($key in @($payload.PSObject.Properties.Name)) {
-        if ($key -notin @("title", "problem", "avoidance", "roles")) {
-            Write-ErrorResult "PAYLOAD_INVALID" "unknown payload key '$key' (allowed: title, problem, avoidance, roles; id/schema/recordedBy/recordedAt/deprecated are CLI-stamped)" 1
+        if ($key -eq "roles") {
+            Write-ErrorResult "PAYLOAD_INVALID" "payload key 'roles' is no longer accepted: add stamps roles = [-By] (record-then-own); use target -Id <id> -By <ROLE> to extend an existing entry" 1
+        }
+        if ($key -notin @("title", "problem", "avoidance")) {
+            Write-ErrorResult "PAYLOAD_INVALID" "unknown payload key '$key' (allowed: title, problem, avoidance; roles/id/schema/recordedBy/recordedAt/deprecated are CLI-stamped)" 1
         }
     }
     $content = @{}
@@ -254,19 +221,6 @@ function Read-TipPayload {
         }
         $content[$field] = $prop.Value.Trim()
     }
-    $rolesProp = $payload.PSObject.Properties["roles"]
-    if ($null -eq $rolesProp -or $rolesProp.Value -is [string]) {
-        Write-ErrorResult "PAYLOAD_INVALID" "payload field 'roles' must be a JSON array of role names (ALL alone targets every role)" 1
-    }
-    if (@($rolesProp.Value).Count -eq 0) {
-        Write-ErrorResult "PAYLOAD_INVALID" "payload 'roles' must contain at least one role" 1
-    }
-    foreach ($item in @($rolesProp.Value)) {
-        if (-not ($item -is [string]) -or [string]::IsNullOrWhiteSpace($item)) {
-            Write-ErrorResult "PAYLOAD_INVALID" "payload 'roles' must contain non-empty strings only" 1
-        }
-    }
-    $content["roles"] = @($rolesProp.Value)
     return $content
 }
 
@@ -325,25 +279,97 @@ function Invoke-AddTip {
         Write-ErrorResult "INVALID_ROLE" "unknown -By role '$By' (valid: $($RecorderRoles -join ', '))" 1
     }
     $fileGiven = -not [string]::IsNullOrWhiteSpace($File)
-    $inlineGiven = -not ([string]::IsNullOrWhiteSpace($Title) -and [string]::IsNullOrWhiteSpace($Problem) -and [string]::IsNullOrWhiteSpace($Avoidance) -and [string]::IsNullOrWhiteSpace($Roles))
+    $inlineGiven = -not ([string]::IsNullOrWhiteSpace($Title) -and [string]::IsNullOrWhiteSpace($Problem) -and [string]::IsNullOrWhiteSpace($Avoidance))
     if ($fileGiven -and $inlineGiven) {
-        Write-ErrorResult "DUAL_CHANNEL" "inline params (-Title/-Problem/-Avoidance/-Roles) and -File are mutually exclusive; pass the content through exactly one channel" 1
+        Write-ErrorResult "DUAL_CHANNEL" "inline params (-Title/-Problem/-Avoidance) and -File are mutually exclusive; pass the content through exactly one channel" 1
     }
     if ($fileGiven) { $content = Read-TipPayload $File }
     else { $content = Get-InlineTipContent }
-    $rolesResult = Resolve-TargetRoles $content["roles"]
-    if ($null -ne $rolesResult.error) {
-        Write-ErrorResult $rolesResult.error.code $rolesResult.error.message 1
-    }
-    $stored = Write-TipEntry -Content $content -TargetRoles @($rolesResult.roles) -Recorder $recorder
+    # Record-then-own: the recorder IS the target — no roles input anywhere.
+    $stored = Write-TipEntry -Content $content -TargetRoles @($recorder) -Recorder $recorder
     Write-ResultEnvelope @{
         recorded   = $true
         id         = $stored.id
         path       = (ConvertTo-RepoRelativePath $stored.path)
         title      = $stored.entry.title
-        roles      = @($rolesResult.roles)
+        roles      = @($recorder)
         recordedBy = $recorder
         recordedAt = $stored.entry.recordedAt
+    }
+}
+
+# === target: organic spread ===
+
+function Write-TipEntryFile {
+    # Whole-entry rewrite at a known path (UTF-8 no BOM, same canonical form
+    # add writes) — target's persistence leg. -> the written entry.
+    param([string]$EntryPath, [hashtable]$Entry)
+    try {
+        [System.IO.File]::WriteAllText($EntryPath, (ConvertTo-PortableJson $Entry -Depth 4), (New-Object System.Text.UTF8Encoding($false)))
+    }
+    catch {
+        Write-ErrorResult "ENV_ERROR" "failed to rewrite the tip entry: $($_.Exception.Message)" 2
+    }
+    return $Entry
+}
+
+function Invoke-TargetTip {
+    # Attach $By (the CURRENT role, operator semantics reused from add) to an
+    # existing entry — organic spread of a matching tip instead of a re-record
+    # (2026-10-06 user ruling). Chain: MISSING_ID -> MISSING_BY ->
+    # INVALID_ROLE -> TIP_NOT_FOUND -> CORRUPT_ENTRY (via Read-TipEntryFile,
+    # exit 3). Idempotent: an already-member role echoes success WITHOUT
+    # touching the file.
+    if ([string]::IsNullOrWhiteSpace($Id)) {
+        Write-ErrorResult "MISSING_ID" "-Id <tip-id> is required for target (the entry to extend, e.g. 20261006T100831Z-QA-4183)" 1
+    }
+    if ([string]::IsNullOrWhiteSpace($By)) {
+        Write-ErrorResult "MISSING_BY" "-By <ROLE> (the role attaching itself) is required for target" 1
+    }
+    $role = Get-CanonicalRole $By $RecorderRoles
+    if ($null -eq $role) {
+        Write-ErrorResult "INVALID_ROLE" "unknown -By role '$By' (valid: $($RecorderRoles -join ', '))" 1
+    }
+    $tipId = $Id.Trim()
+    $entryPath = Join-Path (Get-TipsEntriesDir) ($tipId + ".json")
+    # Path-shape guard: a store entry is "<id>.json" inside the entries dir;
+    # an $Id smuggling separators (traversal) can never be one — same
+    # TIP_NOT_FOUND verdict, nothing is probed outside the store.
+    $leaf = [System.IO.Path]::GetFileName($entryPath)
+    if ($leaf -ne ($tipId + ".json") -or -not (Test-Path -LiteralPath $entryPath -PathType Leaf)) {
+        Write-ErrorResult "TIP_NOT_FOUND" "no tip entry with id '$tipId' in the store" 1
+    }
+    $stored = Read-TipEntryFile $entryPath
+    $newRoles = @($stored.roles)
+    if ($newRoles -notcontains $role) {
+        $newRoles += $role
+        # $null capture: the writer's return would otherwise leak into the
+        # pipeline ahead of the JSON envelope (uncaptured output is emitted).
+        $null = Write-TipEntryFile -EntryPath $entryPath -Entry @{
+            schema     = $TipSchema
+            id         = $stored.id
+            title      = $stored.title
+            problem    = $stored.problem
+            avoidance  = $stored.avoidance
+            roles      = $newRoles
+            recordedBy = $stored.recordedBy
+            recordedAt = $stored.recordedAt
+            deprecated = $stored.deprecated
+        }
+        $appended = $true
+    }
+    else {
+        $appended = $false
+    }
+    Write-ResultEnvelope @{
+        targeted   = $true
+        appended   = $appended
+        id         = $stored.id
+        role       = $role
+        roles      = $newRoles
+        title      = $stored.title
+        path       = $stored.path
+        recordedBy = $stored.recordedBy
     }
 }
 
@@ -367,13 +393,11 @@ function Get-EntryShapeError {
     if ($null -eq $rolesProp -or $rolesProp.Value -is [string]) { return "roles must be an array of role names" }
     $roles = @($rolesProp.Value)
     if ($roles.Count -eq 0) { return "roles must contain at least one role" }
-    $valid = @($RecorderRoles) + @($AllSentinel)
     foreach ($role in $roles) {
-        if (-not ($role -is [string]) -or $valid -notcontains $role) {
-            return ("invalid role value '{0}' (valid: {1})" -f [string]$role, ($valid -join ", "))
+        if (-not ($role -is [string]) -or $RecorderRoles -notcontains $role) {
+            return ("invalid role value '{0}' (valid: {1})" -f [string]$role, ($RecorderRoles -join ", "))
         }
     }
-    if ($roles -contains $AllSentinel -and $roles.Count -gt 1) { return "ALL mixed with concrete roles" }
     $deprecatedProp = $Entry.PSObject.Properties["deprecated"]
     if ($null -ne $deprecatedProp -and -not ($deprecatedProp.Value -is [bool])) { return "deprecated must be a boolean" }
     return $null
@@ -416,7 +440,7 @@ function Invoke-ListTips {
     if (-not [string]::IsNullOrWhiteSpace($Role)) {
         $filterRole = Get-CanonicalRole $Role $RecorderRoles
         if ($null -eq $filterRole) {
-            Write-ErrorResult "INVALID_ROLE" "unknown -Role filter '$Role' (valid: $($RecorderRoles -join ', '); entries carrying ALL match every filter)" 1
+            Write-ErrorResult "INVALID_ROLE" "unknown -Role filter '$Role' (valid: $($RecorderRoles -join ', '))" 1
         }
     }
     $entriesDir = Get-TipsEntriesDir
@@ -427,7 +451,7 @@ function Invoke-ListTips {
         }
     }
     if ($null -ne $filterRole) {
-        $items = @($items | Where-Object { $_.roles -contains $filterRole -or $_.roles -contains $AllSentinel })
+        $items = @($items | Where-Object { $_.roles -contains $filterRole })
     }
     # Expression blocks, not -Property names: entries are hashtables and
     # Sort-Object cannot key off dictionary "properties" (code-metrics lesson).
@@ -439,12 +463,14 @@ function Invoke-ListTips {
 
 try {
     if ([string]::IsNullOrWhiteSpace($Command)) {
-        Write-ErrorResult "MISSING_COMMAND" "-Command is required. Valid values: add, list" 1
+        Write-ErrorResult "MISSING_COMMAND" "-Command is required. Valid values: add, list, target" 1
     }
-    if ($Command -notin @("add", "list")) {
-        Write-ErrorResult "INVALID_COMMAND" "unknown command '$Command' (valid: add, list)" 1
+    if ($Command -notin @("add", "list", "target")) {
+        Write-ErrorResult "INVALID_COMMAND" "unknown command '$Command' (valid: add, list, target)" 1
     }
-    if ($Command -eq "add") { Invoke-AddTip } else { Invoke-ListTips }
+    if ($Command -eq "add") { Invoke-AddTip }
+    elseif ($Command -eq "target") { Invoke-TargetTip }
+    else { Invoke-ListTips }
 }
 catch {
     # Layer 2: environment errors (IO failure, unwritable store, ...). The
