@@ -311,6 +311,15 @@ function Get-RoleTips {
         return @()
     }
     $output = ""
+    # Pin the child's store root to THIS handoff's $root. The CLI's own
+    # cwd/env chain would otherwise resolve whichever repo the caller sits
+    # in: with -Project <A> launched from a checkout of B, B's tips and
+    # B-relative pointers leaked into A's pointer message (cross-module
+    # root seam, found by the n9 integration pass). RDD_PROJECT_ROOT is
+    # the CLI's documented override link (engine-location.md chain link 1);
+    # the previous value is restored so the caller's env stays untouched.
+    $prevRoot = $env:RDD_PROJECT_ROOT
+    $env:RDD_PROJECT_ROOT = $root
     try {
         # stdout only: the CLI emits its JSON envelope (success AND error
         # shapes alike) on stdout and signals via exit code.
@@ -319,6 +328,10 @@ function Get-RoleTips {
     catch {
         Write-TipsDegradedWarning ("tips 查询子进程失败（{0}）" -f $_.Exception.Message)
         return @()
+    }
+    finally {
+        if ([string]::IsNullOrEmpty($prevRoot)) { Remove-Item Env:\RDD_PROJECT_ROOT -ErrorAction SilentlyContinue }
+        else { $env:RDD_PROJECT_ROOT = $prevRoot }
     }
     if ([string]::IsNullOrWhiteSpace($output)) {
         Write-TipsDegradedWarning "tips 查询无 stdout 输出"

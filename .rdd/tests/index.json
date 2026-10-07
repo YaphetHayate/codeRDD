@@ -232,6 +232,21 @@
       "deprecatedCount": 0,
       "lastUpdated": "2026-10-06",
       "lastChange": "2026-10-06-role-tips-mechanism"
+    },
+    {
+      "feature": "tips-integration",
+      "relatedCode": [
+        "rdd-engine/scripts/tips.ps1",
+        "rdd-engine/scripts/tips.cmd",
+        "rdd-engine/scripts/start-role.ps1"
+      ],
+      "testCode": [
+        ".rdd/tests/tips-integration/tips-chain-e2e.ps1"
+      ],
+      "activeCount": 5,
+      "deprecatedCount": 0,
+      "lastUpdated": "2026-10-07",
+      "lastChange": "2026-10-06-role-tips-mechanism"
     }
   ]
 }

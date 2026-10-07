@@ -1,0 +1,83 @@
+{
+    "feature": "tips-integration",
+    "status": "active",
+    "relatedCode": [
+        "rdd-engine/scripts/tips.ps1",
+        "rdd-engine/scripts/tips.cmd",
+        "rdd-engine/scripts/start-role.ps1"
+    ],
+    "testCode": [
+        ".rdd/tests/tips-integration/tips-chain-e2e.ps1"
+    ],
+    "lastChange": "2026-10-06-role-tips-mechanism",
+    "cases": [
+        {
+            "id": "TC-005",
+            "title": "端到端完整场景（真实 git 仓、无环境钉定）：子目录 add -File 中文 → target 扩散 QA → DEV/QA 的 B2 精确携带（CJK 逐字）→ 行内指针读回完整教训 → PM 不含",
+            "type": "positive",
+            "priority": "P0",
+            "acceptance": "overview-AC-1",
+            "codeRef": ".rdd/tests/tips-integration/tips-chain-e2e.ps1:125",
+            "sourceChange": "2026-10-06-role-tips-mechanism",
+            "status": "active",
+            "crossFeature": ["tips-store-cli", "tips-startup-injection"],
+            "precondition": "%TEMP% 一次性 git 仓 labA + 归档夹具；全程双清 RDD_PROJECT_ROOT/RDD_RUNTIME/DSH_WEB_URL（仓库根仅经 git/cwd 链解析，与真实交付会话同形态）",
+            "steps": ["cwd=labA\\pkg\\nested 经 tips.ps1 add -By DEV -File <中文 payload>", "list -Role DEV（同子目录）", "target -Id <id> -By QA", "cwd=labA 根 start-role -Role DEV/QA/PM -DryRun（dsh）"],
+            "expected": "add 信封返回条目标识（id 形态 + 仓相对 path，条目落 labA 沉淀区）；DEV B2 == 基础句+标题行+tip 行（精确形态，中文逐字）；指针文件解析回 schema/id/title/avoidance/roles 全匹配；QA 的 B2 含同一 tip 行；PM 的 B2 等于基础句单行形态"
+        },
+        {
+            "id": "TC-010",
+            "title": "跨仓根分叉防回归（n9 修复锚）：-Project <A> 而 cwd 在外来 git 仓 B 时，B2 只携带 A 自身 tips，外来仓条目与 B 相对指针不泄漏",
+            "type": "negative",
+            "priority": "P0",
+            "acceptance": "overview-AC-1",
+            "codeRef": ".rdd/tests/tips-integration/tips-chain-e2e.ps1:161",
+            "sourceChange": "2026-10-06-role-tips-mechanism",
+            "status": "active",
+            "crossFeature": ["tips-startup-injection", "role-handoff"],
+            "precondition": "labB 为另一 git 仓且已记录自己的 DEV tip（修复前该条目泄漏进 labA 的 B2）",
+            "steps": ["cwd=labB 运行 start-role -Role DEV -DryRun -Project <labA> -TaskJson <labA 夹具>", "立即原样重跑一次"],
+            "expected": "B2 含 labA 的 tip 行且不含 labB 条目；指针在 labA 仓内可解析；两次运行逐字节一致（RDD_PROJECT_ROOT 钉定/还原无残留）"
+        },
+        {
+            "id": "TC-015",
+            "title": "无 tips 项目启动行为与现状一致：空库 B2 与注入特性前一版（d082287~1）逐字节一致（UTF-8 字节级，无环境钉定）",
+            "type": "boundary",
+            "priority": "P0",
+            "acceptance": "overview-AC-1",
+            "codeRef": ".rdd/tests/tips-integration/tips-chain-e2e.ps1:171",
+            "sourceChange": "2026-10-06-role-tips-mechanism",
+            "status": "active",
+            "crossFeature": ["tips-startup-injection"],
+            "precondition": "labC git 仓无任何 tips 条目；git show d082287~1:start-role.ps1 落临时引擎目录（BOM 完整）",
+            "steps": ["cwd=labC 分别驱动工作区版与前一版 -DryRun（dsh）", "提取两者 B2 文本做 UTF-8 字节比对"],
+            "expected": "两者 B2 完全一致且等于历史单行形态；无 tips 段、无降级警告"
+        },
+        {
+            "id": "TC-020",
+            "title": "降级不阻断（无钉定形态）：半损坏条目 → 警告指名文件 + 零注入 + 交接不阻断（exit 0）",
+            "type": "exception",
+            "priority": "P1",
+            "acceptance": "overview-AC-1",
+            "codeRef": ".rdd/tests/tips-integration/tips-chain-e2e.ps1:184",
+            "sourceChange": "2026-10-06-role-tips-mechanism",
+            "status": "active",
+            "crossFeature": ["tips-startup-injection"],
+            "precondition": "labD git 仓：1 条健康 DEV 条目 + 1 条非法 JSON 损坏条目",
+            "expected": "stdout 含「定向 tips 注入降级」且指名损坏文件；B2 等于无 tips 形态；exit 0"
+        },
+        {
+            "id": "TC-025",
+            "title": "真仓冒烟：真实归档 + dogfood 条目（QA 记录的 BOM tip）DEV 含 / PM 不含，且条目 git 在册（fresh clone 不丢）",
+            "type": "positive",
+            "priority": "P1",
+            "acceptance": "overview-AC-1",
+            "codeRef": ".rdd/tests/tips-integration/tips-chain-e2e.ps1:193",
+            "sourceChange": "2026-10-06-role-tips-mechanism",
+            "status": "active",
+            "crossFeature": ["tips-store-cli", "tips-startup-injection"],
+            "steps": ["cwd=真仓根 start-role -Role DEV/PM -DryRun -TaskJson <真实归档>", "git ls-files --error-unmatch 校验条目在册", "解析真实条目 JSON"],
+            "expected": "DEV B2 含「write/edit 工具会抹掉 .ps1 的 UTF-8 BOM」标题行与指针；PM B2 等于基础句形态；条目被 git 跟踪且 roles 含 DEV 与 QA（数据源单源）"
+        }
+    ]
+}
