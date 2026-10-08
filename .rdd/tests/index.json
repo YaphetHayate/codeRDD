@@ -247,6 +247,37 @@
       "deprecatedCount": 0,
       "lastUpdated": "2026-10-07",
       "lastChange": "2026-10-06-role-tips-mechanism"
+    },
+    {
+      "feature": "explore-query-log",
+      "relatedCode": [
+        "rdd-engine/scripts/explore.ps1",
+        "rdd-engine/scripts/explore.cmd",
+        "dsh/dsh-rdd-explore/src/index.ts",
+        "dsh/dsh-rdd-explore/src/query-log.ts"
+      ],
+      "testCode": [
+        "rdd-engine/tests/test-query-log.ps1",
+        "dsh/dsh-rdd-explore/tests/query-log.mjs",
+        ".rdd/tests/explore-query-log/plugin-entry-e2e.mjs",
+        ".rdd/tests/explore-query-log/hit-rate-aggregation.mjs",
+        ".rdd/tests/explore-query-log/explore-query-log-qa-verify.ps1"
+      ],
+      "activeCount": 15,
+      "deprecatedCount": 0,
+      "lastUpdated": "2026-10-08",
+      "lastChange": "2026-10-08-rdd-ops-dashboard"
+    },
+    {
+      "feature": "ops-dashboard",
+      "relatedCode": [],
+      "testCode": [
+        ".rdd/tests/ops-dashboard/ops-dashboard-qa-verify.ps1"
+      ],
+      "activeCount": 12,
+      "deprecatedCount": 0,
+      "lastUpdated": "2026-10-08",
+      "lastChange": "2026-10-08-rdd-ops-dashboard"
     }
   ]
 }

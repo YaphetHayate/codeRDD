@@ -45,6 +45,7 @@ import {
 import { lexicalRecaller } from './recallers/lexical.js'
 import { vectorRecaller } from './recallers/vector.js'
 import { buildDispatchPrompt } from './dispatch.js'
+import { appendQueryLog } from './query-log.js'
 
 export const name = 'rdd-explore'
 export const inject = ['tools', 'subagents']
@@ -585,7 +586,18 @@ export function apply(ctx: Context, config: Config): void {
         explorationDir,
         recallers: [lexicalRecaller, vectorRecaller],
       })
+      // Query-log projection of the rankMeta outcomes (the frozen three-field
+      // view; warnings stay in rankMeta only) — shared by both outcome arms
+      // below so every executed query appends exactly ONE line.
+      const logRecallers = rankMeta.recallers.map(outcome => ({
+        name: outcome.name,
+        status: outcome.status,
+        qualified: outcome.qualified,
+      }))
       if (ranked.length > 0 && args.force_dispatch !== true) {
+        // HIT: one failure-isolated append before the result is returned
+        // (hit-rate data source; a log failure never touches the result).
+        await appendQueryLog(explorationDir, args.query, 'hit', ranked.map(result => result.key), logRecallers)
         const candidates: CandidateView[] = ranked.map(result => ({
           key: result.key,
           tags: [...result.tags],
@@ -615,6 +627,12 @@ export function apply(ctx: Context, config: Config): void {
       // 3. Dispatch the worker through the subagent service. Plugin mode runs
       // a pure researcher: the structured output carries the payload, and the
       // plugin (trusted code) owns every cache mutation afterwards.
+      // MISS (or forced bypass): log the dispatch DECISION before the worker
+      // starts — the log records that a dispatch was triggered, never the
+      // worker's completion. `forced` stays distinct from `miss`: it bypassed
+      // a possibly non-empty cache, so it is excluded from the hit-rate
+      // denominator (forced -> keys always empty).
+      await appendQueryLog(explorationDir, args.query, args.force_dispatch === true ? 'forced' : 'miss', [], logRecallers)
       const registerMode = config.registerMode ?? 'plugin'
       const prompt = await buildDispatchPrompt({
         query: args.query,

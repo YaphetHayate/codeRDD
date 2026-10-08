@@ -96,6 +96,7 @@ function Get-ExplorationDir { Join-Path $repoRoot ".rdd/exploration" }
 function Get-IndexPath      { Join-Path (Get-ExplorationDir) "index.json" }
 function Get-HotPath        { Join-Path (Get-ExplorationDir) "hot.json" }
 function Get-ArtifactsDir   { Join-Path (Get-ExplorationDir) "artifacts" }
+function Get-QueryLogPath   { Join-Path (Get-ExplorationDir) "query-log.jsonl" }
 
 function Resolve-RepoPath {
     param([string]$RelOrAbs)
@@ -796,6 +797,59 @@ function Build-DispatchPrompt {
     ) -join [System.Environment]::NewLine)
 }
 
+# === Query log (hit-rate data source) ===
+# One append-only JSONL line per search query (.rdd/exploration/query-log.jsonl)
+# -- the raw data hit-rate / miss-query analytics are computed from. Frozen
+# six-field line contract, shared with the dsh plugin mirror
+# (packages/local/rdd-explore/src/query-log.ts -- change both sides together):
+#   ts        ISO-8601 UTC with milliseconds ("yyyy-MM-ddTHH:mm:ss.fffZ")
+#   entry     "cli" (this script) | "dsh-plugin" (the tool side)
+#   query     original query text
+#   outcome   hit | miss (the CLI has no force-dispatch face)
+#   keys      Top-K returned entry keys in rank order (miss -> [])
+#   recallers [{name,status,qualified}] projected from the rankMeta outcomes
+# Field order is frozen (ts,entry,query,outcome,keys,recallers) so lines from
+# both writers are comparable apart from values. Failure isolation is a hard
+# acceptance gate: any throw degrades to a stderr warning only -- the search
+# result, stdout payload and exit code are untouched.
+function Write-QueryLog {
+    param(
+        [string]$Query,
+        [string]$Outcome,
+        [array]$Keys,
+        [array]$RecallerOutcomes
+    )
+    try {
+        $loggedRecallers = @()
+        foreach ($o in @($RecallerOutcomes)) {
+            $loggedRecallers += [ordered]@{
+                name      = [string]$o.name
+                status    = [string]$o.status
+                qualified = [int]$o.qualified
+            }
+        }
+        $record = [ordered]@{
+            ts        = ([datetime]::UtcNow).ToString('yyyy-MM-ddTHH:mm:ss.fffZ', [System.Globalization.CultureInfo]::InvariantCulture)
+            entry     = 'cli'
+            query     = $Query
+            outcome   = $Outcome
+            keys      = @($Keys | ForEach-Object { [string]$_ })
+            recallers = $loggedRecallers
+        }
+        $dir = Get-ExplorationDir
+        if (-not (Test-Path -LiteralPath $dir)) {
+            New-Item -ItemType Directory -Path $dir -Force | Out-Null
+        }
+        # AppendAllText + UTF8Encoding($false): O_APPEND single-line write, no
+        # BOM ever (Add-Content/Out-File stay banned -- PS5.1 default-encoding
+        # traps). [ordered] keeps the field order identical to the TS mirror.
+        [System.IO.File]::AppendAllText((Get-QueryLogPath), (ConvertTo-PortableJson $record) + "`n", (New-Object System.Text.UTF8Encoding($false)))
+    }
+    catch {
+        [Console]::Error.WriteLine("query-log append failed (ignored, search unaffected): $($_.Exception.Message)")
+    }
+}
+
 # === Input validation ===
 
 if ([string]::IsNullOrWhiteSpace($Type)) {
@@ -858,6 +912,17 @@ if ($Type -eq "search") {
         if (-not [string]::IsNullOrEmpty([string]$o.warning)) { $view["warning"] = [string]$o.warning }
         $recallerViews += $view
     }
+
+    # Query-log decision point (hit-rate data source): ONE append per search,
+    # after results are computed and before anything is emitted. The CLI has
+    # no force-dispatch face, so the outcome is exactly hit|miss here.
+    $loggedOutcome = 'miss'
+    $loggedKeys = @()
+    if ($results.Count -gt 0) {
+        $loggedOutcome = 'hit'
+        $loggedKeys = @($results | ForEach-Object { [string]$_.key })
+    }
+    Write-QueryLog -Query $Query -Outcome $loggedOutcome -Keys $loggedKeys -RecallerOutcomes $recallerViews
 
     $data = @{
         query        = $Query
