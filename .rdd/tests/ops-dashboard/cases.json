@@ -1,0 +1,377 @@
+{
+    "feature":  "ops-dashboard",
+    "status":  "active",
+    "relatedCode":  [
+                        "rdd-engine/dashboard/",
+                        "rdd-engine/scripts/dashboard.cmd",
+                        "ops-dashboard.cmd"
+                    ],
+    "testCode":  [
+                     ".rdd/tests/ops-dashboard/ops-dashboard-qa-verify.ps1",
+                     ".rdd/tests/ops-dashboard/js-quality-metrics.mjs"
+                 ],
+    "lastChange":  "2026-10-08-rdd-ops-dashboard",
+    "cases":  [
+                  {
+                      "id":  "TC-105",
+                      "title":  "一条命令启动服务：进程存活、stdout 宣告可打开的 URL、GET 200 且 HTML 非空",
+                      "type":  "positive",
+                      "priority":  "P0",
+                      "acceptance":  "AC-1",
+                      "codeRef":  ".rdd/tests/ops-dashboard/ops-dashboard-qa-verify.ps1:214",
+                      "sourceChange":  "2026-10-08-rdd-ops-dashboard",
+                      "status":  "active",
+                      "crossFeature":  [
+
+                                       ],
+                      "precondition":  "看板已交付且启动命令已知（-StartCommand 传入或仓内约定入口可发现）",
+                      "steps":  [
+                                    "执行一条启动命令",
+                                    "以 FileShare.ReadWrite 共享读法从 stdout 重定向文件提取 URL（服务持有句柄时默认读法会 IOException）",
+                                    "GET 该 URL"
+                                ],
+                      "expected":  "进程不退出；URL 可提取（用户必须能知道打开哪里）；响应 200 且 HTML 非空"
+                  },
+                  {
+                      "id":  "TC-110",
+                      "title":  "P0 数据域地面真值对账：归档总数/tips 条数/探索缓存热区条数/交付树数量的真实计数均出现在总览页",
+                      "type":  "positive",
+                      "priority":  "P0",
+                      "acceptance":  "AC-1",
+                      "codeRef":  ".rdd/tests/ops-dashboard/ops-dashboard-qa-verify.ps1:241",
+                      "sourceChange":  "2026-10-08-rdd-ops-dashboard",
+                      "status":  "active",
+                      "crossFeature":  [
+
+                                       ],
+                      "precondition":  "服务运行中；QA 套件独立从 .rdd/ 原始文件计算地面真值（不信看板自报）",
+                      "steps":  [
+                                    "计算各域真实计数",
+                                    "抓取总览页文本",
+                                    "逐域断言计数出现（数字边界防 substring 假阳）"
+                                ],
+                      "expected":  "全部 P0 域计数同现页面（≥1 的计数必须出现；稀疏小数字同样出现）"
+                  },
+                  {
+                      "id":  "TC-115",
+                      "title":  "需求钻取：根页链接可跟进至含已知需求标题的详情页，且携带 Owner/生命周期/文档路径信号",
+                      "type":  "positive",
+                      "priority":  "P0",
+                      "acceptance":  "AC-3",
+                      "codeRef":  ".rdd/tests/ops-dashboard/ops-dashboard-qa-verify.ps1:301",
+                      "sourceChange":  "2026-10-08-rdd-ops-dashboard",
+                      "status":  "active",
+                      "crossFeature":  [
+
+                                       ],
+                      "precondition":  "真实仓存在含中文标题的最新归档 task.json",
+                      "steps":  [
+                                    "解析根页 href（限同源，跳过静态资源，上限 12 页）",
+                                    "逐页寻找已知标题",
+                                    "检查详情信号"
+                                ],
+                      "expected":  "至少一页含该标题原文，且匹配 requirements/|design/|Owner|责任人|生命周期|lifecycle|active|completed 之一"
+                  },
+                  {
+                      "id":  "TC-175",
+                      "title":  "页面骨架契约：响应为完整 HTML 文档（DOCTYPE + html 开闭）且自带样式表与客户端脚本引用，被引用静态资源可达",
+                      "type":  "positive",
+                      "priority":  "P0",
+                      "acceptance":  "AC-1",
+                      "codeRef":  ".rdd/tests/ops-dashboard/ops-dashboard-qa-verify.ps1:314",
+                      "sourceChange":  "2026-10-08-rdd-ops-dashboard",
+                      "status":  "active",
+                      "crossFeature":  [
+
+                                       ],
+                      "precondition":  "服务运行中；以原始 HTML（未剥标签）为证据——文本断言看不见骨架",
+                      "steps":  [
+                                    "断言响应以 \u003c!DOCTYPE html 开头且含 \u003chtml\u003e/\u003c/html\u003e",
+                                    "断言存在 rel=stylesheet 的 link 与带 src 的 script 标签",
+                                    "逐一 GET 被引用的静态资源"
+                                ],
+                      "expected":  "完整文档骨架成立；样式表与客户端脚本均 200 且非空——杜绝「只返回正文片段」（无样式、脚本永不加载）类缺陷在纯文本断言下全绿"
+                  },
+                  {
+                      "id":  "TC-180",
+                      "title":  "全部 P0 数据域页面可从总览页导航到达：跟进根页自报 href，每页 200 且为完整文档",
+                      "type":  "positive",
+                      "priority":  "P0",
+                      "acceptance":  "AC-1",
+                      "codeRef":  ".rdd/tests/ops-dashboard/ops-dashboard-qa-verify.ps1:349",
+                      "sourceChange":  "2026-10-08-rdd-ops-dashboard",
+                      "status":  "active",
+                      "crossFeature":  [
+
+                                       ],
+                      "precondition":  "服务运行中；不预设路由词汇，只跟进根页实际渲染出的同源页面链接（排除静态资源）",
+                      "steps":  [
+                                    "从根页提取 \u003ca href\u003e（去重、排除 css/js/图片、排除站外）",
+                                    "逐页 GET",
+                                    "断言 ≥6 页可导航到达且全部为完整文档、无坏链"
+                                ],
+                      "expected":  "六个 P0 域页面均可达（≥6 完整文档，坏链 0），运营者打开根 URL 即可进入任一域"
+                  },
+                  {
+                      "id":  "TC-120",
+                      "title":  "实时性：注册一条真实探索缓存条目后刷新页面即见计数 +1（无需重启服务）",
+                      "type":  "positive",
+                      "priority":  "P0",
+                      "acceptance":  "AC-4",
+                      "codeRef":  ".rdd/tests/ops-dashboard/ops-dashboard-qa-verify.ps1:366",
+                      "sourceChange":  "2026-10-08-rdd-ops-dashboard",
+                      "status":  "active",
+                      "crossFeature":  [
+                                           "explore-query-log"
+                                       ],
+                      "precondition":  "-Mutate 激活（默认只读运行 SKIP）；注册的是真实有值的 livecheck 记录（含配对 summary）；register 按 key 幂等 upsert，故 key 必须逐轮唯一，否则重跑时计数不增而误判",
+                      "steps":  [
+                                    "记录当前热区计数",
+                                    "以逐轮唯一 key 经 explore-store register 注册 livecheck 条目",
+                                    "刷新页面断言新计数出现"
+                                ],
+                      "expected":  "刷新后页面出现 hot+1 计数；服务未重启"
+                  },
+                  {
+                      "id":  "TC-125",
+                      "title":  "命中率模块条件展示：有流水数据时呈现与地面真值一致（±1）的百分比，且近期 query 原文可在数据面查到",
+                      "type":  "positive",
+                      "priority":  "P0",
+                      "acceptance":  "AC-2",
+                      "codeRef":  ".rdd/tests/ops-dashboard/ops-dashboard-qa-verify.ps1:258",
+                      "sourceChange":  "2026-10-08-rdd-ops-dashboard",
+                      "status":  "active",
+                      "crossFeature":  [
+                                           "explore-query-log"
+                                       ],
+                      "precondition":  "真实仓 query-log.jsonl 存在且有命中记录（#1 已交付）；地面真值按 keys 非空判命中",
+                      "steps":  [
+                                    "从流水独立计算命中率",
+                                    "抓取页面所有百分比数字",
+                                    "断言之一与真值差 ≤1"
+                                ],
+                      "expected":  "百分比出现且口径吻合；流水明细面含近期 query 原文（无数据分支见 TC-170）"
+                  },
+                  {
+                      "id":  "TC-130",
+                      "title":  "测试假数据排除：特征 token（tmp/、.rdd/tmp/、夹具命名交付树）不出现在页面任何渲染面",
+                      "type":  "negative",
+                      "priority":  "P0",
+                      "acceptance":  "AC-5",
+                      "codeRef":  ".rdd/tests/ops-dashboard/ops-dashboard-qa-verify.ps1:276",
+                      "sourceChange":  "2026-10-08-rdd-ops-dashboard",
+                      "status":  "active",
+                      "crossFeature":  [
+
+                                       ],
+                      "precondition":  "仓内存在可辨识的测试数据目录/文件名（真实仓的噪音主要在 .rdd/tmp/ 与交付树夹具目录，仓根 tmp/ 常为空）",
+                      "steps":  [
+                                    "从仓根 tmp/、.rdd/tmp/ 与 qa-fixture/qa-bridge 命名的交付树收集特征 token（≥6 字符，取前 8）",
+                                    "断言页面文本不含任一 token"
+                                ],
+                      "expected":  "零泄漏；各统计计数与排除夹具的地面真值一致"
+                  },
+                  {
+                      "id":  "TC-135",
+                      "title":  "端口占用显式报错：服务运行中再起第二实例，必须给出含端口信号的清晰提示且不静默失败，原实例不受影响",
+                      "type":  "negative",
+                      "priority":  "P0",
+                      "acceptance":  "AC-6",
+                      "codeRef":  ".rdd/tests/ops-dashboard/ops-dashboard-qa-verify.ps1:384",
+                      "sourceChange":  "2026-10-08-rdd-ops-dashboard",
+                      "status":  "active",
+                      "crossFeature":  [
+
+                                       ],
+                      "precondition":  "第一实例健康运行中",
+                      "steps":  [
+                                    "以同一启动命令起第二实例",
+                                    "收集其输出与退出码",
+                                    "回探第一实例"
+                                ],
+                      "expected":  "输出含 port/端口 及占用/失败/切换类明确语义（或非零退出+报错）；第一实例仍 200"
+                  },
+                  {
+                      "id":  "TC-140",
+                      "title":  "稀疏数据不报错：真实仓即稀疏（tips 少/热区少），页面渲染真实小数字、无错误栈、内容实质非空",
+                      "type":  "boundary",
+                      "priority":  "P1",
+                      "acceptance":  "AC-1",
+                      "codeRef":  ".rdd/tests/ops-dashboard/ops-dashboard-qa-verify.ps1:244",
+                      "sourceChange":  "2026-10-08-rdd-ops-dashboard",
+                      "status":  "active",
+                      "crossFeature":  [
+
+                                       ],
+                      "steps":  [
+                                    "抓取总览页",
+                                    "断言无 Unhandled/stack trace/500 类错误痕迹",
+                                    "断言文本量实质"
+                                ],
+                      "expected":  "页面正常渲染（数据稀疏是正常态，不报错不空白）"
+                  },
+                  {
+                      "id":  "TC-145",
+                      "title":  "中文标题逐字出现：UTF-8 无 BOM 数据源的中文经看板解码零乱码",
+                      "type":  "boundary",
+                      "priority":  "P1",
+                      "acceptance":  "AC-1",
+                      "codeRef":  ".rdd/tests/ops-dashboard/ops-dashboard-qa-verify.ps1:248",
+                      "sourceChange":  "2026-10-08-rdd-ops-dashboard",
+                      "status":  "active",
+                      "crossFeature":  [
+
+                                       ],
+                      "steps":  [
+                                    "取地面真值中文需求标题",
+                                    "HTML 解码后断言逐字包含"
+                                ],
+                      "expected":  "标题原文逐字出现（实体解码后一致）"
+                  },
+                  {
+                      "id":  "TC-150",
+                      "title":  "旧结构归档（需求文件在根目录/task.md 代替 task.json）不致服务崩溃：页面保持响应、新结构计数正确",
+                      "type":  "boundary",
+                      "priority":  "P2",
+                      "acceptance":  "AC-1,AC-3",
+                      "codeRef":  ".rdd/tests/ops-dashboard/ops-dashboard-qa-verify.ps1:394",
+                      "sourceChange":  "2026-10-08-rdd-ops-dashboard",
+                      "status":  "active",
+                      "crossFeature":  [
+
+                                       ],
+                      "precondition":  "真实仓存在旧结构归档（地面真值扫描可判）；无则 SKIP",
+                      "steps":  [
+                                    "确认旧结构归档存在",
+                                    "全套请求后回探服务"
+                                ],
+                      "expected":  "服务持续 200 响应（兼容展示或明确跳过均可，崩溃不可接受）；新结构计数与真值一致"
+                  },
+                  {
+                      "id":  "TC-155",
+                      "title":  "命中率无数据态：空流水环境下占位呈现（「暂无数据」类）、无报错、其他数据域正常（半手动）",
+                      "type":  "negative",
+                      "priority":  "P2",
+                      "acceptance":  "AC-2",
+                      "codeRef":  null,
+                      "sourceChange":  "2026-10-08-rdd-ops-dashboard",
+                      "status":  "deprecated",
+                      "deprecatedReason":  "半手动协议已由 TC-170 自动化为常规断言（隔离数据根起服务 + 无捏造百分比 + 他域正常），不再需要 verify 时人工配合",
+                      "crossFeature":  [
+                                           "explore-query-log"
+                                       ],
+                      "precondition":  "以空/隔离数据根启动服务（启动命令支持数据根参数时）",
+                      "steps":  [
+                                    "以无流水数据根起服务",
+                                    "打开看板检查命中率区",
+                                    "检查其余数据域"
+                                ],
+                      "expected":  "命中率区占位不报错；其余域正常渲染（#1 未交付/无数据时的降级路径）"
+                  },
+                  {
+                      "id":  "TC-160",
+                      "title":  "整体验收判据 #2：一 hit 一 miss 真实查询 → 刷新看板 → 命中率数字变化且流水明细新增两条（手动协议）",
+                      "type":  "positive",
+                      "priority":  "P1",
+                      "acceptance":  "AC-2,AC-4",
+                      "codeRef":  null,
+                      "sourceChange":  "2026-10-08-rdd-ops-dashboard",
+                      "status":  "deprecated",
+                      "crossFeature":  [
+                                           "explore-query-log"
+                                       ],
+                      "precondition":  "看板运行中且 #1 已交付；miss 查询的 nonce 不得与任何缓存条目共享 token（tokenizer 对 ASCII 小写串与 CJK 双字切分，\u0027qa\u0027 一类词会命中 live 条目的 tags）",
+                      "steps":  [
+                                    "记录看板当前命中率数字与流水行数",
+                                    "经 rdd_explore 或 CLI 做一次未命中查询并刷新核对",
+                                    "再做一次可命中查询并刷新核对",
+                                    "断言两条 query 逐字出现在明细面"
+                                ],
+                      "expected":  "两次刷新后命中率数字均按 hit/(hit+miss) 重算并变化；流水明细新增两条，query 逐字可查",
+                      "deprecatedReason":  "手动协议已由 TC-195（ops-dashboard-acceptance.ps1 判据 #2 端到端：真实一 miss 一 hit 查询 + 刷新 + 数字与明细对账）自动化为常规断言，不再需要 verify 时人工配合"
+                  },
+                  {
+                      "id":  "TC-165",
+                      "title":  "实时性（AC-4 另一半）：新增一条 tips 条目后刷新即见、删除后即消失，服务不重启",
+                      "type":  "positive",
+                      "priority":  "P0",
+                      "acceptance":  "AC-4",
+                      "codeRef":  ".rdd/tests/ops-dashboard/ops-dashboard-qa-verify.ps1:417",
+                      "sourceChange":  "2026-10-08-rdd-ops-dashboard",
+                      "status":  "active",
+                      "crossFeature":  [
+
+                                       ],
+                      "precondition":  ".rdd/tips/entries 可写；服务运行中；探针写入的是带唯一标记的临时条目并在断言后删除",
+                      "steps":  [
+                                    "写入一条含唯一标记的 tips 条目",
+                                    "抓取总览页（计数）与 /tips（条目标题）",
+                                    "断言计数 +1 且标记出现",
+                                    "删除该条目并再次抓取"
+                                ],
+                      "expected":  "新增后刷新即见（未重启服务）；删除后计数回退、标记消失——证明每次请求实时读盘"
+                  },
+                  {
+                      "id":  "TC-170",
+                      "title":  "命中率无数据态（隔离数据根）：无流水时占位呈现、不报错、无捏造百分比、其他数据域正常",
+                      "type":  "negative",
+                      "priority":  "P0",
+                      "acceptance":  "AC-2",
+                      "codeRef":  ".rdd/tests/ops-dashboard/ops-dashboard-qa-verify.ps1:446",
+                      "sourceChange":  "2026-10-08-rdd-ops-dashboard",
+                      "status":  "active",
+                      "crossFeature":  [
+                                           "explore-query-log"
+                                       ],
+                      "precondition":  "以 -Port \u003cn\u003e 运行（探针在 \u003cn\u003e+1 上用 RDD_PROJECT_ROOT 起隔离数据根实例：只含 .rdd/tips/entries，无 exploration/query-log.jsonl）",
+                      "steps":  [
+                                    "构造隔离数据根并起第二实例",
+                                    "抓 /hit-rate",
+                                    "抓 /tips"
+                                ],
+                      "expected":  "/hit-rate 200、文本实质非空、无错误栈/NaN/Infinity，且不出现任何捏造的命中率百分比；/tips 正常渲染该根自有数据（单域降级不影响他域）"
+                  },
+                  {
+                      "id":  "TC-190",
+                      "title":  "整体验收判据 #1 端到端：一条命令 + 打开 URL 即见六域全貌，且可钻取任一需求全链路（含打回备注逐段可查）",
+                      "type":  "positive",
+                      "priority":  "P0",
+                      "acceptance":  "AC-1,AC-3",
+                      "codeRef":  ".rdd/tests/ops-dashboard/ops-dashboard-acceptance.ps1:150",
+                      "sourceChange":  "2026-10-08-rdd-ops-dashboard",
+                      "status":  "active",
+                      "crossFeature":  [
+
+                                       ],
+                      "precondition":  "看板已交付；A0..A6 全部用 QA 独立计算的地面真值对账（不信看板自报）",
+                      "steps":  [
+                                    "起服务并断言 stdout 宣告 URL（共享读）",
+                                    "GET / 断言 200 + 六域页面可导航",
+                                    "归档真值计数同现 + 真实中文标题逐字",
+                                    "钻取最新归档详情四信号 + 含打回备注归档逐段命中"
+                                ],
+                      "expected":  "判据 #1 的 8 条断言全过：一条命令 → 打开即见全貌（六域）+ 需求全链路钻取成立"
+                  },
+                  {
+                      "id":  "TC-195",
+                      "title":  "整体验收判据 #2 端到端：一次真实 miss + 一次真实 hit 查询 → 刷新看板 → 命中率数字变化且两条 query 逐字入明细",
+                      "type":  "positive",
+                      "priority":  "P0",
+                      "acceptance":  "AC-2,AC-4",
+                      "codeRef":  ".rdd/tests/ops-dashboard/ops-dashboard-acceptance.ps1:207",
+                      "sourceChange":  "2026-10-08-rdd-ops-dashboard",
+                      "status":  "active",
+                      "crossFeature":  [
+                                           "explore-query-log"
+                                       ],
+                      "precondition":  "看板运行中；hit 侧经 explore-store 注册带唯一 token 的探针条目（收尾删除），miss 侧 nonce 与缓存条目零共享 token；两次查询均为真实 CLI 调用（真流水，不清除）",
+                      "steps":  [
+                                    "从 jsonl 独立算基线命中率并与页面百分比对账",
+                                    "CLI 做一次 miss 查询 → 断言流水 +1 miss 且刷新后数字重算并变化",
+                                    "注册探针条目 → CLI 做一次 hit 查询 → 断言 +1 hit 且数字再次变化",
+                                    "断言两条 query 逐字出现在明细面、明细覆盖全量流水、服务全程未重启"
+                                ],
+                      "expected":  "判据 #2 的 9 条断言全过：命中率随真实流水重算并两次变化，明细逐字可查，服务零重启"
+                  }
+              ]
+}

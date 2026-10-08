@@ -270,12 +270,18 @@
     },
     {
       "feature": "ops-dashboard",
-      "relatedCode": [],
-      "testCode": [
-        ".rdd/tests/ops-dashboard/ops-dashboard-qa-verify.ps1"
+      "relatedCode": [
+        "rdd-engine/dashboard/",
+        "rdd-engine/scripts/dashboard.cmd",
+        "ops-dashboard.cmd"
       ],
-      "activeCount": 12,
-      "deprecatedCount": 0,
+      "testCode": [
+        ".rdd/tests/ops-dashboard/ops-dashboard-qa-verify.ps1",
+        ".rdd/tests/ops-dashboard/ops-dashboard-acceptance.ps1",
+        ".rdd/tests/ops-dashboard/js-quality-metrics.mjs"
+      ],
+      "activeCount": 16,
+      "deprecatedCount": 2,
       "lastUpdated": "2026-10-08",
       "lastChange": "2026-10-08-rdd-ops-dashboard"
     }
