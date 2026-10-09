@@ -399,7 +399,7 @@ assertTrue(afterErrorPick.status === 'canceled', 'pick: the lock is free again a
 
 // ── unit: single-domain isolation (AC 2) ──────────────────────────────
 const brokenDomains = readAllDomains({ projectRoot: null, rddRoot: null })
-assertTrue(Object.keys(brokenDomains).length === 6, 'isolation: all six domains are always present in the payload')
+assertTrue(Object.keys(brokenDomains).length === 7, 'isolation: all seven domains are always present in the payload')
 assertTrue(
   Object.values(brokenDomains).every((envelope) => envelope.available === false && envelope.meta.notes.length > 0),
   'isolation: a throwing domain degrades to available=false + note instead of failing the request',
@@ -454,7 +454,7 @@ assertTrue(homeText.includes('第六条查询'), 'HTTP: overview surfaces the ne
 assertTrue(!/Unhandled|stack trace|Internal Server Error|System\.Exception/.test(homeText), 'HTTP: no crash markers on the overview')
 
 const routeTexts = {}
-for (const route of ['/', '/requirements', '/exploration', '/hit-rate', '/quality', '/tips', '/goal-trees', '/requirements/2026-01-01-alpha/1']) {
+for (const route of ['/', '/requirements', '/exploration', '/hit-rate', '/quality', '/tips', '/goal-trees', '/config', '/requirements/2026-01-01-alpha/1']) {
   const page = await fetchPage(base, route)
   routeTexts[route] = pageText(page.html)
   assertTrue(page.status === 200, `HTTP: ${route} -> 200`, `status=${page.status}`)
@@ -478,7 +478,7 @@ const apiEnvelope = await apiResponse.json()
 assertTrue(apiResponse.status === 200 && apiEnvelope.domain === 'hit-rate' && typeof apiEnvelope.meta.generatedAt === 'string' && Array.isArray(apiEnvelope.meta.notes), 'API: hit-rate envelope contract', JSON.stringify(Object.keys(apiEnvelope)))
 assertTrue(apiEnvelope.available === true && apiEnvelope.data.hitRatePercent === 66.67, 'API: hit-rate data payload', JSON.stringify(apiEnvelope.data.hitRatePercent))
 const apiOverview = await (await fetch(`${base}/api/overview`)).json()
-assertTrue(apiOverview.domain === 'overview' && apiOverview.data.cards.length === 6 && apiOverview.data.domains['goal-trees'].data.totalCount === 2, 'API: overview envelope aggregates all six domains')
+assertTrue(apiOverview.domain === 'overview' && apiOverview.data.cards.length === 6 && apiOverview.data.domains['goal-trees'].data.totalCount === 2, 'API: overview envelope aggregates the domains (six KPI cards; the config domain rides in data.domains)')
 const apiMissing = await fetch(`${base}/api/requirements/2026-01-01-alpha/99`)
 assertTrue(apiMissing.status === 404, 'API: unknown detail returns 404 with the envelope', `status=${apiMissing.status}`)
 

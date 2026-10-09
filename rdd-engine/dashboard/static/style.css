@@ -662,6 +662,65 @@ a:focus-visible, button:focus-visible, [tabindex]:focus-visible {
   .data-table tbody td { max-width: 200px; }
 }
 
+/* ── 5.18 ConfigCenter（/config 编辑表单，ops-config-panel §3-6/§7） ── */
+.config-form { display: flex; flex-direction: column; gap: var(--ops-space-4); }
+.config-group {
+  display: flex; flex-direction: column; gap: var(--ops-space-2);
+  border: 1px solid var(--ops-border-subtle); border-radius: var(--ops-radius-card);
+  padding: var(--ops-space-3) var(--ops-space-4); margin: 0; min-width: 0;
+}
+.config-group-title {
+  font-size: var(--ops-font-aux); font-weight: 700; color: var(--ops-text-secondary);
+  padding: 0 var(--ops-space-2);
+}
+.config-field { display: flex; align-items: center; gap: var(--ops-space-3); flex-wrap: wrap; }
+.config-label {
+  flex: 0 0 220px; font-family: var(--ops-font-mono); font-size: var(--ops-font-aux);
+  color: var(--ops-text-secondary); overflow-wrap: anywhere;
+}
+.config-input {
+  flex: 0 1 200px; min-width: 120px; height: var(--ops-hit); padding: 0 10px;
+  font-family: var(--ops-font-mono); font-size: var(--ops-font-aux-lg);
+  background: var(--ops-bg-surface); color: var(--ops-text-primary);
+  border: 1px solid var(--ops-border-default); border-radius: var(--ops-radius-card);
+  transition: border-color var(--ops-transition), box-shadow var(--ops-transition);
+}
+.config-input:focus {
+  outline: none;
+  border-color: var(--ops-action-primary);
+  box-shadow: 0 0 0 2px var(--ops-accent-tertiary);
+}
+select.config-input { flex: 0 0 auto; padding-right: var(--ops-space-3); }
+.config-hint { flex: 1 1 160px; min-width: 120px; font-size: var(--ops-font-aux); color: var(--ops-text-secondary); }
+.config-actions { display: flex; align-items: center; gap: var(--ops-space-3); flex-wrap: wrap; }
+.config-nojs { font-size: var(--ops-font-aux); color: var(--ops-text-secondary); }
+.config-nojs[hidden] { display: none; }
+.config-note:empty { display: none; }
+.config-note .note-bar { padding: 8px 12px; flex-direction: column; align-items: flex-start; gap: var(--ops-space-2); }
+.config-error-list { margin: 0; padding-left: 20px; display: flex; flex-direction: column; gap: 2px; }
+.config-error-list code { font-family: var(--ops-font-mono); }
+@media (max-width: 900px) {
+  .config-label { flex-basis: 100%; }
+}
+
+/* ── 5.19 ConfigCenter R2（模块分区 + UX 编辑器，ops-config-panel-r2 §2/§5） ── */
+.module-sub { margin: 0 0 var(--ops-space-3); color: var(--ops-text-secondary); max-width: 100ch; }
+.ux-agent-block {
+  display: flex; flex-direction: column; gap: var(--ops-space-2);
+  border: 1px solid var(--ops-border-subtle); border-radius: var(--ops-radius-card);
+  padding: var(--ops-space-3) var(--ops-space-4); margin: 0; min-width: 0;
+}
+.ux-agent-block .config-group-title { padding: 0; }
+.ux-sync-head {
+  display: flex; align-items: center; gap: var(--ops-space-3); flex-wrap: wrap;
+  margin-bottom: var(--ops-space-3);
+}
+.ux-sync-head .config-nojs { font-size: var(--ops-font-aux); color: var(--ops-text-secondary); }
+.ux-sync-head .config-nojs[hidden] { display: none; }
+@media (max-width: 900px) {
+  .ux-agent-block .config-label { flex-basis: 100%; }
+}
+
 /* ── 6.5 prefers-reduced-motion 降级 ───────────────────────────────── */
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after {

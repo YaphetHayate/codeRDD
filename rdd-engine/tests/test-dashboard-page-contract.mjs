@@ -22,8 +22,8 @@ const engineDir = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const repoRoot = resolve(engineDir, '..')
 const appJsPath = join(engineDir, 'dashboard', 'static', 'app.js')
 const PORT = 8811
-const ROUTES = ['/', '/requirements', '/exploration', '/hit-rate', '/quality', '/tips', '/goal-trees']
-const SIDEBAR_ROUTES = ['/requirements', '/exploration', '/hit-rate', '/quality', '/tips', '/goal-trees']
+const ROUTES = ['/', '/requirements', '/exploration', '/hit-rate', '/quality', '/tips', '/goal-trees', '/config']
+const SIDEBAR_ROUTES = ['/requirements', '/exploration', '/hit-rate', '/quality', '/tips', '/goal-trees', '/config']
 
 let total = 0
 let failures = 0
@@ -75,6 +75,94 @@ async function checkPageContract() {
   assertTrue(home.html.includes('切换数据根（项目）') && home.html.includes('或 手动输入路径'), 'contract: switcher panel copy present')
 }
 
+/** Strip scripts/styles/tags down to visible text — what a no-JS reader sees. */
+function visibleText(html) {
+  return html
+    .replace(/<script[\s\S]*?<\/script>/g, ' ')
+    .replace(/<style[\s\S]*?<\/style>/g, ' ')
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/&amp;/g, '&')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+}
+
+/** Assert every marker is present in the given text, reporting all misses. */
+function assertMarkersPresent(text, markers, name) {
+  const missing = markers.filter((marker) => !text.includes(marker))
+  assertTrue(missing.length === 0, name, `missing=${missing.join(',')}`)
+}
+
+/**
+ * Section D: the /config page serves all five configuration layers into the
+ * HTML so a no-JS reader sees everything (ops-config-panel n4 acceptance ①).
+ */
+async function checkConfigPageContract() {
+  const secret = 'qa-page-contract-apikey-A1b2C3d4'
+  const previousApikey = process.env.RDD_EMBED_APIKEY
+  process.env.RDD_EMBED_APIKEY = secret
+  let page
+  try {
+    page = await fetchPage('/config')
+  } finally {
+    if (previousApikey === undefined) delete process.env.RDD_EMBED_APIKEY
+    else process.env.RDD_EMBED_APIKEY = previousApikey
+  }
+  const text = visibleText(page.html)
+  assertTrue(page.status === 200, 'config contract: /config serves 200', `status=${page.status}`)
+  assertTrue(/<title>配置中心 · RDD 运营看板<\/title>/.test(page.html), 'config contract: the page carries its title')
+  // R2 migration (design §6.4 row 4): dual-writable declaration + module titles.
+  assertMarkersPresent(text, ['两个可写点', 'search-config.json', '观测点'], 'config contract: the two declaration bars render (dual writable points)')
+  assertMarkersPresent(
+    text,
+    ['跨模块公用配置', '探索检索与缓存向量化', 'UX 视觉稿子代理'],
+    'config contract: the R2 module titles render'
+  )
+  assertTrue(!/\bL[1-5]\b/.test(text) && !text.includes('唯一可写点'), 'config contract: no L1–L5 jargon and no retired single-writable wording')
+  assertMarkersPresent(
+    text,
+    ['RDD_ENGINE_HOME', 'RDD_PROJECT_ROOT', 'RDD_RUNTIME', 'DSH_WEB_URL', 'RDD_EMBED_APIKEY', '已设置（不回显）'],
+    'config contract: the five environment variables render without echoing the APIKEY value'
+  )
+  assertTrue(!page.html.includes(secret), 'config contract: the APIKEY value never appears in the HTML')
+  assertMarkersPresent(
+    text,
+    ['topK', 'recallDepth', 'rrfK', 'recallers.lexical.enabled', 'recallers.lexical.weight', 'recallers.lexical.bm25K1', 'recallers.lexical.bm25B', 'recallers.vector.enabled', 'recallers.vector.weight', 'recallers.vector.endpoint', 'recallers.vector.model', 'recallers.vector.dimensions', 'recallers.vector.minCosine', 'recallers.vector.timeoutSeconds', '文件值', '内置默认', '生效值', '四要素'],
+    'config contract: L2 shows the 14-field comparison table and readiness factors'
+  )
+  assertMarkersPresent(text, ['热区保留期', 'rdd-tip/1', 'F1–F8'], 'config contract: L3 frozen constants render')
+  assertMarkersPresent(text, ['goal-tree', 'delivery-bridge', 'code-metrics', 'MaxRounds', 'MaxFunctionLines', '8787'], 'config contract: L4 CLI defaults render')
+  assertMarkersPresent(text, ['rdd-ux/ux_subagent.json', '.opencode/agent/', 'dsh/presets/', 'opencode.json', '.rdd/install.json', '~/.rdd/engine/manifest.json'], 'config contract: every ecosystem probe path renders (module rows)')
+  assertMarkersPresent(text, ['消费方'], 'config contract: the consumers column of the module tables renders')
+  checkConfigFormShell(page.html)
+  checkUxFormShell(page.html)
+}
+
+/** The SSR edit form: 14 fields prefilled, submit disabled without JS. */
+function checkConfigFormShell(html) {
+  assertTrue(html.includes('id="ops-config-form"') && html.includes('id="ops-config-save"'), 'config contract: the edit form and save button exist')
+  assertTrue(html.split('data-config-field="1"').length - 1 === 14, 'config contract: the form carries exactly 14 fields', `count=${html.split('data-config-field="1"').length - 1}`)
+  assertTrue(html.split('data-cross-module="1"').length - 1 === 7, 'config contract: the seven vector fields carry the cross-module attribute', `count=${html.split('data-cross-module="1"').length - 1}`)
+  assertTrue(html.includes('id="cfg-recallers-lexical-enabled"') && html.includes('id="cfg-recallers-vector-enabled"'), 'config contract: both enabled fields use selects')
+  assertTrue(html.includes('data-original='), 'config contract: form fields carry data-original for the client-side diff')
+  const saveButton = /<button[^>]*id="ops-config-save"[^>]*>/.exec(html)?.[0] ?? ''
+  assertTrue(saveButton.includes('disabled'), 'config contract: the save button ships disabled (no JS cannot save)', saveButton)
+  assertTrue(html.includes('保存需启用 JavaScript'), 'config contract: the no-JS caveat is stated')
+  assertTrue(html.includes('同时影响检索召回') && html.includes('缓存向量化'), 'config contract: the always-on vector cross-module hint renders (layer ①)')
+}
+
+/** The SSR UX editor block (r2 §5.1, design §8 anchors). */
+function checkUxFormShell(html) {
+  assertTrue(html.includes('id="ops-ux-form"') && html.includes('id="ops-ux-save"') && html.includes('id="ops-ux-add"'), 'ux contract: the UX form, save and add buttons exist')
+  assertTrue(html.includes('id="ops-ux-sync"'), 'ux contract: the standalone sync button exists')
+  assertTrue(html.includes('id="ops-ux-agent-template"'), 'ux contract: the new-agent template ships for JS row cloning')
+  const saveButton = /<button[^>]*id="ops-ux-save"[^>]*>/.exec(html)?.[0] ?? ''
+  assertTrue(saveButton.includes('disabled'), 'ux contract: the UX save button ships disabled (no JS cannot save)', saveButton)
+  assertTrue(html.split('data-ux-field="name"').length - 1 >= 1, 'ux contract: at least one agent row renders with a name field')
+  assertTrue(html.includes('需重启 opencode') || html.includes('sync-ux-subagents.cmd'), 'ux contract: the escape hatch footer names the manual sync path')
+}
+
 /** A DOM element stub (attributes, listeners and the members the script touches). */
 function stubElement(id) {
   const attrs = new Map()
@@ -124,6 +212,7 @@ function buildStubDocument(nodes, listeners, documentElement) {
     documentElement,
     readyState: 'complete',
     getElementById: (id) => nodes.get(id) ?? null,
+    querySelector: () => null,
     querySelectorAll: () => [],
     addEventListener: (type, handler) => listeners.set(`document:${type}`, handler),
     createElement: (tag) => stubElement(tag),
@@ -280,6 +369,7 @@ try {
     server.on('error', rejectPromise)
   })
   await checkPageContract()
+  await checkConfigPageContract()
   const stub = await checkClientModule()
   await checkSwitcherModule(stub)
   checkClientScriptShape()

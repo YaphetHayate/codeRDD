@@ -6,6 +6,7 @@
 // HTML — views own presentation.
 import { makeEnvelope } from './io.mjs'
 import { readArchives } from './readers/archives.mjs'
+import { readConfig } from './readers/config.mjs'
 import { readExploration } from './readers/exploration.mjs'
 import { readGoalTrees } from './readers/goal-trees.mjs'
 import { readHitRate } from './readers/query-log.mjs'
@@ -24,6 +25,7 @@ export const DOMAIN_DEFS = [
   { key: 'quality', title: '检索质量', route: '/quality', icon: 'check' },
   { key: 'tips', title: 'Tips', route: '/tips', icon: 'bulb' },
   { key: 'goal-trees', title: '交付树', route: '/goal-trees', icon: 'tree' },
+  { key: 'config', title: '配置中心', route: '/config', icon: 'gear' },
 ]
 
 /**
@@ -58,6 +60,7 @@ export function readAllDomains(context) {
     quality: safeRead('quality', '.rdd/tests/explore-search/results.json', () => readQuality(context)),
     tips: safeRead('tips', '.rdd/tips/entries/*.json', () => readTips(context)),
     'goal-trees': safeRead('goal-trees', '.rdd/goal-trees*/**', () => readGoalTrees(context)),
+    config: safeRead('config', 'env + .rdd/exploration/search-config.json + 内置镜像常量', () => readConfig(context)),
   }
 }
 
@@ -70,6 +73,7 @@ export function navCounts(domains) {
     quality: domains.quality.data?.primary?.summary.total ?? 0,
     tips: domains.tips.data?.count ?? 0,
     'goal-trees': domains['goal-trees'].data?.totalCount ?? 0,
+    config: domains.config.data?.l2?.nonDefaultCount ?? 0,
   }
 }
 
@@ -246,6 +250,8 @@ function domainScale(key, domain) {
       return domain.data.primary?.summary.total ?? 0
     case 'tips':
       return domain.data.count
+    case 'config':
+      return domain.data.l2?.nonDefaultCount ?? 0
     default:
       return domain.data.totalCount
   }

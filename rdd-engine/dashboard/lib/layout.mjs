@@ -28,7 +28,7 @@ function renderSidebar(activeKey, counts) {
     navItem({ key: 'overview', title: '总览', route: '/', icon: 'overview' }, activeKey, undefined),
     ...DOMAIN_DEFS.map((definition) => navItem(definition, activeKey, counts[definition.key])),
   ].join('')
-  return `<aside class="sidebar" id="ops-sidebar"><div class="brand"><span class="brand-mark">${icon('overview', 'brand-icon')}</span><div class="brand-text"><span class="brand-name">RDD 看板</span><span class="brand-sub">只读 · 本地</span></div></div><div class="nav-group"><span class="nav-group-title">数据域</span>${items}</div><div class="sidebar-foot"><span class="chip chip-strong">只读数据面</span><span class="sidebar-note">消费 .rdd/，不回写</span></div></aside>`
+  return `<aside class="sidebar" id="ops-sidebar"><div class="brand"><span class="brand-mark">${icon('overview', 'brand-icon')}</span><div class="brand-text"><span class="brand-name">RDD 看板</span><span class="brand-sub">本地 · 双点可写</span></div></div><div class="nav-group"><span class="nav-group-title">数据域</span>${items}</div><div class="sidebar-foot"><span class="chip chip-strong">只读数据面</span><span class="sidebar-note">消费 .rdd/ · 可写：search-config.json + ux_subagent.json（配置中心）</span></div></aside>`
 }
 
 /** Switcher panel skeleton (UX §5.2/§5.7) — SSR so it is truthful without JS. */
@@ -55,7 +55,7 @@ function renderFooter(options) {
     fixture === undefined || fixture.excludedCount === 0
       ? '统计口径：仅含真实交付数据，未发现测试夹具目录。'
       : `统计口径：已排除 ${fixture.excludedCount} 个测试夹具目录（枚举 ${fixture.enumeratedCount} 个交付树目录）。`
-  return `<footer class="page-foot"><span>只读看板 · 数据根 <code>${esc(options.projectRoot)}</code></span><span>生成时间 ${esc(dateTime(options.generatedAt))} UTC</span><span>${esc(fixtureText)}</span></footer>`
+  return `<footer class="page-foot"><span>数据面只读 · 可写：search-config.json / ux_subagent.json（配置中心） · 数据根 <code>${esc(options.projectRoot)}</code></span><span>生成时间 ${esc(dateTime(options.generatedAt))} UTC</span><span>${esc(fixtureText)}</span></footer>`
 }
 
 /**

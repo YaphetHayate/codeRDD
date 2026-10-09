@@ -16,7 +16,21 @@ import { createDataRootHolder } from './lib/data-root.mjs'
 import { pickDirectory } from './lib/native-dialog.mjs'
 import { readAllDomains, buildOverview, navCounts, DOMAIN_DEFS } from './lib/overview.mjs'
 import { readArchiveDetail } from './lib/readers/archives.mjs'
-import { makeEnvelope } from './lib/io.mjs'
+import {
+  crossModuleImpact,
+  loadEffectiveSearchConfig,
+  mergeSearchConfigPatch,
+  mergeUxAgents,
+  readUx,
+  validateSearchConfigPatch,
+  validateUxAgents,
+  writeSearchConfigAtomic,
+  writeUxSubagentsAtomic,
+  computeVectorReadiness,
+  uxSubagentsPath,
+} from './lib/readers/config.mjs'
+import { makeEnvelope, readJson } from './lib/io.mjs'
+import { runUxSync } from './lib/ux-sync.mjs'
 import { renderOverview } from './lib/views/overview.mjs'
 import { renderRequirementsPage, renderRequirementDetail } from './lib/views/requirements.mjs'
 import { renderExplorationPage } from './lib/views/exploration.mjs'
@@ -24,6 +38,7 @@ import { renderHitRatePage } from './lib/views/hit-rate.mjs'
 import { renderQualityPage } from './lib/views/quality.mjs'
 import { renderTipsPage } from './lib/views/tips.mjs'
 import { renderGoalTreesPage } from './lib/views/goal-trees.mjs'
+import { renderConfigPage } from './lib/views/config.mjs'
 
 const DEFAULT_PORT = 8787
 const HOST = '127.0.0.1'
@@ -110,9 +125,13 @@ async function handleProjectPick(res) {
   return sendJson(res, 200, { ok: false, code: outcome.code, message: outcome.message })
 }
 
+/** A plain JSON object (not null, not an array). */
+function isPlainObject(value) {
+  return value !== null && typeof value === 'object' && !Array.isArray(value)
+}
+
 /** POST /api/project/switch — validate + atomically swap the current root. */
-async function handleProjectSwitch(req, res, holder) {
-  const payload = await parseJsonBody(req)
+async function handleProjectSwitch(req, res, holder) {  const payload = await parseJsonBody(req)
   if (payload === null || typeof payload.path !== 'string') {
     return sendJson(res, 400, { ok: false, code: 'invalid-payload', message: '请求体必须是 JSON 对象：{"path": "<RDD 项目目录>"}。' })
   }
@@ -123,6 +142,164 @@ async function handleProjectSwitch(req, res, holder) {
     return sendJson(res, 422, { ok: false, code: result.code, message: `拒绝切换：${result.message}${tail}` })
   }
   return sendJson(res, 200, { ok: true, projectRoot: result.projectRoot, previousRoot })
+}
+
+/** Shape gate (design §5.3 400 list) — the rejection message, or null when fine. */
+function configShapeProblem(payload) {
+  if (payload === null) return '请求体必须是 JSON 对象：{"config": {...}}。'
+  const config = payload.config
+  if (config === undefined) return '缺少 config 键：请求体必须是 {"config": {...}}。'
+  if (!isPlainObject(config)) return 'config 必须是 JSON 对象：{"config": {...}}。'
+  if (config.recallers !== undefined && !isPlainObject(config.recallers)) return 'config.recallers 必须是 JSON 对象（含 lexical/vector 两节）。'
+  if (config.recallers !== undefined && config.recallers.lexical !== undefined && !isPlainObject(config.recallers.lexical)) return 'config.recallers.lexical 必须是 JSON 对象。'
+  if (config.recallers !== undefined && config.recallers.vector !== undefined && !isPlainObject(config.recallers.vector)) return 'config.recallers.vector 必须是 JSON 对象。'
+  return null
+}
+
+/** POST /api/config/search-config — validate + atomically save the L2 tuning file. */
+async function handleConfigSave(req, res, holder) {
+  let payload
+  try {
+    payload = await parseJsonBody(req)
+  } catch {
+    // The switch endpoint lets this land in the 500 catch-all (historic); this
+    // endpoint maps it to 413 itself (design §5.2 / R10).
+    return sendJson(res, 413, { ok: false, code: 'payload-too-large', message: '请求体超过大小上限（8192 字节）。' })
+  }
+  const shapeProblem = configShapeProblem(payload)
+  if (shapeProblem !== null) {
+    return sendJson(res, 400, { ok: false, code: 'invalid-payload', message: shapeProblem })
+  }
+  const config = payload.config
+  const { unknownFields, fieldErrors } = validateSearchConfigPatch(config)
+  if (unknownFields.length > 0) {
+    return sendJson(res, 422, {
+      ok: false,
+      code: 'unknown-field',
+      message: `拒绝保存：存在未知字段（拼错即拒，不静默忽略）：${unknownFields.join('、')}。原文件保持不变。`,
+      fieldErrors: unknownFields.map((path) => ({ path, reason: '未知字段（不在 14 字段集内）' })),
+    })
+  }
+  if (fieldErrors.length > 0) {
+    return sendJson(res, 422, {
+      ok: false,
+      code: 'invalid-field',
+      message: `拒绝保存：${fieldErrors.length} 个字段值不合法（${fieldErrors.map((error) => error.path).join('、')}）。原文件保持不变。`,
+      fieldErrors,
+    })
+  }
+  const context = holder.getCurrent()
+  const effective = loadEffectiveSearchConfig(context)
+  const merged = mergeSearchConfigPatch(effective, config)
+  const impact = crossModuleImpact(effective, config)
+  let written
+  try {
+    written = writeSearchConfigAtomic(context, merged)
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error)
+    return sendJson(res, 500, { ok: false, code: 'write-failed', message: `写入失败：${message}；原文件保持不变。` })
+  }
+  return sendJson(res, 200, {
+    ok: true,
+    code: 'saved',
+    path: written.path,
+    bytes: written.bytes,
+    writtenAt: written.writtenAt,
+    effective: merged,
+    vectorReadiness: computeVectorReadiness(merged),
+    ...(impact !== null ? { impact } : {}),
+  })
+}
+
+/** Shape gate (r2 §5.3 ②) — the rejection message, or null when fine. */
+function uxShapeProblem(payload) {
+  if (payload === null) return '请求体必须是 JSON 对象：{"agents": [...]}。'
+  if (payload.agents === undefined) return '缺少 agents 键：请求体必须是 {"agents": [...]}。'
+  if (!Array.isArray(payload.agents)) return 'agents 必须是 JSON 数组：{"agents": [...]}。'
+  if (!payload.agents.every((entry) => isPlainObject(entry))) return 'agents 的每个条目必须是 JSON 对象（name/model/temperature/capability/note 五键）。'
+  return null
+}
+
+/** Unknown-key + predicate + count gates (r2 §5.3 ③④) → the 422 body, or null. */
+function uxGateProblem(payload) {
+  const { unknownFields, fieldErrors, countError } = validateUxAgents(payload)
+  if (unknownFields.length > 0) {
+    return {
+      status: 422,
+      body: {
+        ok: false,
+        code: 'unknown-field',
+        message: `拒绝保存：存在越界键（拼错即拒，不静默忽略）：${unknownFields.join('、')}。原文件保持不变。`,
+        fieldErrors: unknownFields.map((path) => ({ path, reason: '越界键（agents 条目只允许 name/model/temperature/capability/note 五键，顶层只允许 agents）' })),
+      },
+    }
+  }
+  if (fieldErrors.length > 0) {
+    return {
+      status: 422,
+      body: {
+        ok: false,
+        code: 'invalid-field',
+        message: `拒绝保存：${fieldErrors.length} 个字段值不合法（${fieldErrors.map((error) => error.path).join('、')}）。原文件保持不变。`,
+        fieldErrors,
+      },
+    }
+  }
+  if (countError !== null) {
+    return { status: 422, body: { ok: false, code: 'agent-count', message: countError } }
+  }
+  return null
+}
+
+/** Step ⑤⑥: merge over the original file + atomic write; throws upstream. */
+function uxWrite(context, agents) {
+  const original = readJson(uxSubagentsPath(context))
+  const merged = mergeUxAgents(isPlainObject(original.value) ? original.value : null, agents)
+  return { merged, written: writeUxSubagentsAtomic(context, merged) }
+}
+
+/** POST /api/config/ux-subagents — validate → atomic write → spawn sync → reread (r2 §5.3). */
+async function handleUxSave(req, res, holder) {
+  let payload
+  try {
+    payload = await parseJsonBody(req)
+  } catch {
+    return sendJson(res, 413, { ok: false, code: 'payload-too-large', message: '请求体超过大小上限（8192 字节）。' })
+  }
+  const shapeProblem = uxShapeProblem(payload)
+  if (shapeProblem !== null) {
+    return sendJson(res, 400, { ok: false, code: 'invalid-payload', message: shapeProblem })
+  }
+  const gate = uxGateProblem(payload)
+  if (gate !== null) return sendJson(res, gate.status, gate.body)
+  const context = holder.getCurrent()
+  let outcome
+  try {
+    outcome = uxWrite(context, payload.agents)
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error)
+    return sendJson(res, 500, { ok: false, code: 'write-failed', message: `写入失败：${message}；原文件保持不变。` })
+  }
+  const sync = await runUxSync(context)
+  const reread = readUx(context)
+  return sendJson(res, 200, {
+    ok: true,
+    code: 'saved',
+    path: outcome.written.path,
+    bytes: outcome.written.bytes,
+    writtenAt: outcome.written.writtenAt,
+    agents: reread.agents,
+    sync,
+    syncStatusAfter: reread.syncStatus,
+  })
+}
+
+/** POST /api/config/ux-subagents/sync — run the script only, never rewrites the file. */
+async function handleUxSyncOnly(res, holder) {
+  const context = holder.getCurrent()
+  const sync = await runUxSync(context)
+  const reread = readUx(context)
+  return sendJson(res, 200, { ok: true, code: 'synced', sync, syncStatusAfter: reread.syncStatus })
 }
 
 /** Read every domain once for this request and build the shared view input. */
@@ -175,6 +352,7 @@ function servePage(pathname, res, context) {
     '/quality': renderQualityPage,
     '/tips': renderTipsPage,
     '/goal-trees': renderGoalTreesPage,
+    '/config': renderConfigPage,
   }
   if (pathname === '/') {
     const input = buildViewInput(context, 'overview')
@@ -192,7 +370,7 @@ function servePage(pathname, res, context) {
 function renderNotFound(pathname, context) {
   const input = buildViewInput(context, 'overview')
   input.overview = buildOverview(input.domains)
-  input.notice = `<section class="panel"><div class="panel-head"><div class="panel-title">未识别的路由</div></div><div class="panel-body"><p class="prose">未识别的路由 <code>${pathname.replace(/[<>&"]/g, '')}</code>，已回到总览。可用路由：<code>/</code>、<code>/requirements</code>、<code>/exploration</code>、<code>/hit-rate</code>、<code>/quality</code>、<code>/tips</code>、<code>/goal-trees</code>。</p></div><div class="panel-foot"><a class="btn" href="/">返回总览</a></div></section>`
+  input.notice = `<section class="panel"><div class="panel-head"><div class="panel-title">未识别的路由</div></div><div class="panel-body"><p class="prose">未识别的路由 <code>${pathname.replace(/[<>&"]/g, '')}</code>，已回到总览。可用路由：<code>/</code>、<code>/requirements</code>、<code>/exploration</code>、<code>/hit-rate</code>、<code>/quality</code>、<code>/tips</code>、<code>/goal-trees</code>、<code>/config</code>。</p></div><div class="panel-foot"><a class="btn" href="/">返回总览</a></div></section>`
   return renderOverview(input)
 }
 
@@ -205,6 +383,21 @@ function serveApi(pathname, req, res, holder) {
     }
     if (pathname === '/api/project/pick') return handleProjectPick(res)
     return handleProjectSwitch(req, res, holder)
+  }
+  if (pathname === '/api/config/search-config') {
+    if (req.method !== 'POST') {
+      sendJson(res, 405, { ok: false, code: 'method-not-allowed', message: '该端点只接受 POST。' })
+      return
+    }
+    return handleConfigSave(req, res, holder)
+  }
+  if (pathname === '/api/config/ux-subagents' || pathname === '/api/config/ux-subagents/sync') {
+    if (req.method !== 'POST') {
+      sendJson(res, 405, { ok: false, code: 'method-not-allowed', message: '该端点只接受 POST。' })
+      return
+    }
+    if (pathname === '/api/config/ux-subagents') return handleUxSave(req, res, holder)
+    return handleUxSyncOnly(res, holder)
   }
   const context = holder.getCurrent()
   if (pathname === '/api/overview') {

@@ -7,7 +7,7 @@
 var THEME_KEY = 'ops-dashboard:theme'
 var HERO_KEY = 'ops-dashboard:hero-collapsed'
 var REFRESH_HIGHLIGHT_MS = 600
-var SHORTCUT_ROUTES = ['/', '/requirements', '/exploration', '/hit-rate', '/quality', '/tips', '/goal-trees']
+var SHORTCUT_ROUTES = ['/', '/requirements', '/exploration', '/hit-rate', '/quality', '/tips', '/goal-trees', '/config']
 
 function readStorage(key) {
   try {
@@ -421,7 +421,7 @@ function renderSwitchFlash(slot, data) {
   appendFlashCode(text, data.from)
   text.appendChild(document.createTextNode(' → '))
   appendFlashCode(text, data.to)
-  text.appendChild(document.createTextNode('。以下六域数据均为新根真值。'))
+  text.appendChild(document.createTextNode('。以下各域数据均为新根真值。'))
   var close = document.createElement('button')
   close.type = 'button'
   close.className = 'btn'
@@ -491,6 +491,422 @@ function setupProjectSwitcher() {
   })
 }
 
+
+// ── config form (/config) — the single writable surface ───────────────
+var CONFIG_SAVE_ENDPOINT = '/api/config/search-config'
+var CONFIG_RELOAD_MS = 800
+var CONFIG_NUMERIC_RE = /^[+-]?(\d+\.?\d*|\.\d+)([eE][+-]?\d+)?$/
+var isConfigSaveBusy = false // single-flight: one save in flight at a time
+
+/** Config-form controls inside a scope (null when the page has no form). */
+function configEls(scope) {
+  var form = scope.querySelector('#ops-config-form')
+  if (form === null || form === undefined) return null
+  return {
+    form: form,
+    save: form.querySelector('#ops-config-save'),
+    nojs: form.querySelector('#ops-config-nojs'),
+    note: form.querySelector('#ops-config-note'),
+  }
+}
+
+/** Build the per-field error list (shared by the config and UX editors). */
+function buildFieldErrorList(fieldErrors) {
+  var list = document.createElement('ul')
+  list.className = 'config-error-list'
+  Array.prototype.forEach.call(fieldErrors, function (error) {
+    var item = document.createElement('li')
+    var path = document.createElement('code')
+    path.textContent = error.path
+    item.appendChild(path)
+    item.appendChild(document.createTextNode('：' + (error.reason || '不合法')))
+    if (error.value !== undefined && error.value !== null && error.value !== '') {
+      item.appendChild(document.createTextNode('（当前值：' + error.value + '）'))
+    }
+    list.appendChild(item)
+  })
+  return list
+}
+
+/** Note area under the form: one note-bar, replaced in place; textContent only. */
+function showConfigNote(els, kind, text, fieldErrors) {
+  if (els.note === null || els.note === undefined) return
+  els.note.textContent = ''
+  var bar = document.createElement('div')
+  bar.className = 'note-bar note-' + kind + ' config-note-bar'
+  var span = document.createElement('span')
+  span.className = 'note-text'
+  span.textContent = text
+  bar.appendChild(span)
+  if (fieldErrors !== null && fieldErrors !== undefined && fieldErrors.length > 0) {
+    bar.appendChild(buildFieldErrorList(fieldErrors))
+  }
+  els.note.appendChild(bar)
+}
+
+/** Collect the 14 fields; types come from data-config-type, not a hardcoded list. */
+function collectConfigValues(form) {
+  var config = {}
+  var fields = form.querySelectorAll('[data-config-field]')
+  Array.prototype.forEach.call(fields, function (field) {
+    var name = field.getAttribute('name') || ''
+    if (name === '') return
+    var type = field.getAttribute('data-config-type') || 'string'
+    var raw = String(field.value !== undefined ? field.value : '')
+    if (type === 'enabled') {
+      config[name] = raw === 'true' ? true : raw === 'false' ? false : 'auto'
+      return
+    }
+    if (type === 'number') {
+      var trimmed = raw.trim()
+      if (CONFIG_NUMERIC_RE.test(trimmed)) {
+        config[name] = Number(trimmed)
+        return
+      }
+      // Non-numeric input travels verbatim: the server's predicate rejection
+      // names the exact requirement, which beats a client-side guess.
+    }
+    config[name] = raw
+  })
+  return config
+}
+
+function setConfigBusy(els, busy) {
+  if (els.save === null || els.save === undefined) return
+  els.save.disabled = busy
+  if (busy) els.save.setAttribute('aria-busy', 'true')
+  else els.save.removeAttribute('aria-busy')
+  els.save.textContent = busy ? '校验并保存中…' : '校验并保存'
+}
+
+function handleConfigResult(els, result) {
+  var payload = result.payload
+  if (payload !== null && payload !== undefined && payload.ok === true) {
+    var readiness = payload.vectorReadiness
+    var readyText =
+      readiness !== null && readiness !== undefined && readiness.ready
+        ? '就绪'
+        : '缺失 ' + (readiness !== null && readiness !== undefined ? readiness.missing.join('、') : '未知')
+    var impactText = ''
+    if (payload.impact !== null && payload.impact !== undefined && payload.impact.crossModuleFields !== undefined && payload.impact.crossModuleFields.length > 0) {
+      impactText = ' · 影响面：检索召回 + 缓存向量化'
+    }
+    showConfigNote(els, 'success', '已保存' + impactText + ' · ' + payload.bytes + ' 字节 · 向量路：' + readyText + '。正在刷新页面…')
+    window.setTimeout(function () {
+      window.location.reload()
+    }, CONFIG_RELOAD_MS)
+    return
+  }
+  isConfigSaveBusy = false
+  setConfigBusy(els, false)
+  var code = payload === null || payload === undefined ? '' : payload.code
+  var message =
+    payload !== null && payload !== undefined && typeof payload.message === 'string'
+      ? payload.message
+      : '保存失败（HTTP ' + result.status + '）。原文件保持不变。'
+  var errors = payload !== null && payload !== undefined ? payload.fieldErrors : null
+  showConfigNote(els, 'error', message, code === 'invalid-field' || code === 'unknown-field' ? errors : null)
+}
+
+/** The cross-module vector fields whose value differs from the SSR original (r2 §4.2 ②). */
+function crossModuleTouches(form) {
+  var touched = []
+  var fields = form.querySelectorAll('[data-cross-module="1"]')
+  Array.prototype.forEach.call(fields, function (field) {
+    var original = field.getAttribute('data-original')
+    if (original === null) original = ''
+    var current = String(field.value !== undefined ? field.value : '')
+    if (current !== original) {
+      var name = field.getAttribute('name') || ''
+      if (name !== '') touched.push(name)
+    }
+  })
+  return touched
+}
+
+function submitConfigForm(els) {
+  if (isConfigSaveBusy) return
+  var touched = crossModuleTouches(els.form)
+  if (touched.length > 0) {
+    var confirmed = window.confirm(
+      '本次修改涉及向量路配置（' + touched.join('、') + '）：同时影响检索召回（rdd explore 搜索的向量路）与探索缓存向量化（register/embed-backfill 的向量写入）。确认保存？'
+    )
+    if (!confirmed) return // 取消 = 不发请求，表单状态保留
+  }
+  isConfigSaveBusy = true
+  setConfigBusy(els, true)
+  window
+    .fetch(CONFIG_SAVE_ENDPOINT, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ config: collectConfigValues(els.form) }),
+    })
+    .then(readControlResponse)
+    .then(function (result) {
+      handleConfigResult(els, result)
+    })
+    .catch(function (error) {
+      isConfigSaveBusy = false
+      setConfigBusy(els, false)
+      showConfigNote(els, 'error', '请求失败（' + error.message + '）。原文件保持不变，可重试。')
+    })
+}
+
+/** Wire the config form: enable the save button, hide the no-JS caveat. */
+function bindConfigForm(scope) {
+  var els = configEls(scope)
+  if (els === null || els.form.getAttribute('data-bound') === '1') return
+  els.form.setAttribute('data-bound', '1')
+  els.form.addEventListener('submit', function (event) {
+    event.preventDefault()
+  })
+  if (els.nojs !== null && els.nojs !== undefined) els.nojs.hidden = true
+  if (els.save !== null && els.save !== undefined) {
+    els.save.removeAttribute('disabled')
+    els.save.addEventListener('click', function () {
+      submitConfigForm(els)
+    })
+  }
+}
+
+// ── ux subagent editor (/config · UX module, ops-config-panel-r2 §5) ──
+var UX_SAVE_ENDPOINT = '/api/config/ux-subagents'
+var UX_SYNC_ENDPOINT = '/api/config/ux-subagents/sync'
+var UX_RELOAD_MS = 800
+var isUxBusy = false // single-flight: one save or sync in flight at a time
+
+/** UX editor controls (the form plus the sync button outside it). */
+function uxEls(scope) {
+  var form = scope.querySelector('#ops-ux-form')
+  if (form === null || form === undefined) return null
+  return {
+    form: form,
+    save: form.querySelector('#ops-ux-save'),
+    add: form.querySelector('#ops-ux-add'),
+    nojs: form.querySelector('#ops-ux-nojs'),
+    note: form.querySelector('#ops-ux-note'),
+    sync: scope.querySelector('#ops-ux-sync'),
+    syncNojs: scope.querySelector('#ops-ux-sync-nojs'),
+  }
+}
+
+/** One appended note bar (the UX panel may stack saved + sync notes). */
+function addUxNote(els, kind, text) {
+  var bar = document.createElement('div')
+  bar.className = 'note-bar note-' + kind + ' config-note-bar'
+  var span = document.createElement('span')
+  span.className = 'note-text'
+  span.textContent = text
+  bar.appendChild(span)
+  els.note.appendChild(bar)
+}
+
+/** Replace the UX note area: [kind, text] entries, optional fieldErrors list. */
+function showUxNotes(els, entries, fieldErrors) {
+  if (els.note === null || els.note === undefined) return
+  els.note.textContent = ''
+  Array.prototype.forEach.call(entries, function (entry) {
+    addUxNote(els, entry[0], entry[1])
+  })
+  if (fieldErrors !== null && fieldErrors !== undefined && fieldErrors.length > 0) {
+    var bar = document.createElement('div')
+    bar.className = 'note-bar note-error config-note-bar'
+    bar.appendChild(buildFieldErrorList(fieldErrors))
+    els.note.appendChild(bar)
+  }
+}
+
+/** Collect the full agents array (full-replacement semantics, r2 §6.2). */
+function collectUxAgents(form) {
+  var agents = []
+  var blocks = form.querySelectorAll('[data-ux-agent]')
+  Array.prototype.forEach.call(blocks, function (block) {
+    var agent = {}
+    var sawField = false
+    Array.prototype.forEach.call(block.querySelectorAll('[data-ux-field]'), function (field) {
+      var key = field.getAttribute('data-ux-field') || ''
+      if (key === '') return
+      var raw = String(field.value !== undefined ? field.value : '')
+      if (key === 'temperature') {
+        var trimmed = raw.trim()
+        agent.temperature = CONFIG_NUMERIC_RE.test(trimmed) ? Number(trimmed) : raw
+        sawField = true
+        return
+      }
+      agent[key] = raw
+      sawField = true
+    })
+    if (sawField) agents.push(agent)
+  })
+  return agents
+}
+
+function setUxBusy(els, busy) {
+  if (els.save !== null && els.save !== undefined) {
+    els.save.disabled = busy
+    if (busy) els.save.setAttribute('aria-busy', 'true')
+    else els.save.removeAttribute('aria-busy')
+    els.save.textContent = busy ? '校验并保存中…' : '校验并保存（全量替换）'
+  }
+  if (els.sync !== null && els.sync !== undefined) {
+    els.sync.disabled = busy
+    if (busy) els.sync.setAttribute('aria-busy', 'true')
+    else els.sync.removeAttribute('aria-busy')
+  }
+}
+
+/** The note entries for one sync outcome; restart reminder mirrors the script. */
+function uxSyncNotes(sync) {
+  if (sync === null || sync === undefined) return []
+  if (sync.status === 'ok') {
+    if (sync.changed === true) {
+      var detail = sync.changes !== undefined && sync.changes.length > 0 ? '（' + sync.changes.join('；') + '）' : ''
+      return [['success', '已同步 .opencode/agent/ —— 需重启 opencode 才能生效。' + detail]]
+    }
+    return [['info', '同步完成：无变更，.opencode/agent/ 已是最新。']]
+  }
+  var reason =
+    sync.status === 'timeout'
+      ? '同步超时（' + sync.durationMs + 'ms，已终止脚本）'
+      : '同步失败（exit ' + sync.exitCode + (sync.stderr !== undefined && sync.stderr !== '' ? '：' + String(sync.stderr).slice(0, 200) : '') + '）'
+  return [['warn', reason + '——.opencode/agent/ 尚未更新。点击「运行同步」重试，或手工运行 rdd-engine/scripts/sync-ux-subagents.cmd。']]
+}
+
+function handleUxResult(els, result) {
+  var payload = result.payload
+  if (payload !== null && payload !== undefined && payload.ok === true) {
+    var entries = [['success', '文件已保存（' + payload.path + ' · ' + payload.bytes + ' 字节）。']]
+    var sync = payload.sync
+    var syncNotes = uxSyncNotes(sync)
+    Array.prototype.forEach.call(syncNotes, function (entry) {
+      entries.push(entry)
+    })
+    showUxNotes(els, entries)
+    if (sync !== null && sync !== undefined && sync.status === 'ok') {
+      window.setTimeout(function () {
+        window.location.reload()
+      }, UX_RELOAD_MS)
+      return
+    }
+    // sync failed/timeout: keep the failure guidance visible — no auto reload
+    isUxBusy = false
+    setUxBusy(els, false)
+    return
+  }
+  isUxBusy = false
+  setUxBusy(els, false)
+  var code = payload === null || payload === undefined ? '' : payload.code
+  var message =
+    payload !== null && payload !== undefined && typeof payload.message === 'string'
+      ? payload.message
+      : '保存失败（HTTP ' + result.status + '）。原文件保持不变。'
+  showUxNotes(els, [['error', message]], code === 'invalid-field' || code === 'unknown-field' ? (payload ? payload.fieldErrors : null) : null)
+}
+
+function submitUxForm(els) {
+  if (isUxBusy) return
+  isUxBusy = true
+  setUxBusy(els, true)
+  window
+    .fetch(UX_SAVE_ENDPOINT, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ agents: collectUxAgents(els.form) }),
+    })
+    .then(readControlResponse)
+    .then(function (result) {
+      handleUxResult(els, result)
+    })
+    .catch(function (error) {
+      isUxBusy = false
+      setUxBusy(els, false)
+      showUxNotes(els, [['error', '请求失败（' + error.message + '）。原文件保持不变，可重试。']])
+    })
+}
+
+/** The standalone sync button — retry path after a failed sync (r2 §5.4). */
+function runUxSyncNow(els) {
+  if (isUxBusy) return
+  isUxBusy = true
+  setUxBusy(els, true)
+  window
+    .fetch(UX_SYNC_ENDPOINT, { method: 'POST' })
+    .then(readControlResponse)
+    .then(function (result) {
+      var payload = result.payload
+      if (payload !== null && payload !== undefined && payload.ok === true) {
+        showUxNotes(els, uxSyncNotes(payload.sync))
+        if (payload.sync !== null && payload.sync !== undefined && payload.sync.status === 'ok') {
+          window.setTimeout(function () {
+            window.location.reload()
+          }, UX_RELOAD_MS)
+          return
+        }
+        isUxBusy = false
+        setUxBusy(els, false)
+        return
+      }
+      isUxBusy = false
+      setUxBusy(els, false)
+      showUxNotes(els, [['error', '同步请求失败（HTTP ' + result.status + '）。']])
+    })
+    .catch(function (error) {
+      isUxBusy = false
+      setUxBusy(els, false)
+      showUxNotes(els, [['error', '同步请求失败（' + error.message + '）。']])
+    })
+}
+
+/** Clone a fresh agent block from the SSR template (JS-gated, r2 §7). */
+function addUxAgentRow(els) {
+  var template = document.getElementById('ops-ux-agent-template')
+  var anchor = els.form.querySelector('.config-actions')
+  if (template !== null && template.content !== null && template.content !== undefined) {
+    var node = template.content.firstElementChild !== null && template.content.firstElementChild !== undefined ? template.content.firstElementChild.cloneNode(true) : null
+    if (node !== null) {
+      els.form.insertBefore(node, anchor)
+      var name = node.querySelector('[data-ux-field="name"]')
+      if (name !== null && name !== undefined && typeof name.focus === 'function') name.focus()
+      return
+    }
+  }
+  var first = els.form.querySelector('[data-ux-agent]')
+  if (first === null || first === undefined) return
+  var clone = first.cloneNode(true)
+  Array.prototype.forEach.call(clone.querySelectorAll('[data-ux-field]'), function (field) {
+    field.value = ''
+    field.readOnly = false
+  })
+  els.form.insertBefore(clone, anchor)
+}
+
+function bindUxForm(scope) {
+  var els = uxEls(scope)
+  if (els === null || els.form.getAttribute('data-bound') === '1') return
+  els.form.setAttribute('data-bound', '1')
+  els.form.addEventListener('submit', function (event) {
+    event.preventDefault()
+  })
+  if (els.nojs !== null && els.nojs !== undefined) els.nojs.hidden = true
+  if (els.syncNojs !== null && els.syncNojs !== undefined) els.syncNojs.hidden = true
+  if (els.save !== null && els.save !== undefined) {
+    els.save.removeAttribute('disabled')
+    els.save.addEventListener('click', function () {
+      submitUxForm(els)
+    })
+  }
+  if (els.add !== null && els.add !== undefined) {
+    els.add.addEventListener('click', function () {
+      addUxAgentRow(els)
+    })
+  }
+  if (els.sync !== null && els.sync !== undefined) {
+    els.sync.removeAttribute('disabled')
+    els.sync.addEventListener('click', function () {
+      runUxSyncNow(els)
+    })
+  }
+}
 
 // ── copy path (inline feedback, no toast) ────────────────────────────
 function copyText(button) {
@@ -589,6 +1005,8 @@ function bindContent(scope) {
   bindCopy(scope)
   bindRows(scope)
   bindFilter(scope)
+  bindConfigForm(scope)
+  bindUxForm(scope)
 }
 
 // ── keyboard shortcuts (all have mouse equivalents) ──────────────────
