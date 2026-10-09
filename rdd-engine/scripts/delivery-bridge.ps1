@@ -78,7 +78,49 @@
 #               `revision` event (append-only, no snapshots) -> bridge plan
 #               section replaced (revision+1) -> unlock set recomputed
 #               (auto-push tail). NODE_BLOCKED_BY_GATE is released by moving
-#               the stalled task's stage here — never by a Force bypass
+#               the stalled task's stage here — never by a Force bypass;
+#               registered-but-unabsorbed mid-run derivations are WHITELISTED
+#               from the delivered-coverage check (opposite direction from the
+#               push/claim gate, by design) and marked absorbed once covered
+#   derive      mid-run scope-gap derivation (planner-midrun-derive): the
+#               planner adjudicates rollback/reclaim both unfit (additions
+#               only, never rework of existing docs) -> -Action propose
+#               (-Title -Rationale [-DependsOn] [-Owners]) registers the
+#               proposal + a derive_proposal ledger entry and returns the
+#               standard user-facing text -> USER CONFIRMATION HARD GATE
+#               (-Action confirm -DerivationId <DRV<n>> -UserVerdict "<the
+#               user's ruling verbatim>" — no record, no execution:
+#               DERIVE_CONFIRMATION_MISSING) -> ruling ledger entry -> budget
+#               pre-check (DERIVE_BUDGET_EXCEEDED, graft never attempted on
+#               insufficient budget) -> graft ONE PM node under the goal root
+#               + auto-push (PM drafts the new requirement doc AND augments
+#               overview's '## 整体验收判据' — live-read anchor, so derived
+#               criteria ride the acceptance gate naturally) -> its settle
+#               registers the task under bridge control (add-task -BridgeRun
+#               代写 + bridge.tasks mapping + DESIGN chain heads pre-grafted
+#               under the PM node, held by the stage gate until replan
+#               absorbs them). -Action withdraw = refusal on record, zero
+#               side effects (a grafted-but-unsettled PM node is pruned).
+#               Derivation bookkeeping: bridge.json derivations[] state
+#               machine + plan-log deviation/scope_derived + conclude-time
+#               DERIVATION_PENDING gate + annex derivation section
+#   design-review pure-contract design-review intake (auditor-subagent-review;
+#               ONLY for runs promulgated with -ReviewMode = the new chain):
+#               -Action submit ingests the review product of a planner-dispatched
+#               independent-context review subagent (mechanical input template
+#               rdd-engine/references/review-input-template.md) for one stage —
+#               the SAME contract core the node settle gate runs (Test-
+#               DesignReviewFileCore: coverage / verdict-findings consistency /
+#               finding four fields / membership; violations = the
+#               SETTLE_EVIDENCE_REJECTED problem list, fix and resubmit) + the
+#               engine-derived overall verdict (never trusts a declared value)
+#               + review-ledger bookkeeping + the passed|failed transition
+#               (fail fires the existing fail wave; no node to reclaim in this
+#               chain). -Action status is the read-only dispatch face: per-stage
+#               review state + the mechanical input list (docs / criteria ref /
+#               report drop / template ref) the subagent prompt is filled from.
+#               Legacy runs (bridge.json WITHOUT review_mode) keep the node
+#               chain byte-identical and are adjudicated via settle instead.
 #
 # Run artifacts (inside the goal-tree run dir, gitignored):
 #   bridge.json           authoritative node<->TaskId mapping (v2: + goal_root anchor
@@ -99,11 +141,18 @@
 #                         machine-readable copy rides bridge.json's review section
 #   report/delivery-annex.md  per-task terminal states + rdd-flow check result
 #                         + root-goal achievement state
-#   decisions.jsonl       append-only pure-auto-mode decision ledger (ONLY for
-#                         -AutoMode runs; same paradigm as state/ledger.jsonl):
-#                         auto / escalation / resolution / overturn entries,
-#                         open-escalation view derived by ref_entry join — the
-#                         ledger is never rewritten
+#   decisions.jsonl       ARCHIVE-level unified decision ledger (planner-
+#                         midrun-derive user ruling: ONE ledger per archive at
+#                         .rdd/changes/archive/<name>/decisions.jsonl — long-
+#                         term analysis asset): four-element entries
+#                         (background / options[] / decision / reason +
+#                         decider) for kinds derive_proposal / checkpoint /
+#                         ruling, plus the AutoMode worker kinds auto /
+#                         escalation / resolution / overturn (field-missing
+#                         compatible — the old kinds keep their payloads);
+#                         append-only with archive-level lock + read-back
+#                         finish; open-escalation view derived by ref_entry
+#                         join — the ledger is never rewritten
 #   plan-log.jsonl        append-only long-task plan event ledger (long-task-
 #                         planning, the cross-session progress/risk/deviation/
 #                         revision carrier): P<n> entries, appended inside the
@@ -123,7 +172,7 @@
 
 [CmdletBinding()]
 param(
-    [ValidateSet("promulgate", "dispatch", "claim", "reclaim", "rollback", "settle", "status", "resume", "conclude", "lease", "register-session", "decide", "escalate", "replan", "conflict")]
+    [ValidateSet("promulgate", "dispatch", "claim", "reclaim", "rollback", "settle", "status", "resume", "conclude", "lease", "register-session", "decide", "escalate", "replan", "conflict", "derive", "design-review")]
     [string]$Command = "status",
 
     [string]$RunId,
@@ -137,6 +186,20 @@ param(
                                    # records the deviation it answers)
     [string]$ReviewFile,          # optional requirement-review verdicts (planner
                                    # session product; planner-guide hard constraint 6)
+    [ValidateSet("subagent", "session")]
+    [string]$ReviewMode,          # auditor-subagent-review: design-review
+                                   # production form for THIS run, persisted as
+                                   # bridge.json `review_mode` (subagent =
+                                   # planner-dispatched independent-context
+                                   # review subagent, the default form | session
+                                   # = strong form, an independent AUDITOR
+                                   # session produced by start-role -Role
+                                   # AUDITOR). No `off` value: in the new chain
+                                   # review is mandatory. OMIT THE FLAG =
+                                   # 缺键 legacy chain (byte-identical node
+                                   # chain: dual probe / review nodes / +K
+                                   # budget / AUDITOR push) — the compat path
+                                   # for already-promulgated runs.
     [string]$ConventionsFile,     # 架构/风格约定载体 (parallel-coordination): review
                                    # 步产出的约定文档;DESIGN 并行链头 ≥2 时必填
                                    # (CONVENTIONS_MISSING,零残留),DESIGN 链头 node.task
@@ -156,6 +219,11 @@ param(
     [int]$MaxRounds = 12,
     [int]$NodeWidth = 0,          # 0 = auto (>= task count, floor 4)
     [int]$MaxNodes = 0,           # 0 = auto (task count * 5 + 6)
+    [int]$MaxDerivations = 0,     # 0 = default 3 (planner-midrun-derive): the
+                                   # per-run derivation-abuse ceiling recorded as
+                                   # bridge.json max_derivation; exceeding it is a
+                                   # WARNING (DERIVATION_LIMIT_WARNING), never a
+                                   # hard reject (design decision #8)
     [string]$CreatedBy = "planner",
 
     # dispatch / claim / reclaim / settle / decide / escalate
@@ -163,9 +231,15 @@ param(
     [string]$Role,                # stage role (CTO/UX/DEV/QA) for claim; inferred from node for others
     [string]$Session,             # Planner lease holder label
 
-    # decide / escalate (planner-auto-mode checkpoint payload)
-    [ValidateSet("auto", "resolution", "overturn")]
-    [string]$Kind,                # decide entry kind (escalate always writes kind=escalation)
+    # design-review (auditor-subagent-review): the plan stage id (S<k>) whose
+    # review product is submitted / whose review state is queried
+    [string]$Stage,
+
+    # decide / escalate (planner-auto-mode checkpoint payload + unified ledger)
+    [ValidateSet("auto", "resolution", "overturn", "checkpoint")]
+    [string]$Kind,                # decide entry kind (escalate always writes
+                                   # kind=escalation; checkpoint = the archive-
+                                   # scoped checkpoint ledger form, see -Archive)
     [string]$Checkpoint,          # checkpoint name (e.g. "技术选型" / "命名")
     [string]$Decision,            # the verdict text (for escalate: the question awaiting the user)
     [string]$Inputs,              # decision inputs (what was considered)
@@ -173,6 +247,28 @@ param(
     [string]$Risk,                # risk label (low / high / free text)
     [string]$RuleId,              # grading-table rule id (required for -Kind auto)
     [string]$RefEntry,            # referenced entry_id (required for resolution / overturn)
+    [string]$Background,          # decide -Kind checkpoint: decision background
+                                   # (four-element ledger schema)
+    [string]$Options,             # decide -Kind checkpoint: candidate options,
+                                   # '|' separated -> options[] (four-element
+                                   # ledger schema)
+
+    # derive (planner-midrun-derive): mid-run scope-gap derivation channel
+    # (-Action propose|confirm|withdraw selects the sub-action)
+    [string]$Title,               # derive propose: the new requirement's title
+    [string]$Rationale,           # derive propose: the goal-gap rationale
+    [string]$UserVerdict,         # derive confirm: the user's ruling VERBATIM —
+                                   # the confirmation record itself (hard gate:
+                                   # missing -> DERIVE_CONFIRMATION_MISSING)
+    [string]$DerivationId,        # derive confirm/withdraw target (DRV<n>)
+    [string]$DependsOn,           # derive propose: existing task ids (comma
+                                   # separated) the derived requirement depends on
+    [string]$Owners,              # derive propose: derived chain-head role set
+                                   # ('+' separated, subset of CTO+UX+QA;
+                                   # default = full chain CTO+UX+QA, decision #10)
+    [string]$Archive,             # decide -Kind checkpoint: archive directory
+                                   # (relative resolves against repo root) — the
+                                   # unified decision ledger is archive-scoped
 
     # register-session (planner-session-roster): off-tree direct-handoff
     # registration into the run's sessions.json roster — the planner records
@@ -215,9 +311,12 @@ param(
     [switch]$DryRun,
 
     # conflict (parallel-coordination 并行协作冲突治理):动作仅 open|resolve;
-    # 上报/挂起为条目状态属性(经 open -ConflictId 更新 -ConflictStatus)
-    [ValidateSet("open", "resolve")]
-    [string]$Action,              # conflict command action
+    # 上报/挂起为条目状态属性(经 open -ConflictId 更新 -ConflictStatus);
+    # derive (planner-midrun-derive) 复用同一参数承载 propose|confirm|withdraw,
+    # design-review (auditor-subagent-review) 复用同一参数承载 submit|status
+    # (各命令各自守卫自己的动作集,互不感知)
+    [ValidateSet("open", "resolve", "propose", "confirm", "withdraw", "submit", "status")]
+    [string]$Action,              # conflict / derive / design-review action
     [string]$ConflictId,          # registry id C<n> (resolve / state-attribute update)
     [ValidateSet("design", "file")]
     [string]$ConflictKind,        # conflict kind for a new entry (design | file)
@@ -572,6 +671,61 @@ function Exit-BridgeRunLock {
     }
 }
 
+$script:ArchiveLockStream = $null
+$script:ArchiveLockPath = $null
+
+function Enter-ArchiveLock {
+    # 归档级锁（统一决策账本临界区）——Enter-BridgeRunLock 的刻意镜像：同 .lock
+    # 文件语义（CreateNew+FileShare::None OS 互斥、60s stale 抢占、10s 超时），
+    # 锚在归档目录（<archive>/.decisions.lock）而非 run 目录——账本生命周期 =
+    # 归档生命周期，跨 run 串行化。写入方 sync 纪律同 run 锁。
+    param([string]$ArchivePath, [int]$TimeoutSec = 10, [int]$StaleSec = 60)
+    $script:ArchiveLockPath = Join-Path $ArchivePath ".decisions.lock"
+    $deadline = (Get-Date).AddSeconds($TimeoutSec)
+    $stolen = $false
+    while ($true) {
+        try {
+            $fs = [System.IO.File]::Open($script:ArchiveLockPath, [System.IO.FileMode]::CreateNew, [System.IO.FileAccess]::ReadWrite, [System.IO.FileShare]::None)
+            $info = "cmd=$Command ledger=decisions pid=$PID at=$(Get-Date -Format s)"
+            $bytes = [System.Text.Encoding]::UTF8.GetBytes($info)
+            $fs.Write($bytes, 0, $bytes.Length)
+            $fs.Flush()
+            $script:ArchiveLockStream = $fs
+            return @{ path = $script:ArchiveLockPath; stale_taken_over = $stolen }
+        }
+        catch [System.IO.IOException], [System.UnauthorizedAccessException] {
+            if (Test-Path -LiteralPath $script:ArchiveLockPath -PathType Leaf) {
+                $age = ((Get-Date) - (Get-Item -LiteralPath $script:ArchiveLockPath).LastWriteTime).TotalSeconds
+                if ($age -gt $StaleSec) {
+                    try { Remove-Item -LiteralPath $script:ArchiveLockPath -Force -ErrorAction SilentlyContinue } catch {}
+                    $stolen = $true
+                    continue
+                }
+            }
+            else {
+                continue
+            }
+            if ((Get-Date) -gt $deadline) {
+                Write-ErrorResult "LOCK_TIMEOUT" "Archive decision-ledger lock held by another writer for > ${TimeoutSec}s: $script:ArchiveLockPath. Back off and retry." 3
+            }
+            Start-Sleep -Milliseconds 100
+        }
+    }
+}
+
+function Exit-ArchiveLock {
+    if ($null -ne $script:ArchiveLockStream) {
+        try { $script:ArchiveLockStream.Close() } catch {}
+        $script:ArchiveLockStream = $null
+    }
+    if ($script:ArchiveLockPath -and (Test-Path -LiteralPath $script:ArchiveLockPath -PathType Leaf)) {
+        try {
+            $raw = [System.IO.File]::ReadAllText($script:ArchiveLockPath, [System.Text.Encoding]::UTF8)
+            if ($raw -match "pid=$PID ") { Remove-Item -LiteralPath $script:ArchiveLockPath -Force -ErrorAction SilentlyContinue }
+        } catch {}
+    }
+}
+
 function ConvertTo-PolicyRule {
     # One raw JSON rule object -> @{ id; match; action; note } (trimmed, action
     # lowercased), with the entry-level RISK_POLICY_INVALID errors: non-object
@@ -677,10 +831,17 @@ function Get-AutoModeProtocolHint {
     # The protocol guidance string injected into the claim response (the
     # report_hint precedent: plain text the worker session can follow verbatim).
     param([string]$RunIdText)
-    return "pure auto mode is ENABLED on this run: at each in-session confirmation checkpoint, classify it against the injected risk policy (first match wins, top-down). Low-risk (rule action=auto): answer it yourself with 'delivery-bridge.cmd -Command decide -RunId $RunIdText -NodeId <n> -Kind auto -RuleId <rule> -Checkpoint <name> -Decision <verdict> [-Inputs ...] [-Basis ...] [-Risk ...]' — the ledgered decide counts as the confirmation gate. Prohibition-class (R1 hard floor: safety/cost/irreversible/git) or manual-graded or unsure: 'delivery-bridge.cmd -Command escalate -RunId $RunIdText -NodeId <n> -Checkpoint <name> -Decision <question for the user> [-Risk high] [-RuleId <rule>] [-Inputs ...]' and WAIT for the user verdict (delivered back through your session or the Planner; never proceed past an open escalation). Every decision is auditable in .rdd/goal-trees/$RunIdText/decisions.jsonl and overturnable (decide -Kind overturn) before settle."
+    return "pure auto mode is ENABLED on this run: at each in-session confirmation checkpoint, classify it against the injected risk policy (first match wins, top-down). Low-risk (rule action=auto): answer it yourself with 'delivery-bridge.cmd -Command decide -RunId $RunIdText -NodeId <n> -Kind auto -RuleId <rule> -Checkpoint <name> -Decision <verdict> [-Inputs ...] [-Basis ...] [-Risk ...]' — the ledgered decide counts as the confirmation gate. Prohibition-class (R1 hard floor: safety/cost/irreversible/git) or manual-graded or unsure: 'delivery-bridge.cmd -Command escalate -RunId $RunIdText -NodeId <n> -Checkpoint <name> -Decision <question for the user> [-Risk high] [-RuleId <rule>] [-Inputs ...]' and WAIT for the user verdict (delivered back through your session or the Planner; never proceed past an open escalation). Every decision is auditable in the archive-level decisions.jsonl (统一决策账本) and overturnable (decide -Kind overturn) before settle."
 }
 
-function Get-DecisionsPath { param([string]$RunDir); Join-Path $RunDir "decisions.jsonl" }
+function Get-ArchiveDecisionsPath {
+    # 归档级统一决策账本路径（planner-midrun-derive 用户裁定）：账本是长期分析
+    # 资产，归档是长期载体——新旧场景（AutoMode worker 决策 / 五角色检查点 /
+    # derive 全链 / 编排裁定）一本账到底。run 级路径就此退役（用户确认无历史
+    # AutoMode run，零迁移负担）。
+    param([string]$ArchivePath)
+    return (Join-Path $ArchivePath "decisions.jsonl")
+}
 
 function Read-DecisionEntries {
     # All decision entries as deep hashtables; blank/unparseable lines are
@@ -689,11 +850,10 @@ function Read-DecisionEntries {
     # NOTE: callers MUST wrap the result in @() — PS 5.1 unwraps a single-element
     # return into the entry itself, and .Count on an OrderedDictionary means
     # KEY count, not entry count.
-    param([string]$RunDir)
-    $p = Get-DecisionsPath $RunDir
+    param([string]$LedgerPath)
     $entries = @()
-    if (-not (Test-Path -LiteralPath $p -PathType Leaf)) { return @() }
-    foreach ($line in @([System.IO.File]::ReadAllLines($p))) {
+    if (-not (Test-Path -LiteralPath $LedgerPath -PathType Leaf)) { return @() }
+    foreach ($line in @([System.IO.File]::ReadAllLines($LedgerPath))) {
         if ([string]::IsNullOrWhiteSpace($line)) { continue }
         try {
             $e = Convert-PSObjectToHashtable ($line | ConvertFrom-Json)
@@ -704,31 +864,73 @@ function Read-DecisionEntries {
 }
 
 function Add-DecisionEntry {
-    # THE decision-ledger append chain (lock -> read -> assign D<n> -> append ->
-    # read-back finish -> unlock; ledger.jsonl paradigm) — the single copy shared
-    # by escalate AND decide (no duplicated inline chain). $ValidateCallback
-    # (optional, with $ValidateContext) runs INSIDE the lock against the fresh
-    # entries: race-sensitive validation (decide's ref-entry lookups) shares the
+    # THE decision-ledger append chain (archive lock -> read -> assign D<n> ->
+    # append -> read-back finish -> unlock; ledger.jsonl paradigm) — the single
+    # copy shared by escalate AND decide AND the derive chain AND the
+    # orchestration-ruling tail. $ValidateCallback (optional, with
+    # $ValidateContext) runs INSIDE the lock against the fresh entries:
+    # race-sensitive validation (decide's ref-entry lookups) shares the
     # append's critical section instead of a stale pre-lock check. Contract:
     # & $ValidateCallback <entries> <context>; returns the written entry.
-    param([string]$RunDir, $Entry, [scriptblock]$ValidateCallback = $null, $ValidateContext = $null)
-    $lockInfo = Enter-BridgeRunLock $RunDir
+    # -Advisory: on read-back failure return @{ failed; error } instead of
+    # exiting (for best-effort tails whose host command already succeeded).
+    param([string]$LedgerPath, [string]$LockDir, $Entry, [scriptblock]$ValidateCallback = $null, $ValidateContext = $null, [switch]$Advisory)
+    $lockInfo = Enter-ArchiveLock $LockDir
     try {
-        $entries = @(Read-DecisionEntries $RunDir)
+        $entries = @(Read-DecisionEntries $LedgerPath)
         if ($null -ne $ValidateCallback) { & $ValidateCallback $entries $ValidateContext }
         $Entry['entry_id'] = "D$($entries.Count + 1)"
         $line = ConvertTo-Json $Entry -Depth 8 -Compress
-        [System.IO.File]::AppendAllText((Get-DecisionsPath $RunDir), $line + "`n", $script:Utf8NoBom)
-        $all = @([System.IO.File]::ReadAllLines((Get-DecisionsPath $RunDir)) | Where-Object { $_.Trim() -ne "" })
+        [System.IO.File]::AppendAllText($LedgerPath, $line + "`n", $script:Utf8NoBom)
+        $all = @([System.IO.File]::ReadAllLines($LedgerPath) | Where-Object { $_.Trim() -ne "" })
         try { $null = $all[-1] | ConvertFrom-Json } catch {
+            if ($Advisory) { return @{ failed = $true; error = "decisions.jsonl last line failed to parse after append" } }
             Write-ErrorResult "DECISIONS_READBACK_FAILED" "decisions.jsonl last line failed to parse after append" 3
         }
     }
     finally {
-        Exit-BridgeRunLock
+        Exit-ArchiveLock
     }
     $Entry['lock'] = $lockInfo
     return $Entry
+}
+
+function New-LedgerEntryPayload {
+    # 四要素条目（统一决策账本标准形，kinds: derive_proposal / checkpoint /
+    # ruling）：background / options[] / decision / reason + decider
+    # （user | auto/<规则>@<stage> | planner）。$Extra 可选键追加（checkpoint
+    # 名等上下文）；run 上下文可空（checkpoint 的 -Archive 归档级形态无 run）。
+    param([string]$KindText, [string]$RunIdText, [string]$BackgroundText, $OptionsArr, [string]$DecisionText, [string]$ReasonText, [string]$DeciderText, [string]$RefEntryOut = $null, $Extra = $null)
+    $e = [ordered]@{
+        at         = Get-UtcNowIso
+        run_id     = $(if (-not [string]::IsNullOrWhiteSpace($RunIdText)) { $RunIdText } else { $null })
+        kind       = $KindText
+        background = $(if ([string]::IsNullOrWhiteSpace($BackgroundText)) { $null } else { $BackgroundText })
+        options    = @($(if ($null -ne $OptionsArr) { @($OptionsArr) } else { @() }))
+        decision   = $DecisionText
+        reason     = $(if ([string]::IsNullOrWhiteSpace($ReasonText)) { $null } else { $ReasonText })
+        decider    = $DeciderText
+        ref_entry  = $RefEntryOut
+    }
+    if ($null -ne $Extra -and $Extra -is [System.Collections.IDictionary]) {
+        foreach ($k in @($Extra.Keys)) { $e[$k] = $Extra[$k] }
+    }
+    return $e
+}
+
+function Add-OrchestrationRuling {
+    # 编排裁定自动入账（机械零负担，advisory）：rollback / reclaim / replan /
+    # conclude / conflict-resolve 命令尾追加 kind=ruling 条目——规划者裁定也是
+    # 决策，统一账本可分析（决策 #3 全量接入）。追加失败降级为警告返回（主命令
+    # 已成功，不因留痕失败回滚语义）。返回 @{ entry; warning }。
+    param([string]$ArchivePath, [string]$RunIdText, [string]$CommandName, [string]$DecisionText, [string]$ReasonText, $OptionsArr)
+    if ([string]::IsNullOrWhiteSpace($ArchivePath)) { return @{ entry = $null; warning = $null } }
+    $payload = New-LedgerEntryPayload -KindText 'ruling' -RunIdText $RunIdText -BackgroundText "run 中途编排裁定（$CommandName）" -OptionsArr $OptionsArr -DecisionText $DecisionText -ReasonText $ReasonText -DeciderText 'planner'
+    $entry = Add-DecisionEntry -LedgerPath (Get-ArchiveDecisionsPath $ArchivePath) -LockDir $ArchivePath -Entry $payload -Advisory
+    if ($entry -is [System.Collections.IDictionary] -and $entry.Contains('failed') -and $entry['failed'] -eq $true) {
+        return @{ entry = $null; warning = "决策账本入账失败（advisory）：$([string]$entry['error'])" }
+    }
+    return @{ entry = $entry; warning = $null }
 }
 
 function Find-DecisionEntry {
@@ -787,22 +989,26 @@ function Get-OpenEscalationRows {
 function Get-AutoModeDecisionView {
     # Visibility block for status/resume: per-node decision counts + the derived
     # open-escalation list (Get-OpenEscalationRows). Counts and open rows read
-    # the same single ledger snapshot taken here.
+    # the same single ledger snapshot taken here (the ARCHIVE-level unified
+    # ledger — only the four AutoMode worker kinds join this view; checkpoint /
+    # ruling / derive_proposal entries are archive-scoped bookkeeping, not
+    # per-node worker decisions).
     param([string]$RunDir, $Bridge, $TreeData)
-    $entries = @(Read-DecisionEntries $RunDir)
+    $entries = @(Read-DecisionEntries (Get-ArchiveDecisionsPath ([string]$Bridge.archive)))
     $countsByNode = @{}
     foreach ($e in $entries) {
+        $k = [string]$e['kind']
+        if ($k -notin @('auto', 'escalation', 'resolution', 'overturn')) { continue }
         $node = [string]$e['node_id']
         if (-not $countsByNode.Contains($node)) { $countsByNode[$node] = @{ node = $node; auto = 0; escalation = 0; resolution = 0; overturn = 0; total = 0 } }
         $c = $countsByNode[$node]
-        $k = [string]$e['kind']
         if ($c.Contains($k)) { $c[$k] = [int]$c[$k] + 1 }
         $c['total'] = [int]$c['total'] + 1
     }
     $amSection = Get-AutoModeSection $Bridge
     return @{
         enabled          = $true
-        ledger           = ".rdd/goal-trees/$($Bridge.run_id)/decisions.jsonl"
+        ledger           = "$([string]$Bridge.archive_rel)/decisions.jsonl"
         policy_source    = $(if ($null -ne $amSection -and $amSection.Contains('policy_source')) { [string]$amSection['policy_source'] } else { "default" })
         decision_counts  = @(@($countsByNode.Values) | Sort-Object node)
         open_escalations = @(Get-OpenEscalationRows $entries $TreeData)
@@ -1212,6 +1418,10 @@ function Get-PushCandidates {
     # rides the same push path as the R1 chain nodes (tree-level, no TaskId).
     # stage design-review nodes (auditor-design-stage-review): a grafted
     # [设计审查·S<k>] rides the same tree-level push path (role=AUDITOR).
+    # auditor-subagent-review: this face is LEGACY-CHAIN ONLY — review_mode runs
+    # never graft review nodes (pure contract), so zero nodes appear here.
+    # derivation PM nodes (planner-midrun-derive): a confirmed-but-unregistered
+    # derivation's PM node rides the same tree-level push path (stage=PM).
     $p = Get-PlanSection $Bridge
     if ($null -ne $p) {
         foreach ($st in @($p['stages'])) {
@@ -1224,6 +1434,13 @@ function Get-PushCandidates {
                 $list += @{ node = [string]$dr['node']; stage = "AUDITOR"; task_id = 0; tree_level = $true }
             }
         }
+    }
+    foreach ($d in @(Get-DerivationSection $Bridge)) {
+        if (([string]$d['status']) -ne 'confirmed') { continue }
+        $dn = [string]$d['node']
+        if ([string]::IsNullOrWhiteSpace($dn)) { continue }
+        if ((Test-PropPresent $d 'task_id') -and $null -ne $d['task_id']) { continue }
+        $list += @{ node = $dn; stage = "PM"; task_id = 0; tree_level = $true }
     }
     return $list
 }
@@ -1460,6 +1677,13 @@ function Invoke-AutoDispatch {
     $drMoves = Update-StageDesignReviews $RunDir $Bridge
     $Bridge = $drMoves.bridge
     $grafted += @($drMoves.grafted)
+    # derivation registration state machine (planner-midrun-derive): same
+    # self-healing placement — a confirmed derivation whose PM node settled but
+    # whose task registration did not land (crash window between the tree settle
+    # and the add-task/bridge write) re-runs the idempotent registration here.
+    # Registration is state, not a push: it runs even under no_push isolation.
+    $derMoves = Update-DerivationRegistrations $RunDir $Bridge
+    $Bridge = $derMoves.bridge
     # Run-level isolation gate (bridge.json no_push, set by promulgate -NoPush):
     # one upfront check makes an isolated run provably zero-backend for its
     # whole lifetime (0923 incident, QA F1). The manual dispatch command stays
@@ -2523,7 +2747,11 @@ function Test-PlanBatches {
 function Test-PlanDeliveryFit {
     # plan vs the delivered set: every delivered task in exactly one stage,
     # no phantom task ids (coverage 要素齐全), then order + batch DAG fit.
-    param($Plan, [int[]]$ArchiveIds, [int[]]$DeliveredIds, $DepMap)
+    # $ExemptIds (planner-midrun-derive replan whitelist): registered-but-
+    # unabsorbed derived task ids may sit OUTSIDE the stages during the window
+    # between registration and replan absorption (opposite direction from the
+    # push/claim gate, by design) — every other delivered id stays covered.
+    param($Plan, [int[]]$ArchiveIds, [int[]]$DeliveredIds, $DepMap, [int[]]$ExemptIds = @())
     $stageOfTask = @{}
     foreach ($st in @($Plan.stages)) {
         foreach ($tid in @($st.task_ids)) {
@@ -2533,6 +2761,7 @@ function Test-PlanDeliveryFit {
         }
     }
     foreach ($tid in @($DeliveredIds)) {
+        if ($ExemptIds -contains [int]$tid) { continue }
         if (-not $stageOfTask.Contains([int]$tid)) { Write-ErrorResult "PLAN_FILE_INVALID" "task #$tid is delivered by this run but missing from the plan stages (every delivered task sits in exactly one stage)" 2 }
     }
     Test-PlanStageOrder $Plan $stageOfTask $DepMap
@@ -2595,11 +2824,19 @@ function Get-PlanGateBlockers {
     # stage gate (只增不减): stages strictly before the task's own whose
     # acceptance point has not passed. Empty = gate open (legacy runs too —
     # no plan section means no gate on top of the dependency unlock semantics).
+    # planner-midrun-derive: a bridge-delivered task sitting in NO stage is a
+    # registered-unabsorbed derivation — the pseudo-blocker '<unplanned>' holds
+    # it until replan absorbs it (the replan-side whitelist and this gate point
+    # in OPPOSITE directions by design: fit validation tolerates the window,
+    # push/claim never does).
     param($Bridge, [int]$TaskId)
     $p = Get-PlanSection $Bridge
     if ($null -eq $p) { return @() }
     $st = Get-PlanStageOfTask $p $TaskId
-    if ($null -eq $st) { return @() }
+    if ($null -eq $st) {
+        if ($Bridge.tasks.Contains("$TaskId")) { return @('<unplanned>') }
+        return @()
+    }
     $blockers = @()
     foreach ($other in @($p['stages'])) {
         if ([string]$other['id'] -eq [string]$st['id']) { break }
@@ -2615,6 +2852,9 @@ function Assert-PlanGateOpen {
     param($Bridge, [int]$TaskId)
     $blockers = Get-PlanGateBlockers $Bridge $TaskId
     if ($blockers.Count -gt 0) {
+        if (@($blockers) -contains '<unplanned>') {
+            Write-ErrorResult "NODE_BLOCKED_BY_GATE" "Task #$TaskId is registered but covered by NO plan stage (mid-run derived, awaiting replan absorption) — replan it into the stages: delivery-bridge.cmd -Command replan -RunId $RunId -PlanFile <revised plan incl. task #$TaskId> -Reason <deviation>; no force bypass (the whitelist lives on the replan validation side only)." 1
+        }
         Write-ErrorResult "NODE_BLOCKED_BY_GATE" "Task #$TaskId sits behind a closed stage gate — waiting on acceptance point(s) of stage(s): [$($blockers -join ', ')]. Settle the [集成验收·S<k>] node(s) (真实执行集成验收), or replan to re-scope the stages; no force bypass." 1
     }
 }
@@ -2853,11 +3093,34 @@ function Write-PlanRecoveryTail {
 $script:PlanDesignReviewFmt = "[设计审查·{0}]"
 $script:DesignReviewDims = @("alignment", "change_map", "internal_consistency", "completeness", "cross_design")
 $script:DesignReviewReportFmt = "review/design-review-{0}.json"   # 归档相对机读单源（.md 人读镜像同名）
+# reviewer 枚举单源（auditor-subagent-review 验收 4）：值域扩贯通 DesignReviewFile
+# 契约 / review-ledger 署名 / 驳回协议 From / decisions.jsonl decider 四面；常量表
+# 与 rdd-engine/references/review-input-template.md 的常量表同步（test-review-
+# input-template.ps1 防协议漂移锁定）。
+#   auditor-delegated = 独立上下文子代理生产、规划者呈现（subagent 形态）
+#   auditor           = 强形态独立会话生产（session 形态）
+#   planner           = 存量只读（ReviewFile 历史值域，不再产出；消费端零改动）
+$script:DesignReviewReviewers = @('auditor-delegated', 'auditor')
+$script:ReviewModeValues = @('subagent', 'session')          # review_mode 值域（无 off）
+$script:ReviewInputTemplateRel = "rdd-engine/references/review-input-template.md"
+
+function Get-BridgeReviewMode {
+    # review_mode 配置载体（auditor-subagent-review 决策 #4/#7）：bridge.json 有键
+    # （subagent|session）= 新链（纯契约，评审内生于规划者，无部署判据）；缺键 =
+    # 存量 run 旧链逐字节（节点 graft / AUDITOR 推送 / +K 预算 / 双探照旧，行为不
+    # 回溯）。返回 'subagent'|'session'|$null（$null = legacy）。
+    param($Bridge)
+    if ($null -eq $Bridge -or -not (Test-PropPresent $Bridge 'review_mode')) { return $null }
+    $modeText = [string]$Bridge['review_mode']
+    if ($script:ReviewModeValues -contains $modeText) { return $modeText }
+    return $null
+}
 
 function Test-AuditorDeployed {
-    # 降级双探（验收 7）：engine 包 `rdd-auditor/` 角色卡目录（rdd-engine 同级布局）
-    # + repo `dsh/presets/rdd-auditor/`——任一在即视为已部署；全 miss → promulgate
-    # 警示 + 不落 design_review 段（现行行为：设计不审直接 IMPL），不硬拒建树。
+    # 【legacy only】降级双探（验收 7 缺键旧链保留）：engine 包 `rdd-auditor/` 角色
+    # 卡目录（rdd-engine 同级布局）+ repo `dsh/presets/rdd-auditor/`——任一在即视为
+    # 已部署。仅缺键（review_mode absent）的旧链 promulgate 消费；新链（-ReviewMode）
+    # 部署判据 = 配置项本身，评审能力内生于规划者，此探测零触达。
     # best-effort：探测异常一律按未部署处理。
     param()
     $engineRoot = Split-Path (Split-Path $script:ScriptDir -Parent) -Parent
@@ -2872,10 +3135,11 @@ function Test-AuditorDeployed {
 }
 
 function Set-PlanDesignReviewSlots {
-    # promulgate 落段：AUDITOR 已部署时每个 stage 增 design_review 槽位（planned）。
-    # 未部署 = 不落段 = 无门零节点（逐字节现行行为）。返回 @{ plan; deployed }。
-    param($PlanSec)
-    if (-not (Test-AuditorDeployed)) { return @{ plan = $PlanSec; deployed = $false } }
+    # promulgate 落段分支化（auditor-subagent-review）：新链（-ReviewMode）恒落
+    # design_review 槽位（评审能力内生于规划者——无部署判据、无「未部署零门」降级）；
+    # 缺键旧链沿双探（AUDITOR 已部署才落段，逐字节现行行为）。返回 @{ plan; deployed }。
+    param($PlanSec, [string]$ReviewModeText)
+    if ([string]::IsNullOrWhiteSpace($ReviewModeText) -and -not (Test-AuditorDeployed)) { return @{ plan = $PlanSec; deployed = $false } }
     foreach ($st in @($PlanSec['stages'])) {
         $st['design_review'] = @{
             status = "planned"; node = $null; verdict = $null
@@ -2957,7 +3221,23 @@ function Test-StageDesignTrigger {
         return @{ mode = "exempt"; reason = "no design-stage nodes in this run (no in-run design work to review)"; docs = @(); doc_tasks = $dd.doc_tasks }
     }
     if (@($dd.docs).Count -eq 0) {
-        return @{ mode = "exempt"; reason = "no on-disk design artifacts (无设计产物任务快速通道豁免)"; docs = @(); doc_tasks = $dd.doc_tasks }
+        # 无产物快速通道只在**本段设计工作已经结束**时成立。派生并入的阶段（planner-
+        # midrun-derive × 本机制集成面）在 replan 触发那一刻必然尚无产物：CTO 还没跑、
+        # task.json 也还没有 designDocs 条目（设计文档路径由 CTO 产出并经 add-design
+        # 登记）。若此刻落 exempt 终态，该段此后产出的设计产物永远不进审查、其 IMPL
+        # 节点也不占闸门——新链「评审强制、无 off 值」在这里静默失效。改判：设计工作
+        # 未结束 → wait；任务越过 DESIGN 后同一判据自然给出 exempt（确实没产物）或
+        # graft/ready（有产物）——语义不变，只去掉过早定性。
+        foreach ($tid in @($Stage['task_ids'])) {
+            $task = Find-ArchiveTask $FlowTasks ([int]$tid)
+            if ($null -eq $task) { continue }
+            $bTask = $null
+            if ($Bridge.tasks.Contains("$tid")) { $bTask = $Bridge.tasks["$tid"] }
+            if (-not (Test-StageTaskPastDesign $task $bTask)) {
+                return @{ mode = "wait"; reason = "task #$tid still inside DESIGN and no artifacts on disk yet (no-artifact exemption is decided only once the stage's design work is over)"; docs = @(); doc_tasks = $dd.doc_tasks }
+            }
+        }
+        return @{ mode = "exempt"; reason = "no on-disk design artifacts (设计工作已结束且无产物快速通道豁免)"; docs = @(); doc_tasks = $dd.doc_tasks }
     }
     foreach ($tid in @($Stage['task_ids'])) {
         $task = Find-ArchiveTask $FlowTasks ([int]$tid)
@@ -3109,16 +3389,61 @@ function Test-DesignReviewSummaryBlock {
     return $problems
 }
 
+function Test-DesignReviewProduction {
+    # production 留痕段（auditor-subagent-review 凭据链）：有则验形态（mode 值域 +
+    # template ref 非空——机械输入模板留痕可审计），缺省不拦（存量 DesignReviewFile
+    # 与 legacy 链零回归；转述/裁定倾向注入是协议违规，可驳回重派，不落机械门）。
+    param($Data)
+    if (-not (Test-PropPresent $Data 'production') -or $null -eq $Data['production']) { return @() }
+    $prod = $Data['production']
+    $problems = @()
+    if ($script:ReviewModeValues -notcontains ([string]$prod['mode'])) {
+        $problems += "design_review check: production.mode '$([string]$prod['mode'])' not in $($script:ReviewModeValues -join '|')"
+    }
+    if ([string]::IsNullOrWhiteSpace([string]$prod['template'])) {
+        $problems += "design_review check: production.template is empty（输入模板留痕）"
+    }
+    return $problems
+}
+
+function Test-DesignReviewFileCore {
+    # 契约校验核心（auditor-subagent-review 决策 #6 抽核心双调用点复用）：node settle
+    # （legacy）与 design-review -Action submit 同源执行，拒绝复制校验逻辑（双份漂移
+    # 风险）。机械校验（验收 2）：reviewed_at 非空 / reviewer 值域扩
+    # （auditor-delegated|auditor，验收 4）/ stage 归属一致 / production 留痕形态 /
+    # 阶段设计文档双向全覆盖 / verdict-findings 一致 / finding 四字段 + 枚举值域 /
+    # blocking 归属在册。返回 problems[]（空 = 过）。
+    param($Data, [string]$StageId, [string[]]$Expected)
+    $problems = @()
+    if ([string]::IsNullOrWhiteSpace([string]$Data['reviewed_at'])) { $problems += "design_review check: reviewed_at is absent/empty" }
+    if ($script:DesignReviewReviewers -notcontains ([string]$Data['reviewer'])) {
+        $problems += "design_review check: reviewer must be one of auditor-delegated|auditor (got '$([string]$Data['reviewer'])')"
+    }
+    if (([string]$Data['stage']) -ne $StageId) { $problems += "design_review check: stage field '$([string]$Data['stage'])' does not match the reviewed stage '$StageId'" }
+    $problems += @(Test-DesignReviewProduction $Data)
+    $docs = @(Convert-ToSafeArray $Data['docs'])
+    if ($docs.Count -eq 0) { $problems += "design_review check: docs[] is empty（阶段设计文档全覆盖）" }
+    $seen = @()
+    foreach ($d in @($docs)) {
+        $rel = [string]$d['doc']
+        if ([string]::IsNullOrWhiteSpace($rel)) { $problems += "design_review check: docs[] entry carries an empty doc"; continue }
+        if ($seen -contains $rel) { $problems += "design_review check: docs[] lists '$rel' more than once" }
+        $seen += $rel
+        $problems += @(Test-DesignReviewDocEntry $d $StageId $Expected)
+    }
+    foreach ($rel in @($Expected)) {
+        if ($seen -notcontains $rel) { $problems += "design_review check: on-disk design doc '$rel' is not covered by docs[]（阶段设计文档全覆盖）" }
+    }
+    $problems += @(Test-DesignReviewSummaryBlock $Data['summary'] $StageId $Expected)
+    return $problems
+}
+
 function Test-DesignReviewFile {
     # AUDITOR settle 门校验器（注册表派发——注册行在 verbatim 同步块之外，见
     # $script:RoleHandoffValidators 之后的一行；DEV 先例 Test-DevQualityScan 模式）。
-    # GatePayload 桥接形态 { scenario; run_id; node_id }。机械校验（验收 2）：
-    #   - 阶段设计文档全覆盖（docs[] ↔ 阶段落盘设计产物双向逐一致）
-    #   - verdict-findings 一致（fail 必有 blocking / pass 必无）
-    #   - finding 四字段完备（severity/dimension/item/suggestion）+ 枚举值域
-    #   - blocking 的 doc 归属在册 + cross_design 项 involved_docs 归属在册
-    # 返回 problems[]（空 = 过）。文件层面的问题（缺文件/不可解析）也是 problems——
-    # 四查通道统一拒不合格交付。逐条目校验拆分至两个子过程。
+    # GatePayload 桥接形态 { scenario; run_id; node_id }。文件层面的问题（缺文件/
+    # 不可解析）也是 problems——四查通道统一拒不合格交付。契约断言本体在
+    # Test-DesignReviewFileCore（与 design-review submit 双调用点同源，决策 #6）。
     param($GatePayload)
     $problems = @()
     if ($null -eq $GatePayload -or -not ($GatePayload -is [System.Collections.IDictionary])) {
@@ -3147,25 +3472,7 @@ function Test-DesignReviewFile {
     if ($expected.Count -eq 0) { return @("design_review check: stage $stageId has no on-disk design products — its review node should not exist (replan recovered it)") }
     $rv = Read-DesignReviewFile ([string]$bridge.archive) $stageId
     if (-not $rv.ok) { return @("design_review check: $($rv.error)") }
-    $data = $rv.data
-    if ([string]::IsNullOrWhiteSpace([string]$data['reviewed_at'])) { $problems += "design_review check: reviewed_at is absent/empty" }
-    if (([string]$data['reviewer']) -ne 'auditor') { $problems += "design_review check: reviewer must be 'auditor' (got '$([string]$data['reviewer'])')" }
-    if (([string]$data['stage']) -ne $stageId) { $problems += "design_review check: stage field '$([string]$data['stage'])' does not match the reviewed stage '$stageId'" }
-    $docs = @(Convert-ToSafeArray $data['docs'])
-    if ($docs.Count -eq 0) { $problems += "design_review check: docs[] is empty（阶段设计文档全覆盖）" }
-    $seen = @()
-    foreach ($d in @($docs)) {
-        $rel = [string]$d['doc']
-        if ([string]::IsNullOrWhiteSpace($rel)) { $problems += "design_review check: docs[] entry carries an empty doc"; continue }
-        if ($seen -contains $rel) { $problems += "design_review check: docs[] lists '$rel' more than once" }
-        $seen += $rel
-        $problems += @(Test-DesignReviewDocEntry $d $stageId $expected)
-    }
-    foreach ($rel in @($expected)) {
-        if ($seen -notcontains $rel) { $problems += "design_review check: on-disk design doc '$rel' is not covered by docs[]（阶段设计文档全覆盖）" }
-    }
-    $problems += @(Test-DesignReviewSummaryBlock $data['summary'] $stageId $expected)
-    return $problems
+    return @(Test-DesignReviewFileCore $rv.data $stageId $expected)
 }
 
 function Get-DesignReviewDimCounts {
@@ -3199,7 +3506,7 @@ function New-DesignReviewRefluxLines {
     # 回流建议行构造（Add-DesignReviewLedger 子过程）：同 dimension blocking 同
     # run（账本既有条目 + 本次计数）累计 ≥3 → kind=reflux_suggestion 建议行（只建
     # 议不代建）。best-effort：读账本失败返回空。
-    param($Bridge, [string]$StageId, [string]$At, $DimCounts)
+    param($Bridge, [string]$StageId, [string]$At, $DimCounts, [string]$ReviewerText = 'auditor')
     $lines = @()
     try {
         $ledgerPath = Join-Path $repoRoot ".rdd/review-ledger.jsonl"
@@ -3221,7 +3528,7 @@ function New-DesignReviewRefluxLines {
             $total = [int]$DimCounts[$k] + $(if ($perDim.Contains($k)) { [int]$perDim[$k] } else { 0 })
             if ($total -ge 3) {
                 $lines += (ConvertTo-PortableJson ([ordered]@{
-                    at = $At; archive = [string]$Bridge.archive_rel; reviewer = "auditor"; kind = "reflux_suggestion"
+                    at = $At; archive = [string]$Bridge.archive_rel; reviewer = $ReviewerText; kind = "reflux_suggestion"
                     gap_type = $k; run_id = [string]$Bridge.run_id; stage = $StageId
                     detail = "同 dimension blocking 同 run 累计 $total 次（≥3）——建议生成 CTO 模板/流程改进需求（只建议不代建）"
                 }) -Depth 6)
@@ -3232,6 +3539,17 @@ function New-DesignReviewRefluxLines {
     return @($lines)
 }
 
+function Get-DesignReviewLedgerReviewer {
+    # 账本署名（验收 4 统一新枚举）：优先 DesignReviewFile 的 reviewer 字段；读入
+    # 失败按链推导缺省（subagent→auditor-delegated / session→auditor / 缺键 legacy
+    # →auditor，旧链署名逐字节不变）。
+    param($Bridge, $ReviewData)
+    if ($null -ne $ReviewData -and -not [string]::IsNullOrWhiteSpace([string]$ReviewData['reviewer'])) { return [string]$ReviewData['reviewer'] }
+    $modeText = Get-BridgeReviewMode $Bridge
+    if ($modeText -eq 'subagent') { return 'auditor-delegated' }
+    return 'auditor'
+}
+
 function Add-DesignReviewLedger {
     # 触发记账（验收 8）：审查结论明细入 `.rdd/review-ledger.jsonl`（全局单文件
     # JSONL，账本范式追加不重写）——kind=design_review 汇总条目（含维度分布）+
@@ -3239,7 +3557,7 @@ function Add-DesignReviewLedger {
     # run blocking ≥3 次 → 追加回流建议条目（只建议不代建）。best-effort：追加失败
     # 只落 plan-log 警示，不阻塞流转。统计/回流判定拆分至两个子过程。
     # 返回 $Bridge（链式透传，桥内容不变）。
-    param([string]$RunDir, $Bridge, $Stage, $ReviewData, [string]$Verdict, $Blocking)
+    param([string]$RunDir, $Bridge, $Stage, $ReviewData, [string]$Verdict, $Blocking, [string]$ReviewerText = 'auditor')
     $at = Get-UtcNowIso
     $stageId = [string]$Stage['id']
     $counts = Get-DesignReviewDimCounts $ReviewData
@@ -3253,7 +3571,7 @@ function Add-DesignReviewLedger {
     } catch { }
     $lines = @()
     $lines += (ConvertTo-PortableJson ([ordered]@{
-        at = $at; archive = [string]$Bridge.archive_rel; reviewer = "auditor"; kind = "design_review"
+        at = $at; archive = [string]$Bridge.archive_rel; reviewer = $ReviewerText; kind = "design_review"
         run_id = [string]$Bridge.run_id; stage = $stageId; verdict = $Verdict
         docs_count = @(Convert-ToSafeArray $ReviewData['docs']).Count
         blocking_count = @($Blocking).Count; advisory_count = [int]$counts.advisory; dimension_counts = $dimCounts
@@ -3264,12 +3582,12 @@ function Add-DesignReviewLedger {
         $owners = @($dd.doc_tasks[[string]$b['doc']])
         if ($owners.Count -gt 0) { $tid = [int]$owners[0] }
         $lines += (ConvertTo-PortableJson ([ordered]@{
-            at = $at; archive = [string]$Bridge.archive_rel; reviewer = "auditor"; kind = "blocking"
+            at = $at; archive = [string]$Bridge.archive_rel; reviewer = $ReviewerText; kind = "blocking"
             gap_type = [string]$b['dimension']; task_id = $tid; run_id = [string]$Bridge.run_id; stage = $stageId
             detail = [ordered]@{ doc = [string]$b['doc']; item = [string]$b['item']; suggestion = [string]$b['suggestion'] }
         }) -Depth 6)
     }
-    $lines += @(New-DesignReviewRefluxLines $Bridge $stageId $at $dimCounts)
+    $lines += @(New-DesignReviewRefluxLines $Bridge $stageId $at $dimCounts $ReviewerText)
     try {
         $ledgerPath = Join-Path $repoRoot ".rdd/review-ledger.jsonl"
         $dir = Split-Path $ledgerPath -Parent
@@ -3462,13 +3780,25 @@ function Invoke-DesignReviewFailWave {
 
 function Update-DesignReviewPlanned {
     # planned 态推进（Update-StageDesignReviews 子过程）：触发判据 → wait 不动 /
-    # exempt 快速通道 / graft [设计审查·S<k>]（失败下一触发点重试）。
+    # exempt 快速通道 / graft [设计审查·S<k>]（旧链，失败下一触发点重试）/ 新链
+    # ready（auditor-subagent-review：纯契约形态——无节点、无自动会话，plan-log
+    # progress 事件 + status/next 视图提示派审；规划者派五查子代理产出
+    # DesignReviewFile 后经 design-review -Action submit 入库）。
     # 返回 @{ bridge; grafted }（grafted = $null 表示无进展）。
     param([string]$RunDir, $Bridge, $Stage, $FlowTasks)
     $trig = Test-StageDesignTrigger $Bridge $Stage $FlowTasks
     if ($trig.mode -eq 'wait') { return @{ bridge = $Bridge; grafted = $null } }
     if ($trig.mode -eq 'exempt') {
         $Bridge = Set-DesignReviewState $RunDir $Bridge $Stage 'exempt' $null 'design_review_exempt' @{ basis = $trig.reason }
+        return @{ bridge = $Bridge; grafted = $null }
+    }
+    if ($null -ne (Get-BridgeReviewMode $Bridge)) {
+        $Bridge = Set-DesignReviewState $RunDir $Bridge $Stage 'ready' $null 'design_review_ready' @{
+            docs     = @($trig.docs)
+            template = $script:ReviewInputTemplateRel
+            report   = ($script:DesignReviewReportFmt -f ([string]$Stage['id']))
+            note     = "阶段设计汇聚审查就绪——按机械输入模板派评审子代理（独立上下文，禁转述），产出 DesignReviewFile 后 'delivery-bridge.cmd -Command design-review -Action submit -RunId $([string]$Bridge.run_id) -Stage $([string]$Stage['id'])'"
+        }
         return @{ bridge = $Bridge; grafted = $null }
     }
     $accRef = $null
@@ -3497,7 +3827,7 @@ function Update-DesignReviewGrafted {
         $verdict = $dv.verdict
         $blocking = @($dv.blocking)
     }
-    $Bridge = Add-DesignReviewLedger $RunDir $Bridge $Stage $(if ($rv.ok) { $rv.data } else { $null }) $verdict $blocking
+    $Bridge = Add-DesignReviewLedger $RunDir $Bridge $Stage $(if ($rv.ok) { $rv.data } else { $null }) $verdict $blocking (Get-DesignReviewLedgerReviewer $Bridge $(if ($rv.ok) { $rv.data } else { $null }))
     # 裁定明细落段（verdict/reviewed_at/basis 与 status 同步持久化）
     $dr['verdict'] = $verdict
     $dr['reviewed_at'] = $(if ($rv.ok) { [string]$rv.data['reviewed_at'] } else { $null })
@@ -3520,12 +3850,16 @@ function Update-DesignReviewGrafted {
 function Update-StageDesignReviews {
     # Stage design-review state machine——随每个 auto-dispatch 触发点重评（自愈，与
     # Update-StageAcceptancePoints 同放置位；graft/set-route 是状态非推送，no_push
-    # 隔离下照常运行）：
+    # 隔离下照常运行）。双链同机分支（auditor-subagent-review）：
     #   planned → 触发判据（全越过 DESIGN + ≥1 落盘产物 + 阶段有 DESIGN 节点）→
-    #             graft [设计审查·S<k>] / exempt（快速通道）—— Update-DesignReviewPlanned
-    #   grafted → 节点 done → 从 DesignReviewFile 推导总裁定 → passed / failed（记账）
-    #             —— Update-DesignReviewGrafted（failed 同趟落波）
-    #   failed  → fail 波进行中（可重入；完成 → planned 重置 + 旧节点回收）
+    #             旧链 graft [设计审查·S<k>] / 新链 ready（纯契约提示派审）/
+    #             exempt（快速通道）—— Update-DesignReviewPlanned
+    #   grafted → 旧链节点 done → 从 DesignReviewFile 推导总裁定 → passed / failed
+    #             （记账）—— Update-DesignReviewGrafted（failed 同趟落波）
+    #   ready   → 新链等待态：裁定经 design-review -Action submit（规划者提交子代理
+    #             产物）落 passed|failed，本状态机不推进（防重派提示不漂移）
+    #   failed  → fail 波进行中（可重入；完成 → planned 重置 + 旧节点回收[无节点
+    #             时为空操作]）
     param([string]$RunDir, $Bridge)
     $out = @{ bridge = $Bridge; grafted = @(); wave = $null }
     $p = Get-PlanSection $Bridge
@@ -3613,8 +3947,199 @@ function Assert-DesignReviewGateOpen {
     param($Bridge, [int]$TaskId, [string]$StageRole)
     $blockers = Get-DesignReviewGateBlockers $Bridge $TaskId $StageRole
     if (@($blockers).Count -gt 0) {
-        Write-ErrorResult "NODE_BLOCKED_BY_DESIGN_REVIEW" "Task #$TaskId ($StageRole) sits behind an open design review — stage(s): [$($blockers -join ', ')]. Settle the [设计审查·S<k>] node with a passing DesignReviewFile (pass 才放行 IMPL；fail 自动触发重做波), or replan to re-scope the stage; no force bypass." 1
+        Write-ErrorResult "NODE_BLOCKED_BY_DESIGN_REVIEW" "Task #$TaskId ($StageRole) sits behind an open design review — stage(s): [$($blockers -join ', ')]. Land a passing DesignReviewFile first (legacy chain: settle the [设计审查·S<k>] node; review_mode chain: delivery-bridge.cmd -Command design-review -Action submit) — pass 才放行 IMPL；fail 自动触发重做波; or replan to re-scope the stage; no force bypass." 1
     }
+}
+
+# === Command: design-review (auditor-subagent-review，纯契约入库) ===
+#
+# 新链（bridge.json review_mode 存在）设计汇聚审查的唯一裁定入口：规划者派五查
+# 评审子代理（输入 = review-input-template.md 机械清单，独立上下文）产出
+# DesignReviewFile 后经 -Action submit 入链；契约校验与 node settle 同源
+# （Test-DesignReviewFileCore，决策 #6），总裁定引擎推导（不采信声明值），fail
+# 触发既有重做波（无节点可回收——状态重置 + 覆盖重产）。缺键 legacy run 不适用
+# （照旧 settle [设计审查·S<k>] 节点，行为不回溯）。评审子代理不经 bridge
+# claim/settle——它不是树节点，产物经规划者入链。
+
+function Get-DesignReviewSubmitStage {
+    # -Stage 解析（Invoke-DesignReviewSubmit 前置）：plan.stages 内带 design_review
+    # 槽位的阶段。返回 @{ ok; stage; error }（error = @{ code; message }）。
+    param($Bridge, [string]$StageIdText)
+    if ([string]::IsNullOrWhiteSpace($StageIdText)) {
+        return @{ ok = $false; stage = $null; error = @{ code = "MISSING_STAGE"; message = "design-review requires -Stage <S<k>> (the plan stage id whose review product is submitted)" } }
+    }
+    $p = Get-PlanSection $Bridge
+    if ($null -eq $p) {
+        return @{ ok = $false; stage = $null; error = @{ code = "PLAN_SECTION_MISSING"; message = "run carries no plan section — design review is a plan-stage mechanism" } }
+    }
+    foreach ($st in @($p['stages'])) {
+        if (([string]$st['id']) -ne $StageIdText) { continue }
+        if ($null -eq $st['design_review']) {
+            return @{ ok = $false; stage = $null; error = @{ code = "DESIGN_REVIEW_SECTION_MISSING"; message = "stage $StageIdText carries no design_review slot (pre-feature run shape)" } }
+        }
+        return @{ ok = $true; stage = $st; error = $null }
+    }
+    return @{ ok = $false; stage = $null; error = @{ code = "STAGE_NOT_FOUND"; message = "stage '$StageIdText' not found in the run's plan" } }
+}
+
+function Invoke-DesignReviewSubmitGate {
+    # submit 门（Invoke-DesignReviewSubmit 前置拆分）：状态必须 ready（提前/重复
+    # 提交确定性拒绝——触发判据与派审时序不可跳过）→ 审查对象面 → DesignReviewFile
+    # 读入 → 契约核心校验（违规 SETTLE_EVIDENCE_REJECTED 问题清单、修复重报）。
+    # 返回 @{ bridge; stage; stage_id; mode; review; expected }（不通过即硬错退出）。
+    param($Bridge, $Stage, [string]$ModeText)
+    $stageId = [string]$Stage['id']
+    $status = [string]$Stage['design_review']['status']
+    if ($status -ne 'ready') {
+        Write-ErrorResult "DESIGN_REVIEW_NOT_READY" "stage $stageId design_review is '$status' — submit is accepted only in 'ready'（触发判据达成后的派审态）; fail 波进行中待其完成重置 planned 再审，passed/failed 不接受重复提交" 1
+    }
+    $flow = Read-ArchiveTasks $Bridge.archive
+    $dd = Get-StageDesignDocs $Bridge $Stage $flow.tasks
+    $expected = @($dd.docs)
+    $rv = Read-DesignReviewFile ([string]$Bridge.archive) $stageId
+    if (-not $rv.ok) { Write-ErrorResult "SETTLE_EVIDENCE_REJECTED" "Unqualified delivery — nothing transitioned. Problems: design_review check: $($rv.error)" 1 }
+    $problems = @()
+    if ($expected.Count -eq 0) {
+        $problems += "design_review check: stage $stageId has no on-disk design products — the review was invalidated before submit (重触发后覆盖重产重审)"
+    }
+    else {
+        $problems = @(Test-DesignReviewFileCore $rv.data $stageId $expected)
+    }
+    if ($problems.Count -gt 0) {
+        Write-ErrorResult "SETTLE_EVIDENCE_REJECTED" "Unqualified delivery — nothing transitioned. Problems: $($problems -join '; ')（修复 DesignReviewFile 后重报）" 1
+    }
+    return @{ bridge = $Bridge; stage = $Stage; stage_id = $stageId; mode = $ModeText; review = $rv.data; expected = $expected }
+}
+
+function Submit-DesignReviewVerdict {
+    # 裁定落账（Invoke-DesignReviewSubmit 主体拆分）：总裁定引擎推导（不采信声明
+    # 值）→ review-ledger 记账（署名 = reviewer 枚举）→ passed / failed（fail 同趟
+    # 落波，与 legacy grafted 路径同一 fail 波实现——无节点时回收为空操作）。
+    # 返回 @{ bridge; verdict; blocking; wave; reviewed_at; reviewer }。
+    param([string]$RunDir, $Bridge, $Stage, [string]$ModeText, $ReviewData)
+    $stageId = [string]$Stage['id']
+    $dv = Get-DesignReviewVerdict $ReviewData
+    $verdict = [string]$dv.verdict
+    $blocking = @($dv.blocking)
+    $reviewerText = Get-DesignReviewLedgerReviewer $Bridge $ReviewData
+    $Bridge = Add-DesignReviewLedger $RunDir $Bridge $Stage $ReviewData $verdict $blocking $reviewerText
+    $dr = $Stage['design_review']
+    $dr['verdict'] = $verdict
+    $dr['reviewed_at'] = [string]$ReviewData['reviewed_at']
+    $basis = "all docs pass with zero blocking findings (engine-derived; design-review submit, mode=$ModeText)"
+    if ($verdict -eq 'pass') {
+        $dr['basis'] = $basis
+        $Bridge = Set-DesignReviewState $RunDir $Bridge $Stage 'passed' $null 'design_review_passed' @{
+            verdict = 'pass'; reviewed_at = $dr['reviewed_at']; mode = $ModeText; reviewer = $reviewerText; basis = $basis
+        }
+        return @{ bridge = $Bridge; verdict = $verdict; blocking = @($blocking); wave = $null; reviewed_at = $dr['reviewed_at']; reviewer = $reviewerText }
+    }
+    $Bridge = Set-DesignReviewState $RunDir $Bridge $Stage 'failed' $null 'design_review_failed' @{
+        verdict = 'fail'; blocking_count = @($blocking).Count; mode = $ModeText; reviewer = $reviewerText
+        note = "design-review submit verdict=fail — fail 波重做（状态重置 + 覆盖重产，无节点可回收）"
+    }
+    $flowTasks = @(Get-DesignReviewFlowTasks $Bridge)
+    $wave = Invoke-DesignReviewFailWave $RunDir $Bridge $Stage $flowTasks
+    return @{ bridge = $wave.bridge; verdict = $verdict; blocking = @($blocking); wave = $wave; reviewed_at = $dr['reviewed_at']; reviewer = $reviewerText }
+}
+
+function New-DesignReviewSubmitResult {
+    # submit 回执（Invoke-DesignReviewSubmit 尾部拆分）：裁定 + 落点 + fail 波效果
+    # + 同趟 auto-dispatch 结果（pass 解锁的 IMPL 节点即时推送）。
+    param([string]$RunIdText, $Stage, [string]$ModeText, $ReviewData, $Adjudged, $Push)
+    $stageId = [string]$Stage['id']
+    return @{
+        success = $true
+        data    = @{
+            run_id      = $RunIdText
+            stage       = $stageId
+            review_mode = $ModeText
+            verdict     = [string]$Adjudged.verdict
+            status      = [string]$Stage['design_review']['status']
+            reviewed_at = [string]$Adjudged.reviewed_at
+            reviewer    = [string]$Adjudged.reviewer
+            production  = $(if (Test-PropPresent $ReviewData 'production') { $ReviewData['production'] } else { $null })
+            report      = ($script:DesignReviewReportFmt -f $stageId)
+            blocking    = @($Adjudged.blocking | ForEach-Object { @{ doc = [string]$_.doc; dimension = [string]$_.dimension; item = [string]$_.item; suggestion = [string]$_.suggestion } })
+            wave        = $(if ($null -ne $Adjudged.wave) { @{ rolled = @($Adjudged.wave.rolled); deferred = @($Adjudged.wave.deferred); warnings = @($Adjudged.wave.warnings) } } else { $null })
+            auto_push   = @{ trigger = $Push.trigger; pushed = @($Push.pushed); blocked = @($Push.skipped | Where-Object { $_.reason -eq 'blocked_by_deps' } | ForEach-Object { $_.node }); failed = @($Push.failed) }
+            next_step   = $(if ([string]$Adjudged.verdict -eq 'pass') { "stage $stageId design review passed (engine-derived) — IMPL 闸门已开，后续触发点照常推送" } else { "verdict=fail — fail 波已执行：受影响任务回 DESIGN 重做，重做收敛后状态机重新置 ready（覆盖重产重审）" })
+        }
+    }
+}
+
+function Invoke-DesignReviewSubmit {
+    # design-review -Action submit 主编排（门序拆分至三个子过程，函数行数整改纪律）：
+    # legacy 拒绝 → -Stage 解析 → submit 门（ready + 契约）→ 裁定落账 → 回执。
+    $runDir = Get-BridgeRunDir $RunId
+    $bridge = Require-Bridge $runDir
+    $modeText = Get-BridgeReviewMode $bridge
+    if ($null -eq $modeText) {
+        Write-ErrorResult "DESIGN_REVIEW_LEGACY_RUN" "run $RunId carries no review_mode (缺键 legacy chain) — adjudicate its [设计审查·S<k>] node via -Command settle instead（既有节点照常结算，行为不回溯）" 1
+    }
+    $null = Enter-PlannerLease $runDir
+    $res = Get-DesignReviewSubmitStage $bridge $Stage
+    if (-not $res.ok) { Write-ErrorResult $res.error.code $res.error.message 1 }
+    $gate = Invoke-DesignReviewSubmitGate $bridge $res.stage $modeText
+    $adjudged = Submit-DesignReviewVerdict $runDir $gate.bridge $gate.stage $gate.mode $gate.review
+    $push = Invoke-AutoDispatch $runDir $adjudged.bridge "design-review submit"
+    return New-DesignReviewSubmitResult $RunId $gate.stage $gate.mode $gate.review $adjudged $push
+}
+
+function Get-DesignReviewStatusView {
+    # design-review -Action status 只读派审面：逐阶段审查状态 + 机械输入清单（docs /
+    # criteria_ref / conventions / report 落点 / 模板 ref / production 常量）——规划
+    # 者填充 review-input-template.md 的全部可填充物由此机械导出，零转述零裁量。
+    param($Bridge)
+    $modeText = Get-BridgeReviewMode $Bridge
+    $rows = @()
+    $p = Get-PlanSection $Bridge
+    if ($null -ne $p) {
+        $flowTasks = @(Get-DesignReviewFlowTasks $Bridge)
+        $a = Get-AcceptanceSection $Bridge
+        foreach ($st in @($p['stages'])) {
+            $dr = $st['design_review']
+            if ($null -eq $dr) { continue }
+            $dd = Get-StageDesignDocs $Bridge $st $flowTasks
+            $rows += [ordered]@{
+                stage       = [string]$st['id']
+                status      = [string]$dr['status']
+                verdict     = $(if ([string]::IsNullOrWhiteSpace([string]$dr['verdict'])) { $null } else { [string]$dr['verdict'] })
+                docs        = @($dd.docs)
+                criteria_ref = $(if ($null -ne $a) { [string]$a['criteria_ref'] } else { $null })
+                conventions = Get-ConventionsRef $Bridge
+                report      = ($script:DesignReviewReportFmt -f ([string]$st['id']))
+                template    = $script:ReviewInputTemplateRel
+                production  = @{ mode = $(if ($null -ne $modeText) { $modeText } else { 'subagent' }); template = $script:ReviewInputTemplateRel }
+            }
+        }
+    }
+    return @{
+        success = $true
+        data    = @{
+            run_id      = [string]$Bridge.run_id
+            review_mode = $modeText
+            chain       = $(if ($null -ne $modeText) { "contract (submit)" } else { "legacy (node settle)" })
+            reviewers   = @($script:DesignReviewReviewers)
+            stages      = @($rows)
+            next_step   = $(if (@($rows | Where-Object { [string]$_.status -eq 'ready' }).Count -gt 0) { "有 ready 阶段：按模板常量表填充 review-input-template.md 机械清单派评审子代理（独立上下文），产出 DesignReviewFile 后 -Action submit 入库" } else { "无待派审阶段" })
+        }
+    }
+}
+
+function Invoke-BridgeDesignReview {
+    # design-review 命令族（auditor-subagent-review）：动作仅 submit|status——其余
+    # 动作值属 conflict/derive，此处确定性拒绝（各命令守卫自己的动作集）。
+    if (@('open', 'resolve', 'propose', 'confirm', 'withdraw') -contains $Action) {
+        Write-ErrorResult "DESIGN_REVIEW_ACTION_INVALID" "-Action $Action belongs to conflict/derive — design-review accepts submit / status" 1
+    }
+    if ($Action -eq 'submit') { return Invoke-DesignReviewSubmit }
+    if ($Action -eq 'status') {
+        $runDir = Get-BridgeRunDir $RunId
+        $bridge = Require-Bridge $runDir
+        return Get-DesignReviewStatusView $bridge
+    }
+    Write-ErrorResult "DESIGN_REVIEW_ACTION_REQUIRED" "-Action is required (submit / status)" 1
 }
 
 function Test-PlanEventSeen {
@@ -3684,6 +4209,11 @@ function Write-PlanSettleTail {
     $taskId = [int]$Target.task_id
     $stage = Get-PlanStageOfTask $p $taskId
     if ($null -eq $stage) {
+        # planner-midrun-derive: a registered-unabsorbed derived task sits outside
+        # the stages by design during the absorption window — no deviation noise
+        # for it (the whitelist mirrors Test-PlanDeliveryFit's $ExemptIds).
+        $exempt = @(Get-UnabsorbedDerivedTaskIds $Bridge)
+        if ($exempt -contains $taskId) { return }
         $null = Add-PlanEvent $RunDir 'deviation' 'scope' $NodeIdText $taskId $null @{ key = "task#$taskId"; signature = 'settled_out_of_plan'; note = "settled task is not covered by any plan stage (范围变化)" }
         return
     }
@@ -3745,6 +4275,21 @@ function Compare-PlanStageEntry {
     return @($rows)
 }
 
+function Set-NewPlanStageReviewSlot {
+    # replan 新增阶段的审查槽位（auditor-subagent-review × planner-midrun-derive
+    # 集成面）：run 中途派生并入新阶段是 derive 通道的常态出口（同阶段吸收在派生
+    # 任务带 DependsOn 时与审查触发条件互锁），而新段若无 design_review 段则其设计
+    # 产物静默逃过阶段的边界审查——新链"评审强制、无 off 值"因此有缺口。
+    # 新链（bridge.json review_mode 存在）恒落 planned 槽位，与 promulgate 段同构；
+    # 缺键 legacy run 不落段（部署双探只在 promulgate 生效，逐字节不回改）。
+    param([string]$RunDir, $Bridge, $Stage, [string]$StageId)
+    $reviewMode = ""
+    if (Test-PropPresent $Bridge 'review_mode') { $reviewMode = [string]$Bridge['review_mode'] }
+    if ([string]::IsNullOrWhiteSpace($reviewMode)) { return }
+    $Stage['design_review'] = @{ status = 'planned'; node = $null; verdict = $null; reviewed_at = $null; basis = $null }
+    $null = Add-PlanEvent $RunDir 'progress' 'design_review_slot_staged' $null $null $StageId @{ trigger = 'replan'; reason = 'new stage lands a fresh design-review slot (review is mandatory in the review_mode chain)' }
+}
+
 function Merge-PlanRevision {
     # replan application: carry runtime acceptance state over for untouched
     # stages; stages whose verified content changed reset to planned (the
@@ -3757,7 +4302,7 @@ function Merge-PlanRevision {
         $sid = [string]$st['id']
         $old = $null
         foreach ($o in @($OldSec['stages'])) { if (([string]$o['id']) -eq $sid) { $old = $o; break } }
-        if ($null -eq $old) { continue }
+        if ($null -eq $old) { Set-NewPlanStageReviewSlot $RunDir $Bridge $st $sid; continue }
         $contentSame = ((ConvertTo-PortableJson @($old['task_ids'])) -eq (ConvertTo-PortableJson @($st['task_ids']))) -and
                        ((ConvertTo-PortableJson @($old['batches'])) -eq (ConvertTo-PortableJson @($st['batches']))) -and
                        (([string]$old['acceptance_point']['slice']) -eq ([string]$st['acceptance_point']['slice']))
@@ -3941,6 +4486,30 @@ function Get-PlanDepMaps {
     return @{ delivered = @($delivered | Sort-Object); deps = $deps }
 }
 
+function Set-DerivationAbsorptions {
+    # replan 吸收标记（planner-midrun-derive）：revised plan stages 覆盖到的
+    # registered-unabsorbed 派生条目标 absorbed（有变化才写回 bridge）。
+    # 返回 @{ bridge; absorbed = @("DRV<n>=task#<id>") }。
+    param([string]$RunDir, $Bridge, [int[]]$StagedIds)
+    $derivations = @(Get-DerivationSection $Bridge)
+    $absorbedNow = @()
+    foreach ($x in $derivations) {
+        if (([string]$x['status']) -ne 'registered') { continue }
+        if ((Test-PropPresent $x 'absorbed') -and $x['absorbed'] -eq $true) { continue }
+        if ($null -eq $x['task_id']) { continue }
+        if ($StagedIds -contains [int]$x['task_id']) {
+            $x['absorbed'] = $true
+            $x['absorbed_at'] = Get-UtcNowIso
+            $absorbedNow += "$([string]$x['id'])=task#$([string]$x['task_id'])"
+        }
+    }
+    if ($absorbedNow.Count -gt 0) {
+        $Bridge['derivations'] = $derivations
+        Write-BridgeFile $RunDir $Bridge
+    }
+    return @{ bridge = $Bridge; absorbed = @($absorbedNow) }
+}
+
 function Invoke-BridgeReplan {
     # long-task-planning rolling correction — the ONLY correction entry point:
     # revised PlanFile + mandatory -Reason -> DAG-fit validation -> structured
@@ -3961,26 +4530,38 @@ function Invoke-BridgeReplan {
     $newPlan = Read-PlanFile $PlanFile
     $flow = Read-ArchiveTasks $bridge.archive
     $maps = Get-PlanDepMaps $bridge
-    Test-PlanDeliveryFit $newPlan @($flow.tasks | ForEach-Object { [int]$_.id }) $maps.delivered $maps.deps
+    # planner-midrun-derive replan whitelist: registered-unabsorbed derived ids
+    # may sit outside the stages during the absorption window; covering one
+    # marks it absorbed (a later replan dropping it re-fails coverage).
+    $exempt = @(Get-UnabsorbedDerivedTaskIds $bridge)
+    Test-PlanDeliveryFit $newPlan @($flow.tasks | ForEach-Object { [int]$_.id }) $maps.delivered $maps.deps -ExemptIds $exempt
     Test-PlanCriteriaRef $newPlan (Read-AcceptanceCriteria ([string]$bridge.archive))
     $changes = Compare-PlanRevisions $oldSec $newPlan
     $bridge = Merge-PlanRevision $runDir $bridge $oldSec $newPlan $PlanFile
+    $stagedIds = @()
+    foreach ($st in @($newPlan.stages)) { $stagedIds += @($st.task_ids | ForEach-Object { [int]$_ }) }
+    $absorb = Set-DerivationAbsorptions $runDir $bridge $stagedIds
+    $bridge = $absorb.bridge
+    $absorbedNow = @($absorb.absorbed)
     $rev = [int]((Get-PlanSection $bridge)['revision'])
     $null = Add-PlanEvent $runDir 'revision' 'replan' $null $null $null @{ reason = $Reason; revision = $rev; changes = $changes }
     $push = Invoke-AutoDispatch $runDir $bridge "replan"
     $bridge = $push.bridge
-    return @{
-        success = $true
-        data    = [ordered]@{
-            run_id     = $RunId
-            revision   = $rev
-            reason     = $Reason
-            changes    = @($changes)
-            plan       = Get-PlanView $runDir $bridge
-            auto_push  = @{ trigger = $push.trigger; pushed = @($push.pushed); failed = @($push.failed); skipped = @($push.skipped | ForEach-Object { "$($_.node):$($_.reason)" }) }
-            next_step  = "plan revision $rev applied — unlock set recomputed and stage gates re-evaluate against the revised stages"
-        }
+    # 编排裁定自动入账（统一决策账本，advisory）
+    $ruling = Add-OrchestrationRuling -ArchivePath ([string]$bridge.archive) -RunIdText $RunId -CommandName 'replan' -DecisionText "replan revision $rev applied（absorbed: [$($absorbedNow -join ', ')]）" -ReasonText $Reason -OptionsArr @('维持原 plan', 'replan 滚动修正')
+    $result = [ordered]@{
+        run_id     = $RunId
+        revision   = $rev
+        reason     = $Reason
+        changes    = @($changes)
+        derivations_absorbed = @($absorbedNow)
+        plan       = Get-PlanView $runDir $bridge
+        auto_push  = @{ trigger = $push.trigger; pushed = @($push.pushed); failed = @($push.failed); skipped = @($push.skipped | ForEach-Object { "$($_.node):$($_.reason)" }) }
+        decision_ledger = $(if ($ruling.entry) { @{ entry_id = [string]$ruling.entry['entry_id'] } } else { $null })
+        next_step  = "plan revision $rev applied — unlock set recomputed and stage gates re-evaluate against the revised stages"
     }
+    if ($ruling.warning) { $result['warnings'] = @($ruling.warning) }
+    return @{ success = $true; data = $result }
 }
 
 # === Command: promulgate ===
@@ -4181,9 +4762,12 @@ function New-BridgeSkeleton {
     # bridge.json v2 skeleton: node<->TaskId authoritative mapping + goal_root
     # anchor + the acceptance placeholder (overall-delivery, planned -> grafted)
     # + the plan section (long-task-planning current state; mandatory at
-    # promulgate since -PlanFile is a hard gate).
+    # promulgate since -PlanFile is a hard gate). max_derivation
+    # (planner-midrun-derive) lands ONLY when promulgate passes
+    # -MaxDerivations > 0 — absent key = default 3 (Get-MaxDerivations), and
+    # legacy bridge.json files stay byte-compatible (optional section).
     param([string]$RunId, [string]$ArchivePath, [string]$ArchiveRel, $Goal, [string]$CreatedByText, $Acceptance, $PlanSec)
-    return @{
+    $skel = @{
         format_version  = 2
         run_id          = $RunId
         archive         = $ArchivePath
@@ -4199,6 +4783,11 @@ function New-BridgeSkeleton {
         pending_sync    = @()
         pushes          = @{}
     }
+    if ([int]$MaxDerivations -gt 0) { $skel['max_derivation'] = [int]$MaxDerivations }
+    # auditor-subagent-review: review_mode 落桥（决策 #4 配置项载体）——有键 = 新链
+    # （纯契约）；缺键 = 存量 run 旧链逐字节（决策 #7 缺键兼容判据）。
+    if (-not [string]::IsNullOrWhiteSpace($ReviewMode)) { $skel['review_mode'] = [string]$ReviewMode }
+    return $skel
 }
 
 function Invoke-InitialChainGrafts {
@@ -4391,8 +4980,11 @@ function New-PromulgateResult {
                 }
             } else { $null })
             budget       = @{ max_rounds = $MaxRounds; node_width = $EffWidth; max_nodes = $EffMaxNodes }
-            # auditor-design-stage-review: 部署状态回显（未部署 = 降级警示，现行行为）
-            design_review = $(if (@(@($PlanSec['stages']) | Where-Object { $null -ne $_['design_review'] }).Count -gt 0) {
+            # auditor-subagent-review: 新链回显 review_mode（部署判据 = 配置项）；
+            # 缺键旧链回显部署状态原文（未部署 = 降级警示，逐字节不变）。
+            design_review = $(if (-not [string]::IsNullOrWhiteSpace($ReviewMode)) {
+                @{ mode = [string]$ReviewMode; deployed = $true; note = "评审内生于规划者：阶段边界派五查评审子代理（机械模板 $script:ReviewInputTemplateRel，独立上下文）产出 DesignReviewFile，'delivery-bridge.cmd -Command design-review -Action submit' 入库；pass 才放行 IMPL（闸门三触点：push skip / claim / dispatch 硬拒）" }
+            } elseif (@(@($PlanSec['stages']) | Where-Object { $null -ne $_['design_review'] }).Count -gt 0) {
                 @{ deployed = $true; note = "DESIGN 全 settle 后自动 graft [设计审查·S<k>]（AUDITOR 汇聚五查，一批一会话）；pass 才放行 IMPL（闸门三触点：push skip / claim / dispatch 硬拒）" }
             } else {
                 @{ deployed = $false; note = "AUDITOR 未部署——降级为现行行为（设计不审直接 IMPL），不落 design_review 段；安装 rdd-auditor 后新 run 生效" }
@@ -4438,9 +5030,11 @@ function Get-PromulgateBudget {
     foreach ($p in $Plan) { $headCount += @($p.group).Count }
     $extra = [Math]::Max(0, $StageCount - 1)
     # auditor-design-stage-review: +K（K=阶段数，单阶段 run 即「+1」）——每阶段最多
-    # 1 个 [设计审查·S<k>] goal-root 子位；仅 AUDITOR 已部署时计入（未部署零节点）。
+    # 1 个 [设计审查·S<k>] goal-root 子位；+K 分支化（auditor-subagent-review）：
+    # 缺键旧链仅 AUDITOR 已部署时计入（未部署零节点）；新链（review_mode）审查无
+    # 节点（纯契约），goal-root 子位零占用，不再预留。
     $extraReview = 0
-    if (Test-AuditorDeployed) { $extraReview = $StageCount }
+    if ([string]::IsNullOrWhiteSpace($ReviewMode) -and (Test-AuditorDeployed)) { $extraReview = $StageCount }
     return @{
         width     = $(if ($NodeWidth -gt 0) { $NodeWidth } else { [Math]::Max(4, $headCount + 2 + $extra + $extraReview) })
         max_nodes = $(if ($MaxNodes -gt 0) { $MaxNodes } else { (@($Plan).Count * 5 + 6 + $extra + $extraReview) })
@@ -4537,9 +5131,10 @@ function Invoke-Promulgate {
     # criteria anchor rules; only then is the plan injected as bridge state.
     Test-PlanPromulgateFit $planParsed $plan $allIds $criteria
     $planSec = New-PlanSection $planParsed $PlanFile
-    # auditor-design-stage-review: AUDITOR 已部署 → 每 stage 落 design_review 槽位
-    # （未部署 = 无段无门零成本，现行行为；警示随结果回显）。
-    $drSlots = Set-PlanDesignReviewSlots $planSec
+    # auditor-design-stage-review: design_review 槽位落段分支化（auditor-subagent-
+    # review）——新链（-ReviewMode）恒落（评审内生于规划者）；缺键旧链 AUDITOR 已
+    # 部署才落段（未部署 = 无段无门零成本，现行行为；警示随结果回显）。
+    $drSlots = Set-PlanDesignReviewSlots $planSec $ReviewMode
     $planSec = $drSlots.plan
     $budget = Get-PromulgateBudget $plan (@($planParsed.stages).Count)
 
@@ -5086,11 +5681,11 @@ function Invoke-RedoPointerPush {
     # 重报指令拼进附录，经 Invoke-StartRolePush 投给原会话。投递失败即
     # RECLAIM_INPLACE_PROMPT_FAILED（Write-ErrorResult 直接退出——状态零
     # 迁移）。返回 $push（含更新后的 bridge）。
-    param([string]$RunDir, $Bridge, [string]$NodeIdText, [int]$TaskId, [string]$Stage, [string]$Worker, [string]$SessionId, [string]$FailureRefText)
+    param([string]$RunDir, $Bridge, [string]$NodeIdText, [int]$TaskId, [string]$Stage, [string]$Worker, [string]$SessionId, [string]$FailureRefText, [switch]$TreeLevel)
     $qsHint = ""
     if ($Stage -eq "DEV") { $qsHint = "；DEV 交付另需 extras.quality_scan 质量扫描凭据（violation_count=0）" }
     $appendix = "重做指令：节点 $NodeIdText 的交付未通过 settle 四查（rejected delivery）。失败清单：$FailureRefText。请在原会话内修复上述问题后重新出报：goal-tree-leaf.cmd -Command report -RunId $RunId -Worker $Worker -CallbackFile <回调JSON>（citations=改动清单、extras.verification=验证结果$qsHint）。本节点已退回 claimed（原会话 in-place 重做，ledger 已留 redo 留痕）。"
-    $cand = @{ node = $NodeIdText; stage = $Stage; task_id = $TaskId; tree_level = $false }
+    $cand = @{ node = $NodeIdText; stage = $Stage; task_id = $TaskId; tree_level = ([bool]$TreeLevel) }
     $push = Invoke-StartRolePush -Cand $cand -RunDir $RunDir -Bridge $Bridge -TaskText (Get-NodeTaskText -RunId $RunId -NodeId $NodeIdText) -ExistingSessionId $SessionId -Appendix $appendix
     if (-not $push.ok) {
         # pointer-class failure onto an existing session: state NOT migrated
@@ -5113,7 +5708,7 @@ function Invoke-ReclaimInPlace {
     # mechanical precondition: an empty assembled ref with no -FailureRef
     # hard-rejects (REDO_FAILURE_REF_MISSING) — a redo pointer without a
     # failure list makes the session guess, worse than a fresh session.
-    param([string]$RunDir, $Bridge, $Node, [string]$NodeIdText, [int]$TaskId, [string]$Stage, $Problems, $Live)
+    param([string]$RunDir, $Bridge, $Node, [string]$NodeIdText, [int]$TaskId, [string]$Stage, $Problems, $Live, [switch]$TreeLevel)
     $sessionId = [string]$Live.session_id
     $worker = [string]$Node.claimed_by
     if ([string]::IsNullOrWhiteSpace($worker)) { $worker = $Stage }
@@ -5131,7 +5726,7 @@ function Invoke-ReclaimInPlace {
     $noPush = ((Test-PropPresent $Bridge 'no_push') -and $Bridge['no_push'] -eq $true)
     $push = $null
     if (-not $noPush) {
-        $push = Invoke-RedoPointerPush -RunDir $RunDir -Bridge $Bridge -NodeIdText $NodeIdText -TaskId $TaskId -Stage $Stage -Worker $worker -SessionId $sessionId -FailureRef $failureRef
+        $push = Invoke-RedoPointerPush -RunDir $RunDir -Bridge $Bridge -NodeIdText $NodeIdText -TaskId $TaskId -Stage $Stage -Worker $worker -SessionId $sessionId -FailureRef $failureRef -TreeLevel:$TreeLevel
         $Bridge = $push.bridge
     }
     # --- migration (prompt-first: the LAST write) ---
@@ -5288,9 +5883,13 @@ function Invoke-BridgeReclaim {
         # tree-level design-review node (auditor-design-stage-review; 边界与异常:
         # 审查节点自身失败走既有 reclaim dead-claim 通道)——分支体见
         # Invoke-ReclaimDesignReviewNode（本函数行数预算拆分）。
+        # derivation PM node (planner-midrun-derive): same family dead-claim /
+        # rejected-delivery channel — 分支体见 Invoke-ReclaimDerivationNode。
         $drInfo = Get-DesignReviewNodeInfo $bridge $NodeId
-        if ($null -eq $drInfo) { Write-ErrorResult "NODE_NOT_MAPPED" "Node $NodeId is not in this run's bridge mapping" 2 }
-        return Invoke-ReclaimDesignReviewNode $runDir $bridge $NodeId
+        if ($null -ne $drInfo) { return Invoke-ReclaimDesignReviewNode $runDir $bridge $NodeId }
+        $derInfo = Find-DerivationByNode $bridge $NodeId
+        if ($null -ne $derInfo) { return Invoke-ReclaimDerivationNode $runDir $bridge $NodeId $derInfo }
+        Write-ErrorResult "NODE_NOT_MAPPED" "Node $NodeId is not in this run's bridge mapping" 2
     }
     $stage = [string]$mapping.stage
     $taskId = [int]$mapping.task_id
@@ -5303,17 +5902,27 @@ function Invoke-BridgeReclaim {
     $node = $leafStatus.json.data.node
     $nodeStatus = [string]$node.status
 
+    $res = $null
     if ($nodeStatus -eq "reported") {
-        return Invoke-ReclaimRejectedDelivery $runDir $bridge $node $NodeId $taskId $stage
+        $res = Invoke-ReclaimRejectedDelivery $runDir $bridge $node $NodeId $taskId $stage
     }
-    if ($nodeStatus -eq "pending") {
+    elseif ($nodeStatus -eq "pending") {
         Write-ErrorResult "RECLAIM_NOT_NEEDED" "Node $NodeId is pending (nobody claimed it) — a plain bridge claim is enough; reclaim recovers dead claims or rejected deliveries." 1
     }
-    if ($nodeStatus -in @("done", "pruned")) {
+    elseif ($nodeStatus -in @("done", "pruned")) {
         Write-ErrorResult "RECLAIM_NOT_POSSIBLE" "Node $NodeId is '$nodeStatus' — terminal; nothing to reclaim." 1
     }
-    # claimed: the dead-claim recovery path
-    return Invoke-ReclaimDeadClaim $runDir $bridge $node $NodeId $taskId $stage
+    else {
+        # claimed: the dead-claim recovery path
+        $res = Invoke-ReclaimDeadClaim $runDir $bridge $node $NodeId $taskId $stage
+    }
+    # 编排裁定自动入账（统一决策账本，advisory）——reclaim 也是规划者裁定
+    if ($null -ne $res -and $res.success) {
+        $ruling = Add-OrchestrationRuling -ArchivePath ([string]$bridge.archive) -RunIdText $RunId -CommandName 'reclaim' -DecisionText "reclaim $($res.data.mode) applied to node $($res.data.node_id)$(if ($res.data.task_id) { " (task #$($res.data.task_id))" })" -ReasonText $(if ([string]::IsNullOrWhiteSpace($Reason)) { "dead claim / rejected delivery recovery" } else { $Reason }) -OptionsArr @('等（长任务纪律）', 'reclaim 回收')
+        if ($ruling.warning) { $res.data['warnings'] = @(@(Convert-ToSafeArray $res.data['warnings']) + $ruling.warning) }
+        elseif ($ruling.entry) { $res.data['decision_ledger'] = @{ entry_id = [string]$ruling.entry['entry_id'] } }
+    }
+    return $res
 }
 
 # === Command: rollback (cross-stage reverse transition, planner-stage-rollback) ===
@@ -5687,8 +6296,10 @@ function Invoke-BridgeRollback {
     $dependents = @(Get-RollbackDependents $bridge $NodeId)
     $targetJoined = @($ctx.target_roles) -join '+'
     $nextStep = New-RollbackNextStep $flow $rebuild.node_id $targetJoined @($dependents).Count
+    # 编排裁定自动入账（统一决策账本，advisory）
+    $ruling = Add-OrchestrationRuling -ArchivePath ([string]$bridge.archive) -RunIdText $RunId -CommandName 'rollback' -DecisionText "rollback node $NodeId -> [$targetJoined]@$([string]$ctx.target_phase)（task #$($ctx.task_id)）" -ReasonText ([string]$ctx.reason) -OptionsArr @('settle 前进', 'reclaim 同阶段重做', 'rollback 跨阶段回退')
 
-    return @{
+    $res = @{
         success = $true
         data    = @{
             run_id             = $RunId
@@ -5707,6 +6318,9 @@ function Invoke-BridgeRollback {
             next_step          = $nextStep
         }
     }
+    if ($ruling.warning) { $res.data['warnings'] = @(@($flow.warnings) + $ruling.warning) }
+    elseif ($ruling.entry) { $res.data['decision_ledger'] = @{ entry_id = [string]$ruling.entry['entry_id'] } }
+    return $res
 }
 
 # === Role handoff gate (unified gate at BOTH handoff points) ===
@@ -6151,15 +6765,23 @@ function Invoke-PhaseSettleFlow {
 function Resolve-SettleTarget {
     # Resolve the settle target: bridge-mapped (task, stage) OR a tree-level node
     # (acceptance chain / in-tree repair node, no TaskId — the unified branch).
-    # Returns @{ stage; task_id; tree_level; acceptance; next_stage }.
+    # mid-run derivation PM node (planner-midrun-derive): probed BEFORE the
+    # generic tree-level repair fallback — its settle runs the controlled
+    # registration branch (add-task 代写 + chain-head pre-graft), not the plain
+    # tree-only settle. Returns @{ stage; task_id; tree_level; acceptance;
+    # next_stage; derivation }.
     param($Bridge, [string]$NodeIdText, [string]$RunDirText)
     $mapping = Get-NodeTaskStage $Bridge $NodeIdText
     if ($null -ne $mapping) {
-        return @{ stage = [string]$mapping.stage; task_id = [int]$mapping.task_id; tree_level = $false; acceptance = $null; next_stage = $script:StageNext[[string]$mapping.stage] }
+        return @{ stage = [string]$mapping.stage; task_id = [int]$mapping.task_id; tree_level = $false; acceptance = $null; next_stage = $script:StageNext[[string]$mapping.stage]; derivation = $null }
+    }
+    $der = Find-DerivationByNode $Bridge $NodeIdText
+    if ($null -ne $der) {
+        return @{ stage = 'PM'; task_id = 0; tree_level = $true; acceptance = $null; next_stage = $null; derivation = $der }
     }
     $info = Get-TreeLevelInfo $Bridge $RunDirText $NodeIdText
     if ($null -eq $info) { Write-ErrorResult "NODE_NOT_MAPPED" "Node $NodeIdText is not in this run's bridge mapping" 2 }
-    return @{ stage = [string]$info.role; task_id = 0; tree_level = $true; acceptance = $info; next_stage = $null }
+    return @{ stage = [string]$info.role; task_id = 0; tree_level = $true; acceptance = $info; next_stage = $null; derivation = $null }
 }
 
 function Test-SettleDelivery {
@@ -6292,6 +6914,32 @@ function New-SettleResult {
     }
 }
 
+function Invoke-SettleDerivationTail {
+    # settle 派生分支（planner-midrun-derive）：mid-run derivation PM node，
+    # 四查已过 → 确认记录硬门复核 → tree settle（irreversible）→ 受控入册
+    # （add-task 代写 + bridge.tasks mapping + DESIGN chain heads under this
+    # node）。Registration failure degrades to a warning — the patrol state
+    # machine (Update-DerivationRegistrations) re-runs it idempotently on the
+    # next trigger (pending_sync philosophy, the derivations section IS the
+    # record). Returns the settle tail (same shape as the other two branches).
+    param([string]$RunDir, $Bridge, [string]$NodeIdText, $Der)
+    $conf = Find-DeriveConfirmation @(Read-DecisionEntries (Get-ArchiveDecisionsPath ([string]$Bridge.archive))) $Der
+    if ($null -eq $conf) { Write-ErrorResult "DERIVE_CONFIRMATION_MISSING" "no user ruling record for derivation $($Der['id']) in the archive decision ledger — execution refused (nothing transitioned). The user-confirmation gate is a HARD gate." 1 }
+    $null = Invoke-TreeSettleWrite $NodeIdText
+    $reg = Invoke-DeriveRegisterTask -RunDir $RunDir -Bridge $Bridge -DerId ([string]$Der['id']) -NodeText $NodeIdText
+    $Bridge = $(if ($reg.bridge) { $reg.bridge } else { $Bridge })
+    if ($reg.ok) {
+        return @{
+            bridge = $Bridge; warnings = @($reg.warnings); graftedNext = $null; graftedNextNodes = @()
+            flowOperation = "derivation registered: add-task 代写 + bridge.tasks mapping + chain heads pre-grafted (held by the stage gate until replan)"; taskLifecycle = "registered as task #$($reg.task_id)"
+        }
+    }
+    return @{
+        bridge = $Bridge; warnings = @("derivation registration incomplete — the status patrol retries it (derivation stays confirmed): $($reg.error)"); graftedNext = $null; graftedNextNodes = @()
+        flowOperation = "derivation settle landed, registration pending patrol"; taskLifecycle = "registration pending"
+    }
+}
+
 function Invoke-BridgeSettle {
     $runDir = Get-BridgeRunDir $RunId
     $bridge = Require-Bridge $runDir
@@ -6308,14 +6956,17 @@ function Invoke-BridgeSettle {
     # being re-minted. A skip-form credential passes the chain side as-is
     # (trusted declaration there by design).
     $scanFile = Write-QualityScanTempFile -RunDir $runDir -Node $node
-    # parallel-coordination settle conflict gate (三查先行,冲突门后置,错误码分立):
+    # parallel-coordination settle conflict gate (四查证据门先行,冲突门后置,错误码分立):
     # design-kind 涉事节点恒拒 / file-kind 仅双活跃方互拦 — NODE_HELD_BY_CONFLICT
     if (-not [bool]$target.tree_level) {
         Test-SettleConflictGate -RunDir $runDir -Bridge $bridge -NodeIdText $NodeId
     }
     $conflictWarnings = @(Test-CitationDeviation -RunDir $runDir -Bridge $bridge -NodeIdText $NodeId -Node $node)
     $tail = $null
-    if ($target.tree_level) {
+    if ($null -ne $target.derivation) {
+        $tail = Invoke-SettleDerivationTail $runDir $bridge $NodeId $target.derivation
+    }
+    elseif ($target.tree_level) {
         $tail = Invoke-SettleTreeOnly $runDir $NodeId
     }
     else {
@@ -6956,6 +7607,11 @@ function Add-PlanStatusWarnings {
             if ($drs -eq 'grafted') {
                 $w += "stage $($st.id) design review node $($st.design_review.node) awaiting settle — IMPL 节点闸门关闭至 DesignReviewFile verdict 落地（pass 放行 / fail 触发重做波）"
             }
+            elseif ($drs -eq 'ready') {
+                # auditor-subagent-review: 新链派审提示（plan-log progress 事件 + 本视图
+                # 双感知面，无自动会话）——planner-guide 硬约束「settle 尾必查待审阶段」。
+                $w += "stage $($st.id) design review is READY (design_review_due) — 派五查评审子代理（机械输入模板 rdd-engine/references/review-input-template.md，独立上下文）产出 DesignReviewFile 后 'delivery-bridge.cmd -Command design-review -Action submit -RunId $($Bridge['run_id']) -Stage $($st.id)'；IMPL 闸门关闭至 submit 落地"
+            }
             elseif (@('planned', 'failed') -contains $drs) {
                 $w += "stage $($st.id) design review is '$drs' — 有设计产物在册任务的 IMPL 节点被闸（NODE_BLOCKED_BY_DESIGN_REVIEW 同族）"
             }
@@ -6992,6 +7648,17 @@ function New-StatusWarnings {
         $warnings += "open escalation(s): $(@($AutoModeBlock.open_escalations | ForEach-Object { "$($_.entry_id)@$($_.node)/$($_.checkpoint)$(if ($_.historical) { ' (historical: node pruned)' })" }) -join ', ') — present them to the user; verdict lands via decide -Kind resolution"
     }
     $warnings += @(Add-PlanStatusWarnings $PlanView $Bridge)
+    # 需求派生视图（planner-midrun-derive）：registered-unabsorbed 派生高亮提示
+    # replan 吸收（confirm 后规划者忘记 replan 的应对——链头被闸门 hold 不推进）。
+    foreach ($d in @(Get-DerivationSection $Bridge)) {
+        $st = [string]$d['status']
+        if ($st -in @('proposed', 'confirmed')) {
+            $warnings += "derivation $($d['id'])「$($d['title'])」 is $st$(if ($st -eq 'proposed') { ' — awaiting the user ruling (confirm with -UserVerdict, or withdraw)' } else { " — PM node $($d['node']) in flight (or awaiting push/claim)" })"
+        }
+        elseif ($st -eq 'registered' -and -not ($d['absorbed'] -eq $true)) {
+            $warnings += "derivation $($d['id']) registered as task #$($d['task_id']) but NOT yet absorbed by the plan — its chain is stage-gated (NODE_BLOCKED_BY_GATE); replan it into the stages: delivery-bridge.cmd -Command replan -RunId $($Bridge['run_id']) -PlanFile <revised plan incl. task #$($d['task_id'])> -Reason <deviation>"
+        }
+    }
     # 并行冲突治理视图(parallel-coordination):未决冲突 + 回执偏差警示(status/annex)。
     $cv = Get-ConflictView $Bridge
     foreach ($e in @($cv.open)) {
@@ -7050,6 +7717,7 @@ function Invoke-BridgeStatus {
             auto_mode      = $autoModeBlock
             plan           = $planView
             conflicts      = $view.conflicts
+            derivations    = @(New-DerivationViewRows $bridge)
             pending_sync   = $view.repair.remaining
             repaired_now   = $view.repair.repaired
             lease          = $view.lease
@@ -7076,6 +7744,10 @@ function New-PlanResumeSteps {
         $dr = $st['design_review']
         if ($null -ne $dr -and ([string]$dr['status']) -eq 'grafted' -and -not [string]::IsNullOrWhiteSpace([string]$dr['node'])) {
             $steps += "Stage $($st['id']) design review node $($dr['node']) awaiting settle — the AUDITOR session reports its DesignReviewFile then run 'delivery-bridge.cmd -Command settle -RunId $RunId -NodeId $($dr['node'])'; pass 放行 IMPL，fail 自动触发重做波."
+        }
+        # auditor-subagent-review: 新链 ready 派审续跑步骤（无段零增）
+        if ($null -ne $dr -and ([string]$dr['status']) -eq 'ready') {
+            $steps += "Stage $($st['id']) design review is READY — 派五查评审子代理（rdd-engine/references/review-input-template.md 机械清单，独立上下文）产出 DesignReviewFile 后 run 'delivery-bridge.cmd -Command design-review -Action submit -RunId $RunId -Stage $($st['id'])'; pass 放行 IMPL，fail 自动触发重做波."
         }
     }
     foreach ($key in @($Bridge.tasks.Keys)) {
@@ -7120,6 +7792,23 @@ function New-ResumeSteps {
     return $steps
 }
 
+function New-DerivationResumeSteps {
+    # 需求派生断点（planner-midrun-derive）：proposed 待裁决 / registered 待
+    # 吸收都是续跑规划者的显式动作点。
+    param([string]$RunIdText, $Bridge)
+    $steps = @()
+    foreach ($d in @(Get-DerivationSection $Bridge)) {
+        $st = [string]$d['status']
+        if ($st -eq 'proposed') {
+            $steps += "Derivation $($d['id'])「$($d['title'])」 proposed — present it to the user, then 'delivery-bridge.cmd -Command derive -RunId $RunIdText -Action confirm -DerivationId $($d['id']) -UserVerdict <用户裁决原文>' or '-Action withdraw -DerivationId $($d['id'])'."
+        }
+        elseif ($st -eq 'registered' -and -not ($d['absorbed'] -eq $true)) {
+            $steps += "Derivation $($d['id']) registered as task #$($d['task_id']) but unabsorbed — replan it into the stages: 'delivery-bridge.cmd -Command replan -RunId $RunIdText -PlanFile <revised plan incl. task #$($d['task_id'])> -Reason <deviation>' (its chain stays NODE_BLOCKED_BY_GATE until then)."
+        }
+    }
+    return @($steps)
+}
+
 function Invoke-BridgeResume {
     $runDir = Get-BridgeRunDir $RunId
     $bridge = Require-Bridge $runDir
@@ -7149,6 +7838,7 @@ function Invoke-BridgeResume {
     # stage gates ARE breakpoints too). plan=$null degrades legacy runs.
     $planView = Get-PlanView $runDir $bridge
     $steps += @(New-PlanResumeSteps $bridge)
+    $steps += @(New-DerivationResumeSteps $RunId $bridge)
 
     # 并行协作冲突治理(parallel-coordination):未决冲突也是断点——续跑规划者
     # 按 kind 续处(调和/上报/挂起),无冲突任务不被阻塞。
@@ -7178,6 +7868,7 @@ function Invoke-BridgeResume {
             auto_mode      = $autoModeBlock
             plan           = $planView
             conflicts      = $view.conflicts
+            derivations    = @(New-DerivationViewRows $bridge)
             recovery_steps = $steps
             lease          = $view.lease
         }
@@ -7334,6 +8025,16 @@ function New-DeliveryAnnex {
     # 并行冲突治理记录引用(parallel-coordination):conclude 不新增硬门(涉事任务
     # 未终态由 DELIVERY_INCOMPLETE 兜底),annex 如实引用冲突治理记录。
     $lines += Add-ConflictAnnexLines $Bridge
+    # 需求派生清单区（planner-midrun-derive，留痕三联之三）+ 根目标达成口径
+    # （含派生并入条数——单 run 收敛语义的结案呈现）。
+    $ders = @(Get-DerivationSection $Bridge)
+    if ($ders.Count -gt 0) {
+        $live = @($ders | Where-Object { [string]$_['status'] -ne 'withdrawn' })
+        if (@($PendingRejects).Count -eq 0) {
+            $lines += "- 根目标口径补充: 含 $($live.Count) 条 run 中途派生需求并入（详见下方「需求派生」清单——单 run 收敛）"
+        }
+    }
+    $lines += Add-DerivationAnnexLines $Bridge
     if (-not $CheckOk) {
         $lines += "## rdd-flow check 问题清单"
         $lines += ""
@@ -7347,6 +8048,24 @@ function New-DeliveryAnnex {
     [System.IO.File]::WriteAllText((Get-AnnexPath $RunDir), ($lines -join "`n"), $script:Utf8NoBom)
 }
 
+function Complete-BridgeConclude {
+    # conclude 收尾三联 + 编排裁定入账（统一决策账本，advisory）：rdd-flow
+    # check → delivery annex → lease 释放 → ruling。返回 @{ checkOk;
+    # checkIssues; ruling }（annex/lease 的输入由调用方备齐）。
+    param([string]$RunId, [string]$RunDir, $Bridge, $Flow, $TreeData, $ReviewState, $AnchorInfo, [string]$SummaryText, $Conclusion)
+    $chk = Invoke-RddFlow @("-Command", "check", "-Archive", $Bridge.archive)
+    $checkOk = ($chk.exit -eq 0 -and $null -ne $chk.json -and $chk.json.success -and [int]$chk.json.data.issueCount -eq 0)
+    $checkIssues = @()
+    if ($null -ne $chk.json -and $chk.json.success) { $checkIssues = @(Convert-ToSafeArray $chk.json.data.issues) }
+    $pendingRejects = @($Flow.tasks | Where-Object { $ReviewState.pending_reject_ids -contains [int]$_.id })
+    New-DeliveryAnnex -RunId $RunId -RunDir $RunDir -Bridge $Bridge -Flow $Flow -TreeData $TreeData -CheckOk $checkOk `
+        -CheckIssues $checkIssues -SummaryText $SummaryText -RootNode $AnchorInfo.root_node -PendingRejects $pendingRejects `
+        -PendingRejectIds $ReviewState.pending_reject_ids -MergedInto $ReviewState.merged_into -Conclusion $Conclusion
+    $null = Invoke-LeaseRelease $RunDir
+    $ruling = Add-OrchestrationRuling -ArchivePath ([string]$Bridge.archive) -RunIdText $RunId -CommandName 'conclude' -DecisionText "conclude achieved（含派生并入: $(@(@(Get-DerivationSection $Bridge) | Where-Object { [string]$_['status'] -ne 'withdrawn' }).Count) 条）" -ReasonText $SummaryText -OptionsArr @('继续推进', '结案（achieved）')
+    return @{ checkOk = $checkOk; checkIssues = $checkIssues; ruling = $ruling }
+}
+
 function Invoke-BridgeConclude {
     $runDir = Get-BridgeRunDir $RunId
     $bridge = Require-Bridge $runDir
@@ -7358,6 +8077,10 @@ function Invoke-BridgeConclude {
     $reviewState = Resolve-ConcludeReviewState $bridge $flow
     $treeData = Get-TreeStatusView $RunId
     Test-ConcludeDeliveryComplete $bridge $flow $reviewState.reject_returned $treeData
+    # derivation hard gate (planner-midrun-derive, acceptance 7): open derivations
+    # (proposed/confirmed, or a registered derived task not terminal) block the
+    # conclude — a run with mid-run derivations concludes only when resolved.
+    Test-ConcludeDerivations $bridge $flow
 
     # acceptance hard gate (overall-delivery): the whole-requirement ACCEPT
     # conclusion must be decidable AND 通过 — reported BEFORE any goal-anchor
@@ -7381,20 +8104,11 @@ function Invoke-BridgeConclude {
         Write-ErrorResult "TREE_CONCLUDE_FAILED" "goal-tree conclude failed: $($r.text)" 3
     }
 
-    # 2) rdd-flow check (integrity of the whole archive routing)
-    $chk = Invoke-RddFlow @("-Command", "check", "-Archive", $bridge.archive)
-    $checkOk = ($chk.exit -eq 0 -and $null -ne $chk.json -and $chk.json.success -and [int]$chk.json.data.issueCount -eq 0)
-    $checkIssues = @()
-    if ($null -ne $chk.json -and $chk.json.success) { $checkIssues = @(Convert-ToSafeArray $chk.json.data.issues) }
-
-    # 3) delivery annex: per-task terminal state + acceptance conclusion + check
-    $pendingRejects = @($flow.tasks | Where-Object { $reviewState.pending_reject_ids -contains [int]$_.id })
-    New-DeliveryAnnex -RunId $RunId -RunDir $runDir -Bridge $bridge -Flow $flow -TreeData $treeData -CheckOk $checkOk `
-        -CheckIssues $checkIssues -SummaryText $Summary -RootNode $anchorInfo.root_node -PendingRejects $pendingRejects `
-        -PendingRejectIds $reviewState.pending_reject_ids -MergedInto $reviewState.merged_into -Conclusion $conclusion
-
-    # 4) release the lease (delivery closed)
-    $null = Invoke-LeaseRelease $runDir
+    # 2) rdd-flow check + 3) delivery annex + 4) lease release (+ ruling)
+    $done = Complete-BridgeConclude $RunId $runDir $bridge $flow $treeData $reviewState $anchorInfo $Summary $conclusion
+    $checkOk = $done.checkOk
+    $checkIssues = @($done.checkIssues)
+    $ruling = $done.ruling
 
     return @{
         success = $true
@@ -7411,6 +8125,8 @@ function Invoke-BridgeConclude {
             delivery_annex = ".rdd/goal-trees/$RunId/report/delivery-annex.md"
             tasks_terminal = "$(@($flow.tasks | Where-Object { (([string]$_.lifecycle) -in @("completed", "deprecated")) -or $reviewState.reject_returned.Contains([int]$_.id) }).Count)/$($flow.tasks.Count)"
             reject_return_pending = @($reviewState.pending_reject_ids)
+            derivations    = @(New-DerivationViewRows $bridge)
+            decision_ledger = $(if ($ruling.entry) { @{ entry_id = [string]$ruling.entry['entry_id'] } } else { $null })
         }
     }
 }
@@ -7597,7 +8313,7 @@ function Test-DecisionRefEntry {
     $refId = [string]$Context['ref']
     $target = Find-DecisionEntry $Entries $refId
     if ($null -eq $target) {
-        Write-ErrorResult "REF_ENTRY_NOT_FOUND" "-RefEntry '$refId' does not exist in this run's decision ledger (run-level lookup — cross-node references are tolerated)" 1
+        Write-ErrorResult "REF_ENTRY_NOT_FOUND" "-RefEntry '$refId' does not exist in this archive's decision ledger (archive-level lookup — cross-node references are tolerated)" 1
     }
     $targetKind = [string]$target['kind']
     if ($kindText -eq 'resolution' -and $targetKind -ne 'escalation') {
@@ -7614,6 +8330,28 @@ function Test-DecisionRefEntry {
     }
 }
 
+function Test-DeriveRulingRefEntry {
+    # derive confirm 的账本回调（Add-DecisionEntry in-lock 契约）：ruling 条目
+    # 经 ref_entry 指向的必须是本派生的 derive_proposal 条目且尚未被其它 ruling
+    # 关闭（DERIVE_ALREADY_CONFIRMED）。校验与追加共享临界区（竞态敏感）。
+    param($Entries, $Context)
+    if ($null -eq $Context) { return }
+    $refId = [string]$Context['ref']
+    $target = Find-DecisionEntry $Entries $refId
+    if ($null -eq $target) {
+        Write-ErrorResult "REF_ENTRY_NOT_FOUND" "-RefEntry '$refId' does not exist in the archive decision ledger" 1
+    }
+    if (([string]$target['kind']) -ne 'derive_proposal') {
+        Write-ErrorResult "REF_ENTRY_NOT_DERIVE_PROPOSAL" "-RefEntry '$refId' is kind='$($target['kind'])' — the derive confirmation ruling must reference its own derive_proposal entry" 1
+    }
+    foreach ($e in @($Entries)) {
+        if (([string]$e['kind']) -ne 'ruling') { continue }
+        if (([string]$e['ref_entry']) -eq $refId -and (@($Context['derivation_ids']) -notcontains [string]$e['derivation_id'])) {
+            Write-ErrorResult "DERIVE_ALREADY_CONFIRMED" "proposal '$refId' already carries a confirmation ruling ($($e['entry_id'])) — confirm is once per derivation (retry after DERIVE_BUDGET_EXCEEDED is NOT a thing: budget cannot grow mid-run; withdraw instead)" 1
+        }
+    }
+}
+
 function Get-DecideNextStep {
     # Per-kind post-write guidance (decide's next_step string; reads the
     # script-scope params $RuleId/$RefEntry/$Checkpoint like the callers).
@@ -7626,6 +8364,38 @@ function Get-DecideNextStep {
     return $null
 }
 
+function Invoke-BridgeCheckpointDecide {
+    # decide -Kind checkpoint（统一决策账本·角色检查点留痕，planner-midrun-
+    # derive 决策 #3 全量接入）：五交付角色（PM/CTO/UX/DEV/QA）经用户确认的
+    # 检查点决策入账——纪律性义务（SKILL 协议层），无 run / AutoMode / 节点
+    # 绑定要求，归档级条目（-Archive 定位归档）。四要素 + decider=user。
+    if ([string]::IsNullOrWhiteSpace($Archive)) { Write-ErrorResult "ARCHIVE_REQUIRED" "-Kind checkpoint requires -Archive <归档路径> (checkpoint entries are archive-scoped, no run binding)" 1 }
+    if ([string]::IsNullOrWhiteSpace($Checkpoint)) { Write-ErrorResult "CHECKPOINT_REQUIRED" "-Checkpoint (the checkpoint name this decision answers) is required" 1 }
+    if ([string]::IsNullOrWhiteSpace($Decision)) { Write-ErrorResult "DECISION_REQUIRED" "-Decision (the verdict text) is required" 1 }
+    $arch = $Archive
+    if (-not [System.IO.Path]::IsPathRooted($arch)) { $arch = Join-Path $repoRoot $arch }
+    if (-not (Test-Path -LiteralPath $arch -PathType Container)) { Write-ErrorResult "ARCHIVE_NOT_FOUND" "archive directory not found: $Archive (resolved: $arch)" 2 }
+    $opts = @()
+    if (-not [string]::IsNullOrWhiteSpace($Options)) {
+        $opts = @(($Options -split '\|') | ForEach-Object { $_.Trim() } | Where-Object { $_ -ne '' })
+    }
+    $payload = New-LedgerEntryPayload -KindText 'checkpoint' -RunIdText $RunId -BackgroundText $Background -OptionsArr $opts -DecisionText $Decision -ReasonText $Reason -DeciderText 'user'
+    $payload['checkpoint'] = $Checkpoint
+    $payload['role'] = $(if (-not [string]::IsNullOrWhiteSpace($Role)) { $Role } else { $null })
+    $entry = Add-DecisionEntry -LedgerPath (Get-ArchiveDecisionsPath $arch) -LockDir $arch -Entry $payload
+    return @{
+        success = $true
+        data    = @{
+            archive    = $arch
+            kind       = 'checkpoint'
+            checkpoint = $Checkpoint
+            entry      = $entry
+            ledger     = "decisions.jsonl（归档级统一决策账本）"
+            next_step  = "checkpoint '$Checkpoint' ledgered as $($entry.entry_id) — the confirmation record is on file; continue the flow."
+        }
+    }
+}
+
 function Invoke-BridgeDecide {
     # decide — ledger append for one checkpoint decision:
     #   -Kind auto        grading-table answer (rule must be action=auto);
@@ -7633,15 +8403,19 @@ function Invoke-BridgeDecide {
     #   -Kind resolution  user verdict closing an open escalation (ref_entry);
     #                     decider = user@in-session
     #   -Kind overturn    in-session redo note over an existing decision (auto /
-    #                     resolution / escalation target via ref_entry, run-level
-    #                     existence tolerated); decider = user@in-session
+    #                     resolution / escalation target via ref_entry, archive-
+    #                     level existence tolerated); decider = user@in-session
+    #   -Kind checkpoint  archive-scoped role-checkpoint entry (five delivery
+    #                     roles' user-confirmed decisions — no run/node binding);
+    #                     four-element schema + decider=user
     # Composition (each piece ≤40 lines, ONE append chain): gate context ->
     # kind context -> Add-DecisionEntry (ref validation in-lock) -> view.
-    if ([string]::IsNullOrWhiteSpace($Kind)) { Write-ErrorResult "DECISION_KIND_REQUIRED" "-Kind is required (auto / resolution / overturn)" 1 }
+    if ([string]::IsNullOrWhiteSpace($Kind)) { Write-ErrorResult "DECISION_KIND_REQUIRED" "-Kind is required (auto / resolution / overturn / checkpoint)" 1 }
+    if ($Kind -eq 'checkpoint') { return Invoke-BridgeCheckpointDecide }
     $g = Get-DecisionGateContext $Kind
     $k = Get-DecisionKindContext $g
     $payload = New-DecisionEntryPayload -KindText $Kind -TaskIdNum $g.mapping.task_id -Stage $g.mapping.stage -RiskFallback $null -Decider $k.decider -RuleIdOut $k.rule_id -RefEntryOut $k.ref_entry
-    $entry = Add-DecisionEntry $g.run_dir $payload -ValidateCallback ${function:Test-DecisionRefEntry} -ValidateContext @{ kind = $Kind; ref = $RefEntry }
+    $entry = Add-DecisionEntry -LedgerPath (Get-ArchiveDecisionsPath ([string]$g.bridge.archive)) -LockDir ([string]$g.bridge.archive) -Entry $payload -ValidateCallback ${function:Test-DecisionRefEntry} -ValidateContext @{ kind = $Kind; ref = $RefEntry }
     $view = Get-AutoModeDecisionView $g.run_dir $g.bridge $g.tree
     return @{
         success = $true
@@ -7673,7 +8447,7 @@ function Invoke-BridgeEscalate {
     }
     $ruleIdOut = $(if (-not [string]::IsNullOrWhiteSpace($RuleId)) { $RuleId } else { $null })
     $payload = New-DecisionEntryPayload -KindText "escalation" -TaskIdNum $g.mapping.task_id -Stage $g.mapping.stage -RiskFallback "high" -Decider $null -RuleIdOut $ruleIdOut -RefEntryOut $null
-    $entry = Add-DecisionEntry $g.run_dir $payload
+    $entry = Add-DecisionEntry -LedgerPath (Get-ArchiveDecisionsPath ([string]$g.bridge.archive)) -LockDir ([string]$g.bridge.archive) -Entry $payload
     return @{
         success = $true
         data    = @{
@@ -7686,6 +8460,784 @@ function Invoke-BridgeEscalate {
             next_step  = "escalation $($entry.entry_id) is OPEN — dsh: the watcher delivers it to the Planner inbox (present it to the user); CLI/Plus: visible via status/resume. The worker WAITS at this checkpoint; the verdict lands via: delivery-bridge.cmd -Command decide -RunId $RunId -NodeId $NodeId -Kind resolution -RefEntry $($entry.entry_id) -Checkpoint '$Checkpoint' -Decision <verdict>."
         }
     }
+}
+
+# === Mid-run requirement derivation (planner-midrun-derive) ===
+#
+# run 中途范围缺口通道：规划者裁定 rollback（改既有）/ reclaim（同阶段重做）
+# 都不对症（只管新增不管改既有）→ derive 经【用户确认硬门】派遣 PM 起草新
+# 需求文档，受控入册后并入当前 run 的树与规划，单 run 收敛到结案。两项用户
+# 拍板口径：(a) 新需求并入当前 run（非链式新 run）；(b) 用户确认门为硬门——
+# 无确认记录的执行请求确定性拒绝（DERIVE_CONFIRMATION_MISSING）。
+# 状态机（bridge.json 可选段 derivations[]，缺键 = 旧 run 逐字节不变）：
+#   proposed → confirmed → registered；withdrawn 终态。确认细节单源引用归档
+#   级决策账本 entry_id，不冗余存全文（决策 #9）。max_derivation 缺省 3
+#   （promulgate -MaxDerivations 覆盖；超限 DERIVATION_LIMIT_WARNING 警告上
+#   报不硬拒，决策 #8）。registered 未吸收期间 replan 覆盖校验白名单放行、
+#   推送/认领闸门不豁免（NODE_BLOCKED_BY_GATE，出路只有 replan）——两方向
+#   相反是有意设计。
+
+$script:DeriveDefaultOwners = @("CTO", "UX", "QA")   # 决策 #10：缺省全链（DESIGN 相位角色集），-Owners 可缩窄
+
+function Get-DerivationSection {
+    # bridge.json derivations[]（深哈希表数组）；缺段 = @()（旧 run 兼容，conflicts 段先例）
+    param($Bridge)
+    if ($null -eq $Bridge -or -not (Test-PropPresent $Bridge 'derivations') -or $null -eq $Bridge['derivations']) { return @() }
+    return @(Convert-ToSafeArray $Bridge['derivations'])
+}
+
+function Get-MaxDerivations {
+    param($Bridge)
+    if ($null -ne $Bridge -and (Test-PropPresent $Bridge 'max_derivation') -and $null -ne $Bridge['max_derivation'] -and [int]$Bridge['max_derivation'] -gt 0) { return [int]$Bridge['max_derivation'] }
+    return 3
+}
+
+function Find-DerivationById {
+    param($Bridge, [string]$DerId)
+    foreach ($d in @(Get-DerivationSection $Bridge)) {
+        if (([string]$d['id']) -eq $DerId) { return $d }
+    }
+    return $null
+}
+
+function Find-DerivationByNode {
+    # node → 未完结派生条目（confirm 后 settle 前的 PM 节点归属判定）
+    param($Bridge, [string]$NodeId)
+    foreach ($d in @(Get-DerivationSection $Bridge)) {
+        if (([string]$d['status']) -eq 'withdrawn') { continue }
+        if ([string]$d['node'] -eq $NodeId) { return $d }
+    }
+    return $null
+}
+
+function Get-UnabsorbedDerivedTaskIds {
+    # replan 白名单：已入册（registered）尚未被任何 plan 阶段吸收（absorbed≠true）
+    # 的派生任务 id。吸收即标记——后续 replan 再把它移出阶段将恢复全覆盖校验
+    # （白名单只覆盖 registered-unabsorbed 窗口期，不掩护丢弃）。
+    param($Bridge)
+    $ids = @()
+    foreach ($d in @(Get-DerivationSection $Bridge)) {
+        if (([string]$d['status']) -ne 'registered') { continue }
+        if (-not (Test-PropPresent $d 'task_id') -or $null -eq $d['task_id']) { continue }
+        if ((Test-PropPresent $d 'absorbed') -and $d['absorbed'] -eq $true) { continue }
+        $ids += [int]$d['task_id']
+    }
+    return @($ids)
+}
+
+function Find-DeriveConfirmation {
+    # 确认门记录解析：账本中 ref_entry → proposed_entry 的 ruling 条目
+    # （decider=user）。settle 入册前防御性复核 + confirm 后留痕单源。
+    param($Entries, $Derivation)
+    $target = [string]$Derivation['proposed_entry']
+    foreach ($e in @($Entries)) {
+        if (([string]$e['kind']) -ne 'ruling') { continue }
+        if (([string]$e['ref_entry']) -ne $target) { continue }
+        if ((Test-PropPresent $e 'decider') -and [string]$e['decider'] -eq 'user') { return $e }
+    }
+    return $null
+}
+
+function Read-TreeFullNodesRaw {
+    # state/tree.json 全量节点只读探针（预算预检的节点普查 + goal root 活跃子
+    # 女计数；Get-NodePruneReason 同款直读先例——桥绝不写引擎状态）。
+    param([string]$RunDir)
+    $p = Join-Path (Join-Path $RunDir "state") "tree.json"
+    if (-not (Test-Path -LiteralPath $p -PathType Leaf)) { return @() }
+    try {
+        $obj = [System.IO.File]::ReadAllText($p, [System.Text.Encoding]::UTF8) | ConvertFrom-Json
+        return @(Convert-ToSafeArray $obj.nodes)
+    }
+    catch { return @() }
+}
+
+function Test-DeriveBudgetHeadroom {
+    # confirm 侧预算预检（DEV 首查项核实结论：goal-tree start 只固化预算、graft
+    # 时写前强制 WIDTH_EXCEEDED/NODES_EXCEEDED）——预算不足确定性报
+    # DERIVE_BUDGET_EXCEEDED，不盲目 graft（卡 confirmed 不可自动重试）。
+    # 一条派生链的保守增量：PM 节点 1 + 每链头 1 + IMPL/VERIFY 收敛 2 + 潜在
+    # 新阶段验收节点 1 = owners.Count + 4；宽度增量：goal root 下 PM 节点 +
+    # 潜在 [集成验收·S<k>] = 2。planner-guide 指引预期派生的 run 颁布时
+    # -MaxNodes/-NodeWidth 预留余量。
+    param([string]$RunDir, $Bridge, [string]$OwnerCount)
+    $tree = Get-TreeStatusView ([string]$Bridge.run_id)
+    $budget = $tree.budget
+    $maxNodes = 0; $nodeWidth = 0
+    if ($null -ne $budget) {
+        $maxNodes = [int]$budget.max_nodes
+        $nodeWidth = [int]$budget.node_width
+    }
+    $nodes = @(Read-TreeFullNodesRaw $RunDir)
+    $needNodes = [int]$OwnerCount + 4
+    if ($maxNodes -gt 0 -and (($nodes.Count + $needNodes) -gt $maxNodes)) {
+        Write-ErrorResult "DERIVE_BUDGET_EXCEEDED" "Deriving this requirement would need ~$needNodes more nodes but the run budget is max_nodes=$maxNodes with $($nodes.Count) already grafted — the graft is NOT attempted (the derivation stays confirmed; budget cannot grow mid-run). Either withdraw it (-Action withdraw -DerivationId <id>), or finish this run and derive under a new run promulgated with -MaxNodes headroom (planner-guide: runs expected to derive should reserve budget at promulgate)." 1
+    }
+    $rootActive = 0
+    foreach ($n in $nodes) {
+        if (([string]$n.parent) -eq [string]$Bridge.goal_root -and ([string]$n.status) -ne 'pruned') { $rootActive++ }
+    }
+    if ($nodeWidth -gt 0 -and (($rootActive + 2) -gt $nodeWidth)) {
+        Write-ErrorResult "DERIVE_BUDGET_EXCEEDED" "Deriving this requirement would add up to 2 goal-root children (PM node + a potential [集成验收·S<k>]) but node_width=$nodeWidth already has $rootActive active root children — the graft is NOT attempted (the derivation stays confirmed). Either withdraw it, or finish this run and derive under a new run promulgated with -NodeWidth headroom." 1
+    }
+}
+
+function New-DeriveNodeTaskText {
+    # 派生 PM 节点 task 文本（confirm 与 reclaim 重建共用的单源产出者）：
+    # New-NodeTaskText 标准形（brief/summary 正则可解析）+ 使命段携带派生
+    # 上下文与「overview『## 整体验收判据』增补条目」义务——判据经锚点 live
+    # 读（DEV 首查项核实：现行实现即锚点引用），派生判据自然进验收门。
+    param([string]$TitleText, [string]$RationaleText, [string]$RunIdText, [string]$ConfirmEntry, [string[]]$DepIds)
+    $depsNote = ""
+    if (@($DepIds).Count -gt 0) { $depsNote = "依赖既有任务 #" + (@($DepIds) -join '、#') + "（需求文档「依赖关系」字段如实标注，机读格式同构）。" }
+    $rat = [string]$RationaleText
+    if ($rat.Length -gt 200) { $rat = $rat.Substring(0, 199) + '…' }
+    $mission = "使命：本需求为 run 中途派生（用户确认门已过，决策账本 $ConfirmEntry；缺口理由：$rat）。产出：requirements/ 下新需求文档（含验收标准与依赖关系），并在 requirements/overview.md 增补需求索引行与「## 整体验收判据」条目（判据经锚点 live 读，验收门自然覆盖派生需求）。$depsNote"
+    return New-NodeTaskText -Title $TitleText -Stage 'PM' -ReqRel 'requirements/overview.md' -DesignRels @() -RunId $RunIdText -Mission $mission
+}
+
+function Test-DeriveProposeInputs {
+    # propose 入参门（错误码族 DERIVE_*_REQUIRED/_INVALID）：Title/Rationale
+    # 必填；-DependsOn 限本 run 已交付任务 id；-Owners 只能缩窄缺省全链
+    # CTO+UX+QA（决策 #10）。返回 @{ depIds; ownerSet }。
+    param($Bridge, [string]$DependsOnText, [string]$OwnersText)
+    $depIds = @()
+    if (-not [string]::IsNullOrWhiteSpace($DependsOnText)) {
+        foreach ($d in ($DependsOnText -split ',')) {
+            $di = 0
+            if (-not [int]::TryParse($d.Trim(), [ref]$di) -or -not $Bridge.tasks.Contains("$di")) {
+                Write-ErrorResult "DERIVE_DEP_INVALID" "-DependsOn entry '$($d.Trim())' is not a delivered task id of this run (delivered: $($(@($Bridge.tasks.Keys | Sort-Object) -join ',')))" 1
+            }
+            if ($depIds -notcontains $di) { $depIds += $di }
+        }
+    }
+    # ⚠ 局部变量必须命名 $ownerSet：PS 变量名大小写不敏感，$owners 会与参数
+    # $Owners 同变量互相覆盖（先落默认集 → 分支判断读到的永远是数组）。
+    $ownerSet = @($script:DeriveDefaultOwners)
+    if (-not [string]::IsNullOrWhiteSpace($OwnersText)) {
+        $ownerSet = @(($OwnersText -split '\+') | ForEach-Object { $_.Trim().ToUpper() } | Where-Object { $_ -ne '' })
+        if ($ownerSet.Count -eq 0) { Write-ErrorResult "DERIVE_OWNERS_INVALID" "-Owners parsed to an empty set" 1 }
+        foreach ($o in $ownerSet) {
+            if (@($script:PhaseRoles['DESIGN']) -notcontains $o) {
+                Write-ErrorResult "DERIVE_OWNERS_INVALID" "-Owners entry '$o' outside the DESIGN phase whitelist (CTO+UX+QA) — derive only NARROWS the default full chain (decision #10); PM heads the derived REQ node itself" 1
+            }
+        }
+    }
+    return @{ depIds = @($depIds); ownerSet = @($ownerSet) }
+}
+
+function New-DerivationRecord {
+    # propose 登记落盘：账本 derive_proposal 条目（四要素 + 机读上下文）+
+    # bridge derivations[] 追加 proposed 条目（全字段状态机起点）。
+    # 返回 @{ entry; bridge }。
+    param([string]$RunDir, $Bridge, [string]$RunIdText, [string]$DerId, [string]$TitleText, [string]$RationaleText, [int[]]$DepIds, [string[]]$OwnerSet)
+    $options = @(
+        "confirm：确认派生并入当前 run（用户裁决后经 -Action confirm 落地）"
+        "withdraw：拒绝派生（留痕零副作用）"
+        "维持现状：不派生，按既有范围收口（缺口如实呈报用户）"
+    )
+    $payload = New-LedgerEntryPayload -KindText 'derive_proposal' -RunIdText $RunIdText -BackgroundText "run 中途范围缺口：$RationaleText" -OptionsArr $options -DecisionText "提议派生新需求「$TitleText」并入当前 run" -ReasonText "rollback/reclaim 均不对症（只管新增不管改既有）；树外直交产物进不了当前树——derive 是唯一消化通道" -DeciderText 'planner'
+    $payload['derivation_id'] = $DerId
+    $payload['depends_on'] = @($DepIds)
+    $payload['owners'] = @($OwnerSet)
+    $entry = Add-DecisionEntry -LedgerPath (Get-ArchiveDecisionsPath ([string]$Bridge.archive)) -LockDir ([string]$Bridge.archive) -Entry $payload
+    $derivations = @(Get-DerivationSection $Bridge)
+    $derivations += @{
+        id              = $DerId
+        title           = $TitleText
+        rationale       = $RationaleText
+        depends_on      = @($DepIds)
+        owners          = @($OwnerSet)
+        status          = 'proposed'
+        proposed_entry  = [string]$entry['entry_id']
+        confirm_entry   = $null
+        withdraw_entry  = $null
+        node            = $null
+        task_id         = $null
+        requirement     = $null
+        absorbed        = $false
+        created_at      = Get-UtcNowIso
+        confirmed_at    = $null
+        registered_at   = $null
+        withdrawn_at    = $null
+    }
+    $Bridge['derivations'] = $derivations
+    Write-BridgeFile $RunDir $Bridge
+    return @{ entry = $entry; bridge = $Bridge }
+}
+
+function Invoke-DerivePropose {
+    # propose：登记提议（账本 derive_proposal 条目 + bridge derivations[]）
+    # 并返回标准呈报文案——dsh 经 tool-ask-user 呈现，CLI/Plus 由规划者会话
+    # 内呈现并留痕（需求验收 2 降级路径）。不 graft、不派遣（零副作用）。
+    param([string]$RunDir, $Bridge)
+    if ([string]::IsNullOrWhiteSpace($Title)) { Write-ErrorResult "DERIVE_TITLE_REQUIRED" "-Title (the new requirement's title) is required for -Action propose" 1 }
+    if ([string]::IsNullOrWhiteSpace($Rationale)) { Write-ErrorResult "DERIVE_RATIONALE_REQUIRED" "-Rationale (the goal-gap rationale presented to the user) is required for -Action propose" 1 }
+    $inputs = Test-DeriveProposeInputs $Bridge $DependsOn $Owners
+    $depIds = @($inputs.depIds)
+    $ownerSet = @($inputs.ownerSet)
+    # 防滥用阈值（决策 #8）：超限警告上报，不硬拒
+    $liveCount = @(Get-DerivationSection $Bridge | Where-Object { [string]$_['status'] -ne 'withdrawn' }).Count
+    $maxDer = Get-MaxDerivations $Bridge
+    $limitWarning = $null
+    if (($liveCount + 1) -gt $maxDer) {
+        $limitWarning = "DERIVATION_LIMIT_WARNING: this run already carries $liveCount non-withdrawn derivation(s) (max_derivation=$maxDer) — mid-run scope growth is abnormal, report the pace anomaly to the user (warning only, not rejected)"
+    }
+    # 派生号：max(未撤销数+1, 历史最大号+1) —— withdrawn 条目占号不复用（id 唯一
+    # 是 Find-DerivationById 的前提，检索命中歧义不可接受）
+    $maxN = 0
+    foreach ($d in @(Get-DerivationSection $Bridge)) {
+        if ([string]$d['id'] -match '^DRV(\d+)$') { $n = [int]$Matches[1]; if ($n -gt $maxN) { $maxN = $n } }
+    }
+    $derId = "DRV$([Math]::Max($liveCount + 1, $maxN + 1))"
+    $rec = New-DerivationRecord -RunDir $RunDir -Bridge $Bridge -RunIdText $RunId -DerId $derId -TitleText $Title -RationaleText $Rationale -DepIds $depIds -OwnerSet $ownerSet
+    $entry = $rec.entry
+    $present = "建议派生新需求「$Title」并入当前 run $RunId。缺口理由：$Rationale$(if (@($depIds).Count -gt 0) { '；依赖既有任务 #' + (@($depIds) -join '、#') })。请用户裁决：确认派生 → delivery-bridge.cmd -Command derive -RunId $RunId -Action confirm -DerivationId $derId -UserVerdict ""<用户裁决原文>""；拒绝 → -Action withdraw -DerivationId $derId。无确认记录不派遣（硬门）。"
+    return @{
+        success = $true
+        data    = @{
+            run_id         = $RunId
+            action         = 'propose'
+            derivation_id  = $derId
+            status         = 'proposed'
+            ledger_entry   = [string]$entry['entry_id']
+            present_to_user = $present
+            limit_warning  = $limitWarning
+            next_step      = "present the proposal to the user verbatim (dsh: tool-ask-user; CLI/Plus: in-session, then record the verdict via confirm/withdraw). Nothing is grafted or dispatched yet."
+        }
+    }
+}
+
+function Invoke-DeriveConfirmGraft {
+    # confirm 落地段（ruling 已入账、状态已 confirmed 之后）：graft PM 节点
+    # （goal 根子节点，node.task 注入判据增补义务）→ node 落 derivations →
+    # plan-log D 事件（deviation/scope_derived，决策 #7）→ 自动推送 PM 会话
+    # （推送失败走既有推送账重试——session-create 类自动重试）。
+    # 返回 @{ bridge; node_id; push }。
+    param([string]$RunDir, $Bridge, $Derivation, [string]$DerId, [string]$ConfirmEntry)
+    $taskText = New-DeriveNodeTaskText -TitleText ([string]$Derivation['title']) -RationaleText ([string]$Derivation['rationale']) -RunIdText $RunId -ConfirmEntry $ConfirmEntry -DepIds @($Derivation['depends_on'])
+    $graftItem = @{
+        title = [string]$Derivation['title']
+        task  = $taskText
+        role  = 'pm'
+        ref   = "$(($RunId -replace '^deliver-', ''))/requirements/overview.md"
+    }
+    $g = Invoke-GraftOne $RunId ([string]$Bridge.goal_root) $graftItem
+    if (-not $g.ok) { Write-ErrorResult "DERIVE_GRAFT_FAILED" "graft of the derivation PM node under the goal root failed (derivation $DerId stays confirmed, no node exists — retry confirm after the underlying cause is fixed): $($g.text)" 1 }
+    $derivations = @(Get-DerivationSection $Bridge)
+    foreach ($x in $derivations) {
+        if ([string]$x['id'] -eq $DerId) { $x['node'] = $g.node_id }
+    }
+    $Bridge['derivations'] = $derivations
+    Write-BridgeFile $RunDir $Bridge
+    # 留痕：plan-log D 事件（kind=deviation + event=scope_derived，决策 #7）
+    $rat = [string]$Derivation['rationale']
+    if ($rat.Length -gt 120) { $rat = $rat.Substring(0, 119) + '…' }
+    $null = Add-PlanEvent $RunDir 'deviation' 'scope_derived' $g.node_id $null 'PM' @{
+        derivation    = $DerId
+        title         = [string]$Derivation['title']
+        rationale     = $rat
+        ledger_entry  = $ConfirmEntry
+        depends_on    = @($Derivation['depends_on'])
+    }
+    $push = Invoke-AutoDispatch $RunDir $Bridge "derive"
+    return @{ bridge = $push.bridge; node_id = $g.node_id; push = $push }
+}
+
+function Invoke-DeriveConfirm {
+    # confirm：过账本硬门（用户裁决原文 → ruling 条目）→ 预算预检 → graft
+    # PM 节点（goal 根子节点，role=pm）→ 状态 confirmed + plan-log D 事件 →
+    # 自动推送 PM 会话起草需求文档。顺序契约（设计风险表）：账本回填（事实
+    # 永远记录）先行，预算不足确定性报 DERIVE_BUDGET_EXCEEDED 不盲目 graft
+    # ——派生卡 confirmed 不可自动重试（预算 mid-run 不可增长）。
+    param([string]$RunDir, $Bridge)
+    $d = Find-DerivationById $Bridge $DerivationId
+    if ($null -eq $d) { Write-ErrorResult "DERIVE_NOT_FOUND" "-DerivationId '$DerivationId' not found in run $RunId" 2 }
+    if ([string]$d['status'] -ne 'proposed') { Write-ErrorResult "DERIVE_STATE_INVALID" "derivation $DerivationId is '$([string]$d['status'])' — confirm only applies to a 'proposed' derivation (withdrawn/confirmed/registered are settled states)" 1 }
+    if ([string]::IsNullOrWhiteSpace($UserVerdict)) {
+        Write-ErrorResult "DERIVE_CONFIRMATION_MISSING" "the user-confirmation gate is a HARD gate: -UserVerdict (the user's ruling verbatim) is the confirmation record itself — no record, no execution (final adjudication stays with the user)" 1
+    }
+    $options = @(
+        "confirm：派生并入当前 run（本条目记录的用户裁决）"
+        "withdraw：拒绝派生（零副作用）"
+    )
+    $payload = New-LedgerEntryPayload -KindText 'ruling' -RunIdText $RunId -BackgroundText "派生提议 $DerivationId「$([string]$d['title'])」：$([string]$d['rationale'])" -OptionsArr $options -DecisionText $UserVerdict -ReasonText "用户确认门（planner-midrun-derive 硬门）：mid-run 需求派生经用户裁决后执行" -DeciderText 'user' -RefEntryOut ([string]$d['proposed_entry'])
+    $payload['derivation_id'] = $DerivationId
+    $entry = Add-DecisionEntry -LedgerPath (Get-ArchiveDecisionsPath ([string]$Bridge.archive)) -LockDir ([string]$Bridge.archive) -Entry $payload -ValidateCallback ${function:Test-DeriveRulingRefEntry} -ValidateContext @{ ref = [string]$d['proposed_entry']; derivation_ids = @($DerivationId) }
+    # 事实已入账 → 状态先落 confirmed（预算失败即卡此态，事实永远保留）
+    $derivations = @(Get-DerivationSection $Bridge)
+    foreach ($x in $derivations) {
+        if ([string]$x['id'] -eq $DerivationId) {
+            $x['status'] = 'confirmed'
+            $x['confirm_entry'] = [string]$entry['entry_id']
+            $x['confirmed_at'] = Get-UtcNowIso
+        }
+    }
+    $Bridge['derivations'] = $derivations
+    Write-BridgeFile $RunDir $Bridge
+    Test-DeriveBudgetHeadroom -RunDir $RunDir -Bridge $Bridge -OwnerCount @($d['owners']).Count
+    $grafted = Invoke-DeriveConfirmGraft -RunDir $RunDir -Bridge $Bridge -Derivation $d -DerId $DerivationId -ConfirmEntry ([string]$entry['entry_id'])
+    return @{
+        success = $true
+        data    = @{
+            run_id        = $RunId
+            action        = 'confirm'
+            derivation_id = $DerivationId
+            status        = 'confirmed'
+            ledger_entry  = [string]$entry['entry_id']
+            node_id       = $grafted.node_id
+            auto_push     = @{ trigger = $grafted.push.trigger; pushed = @($grafted.push.pushed); failed = @($grafted.push.failed) }
+            next_step     = "PM session auto-pushed to draft the new requirement doc (+ overview「## 整体验收判据」augmentation). After it reports: settle -RunId $RunId -NodeId $($grafted.node_id) registers the task (add-task 代写 + DESIGN chain heads pre-grafted, held by the stage gate) — then replan absorbs task #<id> into the stages to unlock the chain."
+        }
+    }
+}
+
+function Invoke-DeriveWithdraw {
+    # withdraw：拒绝留痕零副作用——账本 ruling 条目 + 状态 withdrawn；未
+    # settle 的已 graft PM 节点 prune 掉（graft 是 confirm 的唯一副作用，
+    # 撤销即回收）；已 registered 不可撤（任务在册，走 deprecate）。
+    param([string]$RunDir, $Bridge)
+    $d = Find-DerivationById $Bridge $DerivationId
+    if ($null -eq $d) { Write-ErrorResult "DERIVE_NOT_FOUND" "-DerivationId '$DerivationId' not found in run $RunId" 2 }
+    $st = [string]$d['status']
+    if ($st -eq 'registered') { Write-ErrorResult "DERIVE_STATE_INVALID" "derivation $DerivationId is already registered as task #$([string]$d['task_id']) — withdraw cannot un-register a task; deprecate the task instead (rdd-flow deprecate)" 1 }
+    if ($st -eq 'withdrawn') { Write-ErrorResult "DERIVE_STATE_INVALID" "derivation $DerivationId is already withdrawn" 1 }
+    $payload = New-LedgerEntryPayload -KindText 'ruling' -RunIdText $RunId -BackgroundText "派生提议 $DerivationId「$([string]$d['title'])」被拒绝/撤回" -OptionsArr @("维持原范围收口", "派生并入当前 run") -DecisionText "$(if ([string]::IsNullOrWhiteSpace($Reason)) { 'withdraw：拒绝派生（零副作用）' } else { $Reason })" -ReasonText "derive 拒绝留痕（零副作用承诺）" -DeciderText 'user' -RefEntryOut ([string]$d['proposed_entry'])
+    $payload['derivation_id'] = $DerivationId
+    $entry = Add-DecisionEntry -LedgerPath (Get-ArchiveDecisionsPath ([string]$Bridge.archive)) -LockDir ([string]$Bridge.archive) -Entry $payload
+    $prunedNode = $null
+    $node = [string]$d['node']
+    if (-not [string]::IsNullOrWhiteSpace($node)) {
+        $rp = Invoke-GoalTree @("-Command", "prune", "-RunId", $RunId, "-NodeId", $node, "-Reason", "derivation $DerivationId withdrawn before settle (zero side effects)")
+        if ($rp.exit -ne 0 -or -not $rp.json.success) {
+            Write-ErrorResult "DERIVE_WITHDRAW_PRUNE_FAILED" "prune of the grafted PM node $node failed (derivation NOT marked withdrawn — rerun withdraw after fixing): $($rp.text)" 1
+        }
+        $prunedNode = $node
+    }
+    $derivations = @(Get-DerivationSection $Bridge)
+    foreach ($x in $derivations) {
+        if ([string]$x['id'] -eq $DerivationId) {
+            $x['status'] = 'withdrawn'
+            $x['withdraw_entry'] = [string]$entry['entry_id']
+            $x['withdrawn_at'] = Get-UtcNowIso
+        }
+    }
+    $Bridge['derivations'] = $derivations
+    Write-BridgeFile $RunDir $Bridge
+    return @{
+        success = $true
+        data    = @{
+            run_id        = $RunId
+            action        = 'withdraw'
+            derivation_id = $DerivationId
+            status        = 'withdrawn'
+            ledger_entry  = [string]$entry['entry_id']
+            pruned_node   = $prunedNode
+            next_step     = "refusal is on record (ledger $($entry['entry_id'])); no task was created$(if ($prunedNode) { ", node $prunedNode pruned" } else { '' }). Continue the run under the original scope."
+        }
+    }
+}
+
+function Invoke-BridgeDerive {
+    # derive 命令编排：propose / confirm / withdraw（-Action）。
+    $runDir = Get-BridgeRunDir $RunId
+    $bridge = Require-Bridge $runDir
+    $null = Enter-PlannerLease $runDir
+    switch ($Action) {
+        'propose'  { return Invoke-DerivePropose -RunDir $runDir -Bridge $bridge }
+        'confirm'  { return Invoke-DeriveConfirm -RunDir $runDir -Bridge $bridge }
+        'withdraw' { return Invoke-DeriveWithdraw -RunDir $runDir -Bridge $bridge }
+        default    { Write-ErrorResult "DERIVE_ACTION_REQUIRED" "-Action propose|confirm|withdraw is required for -Command derive" 1 }
+    }
+}
+
+function Get-DeriveRequirementFromCitations {
+    # 从已 settle 派生节点的采纳回调 citations 提取新需求文档（归档相对路径）：
+    # 命中 requirements/ 下 .md 且非 overview.md 的首个引用；无命中返回 $null。
+    param([string]$RunDir, $Bridge, [string]$NodeText)
+    $full = Read-TreeFullNode $RunDir $NodeText
+    if ($null -eq $full) { return $null }
+    $cb = Find-AcceptedCallback $RunDir $full
+    if ($null -eq $cb) { return $null }
+    $archRel = ([string]$Bridge.archive_rel).TrimEnd('/')
+    foreach ($c in @($cb.callback.citations)) {
+        $ref = ([string]$c.ref) -replace '\\', '/'
+        if ($ref -match '(^|/)requirements/[^/]+\.md$' -and $ref -notmatch '(^|/)overview\.md$') {
+            $rel = $ref
+            if ($rel.StartsWith("$archRel/")) { $rel = $rel.Substring($archRel.Length + 1) }
+            elseif ($rel.StartsWith(".rdd/changes/archive/") -and $rel -match '^\.rdd/changes/archive/[^/]+/(.+)$') { $rel = $Matches[1] }
+            return $rel
+        }
+    }
+    return $null
+}
+
+function Invoke-DeriveChainGraft {
+    # 派生任务链头预挂（与 promulgate「链头预挂、闸门把守」模型同构）：每 owner
+    # 一个链头节点挂 PM 节点下，depends_on 多锚缝合到各依赖任务的活跃节点
+    # （阶段闸门 hold 至 replan 吸收——NODE_BLOCKED_BY_GATE 出路只有 replan）。
+    # 返回 @{ bridge; nodes = @() }。
+    param([string]$RunDir, $Bridge, $Derivation, [string]$ParentNode, [int]$TaskId, [string]$ReqRel)
+    $treeData = Get-TreeStatusView ([string]$Bridge.run_id)
+    $depNodes = @()
+    foreach ($dt in @($Derivation['depends_on'])) {
+        $depId = [int]$dt
+        if (-not $Bridge.tasks.Contains("$depId")) { continue }
+        $bStages = $Bridge.tasks["$depId"]['stages']
+        if ($null -eq $bStages) { continue }
+        foreach ($roleKey in @($bStages.Keys)) {
+            $dn = [string]$bStages[$roleKey]
+            $st = Get-NodeViewState $treeData $dn
+            if ($null -ne $st -and @('pending', 'claimed', 'reported') -contains [string]$st['status'] -and $depNodes -notcontains $dn) { $depNodes += $dn }
+        }
+    }
+    $acceptanceRef = $null
+    $a = Get-AcceptanceSection $Bridge
+    if ($null -ne $a -and ([string]$a['status']) -eq 'planned') { $acceptanceRef = [string]$a['criteria_ref'] }
+    $archiveName = Split-Path $Bridge.archive -Leaf
+    $nodes = @()
+    foreach ($role in @($Derivation['owners'])) {
+        $taskText = New-NodeTaskText -Title ([string]$Derivation['title']) -Stage $role -ReqRel $ReqRel -DesignRels @() -RunId ([string]$Bridge.run_id) -AcceptanceRef $acceptanceRef
+        $graftItem = @{
+            title = [string]$Derivation['title']
+            task  = $taskText
+            role  = $role.ToLower()
+            ref   = "$archiveName/$ReqRel"
+        }
+        if ($depNodes.Count -gt 0) { $graftItem['depends_on'] = @($depNodes) }
+        $g = Invoke-GraftOne ([string]$Bridge.run_id) $ParentNode $graftItem
+        if (-not $g.ok) { return @{ bridge = $Bridge; nodes = @(); error = "graft failed for derived task $TaskId ($role): $($g.text)" } }
+        Set-NodeTaskStage $Bridge $g.node_id $TaskId $role
+        $nodes += $g.node_id
+    }
+    return @{ bridge = $Bridge; nodes = @($nodes); error = $null }
+}
+
+function Resolve-DeriveTargetTask {
+    # 受控入册步骤 (2)+(3)：新需求文档定位（已有任务 remark 锚点优先——幂等
+    # 续跑，否则采纳回调 citations）→ 首次入册时桥代写 rdd-flow add-task
+    # （-BridgeRun 受控标记 + remark 幂等锚点，task.json 单一写入方不破）。
+    # 返回 @{ taskId; reqRel; error }（error 非空 = 未入册，task.json 未动）。
+    param([string]$RunDir, $Bridge, [string]$DerId, $Der, [string]$NodeText)
+    $tag = "derivation=$DerId"
+    $flow = Read-ArchiveTasks ([string]$Bridge.archive)
+    $existing = $null
+    foreach ($t in @($flow.tasks)) {
+        if (([string]$t.remark) -match [regex]::Escape($tag)) { $existing = $t; break }
+    }
+    if ($null -ne $existing) {
+        return @{ taskId = [int]$existing.id; reqRel = (([string]$existing.requirement) -replace '\\', '/'); error = $null }
+    }
+    $reqRel = Get-DeriveRequirementFromCitations -RunDir $RunDir -Bridge $Bridge -NodeText $NodeText
+    if ([string]::IsNullOrWhiteSpace($reqRel)) {
+        return @{ taskId = 0; reqRel = $null; error = "DERIVE_REQUIREMENT_DOC_MISSING: the PM delivery cites no new requirement doc (expected a requirements/<name>.md citation, overview.md excluded) — reclaim/redo the PM node or settle with proper citations" }
+    }
+    if (-not (Test-Path -LiteralPath (Join-Path ([string]$Bridge.archive) $reqRel) -PathType Leaf)) {
+        return @{ taskId = 0; reqRel = $null; error = "DERIVE_REQUIREMENT_DOC_MISSING: cited requirement doc not found at $reqRel" }
+    }
+    $ownersStr = (@($Der['owners']) -join '+')
+    $r = Invoke-RddFlow @('-Command', 'add-task', '-Archive', ([string]$Bridge.archive), '-Title', ([string]$Der['title']), '-Requirement', $reqRel, '-CurrentOwners', $ownersStr, '-Phase', 'DESIGN', '-Remark', "mid-run 派生入册（$tag，run $($Bridge.run_id)）", '-BridgeRun', ([string]$Bridge.run_id))
+    if ($r.exit -ne 0 -or $null -eq $r.json -or -not $r.json.success) {
+        return @{ taskId = 0; reqRel = $null; error = "DERIVE_ADD_TASK_FAILED: bridge-issued add-task failed (task.json untouched — the patrol retries): $($r.text)" }
+    }
+    return @{ taskId = [int]$r.json.data.taskId; reqRel = $reqRel; error = $null }
+}
+
+function Update-DeriveAcceptanceOnRegister {
+    # 受控入册步骤 (5a)：acceptance live 刷新 FIRST——single_exempt/declared
+    # run 的 PM 增补了 overview 判据即升级 planned（basis=derived_upgrade），
+    # 链头 node.task 随后携带 criteria 锚点，派生判据自然进验收门。
+    # 返回 @{ bridge; warnings }。
+    param($Bridge)
+    $warnings = @()
+    $a = Get-AcceptanceSection $Bridge
+    if ($null -ne $a -and ([string]$a['status']) -eq 'none') {
+        $criteria = Read-AcceptanceCriteria ([string]$Bridge.archive)
+        if (([string]$criteria.mode) -eq 'criteria') {
+            $a['status'] = 'planned'
+            $a['basis'] = 'derived_upgrade'
+            $a['criteria_ref'] = [string]$criteria.criteria_ref
+            $a['declaration'] = $null
+            $Bridge['acceptance'] = $a
+            $warnings += "acceptance upgraded to criteria mode: the derived criteria (overview「## 整体验收判据」) now gate the run — the acceptance chain grafts once all mapped nodes are terminal"
+        }
+    }
+    return @{ bridge = $Bridge; warnings = @($warnings) }
+}
+
+function Repair-DeriveChainHeads {
+    # 受控入册步骤 (5b)：DESIGN 链头挂 PM 节点下（幂等——只补缺失角色的
+    # 链头，已有活跃链头不重挂）。返回 @{ bridge; error }。
+    param([string]$RunDir, $Bridge, $Der, [string]$ParentNode, [int]$TaskId, [string]$ReqRel)
+    $treeData = Get-TreeStatusView ([string]$Bridge.run_id)
+    $missingRoles = @()
+    foreach ($role in @($Der['owners'])) {
+        $has = $false
+        if ($Bridge.tasks["$TaskId"]['stages'] -and $Bridge.tasks["$TaskId"]['stages'].Contains($role)) {
+            $nid = [string]$Bridge.tasks["$TaskId"]['stages'][$role]
+            $stt = Get-NodeViewState $treeData $nid
+            if ($null -ne $stt -and [string]$stt['status'] -ne 'pruned') { $has = $true }
+        }
+        if (-not $has) { $missingRoles += $role }
+    }
+    if ($missingRoles.Count -eq 0) { return @{ bridge = $Bridge; error = $null } }
+    $graft = Invoke-DeriveChainGraft -RunDir $RunDir -Bridge $Bridge -Derivation $Der -ParentNode $ParentNode -TaskId $TaskId -ReqRel $ReqRel
+    return @{ bridge = $graft.bridge; error = $graft.error }
+}
+
+function Invoke-DeriveRegisterTask {
+    # 受控入册（settle 派生分支与 status 巡检自愈共用的幂等实现）：PM 节点已
+    # settle → (1) 确认记录防御性复核（无记录拒绝执行——硬门）→ (2) 新需求
+    # 文档定位（citations / 已有任务 remark 锚点）→ (3) 桥代写 rdd-flow
+    # add-task（-BridgeRun 受控标记 + remark 幂等锚点，task.json 单一写入方
+    # 不破）→ (4) bridge.tasks 映射登记 → (5) 切 DESIGN 相位链头挂 PM 节点下
+    # → (6) acceptance 段 live 刷新（派生判据自然进验收门）→ (7) plan-log
+    # progress 事件。失败返回 @{ ok=$false; error } 不退出（settle 降级警告 +
+    # 巡检重入，pending_sync 同族哲学）。
+    param([string]$RunDir, $Bridge, [string]$DerId, [string]$NodeText)
+    $der = $null
+    foreach ($x in @(Get-DerivationSection $Bridge)) { if ([string]$x['id'] -eq $DerId) { $der = $x; break } }
+    if ($null -eq $der) { return @{ ok = $false; error = "derivation $DerId vanished from bridge.json" } }
+    $archivePath = [string]$Bridge.archive
+    # (1) confirmation record — the HARD gate (execution requires a record)
+    $entries = @(Read-DecisionEntries (Get-ArchiveDecisionsPath $archivePath))
+    $conf = Find-DeriveConfirmation $entries $der
+    if ($null -eq $conf) { return @{ ok = $false; error = "DERIVE_CONFIRMATION_MISSING: no user ruling entry (ref_entry=$([string]$der['proposed_entry'])) found in the archive decision ledger — execution refused" } }
+    # (2)+(3) requirement doc location + bridge-issued add-task (idempotent)
+    $target = Resolve-DeriveTargetTask -RunDir $RunDir -Bridge $Bridge -DerId $DerId -Der $der -NodeText $NodeText
+    if ($null -ne $target.error) { return @{ ok = $false; error = [string]$target.error } }
+    $taskId = [int]$target.taskId
+    $reqRel = [string]$target.reqRel
+    # (4) bridge.tasks mapping registration
+    if (-not $Bridge.tasks.Contains("$taskId")) {
+        $Bridge.tasks["$taskId"] = @{
+            title         = [string]$der['title']
+            requirement   = $reqRel
+            initial_group = @($der['owners'])
+            dep_task_ids  = @($der['depends_on'])
+            stages        = @{}
+        }
+    }
+    # (5a) acceptance live refresh FIRST (single_exempt/declared run whose PM
+    # augmented overview criteria upgrades to planned) — the chain heads grafted
+    # right below then carry the criteria anchor (criteria_ref) in node.task, and
+    # replan's Test-PlanCriteriaRef demand + the acceptance chain gate the
+    # derived requirement naturally.
+    $acc = Update-DeriveAcceptanceOnRegister $Bridge
+    $Bridge = $acc.bridge
+    $warnings = @($acc.warnings)
+    # (5b) DESIGN chain heads under the settled PM node (idempotent: only missing roles)
+    $heads = Repair-DeriveChainHeads -RunDir $RunDir -Bridge $Bridge -Der $der -ParentNode $NodeText -TaskId $taskId -ReqRel $reqRel
+    $Bridge = $heads.bridge
+    if ($heads.error) { return @{ ok = $false; bridge = $Bridge; error = $heads.error } }
+    # (7) derivation bookkeeping + plan-log progress event
+    $derivations = @(Get-DerivationSection $Bridge)
+    foreach ($x in $derivations) {
+        if ([string]$x['id'] -eq $DerId) {
+            $x['status'] = 'registered'
+            $x['task_id'] = $taskId
+            $x['requirement'] = $reqRel
+            $x['registered_at'] = Get-UtcNowIso
+        }
+    }
+    $Bridge['derivations'] = $derivations
+    Write-BridgeFile $RunDir $Bridge
+    $null = Add-PlanEvent $RunDir 'progress' 'derivation_registered' $NodeText $taskId $null @{ derivation = $DerId; ledger_entry = [string]$der['confirm_entry'] }
+    return @{ ok = $true; bridge = $Bridge; task_id = $taskId; requirement = $reqRel; warnings = @($warnings) }
+}
+
+function Update-DerivationRegistrations {
+    # 派生入册自愈状态机（与 pending_sync 同族的幂等续跑）：confirmed 且 PM
+    # 节点已 done 但 task_id 未落（settle 与入册之间中断）→ 重跑
+    # Invoke-DeriveRegisterTask（remark 锚点去重，不重复建任务）。入册是状态
+    # 不是推送：no_push 隔离下照跑（AutoDispatch 状态机段调用）。
+    param([string]$RunDir, $Bridge)
+    $out = @{ bridge = $Bridge; registered = @(); failed = @() }
+    $candidates = @()
+    foreach ($d in @(Get-DerivationSection $Bridge)) {
+        if ([string]$d['status'] -ne 'confirmed') { continue }
+        if ([string]::IsNullOrWhiteSpace([string]$d['node'])) { continue }
+        if ((Test-PropPresent $d 'task_id') -and $null -ne $d['task_id']) { continue }
+        $candidates += ,@{ id = [string]$d['id']; node = [string]$d['node'] }
+    }
+    if ($candidates.Count -eq 0) { return $out }
+    $treeData = Get-TreeStatusView ([string]$Bridge.run_id)
+    foreach ($c in $candidates) {
+        $st = Get-NodeViewState $treeData $c.node
+        if ($null -eq $st -or [string]$st['status'] -ne 'done') { continue }
+        $reg = Invoke-DeriveRegisterTask -RunDir $RunDir -Bridge $Bridge -DerId $c.id -NodeText $c.node
+        if ($reg.ok) {
+            $Bridge = $reg.bridge
+            $out.registered += @{ derivation = $c.id; task_id = $reg.task_id }
+        }
+        else {
+            $Bridge = $(if ($reg.bridge) { $reg.bridge } else { $Bridge })
+            $out.failed += @{ derivation = $c.id; error = [string]$reg.error }
+        }
+    }
+    $out.bridge = $Bridge
+    return $out
+}
+
+function New-DerivationViewRows {
+    # status/resume 派生视图行（registered-unabsorbed 高亮由 warnings/resume
+    # steps 提示 replan——风险应对：confirm 后规划者忘记 replan 吸收）。
+    param($Bridge)
+    $rows = @()
+    foreach ($d in @(Get-DerivationSection $Bridge)) {
+        $rows += @{
+            id             = [string]$d['id']
+            title          = [string]$d['title']
+            status         = [string]$d['status']
+            node           = $(if ($null -ne $d['node']) { [string]$d['node'] } else { $null })
+            task_id        = $(if ($null -ne $d['task_id']) { [int]$d['task_id'] } else { $null })
+            absorbed       = ($d['absorbed'] -eq $true)
+            ledger_entries = @(([string]$d['proposed_entry']), ($(if ($null -ne $d['confirm_entry']) { [string]$d['confirm_entry'] } else { $null })), ($(if ($null -ne $d['withdraw_entry']) { [string]$d['withdraw_entry'] } else { $null }))) | Where-Object { $_ }
+            created_at     = [string]$d['created_at']
+        }
+    }
+    return @($rows)
+}
+
+function Add-DerivationAnnexLines {
+    # annex 派生清单区（留痕三联之三）：全部派生条目 + 状态 + 吸收口径；
+    # 有派生的 run 根目标行补「含 N 条 run 中途派生需求并入」达成口径。
+    param($Bridge)
+    $ds = @(Get-DerivationSection $Bridge)
+    if ($ds.Count -eq 0) { return @() }
+    $lines = @()
+    $lines += ""
+    $lines += "## 需求派生（mid-run derive）"
+    $lines += ""
+    $lines += "| 派生 | 标题 | 状态 | 任务 | 确认记录 | 吸收 |"
+    $lines += "|------|------|------|------|----------|------|"
+    foreach ($d in $ds) {
+        $tid = $(if ($null -ne $d['task_id']) { "#$([string]$d['task_id'])" } else { "-" })
+        $conf = [string]$d['confirm_entry']
+        if ([string]$d['status'] -eq 'withdrawn') { $conf = "$(if ($d['withdraw_entry']) { [string]$d['withdraw_entry'] })（拒绝）" }
+        $abs = "-"
+        if ([string]$d['status'] -eq 'registered') { $abs = $(if ($d['absorbed'] -eq $true) { "已入 plan" } else { "待 replan 吸收" }) }
+        $lines += "| $($d['id']) | $(([string]$d['title']) -replace '\|', '/') | $($d['status']) | $tid | $conf | $abs |"
+    }
+    $lines += ""
+    return $lines
+}
+
+function Test-ConcludeDerivations {
+    # DERIVATION_PENDING（结案硬门，验收 7）：存在未完结派生（proposed/
+    # confirmed 挂起，或 registered 任务未终态）拒绝结案——单 run 收敛语义；
+    # 全任务终态硬门自然覆盖派生任务（registered 未完成照常拒）。
+    param($Bridge, $Flow)
+    $pending = @()
+    foreach ($d in @(Get-DerivationSection $Bridge)) {
+        $st = [string]$d['status']
+        if ($st -eq 'withdrawn') { continue }
+        if ($st -in @('proposed', 'confirmed')) {
+            $pending += "$($d['id'])=$st"
+            continue
+        }
+        if ($st -eq 'registered' -and $null -ne $d['task_id']) {
+            $t = Find-ArchiveTask $Flow.tasks ([int]$d['task_id'])
+            if ($null -eq $t -or $script:PlanTerminalLifecycles -notcontains ([string]$t.lifecycle)) {
+                $pending += "$($d['id'])=task#$([string]$d['task_id']) 未终态"
+            }
+        }
+    }
+    if ($pending.Count -gt 0) {
+        Write-ErrorResult "DERIVATION_PENDING" "Open derivation(s) block the conclude: [$($pending -join '; ')]. Settle/register them to completion, or withdraw the pending proposals first — a run with mid-run derivations concludes only when they are all resolved (withdrawn derivations never block)." 1
+    }
+}
+
+function Steal-DerivationDeadClaim {
+    # 派生 PM 节点 dead-claim 回收：存活预检已过 → steal + 标记重推 →
+    # AutoDispatch 自动推送（reclaim 同族通道）。
+    param([string]$RunDir, $Bridge, [string]$NodeId, $Node)
+    $null = Test-ReclaimLiveness $RunId $NodeId $Node
+    $worker = "planner-reclaim"
+    $r1 = Invoke-GoalTreeLeaf @("-Command", "claim", "-RunId", $RunId, "-NodeId", $NodeId, "-Worker", $worker, "-Steal")
+    if ($r1.exit -ne 0 -or -not $r1.json.success) { Write-ErrorResult "RECLAIM_TREE_FAILED" "leaf steal failed: $($r1.text)" 1 }
+    $Bridge = Set-NodeRepushFlag $RunDir $Bridge $NodeId
+    $push = Invoke-AutoDispatch $RunDir $Bridge "reclaim" (-not [bool]$NoReuse)
+    return @{
+        success = $true
+        data    = @{
+            run_id = $RunId; node_id = $NodeId; task_id = $null; stage = 'PM'
+            reclaimed = $true; mode = 'dead-claim (tree-level derivation PM node)'
+            steal_count = $r1.json.data.node.steal_count
+            auto_push = @{ trigger = $push.trigger; pushed = @($push.pushed); failed = @($push.failed) }
+            next_step = $(if (@($push.pushed) -contains $NodeId) { "fresh PM session auto-pushed for the parked derivation node" } else { "derivation node parked as '$worker' — re-push via status touch or dispatch -NodeId $NodeId" })
+        }
+    }
+}
+
+function Rebuild-DerivationRejectedDelivery {
+    # 派生 PM 节点 rejected-delivery 回收：拒收证据已核 → 原会话存活走
+    # in-place 重做；否则 prune + 同源重建 PM 节点（New-DeriveNodeTaskText
+    # 单源）+ repush。
+    param([string]$RunDir, $Bridge, [string]$NodeId, $Node, $Der, [string[]]$Problems, $Live)
+    if (-not [bool]$NoReuse -and $Live.liveness -eq 'alive' -and -not [string]::IsNullOrWhiteSpace([string]$Live.session_id)) {
+        return Invoke-ReclaimInPlace -RunDir $RunDir -Bridge $Bridge -Node $Node -NodeIdText $NodeId -TaskId 0 -Stage 'PM' -Problems $Problems -Live $Live -TreeLevel
+    }
+    $reason = "derivation PM delivery rejected by settle evidence gate: $($Problems -join '; ')"
+    $rp = Invoke-GoalTree @("-Command", "prune", "-RunId", $RunId, "-NodeId", $NodeId, "-Reason", $reason)
+    if ($rp.exit -ne 0 -or -not $rp.json.success) { Write-ErrorResult "RECLAIM_PRUNE_FAILED" "prune of the rejected derivation delivery failed: $($rp.text)" 1 }
+    $taskText = New-DeriveNodeTaskText -TitleText ([string]$Der['title']) -RationaleText ([string]$Der['rationale']) -RunIdText $RunId -ConfirmEntry ([string]$Der['confirm_entry']) -DepIds @($Der['depends_on'])
+    $graftItem = @{
+        title = [string]$Der['title']
+        task  = $taskText
+        role  = 'pm'
+        ref   = "$(($RunId -replace '^deliver-', ''))/requirements/overview.md"
+    }
+    $g = Invoke-GraftOne $RunId ([string]$Bridge.goal_root) $graftItem
+    if (-not $g.ok) { Write-ErrorResult "RECLAIM_GRAFT_FAILED" "replacement derivation PM node graft failed (derivation $($Der['id']) stays confirmed, old node pruned): $($g.text)" 1 }
+    $derivations = @(Get-DerivationSection $Bridge)
+    foreach ($x in $derivations) {
+        if ([string]$x['id'] -eq [string]$Der['id']) { $x['node'] = $g.node_id }
+    }
+    $Bridge['derivations'] = $derivations
+    Write-BridgeFile $RunDir $Bridge
+    $push = Invoke-AutoDispatch $RunDir $Bridge "reclaim" (-not [bool]$NoReuse)
+    $Bridge = $push.bridge
+    return @{
+        success = $true
+        data    = @{
+            run_id = $RunId; node_id = $g.node_id; pruned_node = $NodeId; task_id = $null; stage = 'PM'
+            reclaimed = $true; mode = 'rejected-delivery (tree-level derivation PM node)'
+            fallback = $(if ($Live.liveness -eq 'alive') { 'no_reuse' } else { $Live.liveness })
+            auto_push = @{ trigger = $push.trigger; pushed = @($push.pushed); failed = @($push.failed) }
+            next_step = "rebuilt derivation PM node $($g.node_id) auto-pushed — the fresh PM session claims it and drafts the requirement doc"
+        }
+    }
+}
+
+function Invoke-ReclaimDerivationNode {
+    # 派生 PM 节点回收（与 design review 节点同族的 tree-level 通道）：
+    # dead-claim → steal + repush；reported-but-unqualified → 原会话存活时
+    # in-place 重做（失败清单 + 原地重报），否则 prune + 重建 PM 节点（同
+    # New-DeriveNodeTaskText 单源）+ repush。registered 后的链头节点是
+    # bridge 映射节点，走既有 reclaim 通道（不经此处）。
+    param([string]$RunDir, $Bridge, [string]$NodeId, $Der)
+    $leafStatus = Invoke-GoalTreeLeaf @("-Command", "status", "-RunId", $RunId, "-NodeId", $NodeId)
+    if ($leafStatus.exit -ne 0 -or $null -eq $leafStatus.json -or -not $leafStatus.json.success) {
+        Write-ErrorResult "NODE_STATUS_FAILED" "leaf status failed: $($leafStatus.text)" 2
+    }
+    $node = $leafStatus.json.data.node
+    $nodeStatus = [string]$node.status
+    if ($nodeStatus -eq 'pending') {
+        Write-ErrorResult "RECLAIM_NOT_NEEDED" "Node $NodeId is pending (nobody claimed it) — a plain bridge claim is enough." 1
+    }
+    if ($nodeStatus -in @('done', 'pruned')) {
+        Write-ErrorResult "RECLAIM_NOT_POSSIBLE" "Node $NodeId is '$nodeStatus' — terminal; nothing to reclaim." 1
+    }
+    if ($nodeStatus -eq 'claimed') {
+        return Steal-DerivationDeadClaim -RunDir $RunDir -Bridge $Bridge -NodeId $NodeId -Node $node
+    }
+    # reported: rejected delivery — unqualified evidence required
+    $problems = @(Test-SettleEvidence -RunDir $RunDir -Node $node -NodeId $NodeId -Bridge $Bridge)
+    if ($problems.Count -eq 0) {
+        Write-ErrorResult "RECLAIM_REQUIRES_UNQUALIFIED" "Node $NodeId is reported with QUALIFIED evidence — settle it instead (settle -RunId $RunId -NodeId $NodeId); reclaim only recovers dead claims or rejected deliveries." 1
+    }
+    $live = Get-ClaimLiveness $RunId $NodeId
+    return Rebuild-DerivationRejectedDelivery -RunDir $RunDir -Bridge $Bridge -NodeId $NodeId -Node $node -Der $Der -Problems $problems -Live $live
 }
 
 # === Parallel coordination (parallel-coordination: 并行协作冲突预防与治理) ===
@@ -8069,7 +9621,7 @@ function Test-ConflictHold {
 }
 
 function Test-SettleConflictGate {
-    # settle 前置冲突门(三查先行、错误码分立,冲突门后置),按 kind 分流(决策 5):
+    # settle 前置冲突门(四查证据门先行、错误码分立,冲突门后置),按 kind 分流(决策 5):
     #   design 涉事节点恒拒(不得默默二选一——先调和/上报并 resolve 再 settle)
     #   file   仅双活跃方互拦(claimed/reported),单活跃写者放行(先行落地即串行化前提)
     param([string]$RunDir, $Bridge, [string]$NodeIdText)
@@ -8311,76 +9863,78 @@ function Resolve-ConflictNodes {
     return $ids
 }
 
-function Invoke-BridgeConflict {
-    # conflict — 并行协作冲突注册表命令族(动作仅 open|resolve;上报/挂起为条目
-    # 状态属性,经 open -ConflictId <id> 更新)。登记即拦截「默默二选一」:涉事节点
-    # 推送门 hold / settle 门按 kind 分流;resolve 后下一触发点自动推送恢复。
-    $runDir = Get-BridgeRunDir $RunId
-    $bridge = Require-Bridge $runDir
-    if ([string]::IsNullOrWhiteSpace($Action)) { Write-ErrorResult "CONFLICT_ACTION_REQUIRED" "-Action is required (open / resolve)" 1 }
-    $null = Enter-PlannerLease $runDir
-    $tree = Get-TreeStatusView $RunId
-
-    if ($Action -eq 'open') {
-        if (-not [string]::IsNullOrWhiteSpace($ConflictId)) {
-            # state-attribute update on an existing entry (escalated / suspended)
-            $entry = Find-ConflictEntry $bridge $ConflictId
-            if ($null -eq $entry) { Write-ErrorResult "CONFLICT_NOT_FOUND" "conflict '$ConflictId' is not in this run's registry (see status conflicts view)" 1 }
-            if (([string]$entry['status']) -eq 'resolved') { Write-ErrorResult "CONFLICT_ALREADY_RESOLVED" "conflict '$ConflictId' is already resolved — a changed verdict reopens as a NEW conflict entry (registry is append-only)" 1 }
-            if ($ConflictStatus -notin @('escalated', 'suspended')) {
-                Write-ErrorResult "CONFLICT_ENTRY_INVALID" "state-attribute update needs -ConflictStatus escalated|suspended (上报/挂起是条目状态属性;open→escalated/suspended)" 1
-            }
-            if ($ConflictStatus -eq 'escalated' -and [string]::IsNullOrWhiteSpace($Escalation)) {
-                Write-ErrorResult "CONFLICT_ENTRY_INVALID" "-ConflictStatus escalated needs -Escalation <呈用户裁决的问题>(上报记录)" 1
-            }
-            $entry = Set-ConflictState $runDir $bridge $entry $ConflictStatus $Note $Escalation
-            return @{
-                success = $true
-                data    = [ordered]@{
-                    run_id    = $RunId
-                    conflict  = $entry
-                    report    = ".rdd/goal-trees/$RunId/report/design-conflicts.md"
-                    next_step = $(if ($ConflictStatus -eq 'escalated') { "已上报用户裁决($($entry['id']))——呈现问题并等用户裁决;裁决落地后 resolve:-Action resolve -ConflictId $($entry['id']) -Ruling '<用户裁决>'" } else { "涉事链已挂起($($entry['id']))并上报——不阻塞无冲突任务;后续会话续处,status 冲突视图可见" })
-                }
-            }
-        }
-        if ([string]::IsNullOrWhiteSpace($ConflictKind)) { Write-ErrorResult "CONFLICT_ENTRY_INVALID" "-ConflictKind design|file is required for a new conflict entry" 1 }
-        $nodeIds = Resolve-ConflictNodes $tree $Nodes
-        $filePaths = @()
-        if ($ConflictKind -eq 'file') {
-            if ([string]::IsNullOrWhiteSpace($Files)) { Write-ErrorResult "CONFLICT_ENTRY_INVALID" "kind=file requires -Files (comma-separated repo-root-relative paths)" 1 }
-            foreach ($f in @(($Files -split ','))) {
-                $fp = (($f.Trim()) -replace '\\', '/')
-                if (-not [string]::IsNullOrWhiteSpace($fp) -and ($filePaths -notcontains $fp)) { $filePaths += $fp }
-            }
-            if ($filePaths.Count -eq 0) { Write-ErrorResult "CONFLICT_ENTRY_INVALID" "-Files resolved to no path" 1 }
-        }
-        $statusOut = 'open'
-        if ($ConflictStatus -in @('escalated', 'suspended')) { $statusOut = $ConflictStatus }
-        if ($statusOut -eq 'escalated' -and [string]::IsNullOrWhiteSpace($Escalation)) {
-            Write-ErrorResult "CONFLICT_ENTRY_INVALID" "status escalated needs -Escalation <呈用户裁决的问题>(上报记录)" 1
-        }
-        $taskIds = @()
-        foreach ($nid in $nodeIds) {
-            $m = Get-NodeTaskStage $bridge $nid
-            if ($null -ne $m -and ($taskIds -notcontains [int]$m.task_id)) { $taskIds += [int]$m.task_id }
-        }
-        $entry = Add-ConflictEntry -RunDir $runDir -Bridge $bridge -Kind $ConflictKind -NodeIds $nodeIds -TaskIds $taskIds -FilePaths $filePaths `
-            -DetectedByText $(if (-not [string]::IsNullOrWhiteSpace($DetectedBy)) { $DetectedBy } else { 'planner' }) `
-            -NoteText $Note -StatusText $statusOut -EscalationText $Escalation
-        return @{
-            success = $true
-            data    = [ordered]@{
-                run_id    = $RunId
-                conflict  = $entry
-                report    = ".rdd/goal-trees/$RunId/report/design-conflicts.md"
-                next_step = "冲突已登记($($entry['id']),涉事节点推送门 hold/settle 门拦截)。调和落地 → -Action resolve -ConflictId $($entry['id']) -Ruling '<一致结论>'(文件冲突可 -Serialize <早者节点> 串行化);无法调和 → -Action open -ConflictId $($entry['id']) -ConflictStatus escalated -Escalation '<呈用户的问题>' 上报用户裁决;用户不在场 → -ConflictStatus suspended 挂起涉事链并上报(不阻塞无冲突任务)。硬约束:不得默默二选一。"
-            }
+function Update-BridgeConflictState {
+    # conflict open 既有条目状态属性更新（escalated/suspended——上报/挂起是
+    # 条目状态属性，open→escalated/suspended）。返回命令结果。
+    param([string]$RunDir, $Bridge, $Tree)
+    $entry = Find-ConflictEntry $Bridge $ConflictId
+    if ($null -eq $entry) { Write-ErrorResult "CONFLICT_NOT_FOUND" "conflict '$ConflictId' is not in this run's registry (see status conflicts view)" 1 }
+    if (([string]$entry['status']) -eq 'resolved') { Write-ErrorResult "CONFLICT_ALREADY_RESOLVED" "conflict '$ConflictId' is already resolved — a changed verdict reopens as a NEW conflict entry (registry is append-only)" 1 }
+    if ($ConflictStatus -notin @('escalated', 'suspended')) {
+        Write-ErrorResult "CONFLICT_ENTRY_INVALID" "state-attribute update needs -ConflictStatus escalated|suspended (上报/挂起是条目状态属性;open→escalated/suspended)" 1
+    }
+    if ($ConflictStatus -eq 'escalated' -and [string]::IsNullOrWhiteSpace($Escalation)) {
+        Write-ErrorResult "CONFLICT_ENTRY_INVALID" "-ConflictStatus escalated needs -Escalation <呈用户裁决的问题>(上报记录)" 1
+    }
+    $entry = Set-ConflictState $RunDir $Bridge $entry $ConflictStatus $Note $Escalation
+    return @{
+        success = $true
+        data    = [ordered]@{
+            run_id    = $RunId
+            conflict  = $entry
+            report    = ".rdd/goal-trees/$RunId/report/design-conflicts.md"
+            next_step = $(if ($ConflictStatus -eq 'escalated') { "已上报用户裁决($($entry['id']))——呈现问题并等用户裁决;裁决落地后 resolve:-Action resolve -ConflictId $($entry['id']) -Ruling '<用户裁决>'" } else { "涉事链已挂起($($entry['id']))并上报——不阻塞无冲突任务;后续会话续处,status 冲突视图可见" })
         }
     }
+}
 
+function New-BridgeConflictOpen {
+    # conflict open 新建条目：kind/nodes/files 校验 → 任务反查 → 登记即拦截
+    # 「默默二选一」（涉事节点推送门 hold / settle 门按 kind 分流）。
+    # 返回命令结果。
+    param([string]$RunDir, $Bridge, $Tree)
+    if ([string]::IsNullOrWhiteSpace($ConflictKind)) { Write-ErrorResult "CONFLICT_ENTRY_INVALID" "-ConflictKind design|file is required for a new conflict entry" 1 }
+    $nodeIds = Resolve-ConflictNodes $Tree $Nodes
+    $filePaths = @()
+    if ($ConflictKind -eq 'file') {
+        if ([string]::IsNullOrWhiteSpace($Files)) { Write-ErrorResult "CONFLICT_ENTRY_INVALID" "kind=file requires -Files (comma-separated repo-root-relative paths)" 1 }
+        foreach ($f in @(($Files -split ','))) {
+            $fp = (($f.Trim()) -replace '\\', '/')
+            if (-not [string]::IsNullOrWhiteSpace($fp) -and ($filePaths -notcontains $fp)) { $filePaths += $fp }
+        }
+        if ($filePaths.Count -eq 0) { Write-ErrorResult "CONFLICT_ENTRY_INVALID" "-Files resolved to no path" 1 }
+    }
+    $statusOut = 'open'
+    if ($ConflictStatus -in @('escalated', 'suspended')) { $statusOut = $ConflictStatus }
+    if ($statusOut -eq 'escalated' -and [string]::IsNullOrWhiteSpace($Escalation)) {
+        Write-ErrorResult "CONFLICT_ENTRY_INVALID" "status escalated needs -Escalation <呈用户裁决的问题>(上报记录)" 1
+    }
+    $taskIds = @()
+    foreach ($nid in $nodeIds) {
+        $m = Get-NodeTaskStage $Bridge $nid
+        if ($null -ne $m -and ($taskIds -notcontains [int]$m.task_id)) { $taskIds += [int]$m.task_id }
+    }
+    $entry = Add-ConflictEntry -RunDir $RunDir -Bridge $Bridge -Kind $ConflictKind -NodeIds $nodeIds -TaskIds $taskIds -FilePaths $filePaths `
+        -DetectedByText $(if (-not [string]::IsNullOrWhiteSpace($DetectedBy)) { $DetectedBy } else { 'planner' }) `
+        -NoteText $Note -StatusText $statusOut -EscalationText $Escalation
+    return @{
+        success = $true
+        data    = [ordered]@{
+            run_id    = $RunId
+            conflict  = $entry
+            report    = ".rdd/goal-trees/$RunId/report/design-conflicts.md"
+            next_step = "冲突已登记($($entry['id']),涉事节点推送门 hold/settle 门拦截)。调和落地 → -Action resolve -ConflictId $($entry['id']) -Ruling '<一致结论>'(文件冲突可 -Serialize <早者节点> 串行化);无法调和 → -Action open -ConflictId $($entry['id']) -ConflictStatus escalated -Escalation '<呈用户的问题>' 上报用户裁决;用户不在场 → -ConflictStatus suspended 挂起涉事链并上报(不阻塞无冲突任务)。硬约束:不得默默二选一。"
+        }
+    }
+}
+
+function Resolve-BridgeConflictCmd {
+    # conflict resolve：调和一致结论 / 用户裁决落账（-Serialize 串行化可代结论）
+    # → resolve 落地 + 编排裁定自动入账（统一决策账本，advisory——conflict
+    # resolve 也是裁定）。返回命令结果。
+    param([string]$RunDir, $Bridge)
     if ([string]::IsNullOrWhiteSpace($ConflictId)) { Write-ErrorResult "CONFLICT_ENTRY_INVALID" "-Action resolve requires -ConflictId <C<n>>" 1 }
-    $entry = Find-ConflictEntry $bridge $ConflictId
+    $entry = Find-ConflictEntry $Bridge $ConflictId
     if ($null -eq $entry) { Write-ErrorResult "CONFLICT_NOT_FOUND" "conflict '$ConflictId' is not in this run's registry (see status conflicts view)" 1 }
     if (([string]$entry['status']) -eq 'resolved') {
         Write-ErrorResult "CONFLICT_ALREADY_RESOLVED" "conflict '$ConflictId' was already resolved (ruling at $($entry['ruling']['at'])) — a changed verdict reopens as a NEW conflict entry (registry is append-only)" 1
@@ -8401,8 +9955,9 @@ function Invoke-BridgeConflict {
     if ([string]::IsNullOrWhiteSpace($ruling)) {
         Write-ErrorResult "CONFLICT_ENTRY_INVALID" "-Action resolve requires -Ruling <调和一致结论/用户裁决> (or -Serialize <早者节点> for 串行化)" 1
     }
-    $entry = Resolve-ConflictEntry $runDir $bridge $entry $ruling $Serialize
-    return @{
+    $entry = Resolve-ConflictEntry $RunDir $Bridge $entry $ruling $Serialize
+    $ledger = Add-OrchestrationRuling -ArchivePath ([string]$Bridge.archive) -RunIdText $RunId -CommandName 'conflict-resolve' -DecisionText "conflict $($entry['id']) resolved: $ruling" -ReasonText $(if ([string]::IsNullOrWhiteSpace($Note)) { "并行冲突调和（不得默默二选一）" } else { $Note }) -OptionsArr @('调和（一致结论）', '上报用户裁决', '挂起涉事链')
+    $res = @{
         success = $true
         data    = [ordered]@{
             run_id     = $RunId
@@ -8412,6 +9967,35 @@ function Invoke-BridgeConflict {
             next_step  = "$($entry['id']) 已 resolved——涉事节点解除 hold,下一触发点自动推送恢复;设计返修经 reclaim rejected-delivery(调和结论写入 -Note/重做上下文)或 rollback 落地"
         }
     }
+    if ($ledger.entry) { $res.data['decision_ledger'] = @{ entry_id = [string]$ledger.entry['entry_id'] } }
+    elseif ($ledger.warning) { $res.data['warnings'] = @($ledger.warning) }
+    return $res
+}
+
+function Invoke-BridgeConflict {
+    # conflict — 并行协作冲突注册表命令族(动作仅 open|resolve;上报/挂起为条目
+    # 状态属性,经 open -ConflictId <id> 更新)。登记即拦截「默默二选一」:涉事节点
+    # 推送门 hold / settle 门按 kind 分流;resolve 后下一触发点自动推送恢复。
+    $runDir = Get-BridgeRunDir $RunId
+    $bridge = Require-Bridge $runDir
+    if ([string]::IsNullOrWhiteSpace($Action)) { Write-ErrorResult "CONFLICT_ACTION_REQUIRED" "-Action is required (open / resolve)" 1 }
+    if ($Action -in @('propose', 'confirm', 'withdraw')) {
+        Write-ErrorResult "CONFLICT_ACTION_INVALID" "-Action $Action is a derive sub-action — the conflict registry only accepts open / resolve (derive lives under -Command derive)" 1
+    }
+    if ($Action -in @('submit', 'status')) {
+        Write-ErrorResult "CONFLICT_ACTION_INVALID" "-Action $Action is a design-review sub-action — the conflict registry only accepts open / resolve (design-review lives under -Command design-review)" 1
+    }
+    $null = Enter-PlannerLease $runDir
+    $tree = Get-TreeStatusView $RunId
+
+    if ($Action -eq 'open') {
+        if (-not [string]::IsNullOrWhiteSpace($ConflictId)) {
+            # state-attribute update on an existing entry (escalated / suspended)
+            return Update-BridgeConflictState -RunDir $runDir -Bridge $bridge -Tree $tree
+        }
+        return New-BridgeConflictOpen -RunDir $runDir -Bridge $bridge -Tree $tree
+    }
+    return Resolve-BridgeConflictCmd -RunDir $runDir -Bridge $bridge
 }
 
 # === Dispatch ===
@@ -8432,6 +10016,8 @@ switch ($Command) {
     "escalate"         { $result = Invoke-BridgeEscalate }
     "replan"           { $result = Invoke-BridgeReplan }
     "conflict"         { $result = Invoke-BridgeConflict }
+    "derive"           { $result = Invoke-BridgeDerive }
+    "design-review"    { $result = Invoke-BridgeDesignReview }
 }
 
 ConvertTo-PortableJson $result -Depth 14

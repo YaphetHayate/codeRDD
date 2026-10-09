@@ -28,6 +28,16 @@ Worker 视图在需求/设计文档行之后渲染**「视觉稿」行**（可�
 
 > **v0.5.1（头部溢出修复）**：卡片头部行的 `id · 任务标题`（`.rdgt-run`）与轮次/runId 等元信息（`.rdgt-meta`）原为 `flex:none` 不可收缩、无省略号——长任务标题或长 runId 会把内容顶出卡片圆角框。两者改为 `flex:0 1 auto` + `min-width:0` + 单行省略号：空间不足时按需截断（完整任务文本仍在头部悬停 tooltip 里），不再溢出。
 
+## /runs 慢响应根治（v0.6.0，plugin-perf 三层）
+
+症状：条带轮询 `GET /rdd-goal-tree/runs` 慢到等不到应答（11 run × ~84 节点 ≈ 300+ 次串行 fs 操作 ≈ 3s/请求，条带 + liveness 探针 + watcher 扫描全都触发全量聚合）。三层修复（产物行为对客户端兼容：字段只增不减语义）：
+
+1. **L1 并行化**（`aggregateOneRun`）：run 之间 `Promise.all`；run 内 manifest/tree/round-log/planner/claims 并发读；全部节点的 doc-link stat 与 mockup 目录游走并发解析（`mockupsByArchive` 缓存 in-flight Promise，阶段链兄弟节点共享同一次游走）。输出与串行管线一致（同视图、同排序、同容错）。
+2. **L2 缓存 + liveness 捷径**：per-run 聚合缓存，键 = `manifest.json`/`state/tree.json`/`state/round-log.jsonl`/`state/planner.json`/`state/claims/*` 的 mtime+size 指纹（任一变化才重聚合），2s TTL 防抖 floor（窗口内直接复用缓存对象，零 stat）；缓存只覆盖 run 状态文件——归档侧文档/视觉稿的出现随下一次 tree.json 写入（claim/settle/prune/graft 必写）生效。节点键 liveness 探针改直读 `state/claims/<node>.json` 副车（不再全量聚合）；`state/ledger.jsonl` 与统一决策账本 `decisions.jsonl` 每次现读（不进指纹，追加即生效）——决策账本自 planner-midrun-derive 起位于**归档根** `.rdd/changes/archive/<归档名>/`（旧 run 目录位置仅作 legacy 兜底），路径经该 run 的 `bridge.json` → `archive_rel` 解析：watcher 必须读引擎实际写入的同一份账本，否则 AutoMode 升级投递会静默断链。
+3. **L3 载荷瘦身**：`/runs` 默认只返回摘要——run 级标量全保留（state/census/budget/updatedAt），节点只带 census 字段（`id/title/type/status/claimedBy/claimSessionId/blockedBy/parent/depth`，视图门控与树列表所需），重字段（task 全文/docs/verdict/confidence）仅「有**活跃** claim 会话的 run」（claim 副车会话在 agents 注册表存活——worker 视图要渲染；历史 claim/死会话的 run 一律 slim）或 `?run=<runId>` 详情表单返回；响应加 `detail: true|false` 标记。**老客户端仍可用**（所读字段全在，slim 节点只是树列表 tooltip 退化到标题）；新客户端对展开的 slim run 经 `&run=` 回填详情（`useRunDetail`，按 runId 校验防串树——旧宿主应答全量列表时安全降级）。
+
+构建环境修复（挂账⑤）：包内 devDependencies 固定 `typescript@5.9.3` + `@types/node`（此前检出链回退到 DSH checkout 的 tsc 6.x，报 `baseUrl` 弃用），host tsconfig 加 `"types": ["node"]`。
+
 ## 会话绑定与视图（v0.3.0，按会话角色收敛）
 
 引擎在 dsh 环境里额外写两个**增量 sidecar**（文件仍是唯一权威）：

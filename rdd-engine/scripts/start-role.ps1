@@ -1,6 +1,9 @@
 ﻿[CmdletBinding()]
 param(
     [Parameter(Mandatory = $true)]
+    # AUDITOR = 强形态独立会话入口（auditor-subagent-review 后仅手动按需启动：
+    # 评审主链内生于规划者会话的评审子代理，不经本入口；缺键 legacy 链审查节点
+    # 推送仍带 -Role AUDITOR 开会话结算）。
     [ValidateSet("PM", "CTO", "UX", "DEV", "QA", "EVAL", "PSE", "PLANNER", "AUDITOR")]
     [string]$Role,
 
@@ -354,20 +357,27 @@ function Get-RoleTips {
 function Get-TipsSegment {
     # Pointer-message targeted-tips segment (tips-startup-injection):
     # injected after the base sentence + handoff pointer and BEFORE the task
-    # brief; the goal-tree marker keeps its trailing-anchor position. One
-    # line per entry (title — repo-relative detail pointer), newest first,
-    # capped at $TipsSummaryCap with an overflow hint only when more exist.
-    # Empty input returns "" so tip-less projects keep the message
-    # byte-for-byte identical (regression anchor, same contract as
-    # Get-TaskBriefSegment).
+    # brief; the goal-tree marker keeps its trailing-anchor position. Shape
+    # (numbered-summary contract, 2026-10-08): a lead line naming the origin
+    # (lessons from past runs, newest first) + ONE numbered title line per
+    # entry ("1. <title>") — the ordinal is the LLM-facing reference key,
+    # the long entry id never enters the reading flow — + a single
+    # quarantined pointer line freezing the number->file mapping inside the
+    # message itself (a mid-session tip add cannot silently renumber what
+    # this session already saw), capped at $TipsSummaryCap with an overflow
+    # hint only when more exist. Empty input returns "" so tip-less
+    # projects keep the message byte-for-byte identical (regression
+    # anchor, same contract as Get-TaskBriefSegment).
     param([array]$Entries, [string]$TargetRole)
     if (-not $Entries -or @($Entries).Count -eq 0) { return "" }
     $shown = @($Entries | Select-Object -First $TipsSummaryCap)
     $total = @($Entries).Count
-    $lines = @(("【定向 tips（{0}）——开工前先通读，详情按行内指针读取】" -f $TargetRole))
-    foreach ($entry in $shown) {
-        $lines += ("- {0} — {1}" -f ([string]$entry.title), ([string]$entry.path))
+    $lines = @(("【定向 tips（{0}）——开工前先通读：以下 {1} 条为历史执行中沉淀的踩坑教训（新→旧），详情按序号查末行指针】" -f $TargetRole, $shown.Count))
+    for ($i = 0; $i -lt $shown.Count; $i++) {
+        $lines += ("{0}. {1}" -f ($i + 1), ([string]$shown[$i].title))
     }
+    $pointers = for ($j = 0; $j -lt $shown.Count; $j++) { "{0}={1}" -f ($j + 1), [string]$shown[$j].path }
+    $lines += "详情指针：" + ($pointers -join "；")
     if ($total -gt $shown.Count) {
         $lines += ("（另有 {0} 条更早定向 tips 未列出，可经 tips.cmd -Command list -Role {1} 查看全量）" -f ($total - $shown.Count), $TargetRole)
     }
@@ -528,7 +538,7 @@ function Build-PromptMessage {
         if (-not $taskJsonAbs) {
             Write-Err "未找到 task.json。请用 -TaskJson 显式指定，或确保 .rdd/changes/archive/ 下有归档。"
         }
-        return "你是 RDD PLANNER（规划者）。先读 rdd-engine/references/planner-guide.md，然后用 delivery-bridge promulgate -TaskJson $taskJsonAbs 接管该归档的整批交付。"
+        return "你是 RDD PLANNER（规划者）。先读 rdd-engine/references/planner-guide.md；接管后先按 rdd-engine/references/review-input-template.md 机械模板派需求审视子代理（独立上下文，禁转述），结论呈用户后用 delivery-bridge promulgate -TaskJson $taskJsonAbs 接管该归档的整批交付。"
     }
 
     if (-not [string]::IsNullOrWhiteSpace($Handoff)) {
@@ -631,7 +641,7 @@ function Build-PointerMessage {
         }
         $archiveRel = Resolve-ArchiveRelativePath -TaskJsonAbs $taskJsonAbs -RootPath $root
         if (-not $archiveRel) { Write-Err "无法从 task.json 路径推导归档相对路径: $taskJsonAbs" }
-        return "请以规划者（PLANNER）身份接管 ${archiveRel}的整批交付：先读 rdd-engine/references/planner-guide.md，随后执行 delivery-bridge -Command promulgate -TaskJson $taskJsonAbs 颁布交付节点并按需调动角色会话。"
+        return "请以规划者（PLANNER）身份接管 ${archiveRel}的整批交付：先读 rdd-engine/references/planner-guide.md，按 rdd-engine/references/review-input-template.md 机械模板派需求审视子代理（独立上下文，禁转述）并把结论呈用户，随后执行 delivery-bridge -Command promulgate -TaskJson $taskJsonAbs 颁布交付节点并按需调动角色会话。"
     }
 
     $taskJsonAbs = Resolve-TaskJsonAbsolute
@@ -649,10 +659,11 @@ function Build-PointerMessage {
             $msg += "（交接包: $handoffRel）"
         }
     }
-    # targeted tips (tips-startup-injection): one line per entry (title —
-    # repo-relative pointer) between the handoff pointer and the task brief;
-    # PLANNER branches above return early un-injected — the planner is the
-    # callback target, not a tips consumer
+    # targeted tips (tips-startup-injection): numbered summary (ordinal +
+    # title per line, pointer mapping quarantined on the last line) between
+    # the handoff pointer and the task brief; PLANNER branches above return
+    # early un-injected — the planner is the callback target, not a tips
+    # consumer
     $msg += Get-TipsSegment -Entries (Get-RoleTips -TargetRole $Role) -TargetRole $Role
     # task brief (dispatch-task-goal-anchoring): goal-first statement ahead of
     # the marker; PLANNER branches above return early unbriefed — the planner

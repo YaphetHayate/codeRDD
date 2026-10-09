@@ -1,18 +1,18 @@
 # 设计汇聚审查方法论与 DesignReviewFile 生产流程
 
-> **定位**：DESIGN→IMPL 阶段边界的独立设计审查（auditor-design-stage-review）。与需求侧审视（[requirement-review.md](requirement-review.md)）构成 AUDITOR 的两个事前把关位：**需求集进规划建树前查需求 / 设计汇聚进实现前查设计**；与 QA 阶段解禁（已交付）构成完整独立审查链——**实现前查设计本身质量（AUDITOR）/ 实现后查符合性（QA）**：两者读同一份设计但回答不同问题，互不污染（AUDITOR 不写测试，QA 验收基线先冻结）。
+> **定位**：DESIGN→IMPL 阶段边界的独立设计审查（auditor-design-stage-review）。与需求侧审视（[requirement-review.md](requirement-review.md)）构成两个事前把关位：**需求集进规划建树前查需求 / 设计汇聚进实现前查设计**；与 QA 阶段解禁（已交付）构成完整独立审查链——**实现前查设计本身质量 / 实现后查符合性（QA）**：两者读同一份设计但回答不同问题，互不污染（审视者不写测试，QA 验收基线先冻结）。本文件兼具**评审子代理提示词素材**定位：`rdd-engine/references/review-input-template.md` §3 提示词骨架直指本方法论（子代理直读）。
 
 ---
 
 ## 一、审查对象与时机
 
-- **触发**（引擎自动，无人工判断）：桥接 run 中某阶段全部在册任务越过 DESIGN（phase ∈ {IMPL, VERIFY} 或 lifecycle 终态）且 ≥1 落盘设计产物 → 引擎自动 graft 树级节点 `[设计审查·S<k>]`（goal 根下、无 TaskId、role=AUDITOR）并推送；全阶段无设计产物 / 无 in-run 设计工作 → `exempt` 快速通道（无节点无门）。
-- **一批一会话**（成本裁定）：一个 AUDITOR 会话**汇聚审查本阶段全部设计产物**，禁止逐设计节点串行审查——并行设计间的跨设计一致性只有汇聚在同一视野内才可查。
-- **审查对象** = 阶段内在册任务的**全部落盘设计产物**（claim 输出 `acceptance.docs` 是权威清单）：CTO 技术方向文档、UX 交互/体验设计、QA 测试先行设计。**UX 纯视觉稿类产物：审查对象为变更地图与交互说明，缺产物即该文档 fail（产物契约不满足）。**
-- **审查完成后**：产出 DesignReviewFile（见「三、契约」）→ `delivery-bridge.cmd -Command settle -RunId <RunId> -NodeId <审查节点id>`。settle 门机械校验契约完备性；总裁定**由引擎推导**（pass ⇔ 全文档 pass 且全局零 blocking）——不采信任何声明值：
+- **触发**（引擎自动，无人工判断）：桥接 run 中某阶段全部在册任务越过 DESIGN（phase ∈ {IMPL, VERIFY} 或 lifecycle 终态）且 ≥1 落盘设计产物。**新链**（bridge.json `review_mode`）：状态置 `ready`（plan-log `design_review_ready` + status/resume 提示，无自动会话）→ 规划者派评审子代理（或强形态会话）产 DesignReviewFile → `delivery-bridge.cmd -Command design-review -Action submit -RunId <RunId> -Stage <S<k>>` 入库；**缺键 legacy**：引擎 graft 树级节点 `[设计审查·S<k>]`（role=AUDITOR）推送会话 → `settle` 结算。全阶段无设计产物 / 无 in-run 设计工作 → `exempt` 快速通道（无门）。
+- **阶段汇聚**（原「一批一会话」，现为方法论级语义）：**汇聚审查本阶段全部设计产物**，禁止逐设计节点串行审查——并行设计间的跨设计一致性只有汇聚在同一视野内才可查。引擎侧「一批一会话」机制（节点 + 会话推送）已删（设计 #8），汇聚语义保留为方法论硬纪律。
+- **审查对象** = 阶段内在册任务的**全部落盘设计产物**（`design-review -Action status` 输出的 docs 清单 / legacy claim 输出 `acceptance.docs` 是权威清单）：CTO 技术方向文档、UX 交互/体验设计、QA 测试先行设计。**UX 纯视觉稿类产物：审查对象为变更地图与交互说明，缺产物即该文档 fail（产物契约不满足）。**
+- **审查完成后**：产出 DesignReviewFile（见「三、契约」）→ 新链由规划者 `design-review -Action submit` 入库 / legacy `settle -NodeId <审查节点id>`。契约校验与节点 settle 门**同一核心**；总裁定**由引擎推导**（pass ⇔ 全文档 pass 且全局零 blocking）——不采信任何声明值：
   - **pass** → `design_review=passed` → IMPL 闸门开（被闸节点下一触发点自动放行）
   - **fail** → 引擎自动触发**重做波**：受影响任务（blocking 归属）rollback 原语语义回 DESIGN（blocking 清单注入重做上下文，目标角色按文档后缀精确映射 `-cto`→CTO / `-ux`→UX / `-qa`→QA）→ 重做收敛后再审（覆盖重产重审）
-- **审查节点自身失败（会话死）**：走既有 `reclaim` dead-claim 通道（park + 重推）。
+- **审查会话自身失败**：legacy 节点走既有 `reclaim` dead-claim 通道（park + 重推）；新链子代理失败即重新派发（无节点状态残留）。
 
 ## 二、五查维度（每一维度都必须产出，漏一维 = 审查不完整）
 
@@ -33,7 +33,11 @@
 ```json
 {
   "reviewed_at": "2026-10-06T09:00:00Z",
-  "reviewer": "auditor",
+  "reviewer": "auditor-delegated",
+  "production": {
+    "mode": "subagent",
+    "template": "rdd-engine/references/review-input-template.md"
+  },
   "stage": "S1",
   "docs": [
     {
@@ -68,23 +72,23 @@
 }
 ```
 
-**字段约束（settle 门机械校验，违规 = SETTLE_EVIDENCE_REJECTED）**：
+**字段约束（submit / legacy settle 门同源机械校验，违规 = SETTLE_EVIDENCE_REJECTED）**：
 
-- `reviewer` 必须为 `"auditor"`；`stage` 必须等于被审阶段 id；`reviewed_at` 非空
+- `reviewer` ∈ {`auditor-delegated`, `auditor`}（单源 `review-input-template.md` 常量表；legacy 存量文件 `planner` 值不再产出）；`production` 留痕形态（mode ∈ {subagent, session} + template ref 非空）；`stage` 必须等于被审阶段 id；`reviewed_at` 非空
 - `docs[]` **全覆盖**：阶段落盘设计文档双向逐一致（漏审任一文档 / 审查不存在的文档均违规）；同一文档不得重复列出
 - 每文档 `verdict ∈ {pass, fail}`；**fail 必有 ≥1 条 blocking finding、pass 必无 blocking**（verdict-findings 一致性）
 - 每条 finding 四字段完备：`severity ∈ {blocking, advisory}`、`dimension ∈ {alignment, change_map, internal_consistency, completeness, cross_design}`、`item`/`suggestion` 非空
 - `summary.cross_design[]` 每条必带 `severity`/`item`/`suggestion` + `involved_docs` 非空且都在册（跨设计项必附涉及文档）
 - **总裁定没有声明字段**——引擎推导：pass ⇔ 全文档 pass 且全局（docs findings + cross_design）零 blocking
 
-**人读镜像 `.md` 模板**：`# 设计汇聚审查 — <归档名>·S<k>` + 审查摘要（触发判据 / 五查各维度 finding 数 / 部署检测 / 账本追加状态）+ 逐文档结论表（文档 / 结论 / blocking 数 / advisory 数）+ 跨设计专节 + 回流建议（如有）。
+**人读镜像 `.md` 模板**：`# 设计汇聚审查 — <归档名>·S<k>` + 审查摘要（触发判据 / 五查各维度 finding 数 / production 留痕 / 账本追加状态）+ 逐文档结论表（文档 / 结论 / blocking 数 / advisory 数）+ 跨设计专节 + 回流建议（如有）。
 
 ## 四、记账规范（触发记账，验收 8）
 
 每次裁定落盘时引擎自动追加 `.rdd/review-ledger.jsonl`（全局单文件 JSONL，账本范式不重写）：
 
-- 汇总条目：`{at, archive, reviewer:"auditor", kind:"design_review", run_id, stage, verdict, docs_count, blocking_count, advisory_count, dimension_counts}`
-- fail 时逐 blocking 条目：`{at, archive, reviewer:"auditor", kind:"blocking", gap_type:<dimension>, task_id, run_id, stage, detail:{doc, item, suggestion}}`
+- 汇总条目：`{at, archive, reviewer:<枚举>, kind:"design_review", run_id, stage, verdict, docs_count, blocking_count, advisory_count, dimension_counts}`
+- fail 时逐 blocking 条目：`{at, archive, reviewer:<枚举>, kind:"blocking", gap_type:<dimension>, task_id, run_id, stage, detail:{doc, item, suggestion}}`
 - **回流建议**：同 dimension blocking 同 run 累计 ≥3 次 → 引擎追加 `kind:"reflux_suggestion"` 条目（建议生成 CTO 模板/流程改进需求——**只建议不代建**，AUDITOR 不替 CTO 建模板）。人读镜像顶部同步标注。
 
 > 与需求侧审视的记账同文件同范式（`kind:"gap"` 为需求侧、`kind:"blocking"` 为设计侧），审计追溯一条账本链到底。
@@ -96,7 +100,7 @@
 | 时机 | 归档后、规划建树前 | 桥接 run 内、DESIGN 全 settle 后 / IMPL 前 |
 | 对象 | 需求集（overview + 各需求文档） | 设计产物（CTO/UX/QA 设计文档 + 变更地图） |
 | 产物 | `review/requirement-review.json` + `.md` | `review/design-review-S<k>.json` + `.md` |
-| 消费端 | `promulgate -ReviewFile`（建树前机械消费） | `settle` 门 + 阶段闸门（IMPL 解锁门） |
+| 消费端 | `promulgate -ReviewFile`（建树前机械消费） | `design-review -Action submit`（新链入库）/ `settle` 门（legacy 节点）+ 阶段闸门（IMPL 解锁门） |
 | 失败处置 | `reject_return` 驳回回流 PM | fail 波自动回 DESIGN 重做（复用 rollback 原语） |
 
 **判定归属**：需求本身空缺（验收不可测 / 覆盖洞 / 依赖错标）→ 需求侧审视维度，即便在设计审查中发现也按「需求空缺」定性并建议回流 PM；设计层问题（错位 / 失真 / 遗漏 / 跨设计不一致）→ 本审查裁定。

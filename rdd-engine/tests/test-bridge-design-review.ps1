@@ -14,6 +14,18 @@
 #   DR6 invalidation wave (replan over a passed design review with changed content) ->
 #       design_review_invalidated + reset planned + old review node pruned
 #   DR7 legacy run: bridge.json without design_review sections (pre-feature shape) -> no gate
+#   NR1-NR8 new chain (review_mode, auditor-subagent-review): the dual-form counterpart —
+#       promulgate -ReviewMode subagent|session -> pure-contract chain: trigger -> ready
+#       (no review node; plan-log design_review_ready + status/next hints), the ONLY
+#       adjudication entry is design-review -Action submit (contract core shared with the
+#       node settle gate), fail fires the existing fail wave with zero node reclaim,
+#       reviewer enum auditor-delegated|auditor + production 留痕. The legacy DR1-DR7
+#       cases above promulgate WITHOUT -ReviewMode (缺键) and stay byte-identical
+#       (缺键 legacy 行为断言保留 — DR 用例双形态).
+#   NR9 integration face (derive × review): a replan-added stage is where a mid-run
+#       derivation lands — in the review_mode chain it gets a fresh planned slot
+#       (mandatory review, no off value) and runs the SAME contract chain; a 缺键 run
+#       stays slot-less (byte-identical).
 # Self-isolation note: every promulgate runs -NoPush (bridge isolation discipline — no real
 # session creation); the design-review state machines (graft/verdict/wave) run even under
 # no_push by design (they are state, not pushes). The promulgate DEGRADE path (AUDITOR not
@@ -153,7 +165,10 @@ function Do-Settle { param([string]$RunId, [string]$NodeId)
 }
 
 # DesignReviewFile writer (archive-relative, on disk): pass/fail over the given docs.
-function Write-ReviewFile { param([string]$ArchiveRel, [string]$StageId, [string[]]$DocRels, [string]$Verdict, [string]$BlockingDim = 'change_map', [bool]$SkipCoverage = $false)
+# Reviewer/WithProduction/ProductionMode (auditor-subagent-review 双形态): new-chain
+# files sign the reviewer enum (auditor-delegated / auditor) + carry the production
+# audit section; the legacy defaults stay reviewer='auditor' with no section.
+function Write-ReviewFile { param([string]$ArchiveRel, [string]$StageId, [string[]]$DocRels, [string]$Verdict, [string]$BlockingDim = 'change_map', [bool]$SkipCoverage = $false, [string]$Reviewer = 'auditor', [bool]$WithProduction = $false, [string]$ProductionMode = 'subagent')
     $archAbs = Join-Path $Work $ArchiveRel
     $docs = @()
     foreach ($rel in @($DocRels)) {
@@ -165,10 +180,11 @@ function Write-ReviewFile { param([string]$ArchiveRel, [string]$StageId, [string
         $docs += @{ doc = $rel; verdict = $Verdict; findings = $findings }
     }
     $file = [ordered]@{
-        reviewed_at = '2026-10-06T09:00:00Z'; reviewer = 'auditor'; stage = $StageId
+        reviewed_at = '2026-10-06T09:00:00Z'; reviewer = $Reviewer; stage = $StageId
         docs = $docs
         summary = @{ cross_design = @() }
     }
+    if ($WithProduction) { $file['production'] = @{ mode = $ProductionMode; template = 'rdd-engine/references/review-input-template.md' } }
     if ($SkipCoverage -and @($docs).Count -gt 1) { $file['docs'] = @($docs | Select-Object -First 1) }
     $rel = "review/design-review-$StageId.json"
     $abs = Join-Path $archAbs ($rel -replace '/', '\')
@@ -387,6 +403,182 @@ try {
     $dev7 = [string]$b.tasks.'1'.stages.DEV
     $r = Invoke-Bridge @('-Command', 'claim', '-RunId', 'deliver-dr-l7', '-NodeId', $dev7, '-Role', 'DEV')
     Assert-True ($r.json.success -eq $true) 'DR7 legacy run DEV claim not gated (no section = no gate)' ($r.raw)
+
+    # ================= NR1: 新链 review_mode 落桥 + 预算零 +K + exempt =================
+    $archN1 = New-Archive 'nr-l1' '[{"title":"NR1a","requirement":"requirements/t1.md","currentOwners":["QA"],"designDocs":[]},{"title":"NR1b","requirement":"requirements/t2.md","currentOwners":["QA"],"designDocs":[]}]' $Script:DeclaredBlock
+    $pfN1 = Write-TestPlan (Join-Path $Work 'nr-l1-plan.json') @(@{ id = 'S1'; tasks = @(1, 2) })
+    $r = Invoke-Bridge @('-Command', 'promulgate', '-TaskJson', ($archN1 + '/task.json'), '-PlanFile', $pfN1, '-ReviewMode', 'subagent', '-NoPush')
+    Assert-True ($r.json.success -eq $true) 'NR1 promulgate ok (-ReviewMode subagent)' ($r.raw)
+    Assert-True ([int]$r.json.data.budget.node_width -eq 4 -and [int]$r.json.data.budget.max_nodes -eq 16) 'NR1 budget no +K in the new chain (no review nodes to reserve)' ($r.raw)
+    Assert-True ([string]$r.json.data.design_review.mode -eq 'subagent') 'NR1 echo design_review.mode (部署判据=配置项)' ($r.raw)
+    $b = Read-BridgeJson 'deliver-nr-l1'
+    Assert-True ([string]$b.review_mode -eq 'subagent') 'NR1 review_mode persisted in bridge.json' ($b | ConvertTo-Json -Depth 6)
+    Assert-True (@($b.plan.stages | Where-Object { $null -ne $_.design_review }).Count -eq 1) 'NR1 design_review slots land unconditionally (无部署判据/零降级)' ($b | ConvertTo-Json -Depth 6)
+    Assert-True ([string]$b.plan.stages[0].design_review.status -eq 'exempt') 'NR1 no-docs stage -> exempt fast lane (shared semantics)' ($b | ConvertTo-Json -Depth 6)
+
+    # ================= NR2: trigger -> ready（无节点）+ 闸门 =================
+    $archN2 = New-Archive 'nr-l2' '[{"title":"NR2","requirement":"requirements/t1.md","currentOwners":["CTO"],"designDocs":[{"path":"design/d1.md","status":"ready"}]}]'
+    $pfN2 = Write-TestPlan (Join-Path $Work 'nr-l2-plan.json') @(@{ id = 'S1'; tasks = @(1) })
+    $r = Invoke-Bridge @('-Command', 'promulgate', '-TaskJson', ($archN2 + '/task.json'), '-PlanFile', $pfN2, '-ReviewMode', 'subagent', '-NoPush')
+    Assert-True ($r.json.success -eq $true) 'NR2 promulgate ok' ($r.raw)
+    $b = Read-BridgeJson 'deliver-nr-l2'
+    $ctoN2 = [string]$b.tasks.'1'.stages.CTO
+    Do-Deliver 'deliver-nr-l2' $ctoN2 'CTO' @('.rdd/changes/archive/nr-l2/design/d1.md') | Out-Null
+    $r = Do-Settle 'deliver-nr-l2' $ctoN2
+    Assert-True ($r.json.success -eq $true) 'NR2 CTO settle ok' ($r.raw)
+    $b = Read-BridgeJson 'deliver-nr-l2'
+    $drN2 = $b.plan.stages[0].design_review
+    Assert-True ([string]$drN2.status -eq 'ready' -and $null -eq $drN2.node) 'NR2 trigger -> ready (no review node in the new chain)' ($b | ConvertTo-Json -Depth 6)
+    Assert-True (@(Read-TreeNodes 'deliver-nr-l2' | Where-Object { [string]$_.title -like '*设计审查*' }).Count -eq 0) 'NR2 zero [设计审查] nodes grafted (pure contract)' ((Read-TreeNodes 'deliver-nr-l2') | ConvertTo-Json)
+    $evN2 = @(Read-PlanLog 'deliver-nr-l2' | Where-Object { [string]$_.event -eq 'design_review_ready' })
+    Assert-True ($evN2.Count -ge 1) 'NR2 plan-log design_review_ready progress event' ((Read-PlanLog 'deliver-nr-l2') | ConvertTo-Json -Depth 4)
+    $devN2 = [string]$b.tasks.'1'.stages.DEV
+    $r = Invoke-Bridge @('-Command', 'claim', '-RunId', 'deliver-nr-l2', '-NodeId', $devN2, '-Role', 'DEV')
+    Assert-True ($r.json.success -eq $false -and [string]$r.json.error.code -eq 'NODE_BLOCKED_BY_DESIGN_REVIEW') 'NR2 DEV claim gated until submit lands' ($r.raw)
+
+    # ================= NR3: -Action status 只读派审面（机械输入清单） =================
+    $r = Invoke-Bridge @('-Command', 'design-review', '-Action', 'status', '-RunId', 'deliver-nr-l2')
+    Assert-True ($r.json.success -eq $true -and [string]$r.json.data.chain -eq 'contract (submit)' -and [string]$r.json.data.review_mode -eq 'subagent') 'NR3 status view chain/mode label' ($r.raw)
+    $stN3 = @($r.json.data.stages | Where-Object { [string]$_.stage -eq 'S1' })[0]
+    Assert-True ($null -ne $stN3 -and [string]$stN3.status -eq 'ready' -and @($stN3.docs) -contains 'design/d1.md') 'NR3 status view per-stage state + docs 清单' ($r.raw)
+    Assert-True ([string]$stN3.template -eq 'rdd-engine/references/review-input-template.md' -and [string]$stN3.report -eq 'review/design-review-S1.json' -and [string]$stN3.production.mode -eq 'subagent') 'NR3 status view 模板/落点/production 常量（零转述填充面）' ($r.raw)
+    Assert-True (@($r.json.data.reviewers) -contains 'auditor-delegated' -and @($r.json.data.reviewers) -contains 'auditor') 'NR3 status view reviewer 枚举单源' ($r.raw)
+
+    # ================= NR4: submit 契约门（同源核心）违规 → 修复重报 =================
+    Write-ReviewFile -ArchiveRel '.rdd/changes/archive/nr-l2' -StageId 'S1' -DocRels @('design/d1.md') -Verdict 'pass' -Reviewer 'planner' | Out-Null
+    $r = Invoke-Bridge @('-Command', 'design-review', '-Action', 'submit', '-RunId', 'deliver-nr-l2', '-Stage', 'S1')
+    Assert-True ($r.json.success -eq $false -and [string]$r.json.error.code -eq 'SETTLE_EVIDENCE_REJECTED' -and ($r.raw -match 'reviewer must be one of')) 'NR4 reviewer enum violation rejected (auditor-delegated|auditor)' ($r.raw)
+    Write-ReviewFile -ArchiveRel '.rdd/changes/archive/nr-l2' -StageId 'S1' -DocRels @('design/d1.md') -Verdict 'pass' -Reviewer 'auditor-delegated' -WithProduction $true -ProductionMode 'bogus-mode' | Out-Null
+    $r = Invoke-Bridge @('-Command', 'design-review', '-Action', 'submit', '-RunId', 'deliver-nr-l2', '-Stage', 'S1')
+    Assert-True ($r.json.success -eq $false -and ($r.raw -match 'production.mode')) 'NR4 production.mode 值域校验（留痕形态）' ($r.raw)
+    $badN2 = @{
+        reviewed_at = '2026-10-06T09:00:00Z'; reviewer = 'auditor-delegated'; stage = 'S1'
+        docs = @(@{ doc = 'design/d1.md'; verdict = 'pass'; findings = @(@{ severity = 'blocking'; dimension = 'alignment'; item = 'x'; suggestion = 'y' }) })
+        summary = @{ cross_design = @() }
+    }
+    Write-Utf8NoBom (Join-Path $Work '.rdd/changes/archive/nr-l2/review/design-review-S1.json') ($badN2 | ConvertTo-Json -Depth 6)
+    $r = Invoke-Bridge @('-Command', 'design-review', '-Action', 'submit', '-RunId', 'deliver-nr-l2', '-Stage', 'S1')
+    Assert-True ($r.json.success -eq $false -and ($r.raw -match 'verdict=pass but carries')) 'NR4 pass-with-blocking inconsistency rejected (同源核心)' ($r.raw)
+    $b = Read-BridgeJson 'deliver-nr-l2'
+    Assert-True ([string]$b.plan.stages[0].design_review.status -eq 'ready') 'NR4 rejected submit leaves state ready (修复重报零副作用)' ($b | ConvertTo-Json -Depth 6)
+
+    # ================= NR5: 合法 pass（auditor-delegated + production）→ passed =================
+    Write-ReviewFile -ArchiveRel '.rdd/changes/archive/nr-l2' -StageId 'S1' -DocRels @('design/d1.md') -Verdict 'pass' -Reviewer 'auditor-delegated' -WithProduction $true | Out-Null
+    $r = Invoke-Bridge @('-Command', 'design-review', '-Action', 'submit', '-RunId', 'deliver-nr-l2', '-Stage', 'S1')
+    Assert-True ($r.json.success -eq $true -and [string]$r.json.data.verdict -eq 'pass' -and [string]$r.json.data.status -eq 'passed' -and [string]$r.json.data.reviewer -eq 'auditor-delegated') 'NR5 submit pass (engine-derived, 不采信声明值) -> passed' ($r.raw)
+    $b = Read-BridgeJson 'deliver-nr-l2'
+    Assert-True ([string]$b.plan.stages[0].design_review.status -eq 'passed' -and [string]$b.plan.stages[0].design_review.verdict -eq 'pass') 'NR5 bridge state passed/verdict' ($b | ConvertTo-Json -Depth 6)
+    $r = Invoke-Bridge @('-Command', 'claim', '-RunId', 'deliver-nr-l2', '-NodeId', $devN2, '-Role', 'DEV')
+    Assert-True ($r.json.success -eq $true) 'NR5 DEV claim unblocked after submit pass' ($r.raw)
+    $r = Invoke-Bridge @('-Command', 'design-review', '-Action', 'submit', '-RunId', 'deliver-nr-l2', '-Stage', 'S1')
+    Assert-True ($r.json.success -eq $false -and [string]$r.json.error.code -eq 'DESIGN_REVIEW_NOT_READY') 'NR5 repeat submit refused (仅 ready 接受)' ($r.raw)
+
+    # ================= NR6: fail submit → 重做波（无节点可回收）+ 账本署名 =================
+    $archN6 = New-Archive 'nr-l6' '[{"title":"NR6","requirement":"requirements/t1.md","currentOwners":["CTO"],"designDocs":[{"path":"design/d1.md","status":"ready"}]}]'
+    $pfN6 = Write-TestPlan (Join-Path $Work 'nr-l6-plan.json') @(@{ id = 'S1'; tasks = @(1) })
+    $r = Invoke-Bridge @('-Command', 'promulgate', '-TaskJson', ($archN6 + '/task.json'), '-PlanFile', $pfN6, '-ReviewMode', 'subagent', '-NoPush')
+    Assert-True ($r.json.success -eq $true) 'NR6 promulgate ok' ($r.raw)
+    $b = Read-BridgeJson 'deliver-nr-l6'
+    $ctoN6 = [string]$b.tasks.'1'.stages.CTO
+    Do-Deliver 'deliver-nr-l6' $ctoN6 'CTO' @('.rdd/changes/archive/nr-l6/design/d1.md') | Out-Null
+    Do-Settle 'deliver-nr-l6' $ctoN6 | Out-Null
+    $b = Read-BridgeJson 'deliver-nr-l6'
+    $devN6 = [string]$b.tasks.'1'.stages.DEV
+    Write-ReviewFile -ArchiveRel '.rdd/changes/archive/nr-l6' -StageId 'S1' -DocRels @('design/d1.md') -Verdict 'fail' -Reviewer 'auditor-delegated' -WithProduction $true | Out-Null
+    $r = Invoke-Bridge @('-Command', 'design-review', '-Action', 'submit', '-RunId', 'deliver-nr-l6', '-Stage', 'S1')
+    Assert-True ($r.json.success -eq $true -and [string]$r.json.data.verdict -eq 'fail' -and @($r.json.data.wave.rolled).Count -ge 1) 'NR6 fail submit -> fail wave fired (零节点回收)' ($r.raw)
+    $b = Read-BridgeJson 'deliver-nr-l6'
+    Assert-True ([string]$b.plan.stages[0].design_review.status -eq 'planned' -and $null -eq $b.plan.stages[0].design_review.node) 'NR6 wave completes -> reset planned (状态重置 + 覆盖重产)' ($b | ConvertTo-Json -Depth 6)
+    $devN6T = Find-TreeNode 'deliver-nr-l6' $devN6
+    Assert-True ($null -ne $devN6T -and [string]$devN6T.status -eq 'pruned') 'NR6 pending DEV node pruned by the wave' ($devN6T | ConvertTo-Json)
+    $ctoN6New = [string]$b.tasks.'1'.stages.CTO
+    $ctoN6NewT = Find-TreeNode 'deliver-nr-l6' $ctoN6New
+    Assert-True ($null -ne $ctoN6NewT -and $ctoN6NewT.task -match '设计审查否决') 'NR6 rebuilt CTO node carries blocking redo context' ($ctoN6NewT | ConvertTo-Json)
+    $ledgerPath = Join-Path $Work '.rdd/review-ledger.jsonl'
+    $ledgerLines = @()
+    if (Test-Path $ledgerPath) { foreach ($ln in (Get-Content $ledgerPath -Encoding UTF8)) { if (-not [string]::IsNullOrWhiteSpace($ln)) { try { $ledgerLines += ($ln | ConvertFrom-Json) } catch { } } } }
+    Assert-True (@($ledgerLines | Where-Object { [string]$_.kind -eq 'design_review' -and [string]$_.run_id -eq 'deliver-nr-l6' -and [string]$_.reviewer -eq 'auditor-delegated' }).Count -ge 1) 'NR6 ledger summary signed auditor-delegated (新枚举署名)' (($ledgerLines | ConvertTo-Json -Depth 4))
+
+    # ================= NR7: session 强形态（review_mode=session → reviewer=auditor） =================
+    $archN7 = New-Archive 'nr-l7' '[{"title":"NR7","requirement":"requirements/t1.md","currentOwners":["CTO"],"designDocs":[{"path":"design/d1.md","status":"ready"}]}]'
+    $pfN7 = Write-TestPlan (Join-Path $Work 'nr-l7-plan.json') @(@{ id = 'S1'; tasks = @(1) })
+    $r = Invoke-Bridge @('-Command', 'promulgate', '-TaskJson', ($archN7 + '/task.json'), '-PlanFile', $pfN7, '-ReviewMode', 'session', '-NoPush')
+    Assert-True ($r.json.success -eq $true -and [string]$r.json.data.design_review.mode -eq 'session') 'NR7 promulgate -ReviewMode session' ($r.raw)
+    $b = Read-BridgeJson 'deliver-nr-l7'
+    Assert-True ([string]$b.review_mode -eq 'session') 'NR7 review_mode=session persisted' ($b | ConvertTo-Json -Depth 6)
+    $ctoN7 = [string]$b.tasks.'1'.stages.CTO
+    Do-Deliver 'deliver-nr-l7' $ctoN7 'CTO' @('.rdd/changes/archive/nr-l7/design/d1.md') | Out-Null
+    Do-Settle 'deliver-nr-l7' $ctoN7 | Out-Null
+    Write-ReviewFile -ArchiveRel '.rdd/changes/archive/nr-l7' -StageId 'S1' -DocRels @('design/d1.md') -Verdict 'pass' -Reviewer 'auditor' -WithProduction $true -ProductionMode 'session' | Out-Null
+    $r = Invoke-Bridge @('-Command', 'design-review', '-Action', 'submit', '-RunId', 'deliver-nr-l7', '-Stage', 'S1')
+    Assert-True ($r.json.success -eq $true -and [string]$r.json.data.verdict -eq 'pass' -and [string]$r.json.data.reviewer -eq 'auditor') 'NR7 session-form submit pass (reviewer=auditor 同契约入库)' ($r.raw)
+
+    # ================= NR8: 缺键 legacy run 拒 submit + 动作守卫 =================
+    $r = Invoke-Bridge @('-Command', 'design-review', '-Action', 'submit', '-RunId', 'deliver-dr-l1', '-Stage', 'S1')
+    Assert-True ($r.json.success -eq $false -and [string]$r.json.error.code -eq 'DESIGN_REVIEW_LEGACY_RUN') 'NR8 legacy run (缺键) submit refused — settle 通道不变' ($r.raw)
+    $r = Invoke-Bridge @('-Command', 'design-review', '-Action', 'status', '-RunId', 'deliver-dr-l1')
+    Assert-True ($r.json.success -eq $true -and [string]$r.json.data.chain -eq 'legacy (node settle)' -and $null -eq $r.json.data.review_mode) 'NR8 legacy run status face (read-only, chain label)' ($r.raw)
+    $r = Invoke-Bridge @('-Command', 'design-review', '-Action', 'open', '-RunId', 'deliver-nr-l2')
+    Assert-True ($r.json.success -eq $false -and [string]$r.json.error.code -eq 'DESIGN_REVIEW_ACTION_INVALID') 'NR8 conflict/derive action values rejected' ($r.raw)
+    $r = Invoke-Bridge @('-Command', 'design-review', '-RunId', 'deliver-nr-l2')
+    Assert-True ($r.json.success -eq $false -and [string]$r.json.error.code -eq 'DESIGN_REVIEW_ACTION_REQUIRED') 'NR8 missing -Action rejected' ($r.raw)
+
+    # ================= NR9: replan 新增阶段的审查槽位（derive × 审查 集成面） =================
+    # run 中途派生并入**新阶段**是 derive 通道的常态出口（同阶段吸收在派生任务带
+    # DependsOn 时会与「全部任务过 DESIGN」触发条件互锁）；新段若没有 design_review
+    # 段，其设计产物就静默逃过阶段边界审查（新链「评审强制、无 off 值」的缺口）。
+    # 修法：新链（bridge.json review_mode 存在）的新段恒落 planned 槽位（与 promulgate
+    # 段同构）；缺键 legacy run 不落段（部署双探只在 promulgate 生效，逐字节不回改）。
+    $archN9 = New-Archive 'nr-l9' '[{"title":"NR9a","requirement":"requirements/t1.md","currentOwners":["DEV"],"designDocs":[]},{"title":"NR9b","requirement":"requirements/t2.md","currentOwners":["CTO"],"designDocs":[{"path":"design/d2.md","status":"ready"}]}]' $Script:DeclaredBlock
+    $pfN9 = Write-TestPlan (Join-Path $Work 'nr-l9-plan.json') @(@{ id = 'S1'; tasks = @(1, 2) })
+    $r = Invoke-Bridge @('-Command', 'promulgate', '-TaskJson', ($archN9 + '/task.json'), '-PlanFile', $pfN9, '-ReviewMode', 'subagent', '-NoPush')
+    Assert-True ($r.json.success -eq $true) 'NR9 promulgate ok (single stage, subagent)' ($r.raw)
+    $pfN9b = Write-TestPlan (Join-Path $Work 'nr-l9-plan2.json') @(@{ id = 'S1'; tasks = @(1) }, @{ id = 'S2'; tasks = @(2) })
+    $r = Invoke-Bridge @('-Command', 'replan', '-RunId', 'deliver-nr-l9', '-PlanFile', $pfN9b, '-Reason', 'NR9: stage expansion (derive-like new stage)')
+    Assert-True ($r.json.success -eq $true) 'NR9 replan adds a new stage' ($r.raw)
+    $b9 = Read-BridgeJson 'deliver-nr-l9'
+    $s2 = @($b9.plan.stages | Where-Object { [string]$_.id -eq 'S2' })[0]
+    Assert-True ($null -ne $s2 -and $null -ne $s2.design_review -and [string]$s2.design_review.status -eq 'planned') 'NR9 [integration] a replan-added stage lands a planned review slot (no silent unreviewed stage)' ($b9.plan.stages | ConvertTo-Json -Depth 6)
+    Assert-True (@(Read-PlanLog 'deliver-nr-l9' | Where-Object { [string]$_.event -eq 'design_review_slot_staged' }).Count -ge 1) 'NR9 plan-log design_review_slot_staged recorded' ((Read-PlanLog 'deliver-nr-l9') | ConvertTo-Json -Depth 4)
+    # S1（全 DEV、无设计产物 -> exempt 快速通道）跑完并过其验收点，S2 才放行
+    $dev9a = [string]$b9.tasks.'1'.stages.DEV
+    Do-Deliver 'deliver-nr-l9' $dev9a 'DEV' @('.rdd/changes/archive/nr-l9/requirements/t1.md') | Out-Null
+    Do-Settle 'deliver-nr-l9' $dev9a | Out-Null
+    $qa9a = [string](Read-BridgeJson 'deliver-nr-l9').tasks.'1'.stages.QA
+    Do-Deliver 'deliver-nr-l9' $qa9a 'QA' @('.rdd/changes/archive/nr-l9/requirements/t1.md') | Out-Null
+    Do-Settle 'deliver-nr-l9' $qa9a | Out-Null
+    $null = Invoke-Bridge @('-Command', 'status', '-RunId', 'deliver-nr-l9')
+    $b9 = Read-BridgeJson 'deliver-nr-l9'
+    $sa9 = [string]$b9.plan.stages[0].acceptance_point.node
+    Assert-True ($sa9 -ne '') 'NR9 S1 acceptance point grafts (S1 is no longer the final stage)' ($b9.plan.stages[0].acceptance_point | ConvertTo-Json -Depth 4)
+    Do-Deliver 'deliver-nr-l9' $sa9 'QA' @('.rdd/changes/archive/nr-l9/requirements/overview.md') | Out-Null
+    Do-Settle 'deliver-nr-l9' $sa9 | Out-Null
+    # S2：新段的审查真实生效（其任务过 DESIGN -> ready；IMPL 被闸；pass 后放行）
+    $cto9b = [string]$b9.tasks.'2'.stages.CTO
+    Do-Deliver 'deliver-nr-l9' $cto9b 'CTO' @('.rdd/changes/archive/nr-l9/design/d2.md') | Out-Null
+    Do-Settle 'deliver-nr-l9' $cto9b | Out-Null
+    $b9 = Read-BridgeJson 'deliver-nr-l9'
+    $s2 = @($b9.plan.stages | Where-Object { [string]$_.id -eq 'S2' })[0]
+    Assert-True ([string]$s2.design_review.status -eq 'ready' -and $null -eq $s2.design_review.node) 'NR9 the new stage review reaches ready (zero node, new chain)' ($s2.design_review | ConvertTo-Json -Depth 4)
+    $dev9b = [string]$b9.tasks.'2'.stages.DEV
+    $r = Invoke-Bridge @('-Command', 'claim', '-RunId', 'deliver-nr-l9', '-NodeId', $dev9b, '-Role', 'DEV')
+    Assert-True ($r.json.success -eq $false -and [string]$r.json.error.code -eq 'NODE_BLOCKED_BY_DESIGN_REVIEW') 'NR9 the new stage gates its IMPL node' ($r.raw)
+    Write-ReviewFile '.rdd/changes/archive/nr-l9' 'S2' @('design/d2.md') 'pass' -Reviewer 'auditor-delegated' -WithProduction $true | Out-Null
+    $r = Invoke-Bridge @('-Command', 'design-review', '-Action', 'submit', '-RunId', 'deliver-nr-l9', '-Stage', 'S2')
+    Assert-True ($r.json.success -eq $true -and [string]$r.json.data.verdict -eq 'pass') 'NR9 the new stage review submits through the same contract chain' ($r.raw)
+    $r = Invoke-Bridge @('-Command', 'claim', '-RunId', 'deliver-nr-l9', '-NodeId', $dev9b, '-Role', 'DEV')
+    Assert-True ($r.json.success -eq $true) 'NR9 the new stage IMPL unblocked after pass' ($r.raw)
+    # legacy（缺键）侧不回改：同样的 replan 扩容不落段
+    $archN9L = New-Archive 'nr-l9l' '[{"title":"NR9L-a","requirement":"requirements/t1.md","currentOwners":["DEV"],"designDocs":[]},{"title":"NR9L-b","requirement":"requirements/t2.md","currentOwners":["CTO"],"designDocs":[{"path":"design/d2.md","status":"ready"}]}]' $Script:DeclaredBlock
+    $pfN9L = Write-TestPlan (Join-Path $Work 'nr-l9l-plan.json') @(@{ id = 'S1'; tasks = @(1, 2) })
+    $r = Invoke-Bridge @('-Command', 'promulgate', '-TaskJson', ($archN9L + '/task.json'), '-PlanFile', $pfN9L, '-NoPush')
+    Assert-True ($r.json.success -eq $true) 'NR9 legacy promulgate ok (缺键)' ($r.raw)
+    $pfN9Lb = Write-TestPlan (Join-Path $Work 'nr-l9l-plan2.json') @(@{ id = 'S1'; tasks = @(1) }, @{ id = 'S2'; tasks = @(2) })
+    $r = Invoke-Bridge @('-Command', 'replan', '-RunId', 'deliver-nr-l9l', '-PlanFile', $pfN9Lb, '-Reason', 'NR9 legacy: stage expansion')
+    Assert-True ($r.json.success -eq $true) 'NR9 legacy replan adds a new stage' ($r.raw)
+    $b9l = Read-BridgeJson 'deliver-nr-l9l'
+    $s2l = @($b9l.plan.stages | Where-Object { [string]$_.id -eq 'S2' })[0]
+    Assert-True ($null -ne $s2l -and $null -eq $s2l.design_review) 'NR9 [legacy 不回溯] a new stage in a 缺键 run lands NO slot (byte-identical)' ($s2l | ConvertTo-Json -Depth 6)
 }
 finally {
     Pop-Location

@@ -54,10 +54,14 @@ Assert-True (Test-Path $auditorSkill) 'TC-A01.a' 'rdd-auditor/SKILL.md missing'
 $auditorRefs = Join-Path $RepoRoot 'rdd-auditor/references/requirement-review.md'
 Assert-True (Test-Path $auditorRefs) 'TC-A01.b' 'rdd-auditor/references/requirement-review.md missing'
 
+# auditor-subagent-review 验收 5（2026-10-07）：rdd-auditor preset 退出默认产品面
+# （默认 8 组 = 7 角色 + planner），强形态独立会话按需经 --with-auditor 重建——
+# 原「preset 两文件存在」断言被取代（用例 TC-A01.c/TC-A01.d 已重新基线化）。
+$presetDirNames = @(Get-ChildItem -Path (Join-Path $RepoRoot 'dsh/presets') -Directory | ForEach-Object { $_.Name })
+Assert-True ($presetDirNames.Count -eq 8 -and ($presetDirNames -notcontains 'rdd-auditor')) 'TC-A01.c' ('default preset family must be 8 without rdd-auditor; got: ' + ($presetDirNames -join ','))
 $presetYml = Join-Path $RepoRoot 'dsh/presets/rdd-auditor/preset.yml'
 $presetCordis = Join-Path $RepoRoot 'dsh/presets/rdd-auditor/agent.cordis.yml'
-Assert-True (Test-Path $presetYml) 'TC-A01.c' 'preset rdd-auditor/preset.yml missing'
-Assert-True (Test-Path $presetCordis) 'TC-A01.d' 'preset rdd-auditor/agent.cordis.yml missing'
+Assert-True ((Read-Utf8 (Join-Path $RepoRoot 'scripts/build-dsh-presets.mjs')).Contains('--with-auditor')) 'TC-A01.d' 'strong-form rebuild path (--with-auditor) missing from the preset generator'
 
 # ValidateSet contains AUDITOR (start-role.ps1)
 $startRoleContent = Read-Utf8 (Join-Path $EngineDir 'start-role.ps1')
@@ -99,16 +103,20 @@ $plus = Run-DryRun -EnvScript '$env:RDD_RUNTIME=''app'';$env:DSH_WEB_URL=$null' 
 Assert-True ($plus.stdout.Contains('Plus POST')) 'TC-A01.f.plus' ('Plus backend not activated; stdout=' + $plus.stdout)
 Assert-True ($plus.stdout.Contains('.rdd/changes/archive/')) 'TC-A01.h.plus' ('Plus stdout missing B2 pointer path; stdout=' + $plus.stdout)
 
-# === TC-A02: build-dsh-presets --check + 9 roles ===
+# === TC-A02: build-dsh-presets --check + 8 组默认（auditor-subagent-review 验收 5） ===
 $checkOut = node "$RepoRoot/scripts/build-dsh-presets.mjs" --check 2>&1 | Out-String
 Assert-True ($checkOut.Contains('CHECK OK')) 'TC-A02.a' ('build-dsh-presets --check failed: ' + $checkOut)
 $checkOut2 = node "$RepoRoot/scripts/build-skills-package.mjs" --check 2>&1 | Out-String
-Assert-True ($checkOut2.Contains('9 skills + 9 presets')) 'TC-A02.b' ('skills package does not contain 9+9: ' + $checkOut2)
+Assert-True ($checkOut2.Contains('CHECK OK') -and $checkOut2.Contains('8 presets')) 'TC-A02.b' ('skills package does not contain 8 presets: ' + $checkOut2)
 
-$cordisContent = Read-Utf8 $presetCordis
-Assert-True ($cordisContent.Contains("forbiddenSkills:") -and $cordisContent.Contains("'rdd-auditor'")) 'TC-A02.c' 'AUDITOR preset forbiddenSkills missing rdd-auditor'
-Assert-True ($cordisContent.Contains('writePrefixes:') -and $cordisContent.Contains('.rdd/changes/archive/')) 'TC-A02.d.1' 'AUDITOR preset writePrefixes missing archive prefix'
-Assert-True ($cordisContent.Contains('writePrefixes:') -and $cordisContent.Contains('.rdd/review-ledger.jsonl')) 'TC-A02.d.2' 'AUDITOR preset writePrefixes missing ledger path'
+# TC-A02.c / TC-A02.d.1 / TC-A02.d.2（旧断言对象 = rdd-auditor preset 生成物）已 superseded：
+# 该生成物默认不再存在（验收 5），加固契约改由单源断言——共享模板 forbiddenSkills
+# + 生成器 ROLE_POLICY 的 AUDITOR 写前缀（archive review/ + 全局账本）仍在。三用例已重新基线化。
+$presetTemplate = Read-Utf8 (Join-Path $RepoRoot 'scripts/dsh-preset-template.yml')
+$presetBuilder = Read-Utf8 (Join-Path $RepoRoot 'scripts/build-dsh-presets.mjs')
+Assert-True ($presetTemplate.Contains('forbiddenSkills:') -and $presetTemplate.Contains("'rdd-auditor'")) 'TC-A02.c' 'shared preset template lost the rdd-auditor hardening anchor'
+Assert-True ($presetBuilder.Contains("'rdd-auditor': { writePrefixes:") -and $presetBuilder.Contains('.rdd/review-ledger.jsonl')) 'TC-A02.d.1' 'generator lost the AUDITOR strong-form writePrefixes policy'
+Assert-True ($presetBuilder.Contains('.rdd/changes/archive/')) 'TC-A02.d.2' 'generator lost the archive write prefix anchor'
 
 # 8 preset roles forbiddenSkills all +rdd-auditor
 $presetRoles = @('rdd-pm', 'rdd-cto', 'rdd-ux', 'rdd-dev', 'rdd-qa', 'rdd-eval', 'rdd-pse', 'rdd-planner')
@@ -121,16 +129,26 @@ foreach ($r in $presetRoles) {
 }
 Assert-True ($presetMissing.Count -eq 0) 'TC-A02.e' ($presetMissing -join '; ')
 
-# rdd-planner order 9 -> 10
+# planner preset 恒为默认家族的末位（auditor-subagent-review 验收 5 塌缩 9->8 后 order 位
+# 稳定性的机械锚：planner > 其余每个角色 preset 的 order，跨 --with-auditor 模式成立）
 $plannerPreset = Read-Utf8 (Join-Path $RepoRoot 'dsh/presets/rdd-planner/preset.yml')
-Assert-True ($plannerPreset.Contains('order: 10')) 'TC-A02.f' 'rdd-planner preset order should be 10'
+$plannerOrder = [int](([regex]::Match($plannerPreset, 'order:\s*(\d+)')).Groups[1].Value)
+$otherOrders = @()
+foreach ($d in $presetDirNames) {
+    if ($d -eq 'rdd-planner') { continue }
+    $p = Read-Utf8 (Join-Path $RepoRoot "dsh/presets/$d/preset.yml")
+    $otherOrders += [int](([regex]::Match($p, 'order:\s*(\d+)')).Groups[1].Value)
+}
+Assert-True ($plannerOrder -gt 0 -and (@($otherOrders | Where-Object { $_ -ge $plannerOrder }).Count -eq 0)) 'TC-A02.f' ("rdd-planner preset order $plannerOrder must be the family maximum ($($otherOrders -join ','))")
 
 # === TC-A03: trigger protocol ===
 $plannerGuide = Read-Utf8 (Join-Path $RepoRoot 'rdd-engine/references/planner-guide.md')
-$hasSemanticAudit = $plannerGuide.Contains('AUDITOR') -and $plannerGuide.Contains('reviewer') -and $plannerGuide.Contains('"auditor"')
-$hasFallback = $plannerGuide.Contains('reviewer: "planner"') -and $plannerGuide.Contains('planner')
+$hasSemanticAudit = $plannerGuide.Contains('AUDITOR') -and $plannerGuide.Contains('reviewer: `auditor-delegated`') -and $plannerGuide.Contains('reviewer: `auditor`')
+# auditor-subagent-review 验收 1/5：原「未部署 → 规划者自产（reviewer: planner）」降级分支整体消失，
+# 断言翻转为「该降级话术不再出现」（用例 TC-A03.b 已重新基线化）
+$hasFallback = -not $plannerGuide.Contains('reviewer: "planner"')
 Assert-True $hasSemanticAudit 'TC-A03.a' 'planner-guide hard rule 6 missing AUDITOR semantic review attribution'
-Assert-True $hasFallback 'TC-A03.b' 'planner-guide hard rule 6 missing undeployed fallback (reviewer:planner) wording'
+Assert-True $hasFallback 'TC-A03.b' 'planner-guide still carries the retired planner self-review fallback wording'
 Assert-True ($plannerGuide.Contains('AUDITOR')) 'TC-A03.c' 'planner-guide missing AUDITOR mention'
 
 $transitionGuide = Read-Utf8 (Join-Path $RepoRoot 'rdd-engine/references/transition-guide.md')
@@ -160,7 +178,9 @@ Assert-True $dim4 'TC-A04.e' 'testability dimension missing untestable_acceptanc
 
 # === TC-A05: ReviewFile schema complete form ===
 Assert-True ($reqReview.Contains('verdicts')) 'TC-A05.a' 'requirement-review.md ReviewFile schema missing verdicts'
-Assert-True ($reqReview.Contains('"reviewer": "auditor"')) 'TC-A05.b' 'ReviewFile schema missing reviewer:"auditor"'
+# auditor-subagent-review 验收 4：新产出的 reviewer 值 = auditor-delegated（子代理形态），
+# auditor 为强形态值——原「默认 reviewer:"auditor"」锚被取代（用例 TC-A05.b 已重新基线化）
+Assert-True ($reqReview.Contains('auditor-delegated') -and $reqReview.Contains('auditor')) 'TC-A05.b' 'ReviewFile schema must document both reviewer enum values (auditor-delegated / auditor)'
 Assert-True ($reqReview.Contains('tree_adjudicated')) 'TC-A05.c' 'ReviewFile schema missing tree_adjudicated verdict'
 Assert-True ($reqReview.Contains('reject_return')) 'TC-A05.d' 'ReviewFile schema missing reject_return verdict'
 Assert-True ($reqReview.Contains('REVIEW_FILE_INVALID')) 'TC-A05.e' 'ReviewFile field constraints missing REVIEW_FILE_INVALID error code'
@@ -176,18 +196,24 @@ Assert-True ($reqReview.Contains('merged_into_task_id')) 'TC-A05.i' 'ReviewFile 
 # === TC-A06: rejection-protocol AUDITOR section ===
 $rejProto = Read-Utf8 (Join-Path $RepoRoot 'rdd-engine/references/rejection-protocol.md')
 Assert-True ($rejProto.Contains('AUDITOR')) 'TC-A06.a' 'rejection-protocol.md missing AUDITOR mention'
-Assert-True ($rejProto.Contains('reject -From AUDITOR')) 'TC-A06.b' 'rejection-protocol.md AUDITOR section missing rdd-flow reject command'
+# auditor-subagent-review 验收 4：驳回双形态（AUDITOR-DELEGATED 主路径 / AUDITOR 强形态）——
+# 命令形态改为完整 rdd-flow.cmd 形式，原「reject -From AUDITOR」子串锚被取代（TC-A06.b 已重新基线化）
+Assert-True ($rejProto.Contains('-From AUDITOR -To PM') -and $rejProto.Contains('AUDITOR-DELEGATED')) 'TC-A06.b' 'rejection-protocol.md missing the two-form reject command (AUDITOR / AUDITOR-DELEGATED)'
 Assert-True ($rejProto.Contains('review-ledger.jsonl')) 'TC-A06.c' 'rejection-protocol.md AUDITOR section missing ledger append guidance'
 
 $taskRouting = Read-Utf8 (Join-Path $RepoRoot 'rdd-engine/references/task-routing.md')
 Assert-True ($taskRouting.Contains('AUDITOR')) 'TC-A06.f' 'task-routing.md missing AUDITOR mention'
 Assert-True ($taskRouting.Contains('reject -From AUDITOR')) 'TC-A06.g' 'task-routing.md missing AUDITOR reject command row'
 
-# === TC-A08: backward compatibility ===
-$diffDelivery = git -C $RepoRoot diff --name-only HEAD -- 'rdd-engine/scripts/delivery-bridge.ps1' 2>$null
-Assert-True ([string]::IsNullOrWhiteSpace($diffDelivery)) 'TC-A08.a' ('delivery-bridge.ps1 changed (consumer end should be zero diff): ' + $diffDelivery)
+# === TC-A08: consumer-side contract preserved ===
+# auditor-subagent-review 后 delivery-bridge.ps1 由本需求合法改动（评审生产端 + submit 入库链），
+# 原「零 diff」断言被取代：改为断言需求审查消费端契约仍在（用例 TC-A08.a 已重新基线化）；
+# rdd-flow.ps1 由并行的 derive 交付合法改动，同断言退化为契约锚。
+$bridgeSrc = Read-Utf8 (Join-Path $RepoRoot 'rdd-engine/scripts/delivery-bridge.ps1')
+Assert-True ($bridgeSrc.Contains('[string]$ReviewFile') -and $bridgeSrc.Contains('REVIEW_FILE_INVALID') -and $bridgeSrc.Contains('REVIEW_TASK_NOT_FOUND')) 'TC-A08.a' 'requirement-review consumption contract (ReviewFile + REVIEW_* codes) vanished from delivery-bridge.ps1'
 $diffRddFlow = git -C $RepoRoot diff --name-only HEAD -- 'rdd-engine/scripts/rdd-flow.ps1' 2>$null
-Assert-True ([string]::IsNullOrWhiteSpace($diffRddFlow)) 'TC-A08.b' ('rdd-flow.ps1 changed (consumer end should be zero diff): ' + $diffRddFlow)
+$flowSrc = Read-Utf8 (Join-Path $RepoRoot 'rdd-engine/scripts/rdd-flow.ps1')
+Assert-True ($flowSrc.Contains('Invoke-Reject') -and $flowSrc.Contains('rejectedBy')) 'TC-A08.b' ('rdd-flow reject contract anchor missing (changed files: ' + ([string]$diffRddFlow) + ')')
 
 Assert-True ($plannerGuide.Contains('"planner"')) 'TC-A08.c' 'planner-guide missing reviewer:"planner" form'
 Assert-True ($plannerGuide.Contains('AUDITOR')) 'TC-A08.d' 'planner-guide missing AUDITOR undeployed wording'

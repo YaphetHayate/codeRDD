@@ -18,8 +18,9 @@
  * （指向 rdd-engine/references/planner-guide.md），由本生成器内建常量装配。
  *
  * 用法:
- *   node scripts/build-dsh-presets.mjs                 # 生成到 dsh/presets/
+ *   node scripts/build-dsh-presets.mjs                 # 生成到 dsh/presets/（默认 8 组：7 角色 + planner）
  *   node scripts/build-dsh-presets.mjs --check         # 校验已生成文件与源一致（幂等），不一致退出 1
+ *   node scripts/build-dsh-presets.mjs --with-auditor  # 追加生成 rdd-auditor（强形态独立会话按需；--check 同步校验）
  *   node scripts/build-dsh-presets.mjs --out <dir>     # 输出到其他目录
  * 零依赖：仅 node:fs / node:path。
  * @module coderrdd/build-dsh-presets
@@ -32,7 +33,13 @@ import { fileURLToPath } from 'node:url'
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..')
 
 /** 生成目标角色（engine 除外：其职能在 dsh 中由 rdd-explore 插件 + CLI 脚本承接）。 */
-const ROLES = ['rdd-pm', 'rdd-cto', 'rdd-ux', 'rdd-dev', 'rdd-qa', 'rdd-eval', 'rdd-pse', 'rdd-auditor']
+const ROLES = ['rdd-pm', 'rdd-cto', 'rdd-ux', 'rdd-dev', 'rdd-qa', 'rdd-eval', 'rdd-pse']
+/**
+ * auditor-subagent-review（设计 #8）：rdd-auditor 退出默认产品面（默认 8 组 = 7 角色 +
+ * planner）——评审内生于规划者会话（reviewer: auditor-delegated），无需独立会话 preset。
+ * 强形态独立会话（reviewer: auditor）按需经 `--with-auditor` 重建（生成与 --check 同步）。
+ */
+const AUDITOR_ROLE = 'rdd-auditor'
 
 /**
  * 规划者引导 preset（rdd-planner）：规划者（PLANNER）是引擎编排形态而非角色卡（无 SKILL.md），
@@ -54,8 +61,8 @@ function assemblePlannerPersona() {
     '- 本会话即 RDD-PLANNER 编排会话。规划者（PLANNER）是 rdd-engine 的引擎编排形态（非第六张角色卡），没有技能正文可加载——行为载荷的唯一事实源是 `rdd-engine/references/planner-guide.md`：任何动作前先读它。',
     '- 引擎定位：`rdd-engine/references/...` 与 `scripts/*.cmd` 经引擎三级定位链解析（协议单源：`rdd-engine/references/engine-location.md`）。',
     '- 代码探索：需要理解项目代码时调用 `rdd_explore` 工具查询探索缓存；本会话没有通用 subagent 工具，探索性委派一律走 `rdd_explore`。',
-    '- 编排操作：一律经桥接 CLI `delivery-bridge.cmd`（promulgate / dispatch / claim / reclaim / settle / status / resume / conclude / lease）；树内依赖维护经 `goal-tree.cmd -Command deps`；为节点调动角色会话经 `start-role.cmd -Role <CTO/UX/DEV/QA>`（复用现有交接链路，不新造机制）。',
-    '- 硬约束（详见 planner-guide.md）：桥接 run 的 task.json 流转只能走 bridge settle，禁止手工 advance/complete；不合格交付（三查不过）不得流转；规划者变更操作需持租约；中断恢复不重复消费已回写节点。',
+    '- 编排操作：一律经桥接 CLI `delivery-bridge.cmd`（promulgate / dispatch / claim / reclaim / rollback / settle / status / resume / replan / conclude / lease；其余 decide / escalate / conflict / derive / design-review / register-session 及全部命令签名与适用前置以 planner-guide.md 命令面板为准——rollback 用 -NodeId 非 -TaskId）；树内依赖维护经 `goal-tree.cmd -Command deps`；为节点调动角色会话经 `start-role.cmd -Role <CTO/UX/DEV/QA>`（复用现有交接链路，不新造机制）。',
+    '- 硬约束（详见 planner-guide.md）：桥接 run 的 task.json 流转只能走 bridge settle，禁止手工 advance/complete；不合格交付（settle 四查不过）不得流转；规划者变更操作需持租约；中断恢复不重复消费已回写节点。',
     '- 汇报风格：进展用进度表，异常先查 planner-guide.md「异常处置速查」再行动。',
   ]
   return lines.join('\n') + '\n'
@@ -291,16 +298,21 @@ function buildPlannerPreset(template, order) {
 }
 
 const checkMode = process.argv.includes('--check')
+const withAuditor = process.argv.includes('--with-auditor')
 const outFlagIndex = process.argv.indexOf('--out')
 const outDir = outFlagIndex !== -1 ? process.argv[outFlagIndex + 1] : join(repoRoot, 'dsh', 'presets')
 const template = readFileSync(join(repoRoot, 'scripts', 'dsh-preset-template.yml'), 'utf8')
 
 const summary = []
 let mismatch = false
-// 生成任务序列：7 个 SKILL 角色 preset + 1 个规划者引导 preset（非角色卡，殿后）
+// 生成任务序列：7 个 SKILL 角色 preset + 1 个规划者引导 preset（非角色卡）；
+// --with-auditor 追加强形态独立会话 preset **殿后**（保持 planner 位序跨模式稳定，
+// 避免默认生成与 --with-auditor 生成的 planner 产物互相漂移；两种模式各与自己的
+// --check 序列同步，防漏改）。
 const buildTasks = [
   ...ROLES.map(role => ({ kind: 'skill', role })),
   { kind: 'planner', role: PLANNER_PRESET.role },
+  ...(withAuditor ? [{ kind: 'skill', role: AUDITOR_ROLE }] : []),
 ]
 for (const [index, task] of buildTasks.entries()) {
   const { cordis, preset, personaChars } = task.kind === 'skill'

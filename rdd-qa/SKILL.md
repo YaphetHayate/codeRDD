@@ -118,6 +118,8 @@ QA 在工作流中有两个触发时机，职责范围不同：
 
 **桥接 run 内判不合格的处置（planner-stage-rollback）**：功能或质量任一硬性项不通过时，QA **不自行 reopen / 不直接改路由**——照常 `goal-tree-leaf report` 回调，但 verdict 填非 done（如 `failed`），并把**失败清单**（哪个验收标准未过 / 哪条量化规则违反、复现方式）写入回调 `full_report` 与 `extras`（如 `extras.problems`），便于规划者裁定。处置交规划者单命令完成：同阶段重做（`delivery-bridge -Command reclaim`）或跨阶段回退（`delivery-bridge -Command rollback -NodeId <本节点> -Reason "<核心理由>"`——退回 DEV 重做，QA 问题清单与回退理由会自动进入重做节点的任务文本）。
 
+**检查点留痕（统一决策账本）**：本会话经用户确认的检查点决策（验收口径改定、放行取舍等）在闭环前留痕——`delivery-bridge.cmd -Command decide -Kind checkpoint -Archive <归档> -Checkpoint <名> -Decision <结论> [-Reason <原因>] [-Options <A|B>] [-Background <背景>] [-Role QA]`（条目落归档级 decisions.jsonl，四要素 + decider=user）。
+
 验证决策完成（complete 闭环 / reopen 回 DEV）→ **必须**按 `rdd-engine/references/transition-guide.md` 上游协议引导下一步（advance 路由 → next → 推荐 → start/handoff）。
 第 3 步仍须用户确认目标角色；第 4 步调用 `start-role.cmd -Role <下游角色> -TaskId <n>`——脚本按 `RDD_RUNTIME` → `DSH_WEB_URL` → CLI 判据链自选后端（agent 不判断模式），dsh 下自动创建 preset 已绑定的会话并投递 B2 指针消息，不可达时报错并回退人工指引。
 

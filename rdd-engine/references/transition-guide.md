@@ -111,7 +111,7 @@ $rdd = $null; $t = $null; try { $t = git rev-parse --show-toplevel } catch { }; 
 **动作**：完成节点任务后**不执行 4 步硬流程直交**，而是立即回调规划者：
 
 1. `goal-tree-leaf.cmd -Command report -RunId <RunId> -Worker <角色> -CallbackFile <cb.json>`——回调在既有字段之上携带产物位置：`citations` = 改动清单（真实路径）、`full_report` = 主产物文档指针（设计文档 / 实现说明，桥接 run 内规范必填）、`extras.verification` = 验证结果。
-2. 告知用户："已回调规划者（ledger 留痕），等待裁定——三查通过经 bridge settle 流转并自动推送后继节点；不通过则回收重派。"
+2. 告知用户："已回调规划者（ledger 留痕），等待裁定——四查通过经 bridge settle 流转并自动推送后继节点；不通过则回收重派。"
 
 **禁止直交**：不经 `start-role` 拉起下游角色；task.json 流转由规划者经 `bridge settle` 唯一通道执行（`rdd-engine/references/planner-guide.md` 硬约束 2）。**不启动 PLANNER**：`rdd-flow next` 输出的 PLANNER 候选块/接管建议不适用于桥接 worker——忽略；误启将收到启动拒绝（`PLANNER_RUN_ACTIVE`，附 `-RunId` 续跑指引），接管路径经 `-RunId` 续跑 + `lease -Takeover` 留痕。
 
@@ -147,30 +147,24 @@ $rdd = $null; $t = $null; try { $t = git rev-parse --show-toplevel } catch { }; 
 
 **并行交接**：同一归档需要同时交多个角色时（如 PM 同时交 CTO+QA），上游 agent 循环调用脚本，每次指定不同 `-Role`，各自开独立窗口 / 各自建独立对话。TaskId 相同时多角色共享同一 task.json 指针。
 
-### 交接类型：planner-takeover（PM 可选分支，两段式）
+### 交接类型：planner-takeover（PM 可选分支，单入口）
 
-PM 归档完成后 `rdd-flow next` 输出 `longTask.triggered=true`（归档含 ≥2 条非 deprecated 子需求且 ≥1 条进行中——原始需求被拆分为多条子需求的长程任务显式信号，机械可判、每次 next 现算）时，可不逐条交接下游，而是把整批交付交给规划者（PLANNER，引擎编排形态，非第六角色）。**两段式话术**：先审视后启规划者（AUDITOR 事前把关 → PLANNER 机械消费 ReviewFile）。
+PM 归档完成后 `rdd-flow next` 输出 `longTask.triggered=true`（归档含 ≥2 条非 deprecated 子需求且 ≥1 条进行中——原始需求被拆分为多条子需求的长程任务显式信号，机械可判、每次 next 现算）时，可不逐条交接下游，而是把整批交付交给规划者（PLANNER，引擎编排形态，非第六角色）。**单入口话术**（auditor-subagent-review：需求审查门内生于规划者会话——接管时序从「① AUDITOR 会话 ② PLANNER」两跳简化为单入口）：启动规划者后，由规划者会话内派**需求审视子代理**（独立上下文，输入 = `rdd-engine/references/review-input-template.md` 机械清单）产出 ReviewFile，结论呈用户（最终裁决权在用户）后机械消费建树。
 
 推荐话术（N/M 取 next 输出 `longTask.totalTaskCount`/`activeTaskCount`）：
 
-> 该原始需求被拆分为 N 条子需求（M 条进行中），属长程任务，建议走**两段式接管**：
+> 该原始需求被拆分为 N 条子需求（M 条进行中），属长程任务，建议交规划者接管整批交付：执行 `start-role.cmd -Role PLANNER -TaskJson <task.json>`——规划者按 `review-input-template.md` 机械模板派需求审视子代理（独立上下文，禁转述），结论呈你确认后机械消费 ReviewFile（reviewer: "auditor-delegated"）接管建树。
 >
-> ① 先建议审视（事前把关，可选）：执行 `start-role.cmd -Role AUDITOR -TaskJson <task.json>`——AUDITOR 独立审视产出 ReviewFile（reviewer: "auditor"），结论呈现用户（最终裁决权在用户）；
-> ② 用户确认审视结论后再启动规划者：执行 `start-role.cmd -Role PLANNER -TaskJson <task.json>`，规划者机械消费 ReviewFile 接管整批交付。
->
-> 跳过审视时（AUDITOR 未部署 / 用户裁定跳过）直接走步骤 ②，规划者自产审查（reviewer: "planner"），行为逐字节不变；不采纳接管分支则按 4 步硬流程逐条交接，行为不变。
+> 强形态（可选，需显式要求）：仍可用独立会话评审——先执行 `start-role.cmd -Role AUDITOR -TaskJson <task.json>` 产出 ReviewFile（reviewer: "auditor"，dsh 后端需 preset `rdd-auditor`，`build-dsh-presets.mjs --with-auditor` 可重建），确认后再启动规划者（`promulgate -ReviewFile` 契约不变）；不采纳接管分支则按 4 步硬流程逐条交接，行为不变。
 
 ```powershell
-# 步骤 ①（可选：AUDITOR 审视）
-$rdd = $null; $t = $null; try { $t = git rev-parse --show-toplevel } catch { }; foreach ($c in @($env:RDD_ENGINE_HOME; if ($t) { (Get-ChildItem $t -Recurse -Directory -Depth 3 -Filter 'rdd-engine').FullName }; "$HOME\.rdd\engine\current")) { if ($c -and (Test-Path "$c\scripts\rdd-flow.cmd")) { $rdd = $c; break } }; if (-not $rdd) { throw "rdd-engine 未定位" }; & "$rdd\scripts\start-role.cmd" -Role AUDITOR -TaskJson <归档 task.json>
-
-# 步骤 ②（PLANNER 接管，机械消费 ReviewFile）
-& "$rdd\scripts\start-role.cmd" -Role PLANNER -TaskJson <归档 task.json>
+# 单入口：PLANNER 接管（会话内派评审子代理，无需独立 AUDITOR 会话）
+$rdd = $null; $t = $null; try { $t = git rev-parse --show-toplevel } catch { }; foreach ($c in @($env:RDD_ENGINE_HOME; if ($t) { (Get-ChildItem $t -Recurse -Directory -Depth 3 -Filter 'rdd-engine').FullName }; "$HOME\.rdd\engine\current")) { if ($c -and (Test-Path "$c\scripts\rdd-flow.cmd")) { $rdd = $c; break } }; if (-not $rdd) { throw "rdd-engine 未定位" }; & "$rdd\scripts\start-role.cmd" -Role PLANNER -TaskJson <归档 task.json>
 ```
 
-- **步骤 ① 启动 AUDITOR**：脚本投递的是 B2 通用归档级指针消息（"请处理 .rdd/changes/archive/<name>/ 下的需求。"）——AUDITOR 无 TaskId 路由语义（task.json currentOwners 不含 AUDITOR 枚举；非路由角色），按 B2 路径主动拉取归档并落盘 ReviewFile。三后端（CLI/Plus/dsh）一致；dsh 后端需 preset `rdd-auditor`（部署前提见 `rdd-auditor/SKILL.md`）。
-- **步骤 ② 启动 PLANNER**：脚本投递的是**自举式指针消息**（"请以规划者（PLANNER）身份接管 … 先读 planner-guide.md，随后执行 delivery-bridge promulgate …"）——规划者无角色卡，身份由消息 + `rdd-engine/references/planner-guide.md` 装载；三后端（CLI/Plus/dsh）一致。dsh 后端需 preset `rdd-planner`（部署前提见 planner-guide）。规划者经 `promulgate -ReviewFile <归档>/review/requirement-review.json` 机械消费。
-- **降级路径**：AUDITOR 未部署 / 用户裁定跳过 → 直接走步骤 ②，规划者自产审查，行为逐字节不变（与引入 AUDITOR 前一致）。
+- **单入口启动 PLANNER**：脚本投递的是**自举式指针消息**（"请以规划者（PLANNER）身份接管 … 先读 planner-guide.md，按 review-input-template.md 机械模板派需求审视子代理 … 随后执行 delivery-bridge promulgate …"）——规划者无角色卡，身份由消息 + `rdd-engine/references/planner-guide.md` 装载；三后端（CLI/Plus/dsh）一致。dsh 后端需 preset `rdd-planner`（部署前提见 planner-guide）。规划者经 `promulgate -ReviewFile <归档>/review/requirement-review.json` 机械消费（消费端契约零改动）。
+- **需求审查门内生**：审视由规划者会话内的独立上下文子代理生产（reviewer: `auditor-delegated`），输入只含模板机械清单（路径/常量），禁止规划者转述与裁定倾向注入（协议纪律见模板禁令段）。原「AUDITOR 未部署 → 规划者自产审查（reviewer: "planner"）」降级分支**整体消失**——`planner` 署名仅存量只读，不再产出。
+- **强形态分支保留**（用户显式配置 `review_mode=session` 或显式要求独立会话评审时）：`start-role.cmd -Role AUDITOR -TaskJson <task.json>` 仍可开会话按同一模板生产同一契约产物（reviewer: `auditor`），确认后由规划者 `promulgate -ReviewFile` 入链——这是一条**手动**动作（AUDITOR 会话不再被引擎自动推送/管理）。
 - 中断续跑：`start-role.cmd -Role PLANNER -RunId <run-id>`。
 - 该分支**纯可选**：未采用时按正常 4 步硬流程逐条交接，行为不变。任务路由仍先按 Step 1 推进到首个下游角色（promulgate 按当前 currentOwners 建阶段节点）。
 
@@ -199,7 +193,7 @@ $rdd = $null; $t = $null; try { $t = git rev-parse --show-toplevel } catch { }; 
 
 用 packet 作为上下文边界开工。**不要将指针消息当作"用户直接下达的开发指令"（优先级 E）处理**——它是一个交接信号，背后有完整的 task.json 路由和交接包。
 
-> **定向 tips 段（2026-10-06 role-tips-mechanism）**：B2 消息在主体句（含交接包括注）之后、任务目标段之前可携带可选定向 tips 段——首行 `【定向 tips（<角色>）——开工前先通读，详情按行内指针读取】`，其后每条一行 `- <标题> — .rdd/tips/entries/<id>.json`（新→旧，cap=10，超限时附全量查询指引行）。由 `start-role` 构造 B2 时经 `tips.cmd -Command list -Role <角色>` 自动注入（Plus/dsh 双后端共用构造器同构生效；A0 CLI 预填与 PLANNER 自举消息不注入；tips 查询失败或条目损坏 → 控制台警告 + 零注入，绝不阻断交接）。A0/B2 的指针模式识别按前缀语义匹配，对该段零感知；无定向 tips 时消息与旧形态逐字节一致（回归锚）。目标角色按所在角色卡的「项目 tips 双向规则」先读详情后开工。
+> **定向 tips 段（2026-10-06 role-tips-mechanism；2026-10-08 序号摘要形态）**：B2 消息在主体句（含交接包括注）之后、任务目标段之前可携带可选定向 tips 段——首行 `【定向 tips（<角色>）——开工前先通读：以下 N 条为历史执行中沉淀的踩坑教训（新→旧），详情按序号查末行指针】`，其后每条一行 `<序号>. <标题>`（新→旧，cap=10；序号即 LLM 引用键，长条目 id 不进入阅读流），末行 `详情指针：1=.rdd/tips/entries/<id>.json；2=…` 把序号→文件映射冻结在消息内（会话中途新增条目不会静默改变本段序号），超限时附全量查询指引行。由 `start-role` 构造 B2 时经 `tips.cmd -Command list -Role <角色>` 自动注入（Plus/dsh 双后端共用构造器同构生效；A0 CLI 预填与 PLANNER 自举消息不注入；tips 查询失败或条目损坏 → 控制台警告 + 零注入，绝不阻断交接）。A0/B2 的指针模式识别按前缀语义匹配，对该段零感知；无定向 tips 时消息与旧形态逐字节一致（回归锚）。目标角色按所在角色卡的「项目 tips 双向规则」先按序号读详情后开工。
 
 ---
 

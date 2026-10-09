@@ -23,6 +23,10 @@ param(
     [string]$QualityScanFile,       # set-route role handoff gate (dev-quality-prescan-gate):
                                     # quality_scan credential JSON, required when DEV
                                     # exits currentOwners (chain handoff scenario)
+    [string]$BridgeRun,             # add-task bridge-run gate (planner-midrun-derive):
+                                    # the delivery-bridge run id under whose authority this
+                                    # add-task executes (controlled registration); REQUIRED
+                                    # when the archive has an active (non-concluded) bridge run
     [Alias("Path")]
     [string]$DesignPath,
     [string]$Reason,
@@ -1703,6 +1707,59 @@ function Invoke-Init {
 
 # --- add-task ---
 
+function Find-ActiveBridgeRunForArchive {
+    # add-task bridge-run gate (planner-midrun-derive): scan .rdd/goal-trees/*/bridge.json
+    # for an ACTIVE (non-concluded) bridge run bound to this archive. Read-only state
+    # probes (bridge.json / manifest.json) — the engine never writes bridge state.
+    # The conclude verdict lives in the run's TOP-LEVEL manifest.json (goal-tree's
+    # Get-ManifestPath: state=concluded + concluded{outcome,concluded_at,...}) — the
+    # gate reads exactly that file: probing state/manifest.json (a path no run ever
+    # has) left the gate shut forever after a conclude, so post-run add-task could
+    # never return to the legacy path (QA defect R2, 2026-10-08 reopen).
+    # Returns @{ run_id; archive } or $null. Path matching is case-insensitive and
+    # tolerant of trailing slashes (bridge.archive stores the same absolute form the
+    # promulgate resolved, so an exact normalized compare suffices).
+    param([string]$ArchivePath, [string]$RepoRoot)
+    $treesDir = Join-Path $RepoRoot ".rdd/goal-trees"
+    if (-not (Test-Path -LiteralPath $treesDir -PathType Container)) { return $null }
+    $resolved = (Resolve-Path -LiteralPath $ArchivePath -ErrorAction SilentlyContinue).Path
+    if (-not $resolved) { $resolved = $ArchivePath }
+    $norm = ([string]$resolved).TrimEnd('\', '/')
+    foreach ($dir in @(Get-ChildItem -LiteralPath $treesDir -Directory -ErrorAction SilentlyContinue)) {
+        $bPath = Join-Path $dir.FullName "bridge.json"
+        if (-not (Test-Path -LiteralPath $bPath -PathType Leaf)) { continue }
+        try { $b = [System.IO.File]::ReadAllText($bPath, [System.Text.Encoding]::UTF8) | ConvertFrom-Json } catch { continue }
+        $bArch = ([string]$b.archive).TrimEnd('\', '/')
+        if ([string]::IsNullOrWhiteSpace($bArch)) { continue }
+        if (-not [string]::Equals($bArch, $norm, [System.StringComparison]::OrdinalIgnoreCase)) { continue }
+        $mPath = Join-Path $dir.FullName "manifest.json"
+        if (Test-Path -LiteralPath $mPath -PathType Leaf) {
+            try {
+                $m = [System.IO.File]::ReadAllText($mPath, [System.Text.Encoding]::UTF8) | ConvertFrom-Json
+                if (([string]$m.state) -eq 'concluded') { continue }
+            } catch { }
+        }
+        return @{ run_id = [string]$b.run_id; archive = $bArch }
+    }
+    return $null
+}
+
+function Test-AddTaskBridgeRunGate {
+    # The gate itself: an archive under an ACTIVE bridge run accepts add-task ONLY
+    # with a matching -BridgeRun (the bridge's controlled registration is the single
+    # write path — mid-run scope growth goes through derive, never around it).
+    # No active run (or concluded) -> no gate (legacy add-task byte-identical).
+    param([string]$ArchivePath, [string]$RepoRoot)
+    $active = Find-ActiveBridgeRunForArchive -ArchivePath $ArchivePath -RepoRoot $RepoRoot
+    if ($null -eq $active) { return }
+    if ([string]::IsNullOrWhiteSpace($BridgeRun)) {
+        Write-ErrorResult "ADD_TASK_BRIDGE_RUN_REQUIRED" "archive '$(Split-Path $ArchivePath -Leaf)' is under ACTIVE delivery-bridge run '$($active.run_id)' — mid-run add-task requires the bridge's controlled registration: pass -BridgeRun $($active.run_id) (delivery-bridge derive settle issues it; manual mid-run scope growth must go through derive, never around it)." 1
+    }
+    if (-not [string]::Equals($BridgeRun, $active.run_id, [System.StringComparison]::OrdinalIgnoreCase)) {
+        Write-ErrorResult "ADD_TASK_BRIDGE_RUN_MISMATCH" "-BridgeRun '$BridgeRun' does not match the archive's active bridge run '$($active.run_id)' (case-insensitive)." 1
+    }
+}
+
 function Invoke-AddTask {
     param([string]$ArchivePath)
 
@@ -1715,6 +1772,11 @@ function Invoke-AddTask {
 
     $owners = Parse-OwnersString $CurrentOwners
     if ($owners.Count -eq 0) { Write-ErrorResult "INVALID_CURRENT_OWNERS" "-CurrentOwners parsed to empty array" 1 }
+
+    # bridge-run gate (planner-midrun-derive): an archive under an ACTIVE bridge
+    # run accepts add-task only with a matching -BridgeRun. Gate runs before any
+    # mutation; archives without an active run keep the legacy behavior.
+    Test-AddTaskBridgeRunGate -ArchivePath $ArchivePath -RepoRoot $repoRoot
 
     # phase-model: optional explicit -Phase (validated); absent -> write-time
     # initialization from the owner set (["QA"] -> VERIFY). Cross-phase sets fail

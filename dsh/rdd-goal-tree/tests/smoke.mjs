@@ -7,9 +7,16 @@
  *      (focused worker view / Planner callback target), plus collectReportEntries
  *   2b. goal-root aggregation: type passthrough on nodes and counts excluding
  *      the type=goal root (goal-tree-goal-root)
+ *   2e. decision-ledger collection (planner-auto-mode): archive-level ledger
+ *      resolved per run through bridge.json `archive_rel` + legacy run-dir fallback
  *   2g. watcher delivery harness (F3): delivery goes through
  *      agent.send(message, 'next-turn', true) — never a bare inbox.append —
  *      with exactly-once across scans, restarts, and the pending guard
+ *   2i. plugin-perf L2/L3: liveness shortcut (direct claim-sidecar read,
+ *      no aggregation) + wire projection (slim default payload, full detail
+ *      for claim-carrying runs, ?run detail shape)
+ *   2j. plugin-perf L2: per-run aggregation cache — TTL debounce floor,
+ *      mtime-fingerprint invalidation, reference-stable reuse on hit
  *   3. engine regression (real CLI, temp fixture): claim writes the claims
  *      sidecar (with DSH_SESSION_ID when the env is set, null when not) and
  *      start writes planner.json
@@ -18,7 +25,7 @@
  */
 import assert from 'node:assert/strict'
 import { execFileSync } from 'node:child_process'
-import { appendFileSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { appendFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { aggregateGoalTrees, artifactLine, collectReportEntries } from '../lib/goaltrees.js'
@@ -406,13 +413,19 @@ import { aggregateGoalTrees, artifactLine, collectReportEntries } from '../lib/g
 }
 
 // --- 2e. decision collection (planner-auto-mode) -------------------------------
-// Open-escalation join over decisions.jsonl: escalation entries minus those
-// referenced by a resolution/overturn ref_entry; corrupt lines skip; a run
-// without the ledger (the default, non-auto-mode shape) yields nothing.
+// Open-escalation join over the unified decision ledger: escalation entries minus
+// those referenced by a resolution/overturn ref_entry; corrupt lines skip; a run
+// without the ledger (the default, non-auto-mode shape) yields nothing. Since
+// planner-midrun-derive the ledger lives at the ARCHIVE ROOT
+// (.rdd/changes/archive/<归档名>/decisions.jsonl), resolved per run through its
+// bridge.json `archive_rel` — the pre-migration run-dir location stays readable
+// as a legacy fallback. (QA defect R1: the watcher kept reading the run dir while
+// the engine wrote the archive, silently breaking auto-mode escalation delivery.)
 {
   const { collectDecisionEntries } = await import('../lib/goaltrees.js')
-  const tmpRoot = join(tmpdir(), `rdgt-smoke-dec-${Date.now()}`)
-  const runDir = join(tmpRoot, 'auto-run')
+  const repoRoot = join(tmpdir(), `rdgt-smoke-dec-${Date.now()}`)
+  const rootDir = join(repoRoot, '.rdd', 'goal-trees')
+  const runDir = join(rootDir, 'auto-run')
   const stateDir = join(runDir, 'state')
   mkdirSync(stateDir, { recursive: true })
   writeFileSync(join(runDir, 'manifest.json'), JSON.stringify({
@@ -422,7 +435,15 @@ import { aggregateGoalTrees, artifactLine, collectReportEntries } from '../lib/g
     format_version: 1, run_id: 'auto-run', updated_at: '2026-01-01T00:10:00Z',
     nodes: [{ id: 'n1', parent: null, title: 'root', task: 't', status: 'pending', depends_on: [] }],
   }))
-  writeFileSync(join(runDir, 'decisions.jsonl'), [
+  // the engine's ledger sits at the ARCHIVE root; bridge.json is the run's own
+  // pointer to it (the single source the watcher must follow)
+  const archiveDir = join(repoRoot, '.rdd', 'changes', 'archive', 'auto-arch')
+  mkdirSync(archiveDir, { recursive: true })
+  writeFileSync(join(runDir, 'bridge.json'), JSON.stringify({
+    run_id: 'auto-run', archive: archiveDir, archive_rel: '.rdd/changes/archive/auto-arch',
+  }))
+  const ledger = join(archiveDir, 'decisions.jsonl')
+  writeFileSync(ledger, [
     JSON.stringify({ entry_id: 'D1', node_id: 'n1', task_id: 1, stage: 'CTO', kind: 'auto', checkpoint: '命名', decision: 'x', decider: 'auto/R7@CTO' }),
     JSON.stringify({ entry_id: 'D2', node_id: 'n1', task_id: 1, stage: 'CTO', kind: 'escalation', checkpoint: '技术选型', decision: 'A 还是 B？', risk: 'high', rule_id: 'R4', decider: null }),
     JSON.stringify({ entry_id: 'D3', node_id: 'n1', task_id: 1, stage: 'CTO', kind: 'escalation', checkpoint: 'git 操作', decision: '允许 push 吗？', risk: 'high', rule_id: 'R1' }),
@@ -432,18 +453,32 @@ import { aggregateGoalTrees, artifactLine, collectReportEntries } from '../lib/g
     '',
   ].join('\n'))
   // sibling run WITHOUT a decisions ledger (legacy / default posture) must stay silent
-  const plainDir = join(tmpRoot, 'plain-run')
+  const plainDir = join(rootDir, 'plain-run')
   mkdirSync(join(plainDir, 'state'), { recursive: true })
   writeFileSync(join(plainDir, 'manifest.json'), JSON.stringify({
     run_id: 'plain-run', state: 'running', goal: 'g', budget: { max_rounds: 2, max_nodes: 6 },
   }))
+  // sibling LEGACY run (pre-migration shape): no bridge.json, the ledger still
+  // sits in the run dir — the fallback keeps its escalations deliverable
+  const legacyDir = join(rootDir, 'legacy-run')
+  mkdirSync(join(legacyDir, 'state'), { recursive: true })
+  writeFileSync(join(legacyDir, 'manifest.json'), JSON.stringify({
+    run_id: 'legacy-run', state: 'running', goal: 'legacy auto goal', budget: { max_rounds: 2, max_nodes: 6 },
+  }))
+  writeFileSync(join(legacyDir, 'decisions.jsonl'), [
+    JSON.stringify({ entry_id: 'D7', node_id: 'n1', task_id: 1, stage: 'DEV', kind: 'escalation', checkpoint: '成本', decision: '允许外呼吗？', risk: 'high', rule_id: 'R2' }),
+  ].join('\n'))
 
-  const open = await collectDecisionEntries(tmpRoot)
-  // D2 is closed by D4 (resolution), D1 is referenced by D5 (overturn), D3 stays open
-  assert.equal(open.length, 1, 'only the unreferenced escalation is open')
-  const d3 = open[0]
+  const open = await collectDecisionEntries(rootDir)
+  // D2 is closed by D4 (resolution), D1 is referenced by D5 (overturn); the
+  // archive-level D3 and the legacy run-dir D7 stay open
+  assert.equal(open.length, 2, 'only the unreferenced escalations are open')
+  // the bridge run carries NO run-dir ledger: a run-dir-only read (the pre-fix
+  // shape) finds nothing here, so the archive-level hit below IS the R1 anchor
+  assert.ok(!existsSync(join(runDir, 'decisions.jsonl')), 'bridge-run fixture pins the archive-level-only shape')
+  const d3 = open.find(entry => entry.runId === 'auto-run')
+  assert.ok(d3 !== undefined, 'archive-level ledger reached through bridge.json archive_rel')
   assert.equal(d3.entryId, 'D3')
-  assert.equal(d3.runId, 'auto-run')
   assert.equal(d3.nodeId, 'n1')
   assert.equal(d3.stage, 'CTO')
   assert.equal(d3.checkpoint, 'git 操作')
@@ -451,22 +486,27 @@ import { aggregateGoalTrees, artifactLine, collectReportEntries } from '../lib/g
   assert.equal(d3.risk, 'high')
   assert.equal(d3.ruleId, 'R1')
   assert.equal(d3.decider, undefined, 'decider is not part of the wire shape')
+  const legacyEsc = open.find(entry => entry.runId === 'legacy-run')
+  assert.ok(legacyEsc !== undefined, 'legacy run-dir ledger still readable (pre-migration fallback)')
+  assert.equal(legacyEsc.entryId, 'D7')
+  assert.equal(legacyEsc.checkpoint, '成本')
 
   // resolution closing the remaining escalation empties the open set (join-derived)
-  appendFileSync(join(runDir, 'decisions.jsonl'), `${JSON.stringify({ entry_id: 'D6', kind: 'resolution', ref_entry: 'D3', decision: 'no' })}\n`)
-  const closed = await collectDecisionEntries(tmpRoot)
-  assert.equal(closed.length, 0, 'all escalations closed')
+  appendFileSync(ledger, `${JSON.stringify({ entry_id: 'D6', kind: 'resolution', ref_entry: 'D3', decision: 'no' })}\n`)
+  const closed = await collectDecisionEntries(rootDir)
+  assert.equal(closed.length, 1, 'archive-side resolution closes the escalation')
+  assert.equal(closed[0].runId, 'legacy-run', 'the untouched legacy escalation stays open')
 
   // corrupt-line prefix never throws (degrades to the parseable set)
-  writeFileSync(join(runDir, 'decisions.jsonl'), [
+  writeFileSync(ledger, [
     '{broken',
     JSON.stringify({ entry_id: 'D9', node_id: 'n1', kind: 'escalation', checkpoint: 'c', decision: 'q' }),
   ].join('\n'))
-  const degraded = await collectDecisionEntries(tmpRoot)
-  assert.equal(degraded.length, 1)
-  assert.equal(degraded[0].entryId, 'D9')
+  const degraded = await collectDecisionEntries(rootDir)
+  assert.equal(degraded.length, 2)
+  assert.deepEqual(degraded.map(entry => entry.entryId).sort(), ['D7', 'D9'])
 
-  rmSync(tmpRoot, { recursive: true, force: true })
+  rmSync(repoRoot, { recursive: true, force: true })
   console.log('[smoke] collectDecisionEntries (open-escalation join) OK')
 }
 
@@ -541,7 +581,15 @@ import { aggregateGoalTrees, artifactLine, collectReportEntries } from '../lib/g
       extras: { verification: 'tests pass' },
     },
   })}\n`)
-  writeFileSync(join(runDir, 'decisions.jsonl'), `${JSON.stringify({
+  // the escalation rides the ARCHIVE-level ledger (planner-midrun-derive): the
+  // engine writes it there and bridge.json points at it — reading the run dir
+  // instead (QA defect R1) silently drops every escalation notice
+  const archiveDir = join(tmpRoot, '.rdd', 'changes', 'archive', 'watch-arch')
+  mkdirSync(archiveDir, { recursive: true })
+  writeFileSync(join(runDir, 'bridge.json'), JSON.stringify({
+    run_id: 'watch-run', archive: archiveDir, archive_rel: '.rdd/changes/archive/watch-arch',
+  }))
+  writeFileSync(join(archiveDir, 'decisions.jsonl'), `${JSON.stringify({
     entry_id: 'D2', node_id: 'n1', task_id: 1, stage: 'CTO', kind: 'escalation',
     checkpoint: '技术选型', decision: 'A 还是 B？', risk: 'high', rule_id: 'R4', decider: null,
   })}\n`)
@@ -603,6 +651,139 @@ import { aggregateGoalTrees, artifactLine, collectReportEntries } from '../lib/g
 
   rmSync(tmpRoot, { recursive: true, force: true })
   console.log('[smoke] watcher delivery harness (send+wakeup, exactly-once, hydration, pending guard) OK')
+}
+
+// --- 2i. plugin-perf L2/L3: liveness shortcut + wire projection ----------------
+// The node-keyed liveness route now reads state/claims/<node>.json directly
+// (no full aggregation); the /runs default payload ships slim summaries and
+// reserves full node detail for claim-carrying runs (or the ?run form). The
+// two contracts pinned here: (a) the shortcut answers exactly what the old
+// aggregate-join answered for every miss shape, and agrees with it on hits;
+// (b) slim runs keep every census field the client renders (view gating +
+// tree list) and drop only the heavy per-node fields.
+{
+  const { readClaimSession, projectRunView } = await import('../lib/goaltrees.js')
+  const tmpRoot = join(tmpdir(), `rdgt-smoke-liv-${Date.now()}`)
+  const stateDir = join(tmpRoot, 'live-run', 'state')
+  const claimsDir = join(stateDir, 'claims')
+  mkdirSync(claimsDir, { recursive: true })
+  writeFileSync(join(tmpRoot, 'live-run', 'manifest.json'), JSON.stringify({
+    run_id: 'live-run', state: 'running', goal: 'g', budget: { max_rounds: 2, max_nodes: 6 },
+  }))
+  writeFileSync(join(stateDir, 'tree.json'), JSON.stringify({
+    format_version: 1, run_id: 'live-run', updated_at: '2026-01-01T00:00:00Z',
+    nodes: [
+      {
+        id: 'n1', parent: null, title: 'bridge root', status: 'pending', depends_on: [],
+        task: '目标：完成「演示」的 DEV 阶段（编码实现）。需求文档：requirements/a.md；归档：demo-arch。',
+      },
+      { id: 'n2', parent: 'n1', title: 'leaf', task: 'leaf task', status: 'claimed', claimed_by: 'DEV', depends_on: [] },
+    ],
+  }))
+  writeFileSync(join(claimsDir, 'n2.json'), JSON.stringify({
+    format_version: 1, node_id: 'n2', dsh_session_id: 'session-live-2',
+  }))
+  writeFileSync(join(claimsDir, 'nX.json'), '{broken json')
+
+  // shortcut: hit → the sidecar's session id (parity with the aggregate join)
+  assert.equal(await readClaimSession(tmpRoot, 'live-run', 'n2'), 'session-live-2')
+  // every miss shape → null (the route's "unknown"), never an error
+  assert.equal(await readClaimSession(tmpRoot, 'live-run', 'n1'), null, 'unclaimed node')
+  assert.equal(await readClaimSession(tmpRoot, 'live-run', 'nX'), null, 'corrupt sidecar')
+  assert.equal(await readClaimSession(tmpRoot, 'no-such-run', 'n1'), null, 'missing run')
+  // the join keys by CONTENT node_id — a sidecar whose content disagrees
+  // with its filename (or the queried node) yields no binding
+  writeFileSync(join(claimsDir, 'n3.json'), JSON.stringify({ node_id: 'other', dsh_session_id: 'session-x' }))
+  assert.equal(await readClaimSession(tmpRoot, 'live-run', 'n3'), null, 'content/filename mismatch → null')
+  // join parity: the aggregate's claimSessionId for n2 is the same binding
+  const { runs } = await aggregateGoalTrees(tmpRoot)
+  assert.equal(runs.length, 1)
+  assert.equal(runs[0].nodes.find(n => n.id === 'n2')?.claimSessionId, 'session-live-2')
+
+  // wire projection: the claim-carrying run ships FULL (a worker session
+  // renders it — task text + doc rows must be present), detail marker set
+  const full = projectRunView(runs[0])
+  assert.equal(full.detail, true, 'run with a dsh-bound claim ships full')
+  const fullN1 = full.nodes.find(n => n.id === 'n1')
+  assert.ok(fullN1.docs !== null && fullN1.docs !== undefined, 'full payload keeps doc rows')
+  assert.equal(fullN1.docs.goal, '完成「演示」的 DEV 阶段（编码实现）。')
+  assert.equal(fullN1.task !== null && fullN1.task !== undefined, true, 'full payload keeps the task text')
+
+  // explicit detail=false → slim regardless of claims (the shape is a choice)
+  const slim = projectRunView(runs[0], false)
+  assert.equal(slim.detail, false, 'explicit detail=false wins')
+  // run-level scalars survive the slim projection verbatim
+  assert.equal(slim.runId, 'live-run')
+  assert.equal(slim.state, 'running')
+  assert.deepEqual(slim.counts, { pending: 1, claimed: 1, reported: 0, done: 0, pruned: 0 })
+  assert.equal(slim.plannerSessionId, null)
+  // slim nodes carry EXACTLY the census fields (view gating needs
+  // claimSessionId; the tree list needs id/title/status/owner/depth/blockedBy)
+  const slimN2 = slim.nodes.find(n => n.id === 'n2')
+  assert.deepEqual(Object.keys(slimN2).sort(),
+    ['blockedBy', 'claimSessionId', 'claimedBy', 'depth', 'id', 'parent', 'status', 'title', 'type'])
+  assert.equal(slimN2.claimSessionId, 'session-live-2', 'claimSessionId kept on slim nodes (view gating)')
+  assert.equal(slimN2.claimedBy, 'DEV', 'owner kept for the tree list')
+  const slimN1 = slim.nodes.find(n => n.id === 'n1')
+  assert.equal(slimN1.task, undefined, 'task text dropped on slim')
+  assert.equal(slimN1.docs, undefined, 'doc rows dropped on slim')
+  // claimless DEFAULT: the summary rule (what /runs serves for idle runs)
+  const claimless = runs[0].nodes.map(n => ({ ...n, claimSessionId: null }))
+  assert.equal(projectRunView({ ...runs[0], nodes: claimless }).detail, false, 'claimless run defaults to slim')
+  // the projection is pure: the aggregated input keeps its full nodes
+  assert.ok(runs[0].nodes.find(n => n.id === 'n1').docs !== null, 'input run not mutated by projection')
+
+  rmSync(tmpRoot, { recursive: true, force: true })
+  console.log('[smoke] liveness shortcut (readClaimSession) + wire projection (slim/full) OK')
+}
+
+// --- 2j. plugin-perf L2: per-run aggregation cache ------------------------------
+// Three invariants: (1) a rewrite landing INSIDE the TTL floor is served
+// stale by design (debounce — the object is reference-identical, zero
+// re-reads); (2) past the floor, a changed state file (tree.json) breaks
+// the mtime fingerprint and re-aggregates; (3) an UNCHANGED fingerprint
+// reuses the cached view object verbatim (reference-equal — no re-read).
+{
+  const { setRunCacheTtlForTests } = await import('../lib/goaltrees.js')
+  const tmpRoot = join(tmpdir(), `rdgt-smoke-cache-${Date.now()}`)
+  const stateDir = join(tmpRoot, 'cache-run', 'state')
+  mkdirSync(stateDir, { recursive: true })
+  const writeTree = extra => writeFileSync(join(stateDir, 'tree.json'), JSON.stringify({
+    format_version: 1, run_id: 'cache-run', updated_at: '2026-01-01T00:00:00Z',
+    nodes: [
+      { id: 'n1', parent: null, title: 'root', task: 't', status: 'pending', depends_on: [] },
+      ...(extra ?? []),
+    ],
+  }))
+  writeFileSync(join(tmpRoot, 'cache-run', 'manifest.json'), JSON.stringify({
+    run_id: 'cache-run', state: 'running', goal: 'g', budget: { max_rounds: 2, max_nodes: 6 },
+  }))
+  writeTree()
+
+  const first = await aggregateGoalTrees(tmpRoot)
+  assert.equal(first.runs[0].nodes.length, 1)
+
+  // (1) TTL debounce: the rewrite below lands inside the 2s floor → the
+  // cached view is served as-is (same object, stale node count)
+  writeTree([{ id: 'n2', parent: 'n1', title: 'leaf', task: 't2', status: 'pending', depends_on: [] }])
+  const debounced = await aggregateGoalTrees(tmpRoot)
+  assert.equal(debounced.runs[0].nodes.length, 1, 'inside the TTL floor: debounced snapshot')
+  assert.ok(debounced.runs[0] === first.runs[0], 'TTL reuse returns the reference-identical cached view')
+
+  // (2) fingerprint invalidation: past the floor (ttl → 0 forces a re-stat),
+  // the changed tree.json breaks the fingerprint and re-aggregates
+  setRunCacheTtlForTests(0)
+  const fresh = await aggregateGoalTrees(tmpRoot)
+  assert.equal(fresh.runs[0].nodes.length, 2, 'changed tree.json re-aggregates past the floor')
+  assert.ok(fresh.runs[0] !== first.runs[0], 'invalidation built a fresh view object')
+
+  // (3) unchanged fingerprint: reference-stable reuse, no re-read
+  const again = await aggregateGoalTrees(tmpRoot)
+  assert.ok(again.runs[0] === fresh.runs[0], 'unchanged fingerprint reuses the cached view object')
+  setRunCacheTtlForTests(2000)
+
+  rmSync(tmpRoot, { recursive: true, force: true })
+  console.log('[smoke] per-run aggregation cache (TTL debounce + fingerprint invalidation + stable reuse) OK')
 }
 
 // --- 3. engine regression: sidecars on the real CLI ---------------------------

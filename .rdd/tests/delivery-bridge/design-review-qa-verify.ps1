@@ -301,7 +301,7 @@ try {
     # battery table: name | docs spec | cross spec | extra args | expected problem substring
     $battery = @(
         @{ n = 'fail-without-blocking'; docs = @(@{ doc = 'design/d1.md'; verdict = 'fail'; findings = @((New-F 'advisory' 'completeness')) }); cross = @(); m = 'no blocking finding' }
-        @{ n = 'reviewer-not-auditor';  docs = @($passDoc); cross = @(); m = "reviewer must be 'auditor'"; rev = 'qa' }
+        @{ n = 'reviewer-not-auditor';  docs = @($passDoc); cross = @(); m = "reviewer must be one of auditor-delegated|auditor"; rev = 'qa' }
         @{ n = 'stage-mismatch';        docs = @($passDoc); cross = @(); m = 'does not match the reviewed stage'; stage = 'S9' }
         @{ n = 'severity-enum';         docs = @(@{ doc = 'design/d1.md'; verdict = 'fail'; findings = @((New-F 'critical' 'alignment')) }); cross = @(); m = "severity 'critical' not in" }
         @{ n = 'dimension-enum';        docs = @(@{ doc = 'design/d1.md'; verdict = 'fail'; findings = @((New-F 'blocking' 'style')) }); cross = @(); m = "dimension 'style' not in" }

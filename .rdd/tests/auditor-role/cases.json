@@ -20,9 +20,10 @@
     ],
     "testCode": [
         ".rdd/tests/auditor-role/auditor-role-qa-verify.ps1",
-        ".rdd/tests/auditor-role/stage-acceptance-s1-verify.ps1"
+        ".rdd/tests/auditor-role/stage-acceptance-s1-verify.ps1",
+        ".rdd/tests/auditor-role/auditor-subagent-qa-verify.ps1"
     ],
-    "lastChange": "2026-10-02-auditor-independent-review",
+    "lastChange": "2026-10-07-planner-midrun-derive",
     "cases": [
         {
             "id": "TC-A01.a",
@@ -933,6 +934,367 @@
             "status": "active",
             "crossFeature": ["delivery-bridge"],
             "expected": "PASS"
+        },
+        {
+            "id": "TC-A17.a",
+            "title": "PLANNER 自举/指针实文单入口：派需求审视子代理 + 机械模板 ref（start-role DryRun 逐字）",
+            "type": "positive",
+            "priority": "P0",
+            "acceptance": "AC-1.1",
+            "codeRef": ".rdd/tests/auditor-role/auditor-subagent-qa-verify.ps1:463",
+            "sourceChange": "2026-10-07-planner-midrun-derive",
+            "status": "active",
+            "crossFeature": ["delivery-bridge", "role-handoff"],
+            "steps": ["临时仓归档 + start-role -Role PLANNER -TaskJson <归档>/task.json -DryRun", "断言实文含 review-input-template.md 与审视子代理话术"],
+            "expected": "PASS"
+        },
+        {
+            "id": "TC-A17.b",
+            "title": "两跳接管话术消失：PLANNER 指针不含「两段式」/「步骤 ①」/「start-role.cmd -Role AUDITOR」",
+            "type": "negative",
+            "priority": "P1",
+            "acceptance": "AC-1.2",
+            "codeRef": ".rdd/tests/auditor-role/auditor-subagent-qa-verify.ps1:464",
+            "sourceChange": "2026-10-07-planner-midrun-derive",
+            "status": "active",
+            "crossFeature": ["role-handoff"],
+            "expected": "PASS"
+        },
+        {
+            "id": "TC-A17.c",
+            "title": "transition-guide planner-takeover 单入口（含单入口语义、无「两段式接管」残留）",
+            "type": "negative",
+            "priority": "P1",
+            "acceptance": "AC-1.3",
+            "codeRef": ".rdd/tests/auditor-role/auditor-subagent-qa-verify.ps1:480",
+            "sourceChange": "2026-10-07-planner-midrun-derive",
+            "status": "active",
+            "crossFeature": ["role-handoff"],
+            "expected": "PASS"
+        },
+        {
+            "id": "TC-A17.d",
+            "title": "规划者自产审查降级语义清除（planner-guide 不再出现 reviewer: \"planner\" 产出话术）",
+            "type": "negative",
+            "priority": "P1",
+            "acceptance": "AC-1.4",
+            "codeRef": ".rdd/tests/auditor-role/auditor-role-qa-verify.ps1:149",
+            "sourceChange": "2026-10-07-planner-midrun-derive",
+            "status": "active",
+            "crossFeature": ["delivery-bridge"],
+            "expected": "PASS"
+        },
+        {
+            "id": "TC-A18.a",
+            "title": "机械输入模板随引擎分发（rdd-engine/references/review-input-template.md 落盘可读）",
+            "type": "positive",
+            "priority": "P0",
+            "acceptance": "AC-3.1",
+            "codeRef": ".rdd/tests/auditor-role/auditor-subagent-qa-verify.ps1:470",
+            "sourceChange": "2026-10-07-planner-midrun-derive",
+            "status": "active",
+            "crossFeature": ["delivery-bridge"],
+            "expected": "PASS"
+        },
+        {
+            "id": "TC-A18.b",
+            "title": "禁令段五条齐备（禁转述 / 禁裁定倾向注入 / 禁代审 / 零父对话继承 / 留痕可审计）",
+            "type": "positive",
+            "priority": "P0",
+            "acceptance": "AC-3.2",
+            "codeRef": ".rdd/tests/auditor-role/auditor-subagent-qa-verify.ps1:472",
+            "sourceChange": "2026-10-07-planner-midrun-derive",
+            "status": "active",
+            "crossFeature": ["delivery-bridge"],
+            "expected": "PASS"
+        },
+        {
+            "id": "TC-A18.c",
+            "title": "模板常量表单源（auditor-delegated / TEMPLATE_REF / 模板路径自指）",
+            "type": "positive",
+            "priority": "P1",
+            "acceptance": "AC-3.3",
+            "codeRef": ".rdd/tests/auditor-role/auditor-subagent-qa-verify.ps1:474",
+            "sourceChange": "2026-10-07-planner-midrun-derive",
+            "status": "active",
+            "crossFeature": ["delivery-bridge"],
+            "expected": "PASS"
+        },
+        {
+            "id": "TC-A18.d",
+            "title": "输入仅机械可填充物（{{DOC_LIST}}/{{CRITERIA_REF}}/{{STAGE_ID}} 占位符面）",
+            "type": "positive",
+            "priority": "P1",
+            "acceptance": "AC-3.4",
+            "codeRef": ".rdd/tests/auditor-role/auditor-subagent-qa-verify.ps1:475",
+            "sourceChange": "2026-10-07-planner-midrun-derive",
+            "status": "active",
+            "crossFeature": ["delivery-bridge"],
+            "expected": "PASS"
+        },
+        {
+            "id": "TC-A18.e",
+            "title": "派审面机械清单零转述（status 导出 docs 清单 + 判据 ref + 约定 ref + 落点 + 常量）",
+            "type": "positive",
+            "priority": "P0",
+            "acceptance": "AC-3.5",
+            "codeRef": ".rdd/tests/auditor-role/auditor-subagent-qa-verify.ps1:311",
+            "sourceChange": "2026-10-07-planner-midrun-derive",
+            "status": "active",
+            "crossFeature": ["delivery-bridge"],
+            "expected": "PASS"
+        },
+        {
+            "id": "TC-A19.a",
+            "title": "新链 promulgate 落 review_mode=subagent + 槽位 planned 零节点 + 回执指向模板/submit",
+            "type": "positive",
+            "priority": "P0",
+            "acceptance": "AC-2.1",
+            "codeRef": ".rdd/tests/auditor-role/auditor-subagent-qa-verify.ps1:278",
+            "sourceChange": "2026-10-07-planner-midrun-derive",
+            "status": "active",
+            "crossFeature": ["delivery-bridge"],
+            "expected": "PASS"
+        },
+        {
+            "id": "TC-A19.b",
+            "title": "阶段收敛 → ready 纯契约态：零审查节点、触发零节点增长、plan-log 无 graft 事件",
+            "type": "positive",
+            "priority": "P0",
+            "acceptance": "AC-2.2",
+            "codeRef": ".rdd/tests/auditor-role/auditor-subagent-qa-verify.ps1:296",
+            "sourceChange": "2026-10-07-planner-midrun-derive",
+            "status": "active",
+            "crossFeature": ["delivery-bridge", "goal-tree"],
+            "expected": "PASS"
+        },
+        {
+            "id": "TC-A19.c",
+            "title": "submit 契约门负向电池 5 形态（存量值域外 reviewer / docs 缺覆盖 / production.mode 越域 / stage 不符 / pass 携 blocking）各拒且零副作用",
+            "type": "negative",
+            "priority": "P0",
+            "acceptance": "AC-2.3",
+            "codeRef": ".rdd/tests/auditor-role/auditor-subagent-qa-verify.ps1:336",
+            "sourceChange": "2026-10-07-planner-midrun-derive",
+            "status": "active",
+            "crossFeature": ["delivery-bridge"],
+            "expected": "PASS"
+        },
+        {
+            "id": "TC-A19.d",
+            "title": "pass 入库：引擎推导（不采信声明值）+ IMPL 闸门解锁 + 回执署名 + 空槽位保零节点",
+            "type": "positive",
+            "priority": "P0",
+            "acceptance": "AC-2.4",
+            "codeRef": ".rdd/tests/auditor-role/auditor-subagent-qa-verify.ps1:350",
+            "sourceChange": "2026-10-07-planner-midrun-derive",
+            "status": "active",
+            "crossFeature": ["delivery-bridge"],
+            "expected": "PASS"
+        },
+        {
+            "id": "TC-A19.e",
+            "title": "fail 波零节点回收：blocking → 引擎推导 fail → 任务回 CTO@DESIGN 且重做上下文携阻断维度",
+            "type": "positive",
+            "priority": "P0",
+            "acceptance": "AC-2.5",
+            "codeRef": ".rdd/tests/auditor-role/auditor-subagent-qa-verify.ps1:380",
+            "sourceChange": "2026-10-07-planner-midrun-derive",
+            "status": "active",
+            "crossFeature": ["delivery-bridge", "inplace-redo"],
+            "expected": "PASS"
+        },
+        {
+            "id": "TC-A19.f",
+            "title": "design-review 动作守卫（conflict/derive 动作值拒 + 缺 -Action 拒）",
+            "type": "negative",
+            "priority": "P1",
+            "acceptance": "AC-2.6",
+            "codeRef": ".rdd/tests/auditor-role/auditor-subagent-qa-verify.ps1:343",
+            "sourceChange": "2026-10-07-planner-midrun-derive",
+            "status": "active",
+            "crossFeature": ["delivery-bridge"],
+            "expected": "PASS"
+        },
+        {
+            "id": "TC-A19.g",
+            "title": "单次裁定：passed 后重复 submit 拒（DESIGN_REVIEW_NOT_READY）",
+            "type": "negative",
+            "priority": "P1",
+            "acceptance": "AC-2.7",
+            "codeRef": ".rdd/tests/auditor-role/auditor-subagent-qa-verify.ps1:361",
+            "sourceChange": "2026-10-07-planner-midrun-derive",
+            "status": "active",
+            "crossFeature": ["delivery-bridge"],
+            "expected": "PASS"
+        },
+        {
+            "id": "TC-A20.a",
+            "title": "reviewer 值域单源：引擎常量闭合集 = 模板常量表（auditor-delegated|auditor）",
+            "type": "positive",
+            "priority": "P0",
+            "acceptance": "AC-4.1",
+            "codeRef": ".rdd/tests/auditor-role/auditor-subagent-qa-verify.ps1:437",
+            "sourceChange": "2026-10-07-planner-midrun-derive",
+            "status": "active",
+            "crossFeature": ["delivery-bridge"],
+            "expected": "PASS"
+        },
+        {
+            "id": "TC-A20.b",
+            "title": "新链拒存量只读值：DesignReviewFile reviewer=planner 被契约门拒（值域扩但闭合）",
+            "type": "negative",
+            "priority": "P0",
+            "acceptance": "AC-4.2",
+            "codeRef": ".rdd/tests/auditor-role/auditor-subagent-qa-verify.ps1:320",
+            "sourceChange": "2026-10-07-planner-midrun-derive",
+            "status": "active",
+            "crossFeature": ["delivery-bridge"],
+            "expected": "PASS"
+        },
+        {
+            "id": "TC-A20.c",
+            "title": "账本署名贯通：新链 auditor-delegated（pass 与 fail 汇总行）/ legacy 节点链 auditor 不变",
+            "type": "positive",
+            "priority": "P0",
+            "acceptance": "AC-4.3",
+            "codeRef": ".rdd/tests/auditor-role/auditor-subagent-qa-verify.ps1:359",
+            "sourceChange": "2026-10-07-planner-midrun-derive",
+            "status": "active",
+            "crossFeature": ["delivery-bridge"],
+            "expected": "PASS"
+        },
+        {
+            "id": "TC-A20.d",
+            "title": "驳回发起方：rdd-flow reject -From auditor-delegated 逐字落账（rejectedBy + remark）",
+            "type": "positive",
+            "priority": "P1",
+            "acceptance": "AC-4.4",
+            "codeRef": ".rdd/tests/auditor-role/auditor-subagent-qa-verify.ps1:419",
+            "sourceChange": "2026-10-07-planner-midrun-derive",
+            "status": "active",
+            "crossFeature": ["delivery-bridge", "task-claim"],
+            "expected": "PASS"
+        },
+        {
+            "id": "TC-A20.e",
+            "title": "ReviewFile 消费端兼容双值域（auditor-delegated 新产出 + planner 存量只读均被消费）",
+            "type": "positive",
+            "priority": "P1",
+            "acceptance": "AC-4.5",
+            "codeRef": ".rdd/tests/auditor-role/auditor-subagent-qa-verify.ps1:427",
+            "sourceChange": "2026-10-07-planner-midrun-derive",
+            "status": "active",
+            "crossFeature": ["delivery-bridge"],
+            "expected": "PASS"
+        },
+        {
+            "id": "TC-A21.a",
+            "title": "部署判据 = 配置项：新链零部署探测，双探函数降级为 legacy-only 路径",
+            "type": "positive",
+            "priority": "P0",
+            "acceptance": "AC-5.1",
+            "codeRef": ".rdd/tests/auditor-role/auditor-subagent-qa-verify.ps1:458",
+            "sourceChange": "2026-10-07-planner-midrun-derive",
+            "status": "active",
+            "crossFeature": ["delivery-bridge"],
+            "expected": "PASS"
+        },
+        {
+            "id": "TC-A21.b",
+            "title": "产品面：默认 8 组无 rdd-auditor + --with-auditor 强形态重建路径 + 双 --check 绿",
+            "type": "positive",
+            "priority": "P0",
+            "acceptance": "AC-5.2",
+            "codeRef": ".rdd/tests/auditor-role/auditor-subagent-qa-verify.ps1:442",
+            "sourceChange": "2026-10-07-planner-midrun-derive",
+            "status": "active",
+            "crossFeature": ["role-handoff"],
+            "expected": "PASS"
+        },
+        {
+            "id": "TC-A21.c",
+            "title": "preset 家族 order 稳定性：planner 恒为家族末位（9→8 塌缩后不漂移）",
+            "type": "positive",
+            "priority": "P1",
+            "acceptance": "AC-5.3",
+            "codeRef": ".rdd/tests/auditor-role/auditor-role-qa-verify.ps1:142",
+            "sourceChange": "2026-10-07-planner-midrun-derive",
+            "status": "active",
+            "crossFeature": ["role-handoff"],
+            "expected": "PASS"
+        },
+        {
+            "id": "TC-A21.d",
+            "title": "「未部署零门」降级面消失：新链恒落槽 + 审查节点预算 +K 归零（同夹具 legacy 对照）",
+            "type": "negative",
+            "priority": "P1",
+            "acceptance": "AC-5.4",
+            "codeRef": ".rdd/tests/auditor-role/auditor-subagent-qa-verify.ps1:284",
+            "sourceChange": "2026-10-07-planner-midrun-derive",
+            "status": "active",
+            "crossFeature": ["delivery-bridge"],
+            "expected": "PASS"
+        },
+        {
+            "id": "TC-A22.a",
+            "title": "一批一会话机制删除：新链零审查节点 → AutoDispatch 无 AUDITOR 会话可管理（树/推送面）",
+            "type": "positive",
+            "priority": "P0",
+            "acceptance": "AC-6.1",
+            "codeRef": ".rdd/tests/auditor-role/auditor-subagent-qa-verify.ps1:297",
+            "sourceChange": "2026-10-07-planner-midrun-derive",
+            "status": "active",
+            "crossFeature": ["delivery-bridge", "goal-tree"],
+            "expected": "PASS"
+        },
+        {
+            "id": "TC-A22.b",
+            "title": "感知面为派审提示：status next_step 指向模板+子代理，且不含 start-role 会话指令",
+            "type": "negative",
+            "priority": "P1",
+            "acceptance": "AC-6.2",
+            "codeRef": ".rdd/tests/auditor-role/auditor-subagent-qa-verify.ps1:315",
+            "sourceChange": "2026-10-07-planner-midrun-derive",
+            "status": "active",
+            "crossFeature": ["delivery-bridge"],
+            "expected": "PASS"
+        },
+        {
+            "id": "TC-A23.a",
+            "title": "存量兼容：缺键 run 照常 graft [设计审查·S<k>] 节点 + 保留 +K 预算（行为不回溯）",
+            "type": "positive",
+            "priority": "P0",
+            "acceptance": "AC-7.1",
+            "codeRef": ".rdd/tests/auditor-role/auditor-subagent-qa-verify.ps1:400",
+            "sourceChange": "2026-10-07-planner-midrun-derive",
+            "status": "active",
+            "crossFeature": ["delivery-bridge", "goal-tree"],
+            "expected": "PASS"
+        },
+        {
+            "id": "TC-A23.b",
+            "title": "存量兼容：缺键 run 的 design-review submit 确定性拒绝（DESIGN_REVIEW_LEGACY_RUN）+ status 标 node 链",
+            "type": "negative",
+            "priority": "P0",
+            "acceptance": "AC-7.2",
+            "codeRef": ".rdd/tests/auditor-role/auditor-subagent-qa-verify.ps1:403",
+            "sourceChange": "2026-10-07-planner-midrun-derive",
+            "status": "active",
+            "crossFeature": ["delivery-bridge"],
+            "expected": "PASS"
+        },
+        {
+            "id": "TC-A23.c",
+            "title": "存量兼容：legacy 审查节点经同一 settle 门照常结算（reviewer: auditor 仍合法、账本署名不变）",
+            "type": "positive",
+            "priority": "P0",
+            "acceptance": "AC-7.3",
+            "codeRef": ".rdd/tests/auditor-role/auditor-subagent-qa-verify.ps1:410",
+            "sourceChange": "2026-10-07-planner-midrun-derive",
+            "status": "active",
+            "crossFeature": ["delivery-bridge"],
+            "expected": "PASS"
         }
     ],
     "softMemos": [
@@ -942,6 +1304,41 @@
             "category": "documentation",
             "severity": "low",
             "rationale": "验收标准 #4 文本主体（verdicts[] / depends_on_override / merged_into_task_id）已落地；三枚错误码契约源头在 planner-guide 硬约束 6（已含完整三枚），AUDITOR 自身方法论文档不重复消费端错误码表是合理分工。下一轮重审时建议将 requirement-review.md 补齐第三枚错误码（与 planner-guide 字面同构），便于后续 worker 一处查阅"
+        },
+        {
+            "id": "TC-M02",
+            "title": "验收 4「决策账本代答者署名统一采用新枚举」的第四签署面在实现中无落点：review 判决只入 review-ledger.jsonl（reviewer 署名），统一决策账本 decisions.jsonl 的 decider 值域仍为 user|planner|auto/<规则>@<stage>",
+            "category": "contract-scope",
+            "severity": "low",
+            "rationale": "三面（ReviewFile.reviewer / DesignReviewFile.reviewer / rejection -From）已机械贯通并有本轮断言；decisions.jsonl 侧不存在承载 review verdict 的条目类型（review 判决的记账通道 = review-ledger.jsonl），故该面为「无落点」而非「未实现」。建议 CTO/EVAL 裁定是否需要把 review 判决也入统一决策账本（涉及 kinds 扩展），本轮不阻塞"
+        },
+        {
+            "id": "TC-M03",
+            "title": "legacy 部署探测面文档漂移：planner-scenarios.md:119 描述「双探」为 引擎仓 rdd-auditor/SKILL.md + .claude/skills/rdd-auditor/SKILL.md / $env:USERPROFILE 同名 / 项目 dsh/presets/rdd-auditor，而实现（HEAD 与本期一致）只探两条路径",
+            "category": "documentation",
+            "severity": "low",
+            "rationale": "对照 HEAD 的 Test-AuditorDeployed：探针数组 = [<engineRoot>/rdd-auditor/SKILL.md, <repoRoot>/dsh/presets/rdd-auditor]，与文档列举的 .claude/skills / USERPROFILE 变体不符——非本期引入（HEAD 同形）。建议规划者侧文档与实现同表对账后修正，避免排障时按文档误判未部署"
+        },
+        {
+            "id": "TC-M04",
+            "title": "机械输入清单自足性小缺口：review-input-template.md §3.1 要求 design_maps 机械缓存 ref（{{DESIGN_MAPS_REF}}），但 design-review -Action status 的机械取数面未导出该值",
+            "category": "design",
+            "severity": "low",
+            "rationale": "status 面导出 docs/criteria_ref/conventions/report/template/production；design_maps 需规划者另从 bridge.json 取（promulgate 缓存），或复现「变更地图维度以机械缓存为准」的纪律。验收 3 要求的「docs 清单 + 判据 ref + 审视方法论」已齐备，故不阻塞；建议后续把 design_maps ref 并入 status 取数面（一处取数、零裁量）"
+        },
+        {
+            "id": "TC-M05",
+            "title": "套件维护欠账：主回归套件（.rdd/tests/delivery-bridge/delivery-bridge-verify.ps1 等）随系统演进失维护，派生流并行更新致陈旧锚堆积",
+            "category": "test-maintenance",
+            "severity": "medium",
+            "rationale": "本轮以「逐项归因 + 重新基线化」处置了 auditor-role / design-review 两套件中直接由本需求取代的断言（TC-A01.c/d、TC-A02.b/c/d.1/d.2/f、TC-A03.b、TC-A05.b、TC-A06.b、TC-A08.a/b 与 design-review QA4.2），但更大范围的陈旧锚（含主回归套件 B 系列）仍是存量欠账。建议立套件维护专项：以 HEAD 基线对拍 + 契约锚升级的方式批量重新基线化，而非逐轮在验证期顺手改"
+        },
+        {
+            "id": "TC-M06",
+            "title": "工具缺陷（非本任务引入）：code-metrics 默认扫描在 git 输出 CRLF 警告时静默丢失整个 git-diff 文件集，只扫未跟踪 .ps1",
+            "category": "tooling",
+            "severity": "high",
+            "rationale": "复现：本仓 core.autocrlf=true + LF 文件 → git 向 stderr 输出 'LF will be replaced by CRLF' → PS5.1 EAP=Stop 下转 NativeCommandError → code-metrics.ps1:51 的 try/catch 吞掉并返回 $null → 默认 scan 报告 files: 7（实际变更 .ps1 = 16），且 delivery-bridge.ps1 的 L1930 Read-ReviewFile（净 85 行）**既不进违规区也不进备忘区**。后果：被修改文件中的超限函数可静默通过质量门（本轮 DEV 凭据因显式 -Files 列 4 文件而未受影响；QA 独立复核同样用 -Files）。建议：Invoke-Git 对 diff/ls-files 改用 --no-optional-locks + 忽略 stderr 退出语义（或先 git -c core.safecrlf=false / 用 cmd 重定向），并对「扫到的文件数 < 变更 .ps1 数」加告警；建议立 PSE/DEV 修复专项"
         }
     ]
 }

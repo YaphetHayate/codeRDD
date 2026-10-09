@@ -16,7 +16,7 @@
  */
 
 import { readdir, readFile, stat, writeFile } from 'node:fs/promises'
-import { dirname, join } from 'node:path'
+import { dirname, isAbsolute, join } from 'node:path'
 
 /**
  * One clickable document pointer projected for the worker's structured rows
@@ -142,8 +142,10 @@ export interface GoalTreeReportEntry {
 }
 
 /**
- * One open escalation entry from a bridge run's decisions.jsonl
- * (planner-auto-mode): a checkpoint the risk-grading table routed to humans.
+ * One open escalation entry from a bridge run's unified decision ledger
+ * `decisions.jsonl` — archive-level since planner-midrun-derive
+ * (`.rdd/changes/archive/<归档名>/`, located through the run's bridge.json;
+ * planner-auto-mode): a checkpoint the risk-grading table routed to humans.
  * "Open" is join-derived — a resolution/overturn entry references the
  * escalation via ref_entry; the ledger itself is never rewritten. Entries on
  * pruned nodes are still collected (flagged historical — the user may still
@@ -423,8 +425,238 @@ async function listMockupLinks(archiveRoot: string): Promise<GoalTreeDocLink[]> 
   return found.slice(0, MOCKUP_CAP).map(f => ({ rel: f.rel, abs: f.abs, exists: true }))
 }
 
+// --- run aggregation cache (plugin-perf L2) ------------------------------------
+//
+// Per-run aggregation cache keyed by an mtime+size fingerprint over the run's
+// state sources (manifest.json / state/tree.json / state/round-log.jsonl /
+// state/planner.json / state/claims/*). A request re-stats only those few
+// files; an unchanged fingerprint reuses the cached view verbatim — zero file
+// re-reads, zero doc-link stats, zero mockup walks. A small TTL floor
+// debounces even the fingerprint stats when the strip poll, liveness probes,
+// and watcher scans land in a burst. Scope: the fingerprint covers run-state
+// files only — archive-side doc/mockup appearance rides along the next
+// tree.json write (every claim/settle/prune/graft rewrites it), never later
+// than that.
+
+/** Debounce floor between fingerprint re-stats of one run (ms). */
+export const RUN_CACHE_TTL_MS = 2_000
+
+let runCacheTtlMs = RUN_CACHE_TTL_MS
+
 /**
- * Aggregate every run directory under the goal-trees root.
+ * Test seam for the smoke suite: shrink/expand the debounce floor (0 forces a
+ * fingerprint re-stat on every call). Production code never calls this.
+ */
+export function setRunCacheTtlForTests(ms: number): void {
+  runCacheTtlMs = ms
+}
+
+/** One cached run view plus the fingerprint and last-stat time guarding it. */
+interface RunCacheEntry {
+  fingerprint: string
+  checkedAt: number
+  /**
+   * The aggregated view; null = the directory is not a run (cached so a
+   * manifest landing inside the TTL window stays skipped until re-stat).
+   */
+  view: GoalTreeRunView | null
+}
+
+/** rootDir → run directory name → cache entry (vanished runs purged per pass). */
+const runCache = new Map<string, Map<string, RunCacheEntry>>()
+
+/** One file's fingerprint component: mtime+size, 'x' when absent. */
+async function stampOf(file: string): Promise<string> {
+  try {
+    const info = await stat(file)
+    return `${info.mtimeMs}:${info.size}`
+  } catch {
+    return 'x'
+  }
+}
+
+/**
+ * Compute one run's state-source fingerprint (plugin-perf L2): stat stamps of
+ * the four fixed state files plus the sorted claims sidecars. Any write the
+ * aggregation reads changes exactly one component.
+ */
+async function fingerprintRun(runDir: string): Promise<string> {
+  const claimsDir = join(runDir, 'state', 'claims')
+  const dirents = await readdir(claimsDir, { withFileTypes: true }).catch(() => null)
+  const claimNames = dirents === null
+    ? []
+    : dirents.filter(d => d.isFile() && d.name.endsWith('.json')).map(d => d.name).sort()
+  const parts = await Promise.all([
+    stampOf(join(runDir, 'manifest.json')),
+    stampOf(join(runDir, 'state', 'tree.json')),
+    stampOf(join(runDir, 'state', 'round-log.jsonl')),
+    stampOf(join(runDir, 'state', 'planner.json')),
+    ...claimNames.map(name => stampOf(join(claimsDir, name))),
+  ])
+  return parts.join('|')
+}
+
+/**
+ * Aggregate ONE run directory (plugin-perf L1): every read the old serial
+ * pipeline issued — manifest, tree, round log, planner sidecar, all claim
+ * sidecars, every node's doc links and mockup walks — now runs concurrently
+ * (runs against each other via {@link aggregateGoalTrees}, files within the
+ * run via Promise.all). Output and tolerance are identical to the serial
+ * pipeline: a missing manifest skips the run (null), missing pieces degrade
+ * to empty.
+ */
+async function aggregateOneRun(rootDir: string, dirName: string, repoRoot: string): Promise<GoalTreeRunView | null> {
+  const runDir = join(rootDir, dirName)
+  const stateDir = join(runDir, 'state')
+  const [manifest, tree, roundText, planner, claimDirents] = await Promise.all([
+    readJson(join(runDir, 'manifest.json')),
+    readJson(join(stateDir, 'tree.json')),
+    readFile(join(stateDir, 'round-log.jsonl'), 'utf8').catch(() => ''), // no rounds started yet
+    readJson(join(stateDir, 'planner.json')),
+    readdir(join(stateDir, 'claims'), { withFileTypes: true }).catch(() => null),
+  ])
+  if (manifest === undefined) return null // not a run directory
+  const runId = str(manifest.run_id) ?? dirName
+
+  const rawNodes = Array.isArray(tree?.nodes) ? (tree?.nodes as Record<string, unknown>[]) : []
+  const { roundsUsed, openRound } = foldRoundLog(roundText.split('\n'))
+
+  // Session-binding sidecars (engine additive; both may be missing on legacy runs).
+  const claimFiles = claimDirents === null ? [] : claimDirents.filter(d => d.isFile() && d.name.endsWith('.json'))
+  const claimReads = await Promise.all(claimFiles.map(d => readJson(join(stateDir, 'claims', d.name))))
+  const claimSession = new Map<string, string>()
+  for (const claim of claimReads) {
+    const nodeId = str(claim?.node_id)
+    const sessionId = str(claim?.dsh_session_id)
+    if (nodeId !== null && sessionId !== null) claimSession.set(nodeId, sessionId)
+  }
+
+  const parentOf = new Map<string, string | null>()
+  const known = new Set<string>()
+  const counts = { pending: 0, claimed: 0, reported: 0, done: 0, pruned: 0 }
+  for (const node of rawNodes) {
+    const id = typeof node.id === 'string' ? node.id : null
+    if (id === null) continue
+    known.add(id)
+    parentOf.set(id, typeof node.parent === 'string' ? node.parent : null)
+  }
+  const nodes: GoalTreeNodeView[] = []
+  // ux-mockup-links: one enumeration per archive per aggregate call — a
+  // task's whole stage chain (UX→DEV→QA nodes) shares one archiveRoot, so
+  // the directory walk happens once and every sibling node reuses the links.
+  // The map caches the in-flight PROMISE (not the value) so concurrent
+  // sibling resolutions share one walk too.
+  const mockupsByArchive = new Map<string, Promise<GoalTreeDocLink[]>>()
+  const mockupsFor = (archiveRoot: string): Promise<GoalTreeDocLink[]> => {
+    let pending = mockupsByArchive.get(archiveRoot)
+    if (pending === undefined) {
+      pending = listMockupLinks(archiveRoot)
+      mockupsByArchive.set(archiveRoot, pending)
+    }
+    return pending
+  }
+  // node-doc-links resolutions run concurrently across ALL nodes (plugin-perf
+  // L1); each job fills its node view's docs slot before the barrier below
+  // returns — the node view must be created first so the job has a stable
+  // slot to write into.
+  const docJobs: Promise<void>[] = []
+  for (const node of rawNodes) {
+    const id = typeof node.id === 'string' ? node.id : null
+    if (id === null) continue
+    const status = typeof node.status === 'string' ? node.status : 'pending'
+    const type = str(node.type)
+    // The five-state census counts WORK nodes only: the type=goal root is the
+    // original requirement's conclude anchor — pending forever by design and
+    // never a delivery unit, so it stays out of every status count.
+    if (type !== 'goal') {
+      if (status === 'pending') counts.pending += 1
+      else if (status === 'claimed') counts.claimed += 1
+      else if (status === 'reported') counts.reported += 1
+      else if (status === 'done') counts.done += 1
+      else if (status === 'pruned') counts.pruned += 1
+    }
+    const dependsOn = Array.isArray(node.depends_on)
+      ? (node.depends_on as unknown[]).filter((d): d is string => typeof d === 'string' && known.has(d) && d !== id)
+      : []
+    const confidenceRaw = node.last_confidence
+    const task = str(node.task)
+    const nodeView: GoalTreeNodeView = {
+      id,
+      parent: parentOf.get(id) ?? null,
+      title: typeof node.title === 'string' ? node.title : id,
+      task,
+      docs: null,
+      type,
+      status,
+      claimedBy: str(node.claimed_by),
+      verdict: str(node.last_verdict),
+      confidence: typeof confidenceRaw === 'number' && Number.isFinite(confidenceRaw) ? confidenceRaw : null,
+      claimSessionId: claimSession.get(id) ?? null,
+      blockedBy: dependsOn,
+      depth: depthOf(id, parentOf),
+    }
+    nodes.push(nodeView)
+    // node-doc-links: decompose a bridge-shaped task into structured slots
+    // (goal sentence + doc pointers). Archive root resolution prefers the
+    // template's own 归档 segment, falling back to the frozen deliver-<archive>
+    // run-id convention; every non-bridge task parses to null (no rows, no
+    // stats — the plain rendering is the zero-degradation path).
+    const parsed = parseNodeTask(task)
+    if (parsed !== null) {
+      const archiveName = parsed.archiveName ?? runId.replace(/^deliver-/, '')
+      const archiveRoot = join(repoRoot, '.rdd', 'changes', 'archive', archiveName)
+      const requirement = parsed.reqRel !== null ? toDocLink(archiveRoot, parsed.reqRel) : Promise.resolve(null)
+      const designs = Promise.all(parsed.designRels.map(rel => toDocLink(archiveRoot, rel)))
+      const mockups = mockupsFor(archiveRoot)
+      docJobs.push((async () => {
+        const [requirementLink, designLinks, mockupLinks] = await Promise.all([requirement, designs, mockups])
+        nodeView.docs = {
+          goal: parsed.goal,
+          stage: parsed.stage,
+          duty: parsed.duty,
+          requirement: requirementLink,
+          designs: designLinks,
+          mockups: mockupLinks,
+        }
+      })())
+    }
+  }
+  if (docJobs.length > 0) await Promise.all(docJobs)
+
+  let updatedAt = str(tree?.updated_at)
+  if (updatedAt === null) {
+    try {
+      updatedAt = new Date((await stat(join(stateDir, 'tree.json'))).mtimeMs).toISOString()
+    } catch {
+      updatedAt = null
+    }
+  }
+
+  const budget = (manifest.budget ?? {}) as Record<string, unknown>
+  const concluded = (manifest.concluded ?? null) as Record<string, unknown> | null
+  return {
+    runId,
+    state: str(manifest.state) ?? 'running',
+    goal: str(manifest.goal) ?? '',
+    outcome: concluded === null ? null : str(concluded.outcome),
+    createdBy: str(manifest.created_by),
+    createdAt: str(manifest.created_at),
+    updatedAt,
+    maxRounds: num(budget.max_rounds, 0),
+    maxNodes: num(budget.max_nodes, 0),
+    roundsUsed,
+    openRound,
+    counts,
+    nodes,
+    plannerSessionId: str(planner?.dsh_session_id),
+  }
+}
+
+/**
+ * Aggregate every run directory under the goal-trees root. Runs aggregate
+ * concurrently (plugin-perf L1) behind the per-run mtime-fingerprint cache
+ * (plugin-perf L2); both layers are invisible to the output — same views,
+ * same order, same tolerance.
  * @param rootDir - absolute path of `<repoRoot>/.rdd/goal-trees`.
  * @param repoRootOverride - explicit repository root for doc-pointer
  * resolution (node-doc-links); defaults to the two-level parent of rootDir,
@@ -437,152 +669,119 @@ export async function aggregateGoalTrees(rootDir: string, repoRootOverride?: str
   const dirents = await readdir(rootDir, { withFileTypes: true }).catch(() => null)
   if (dirents === null) return { runs: [] } // no .rdd/goal-trees at all: nothing to show
 
-  const runs: GoalTreeRunView[] = []
-  for (const dirent of dirents) {
-    if (!dirent.isDirectory() || dirent.name.startsWith('_') || dirent.name.startsWith('.')) continue
-    const runDir = join(rootDir, dirent.name)
+  const names = dirents
+    .filter(dirent => dirent.isDirectory() && !dirent.name.startsWith('_') && !dirent.name.startsWith('.'))
+    .map(dirent => dirent.name)
 
-    const manifest = await readJson(join(runDir, 'manifest.json'))
-    if (manifest === undefined) continue // not a run directory
-    const runId = str(manifest.run_id) ?? dirent.name
-
-    const tree = await readJson(join(runDir, 'state', 'tree.json'))
-    const rawNodes = Array.isArray(tree?.nodes) ? (tree?.nodes as Record<string, unknown>[]) : []
-
-    let roundLines: string[] = []
-    try {
-      roundLines = (await readFile(join(runDir, 'state', 'round-log.jsonl'), 'utf8')).split('\n')
-    } catch {
-      roundLines = [] // no rounds started yet
+  const byName = runCache.get(rootDir) ?? new Map<string, RunCacheEntry>()
+  const views = await Promise.all(names.map(async name => {
+    const cached = byName.get(name)
+    // Debounce floor: inside the window the cached view is served as-is, no
+    // stats at all (checkedAt deliberately NOT bumped here so a poll cadence
+    // faster than the floor cannot starve the re-stat).
+    if (cached !== undefined && Date.now() - cached.checkedAt < runCacheTtlMs) return cached.view
+    const fingerprint = await fingerprintRun(join(rootDir, name))
+    if (cached !== undefined && cached.fingerprint === fingerprint) {
+      cached.checkedAt = Date.now()
+      return cached.view
     }
-    const { roundsUsed, openRound } = foldRoundLog(roundLines)
-
-    // Session-binding sidecars (engine additive; both may be missing on legacy runs).
-    const planner = await readJson(join(runDir, 'state', 'planner.json'))
-    const claimDirents = await readdir(join(runDir, 'state', 'claims'), { withFileTypes: true }).catch(() => null)
-    const claimSession = new Map<string, string>()
-    if (claimDirents !== null) {
-      for (const claimFile of claimDirents) {
-        if (!claimFile.isFile() || !claimFile.name.endsWith('.json')) continue
-        const claim = await readJson(join(runDir, 'state', 'claims', claimFile.name))
-        const nodeId = str(claim?.node_id)
-        const sessionId = str(claim?.dsh_session_id)
-        if (nodeId !== null && sessionId !== null) claimSession.set(nodeId, sessionId)
-      }
-    }
-
-    const parentOf = new Map<string, string | null>()
-    const known = new Set<string>()
-    const counts = { pending: 0, claimed: 0, reported: 0, done: 0, pruned: 0 }
-    for (const node of rawNodes) {
-      const id = typeof node.id === 'string' ? node.id : null
-      if (id === null) continue
-      known.add(id)
-      parentOf.set(id, typeof node.parent === 'string' ? node.parent : null)
-    }
-    const nodes: GoalTreeNodeView[] = []
-    // ux-mockup-links: one enumeration per archive per aggregate call — a
-    // task's whole stage chain (UX→DEV→QA nodes) shares one archiveRoot, so
-    // the directory walk happens once and every sibling node reuses the links.
-    const mockupsByArchive = new Map<string, GoalTreeDocLink[]>()
-    const mockupsFor = async (archiveRoot: string): Promise<GoalTreeDocLink[]> => {
-      const cached = mockupsByArchive.get(archiveRoot)
-      if (cached !== undefined) return cached
-      const links = await listMockupLinks(archiveRoot)
-      mockupsByArchive.set(archiveRoot, links)
-      return links
-    }
-    for (const node of rawNodes) {
-      const id = typeof node.id === 'string' ? node.id : null
-      if (id === null) continue
-      const status = typeof node.status === 'string' ? node.status : 'pending'
-      const type = str(node.type)
-      // The five-state census counts WORK nodes only: the type=goal root is the
-      // original requirement's conclude anchor — pending forever by design and
-      // never a delivery unit, so it stays out of every status count.
-      if (type !== 'goal') {
-        if (status === 'pending') counts.pending += 1
-        else if (status === 'claimed') counts.claimed += 1
-        else if (status === 'reported') counts.reported += 1
-        else if (status === 'done') counts.done += 1
-        else if (status === 'pruned') counts.pruned += 1
-      }
-      const dependsOn = Array.isArray(node.depends_on)
-        ? (node.depends_on as unknown[]).filter((d): d is string => typeof d === 'string' && known.has(d) && d !== id)
-        : []
-      const confidenceRaw = node.last_confidence
-      const task = str(node.task)
-      // node-doc-links: decompose a bridge-shaped task into structured slots
-      // (goal sentence + doc pointers). Archive root resolution prefers the
-      // template's own 归档 segment, falling back to the frozen deliver-<archive>
-      // run-id convention; every non-bridge task parses to null (no rows, no
-      // stats — the plain rendering is the zero-degradation path).
-      let docs: GoalTreeNodeDocs | null = null
-      const parsed = parseNodeTask(task)
-      if (parsed !== null) {
-        const archiveName = parsed.archiveName ?? runId.replace(/^deliver-/, '')
-        const archiveRoot = join(repoRoot, '.rdd', 'changes', 'archive', archiveName)
-        docs = {
-          goal: parsed.goal,
-          stage: parsed.stage,
-          duty: parsed.duty,
-          requirement: parsed.reqRel !== null ? await toDocLink(archiveRoot, parsed.reqRel) : null,
-          designs: await Promise.all(parsed.designRels.map(rel => toDocLink(archiveRoot, rel))),
-          mockups: await mockupsFor(archiveRoot),
-        }
-      }
-      nodes.push({
-        id,
-        parent: parentOf.get(id) ?? null,
-        title: typeof node.title === 'string' ? node.title : id,
-        task,
-        docs,
-        type,
-        status,
-        claimedBy: str(node.claimed_by),
-        verdict: str(node.last_verdict),
-        confidence: typeof confidenceRaw === 'number' && Number.isFinite(confidenceRaw) ? confidenceRaw : null,
-        claimSessionId: claimSession.get(id) ?? null,
-        blockedBy: dependsOn,
-        depth: depthOf(id, parentOf),
-      })
-    }
-
-    let updatedAt = str(tree?.updated_at)
-    if (updatedAt === null) {
-      try {
-        updatedAt = new Date((await stat(join(runDir, 'state', 'tree.json'))).mtimeMs).toISOString()
-      } catch {
-        updatedAt = null
-      }
-    }
-
-    const budget = (manifest.budget ?? {}) as Record<string, unknown>
-    const concluded = (manifest.concluded ?? null) as Record<string, unknown> | null
-    runs.push({
-      runId,
-      state: str(manifest.state) ?? 'running',
-      goal: str(manifest.goal) ?? '',
-      outcome: concluded === null ? null : str(concluded.outcome),
-      createdBy: str(manifest.created_by),
-      createdAt: str(manifest.created_at),
-      updatedAt,
-      maxRounds: num(budget.max_rounds, 0),
-      maxNodes: num(budget.max_nodes, 0),
-      roundsUsed,
-      openRound,
-      counts,
-      nodes,
-      plannerSessionId: str(planner?.dsh_session_id),
-    })
+    const view = await aggregateOneRun(rootDir, name, repoRoot)
+    byName.set(name, { fingerprint, checkedAt: Date.now(), view })
+    return view
+  }))
+  // Purge entries of runs that vanished (archived/moved out) and keep the map.
+  const present = new Set(names)
+  for (const name of byName.keys()) {
+    if (!present.has(name)) byName.delete(name)
   }
+  runCache.set(rootDir, byName)
 
+  const runs = views.filter((view): view is GoalTreeRunView => view !== null)
   runs.sort((a, b) => {
     const rank = (run: GoalTreeRunView): number => (run.state === 'running' ? 0 : 1)
     if (rank(a) !== rank(b)) return rank(a) - rank(b)
     return (b.updatedAt ?? '').localeCompare(a.updatedAt ?? '')
   })
   return { runs }
+}
+
+/**
+ * Read one node's claim-sidecar session binding DIRECTLY (the liveness
+ * shortcut, plugin-perf L2): `<rootDir>/<runId>/state/claims/<nodeId>.json`
+ * → its dsh_session_id, with zero aggregation. Mirrors the aggregate join's
+ * discipline: the sidecar's own node_id must agree with the queried node
+ * (the join keys by content), and every missing/corrupt/malformed shape
+ * returns null (the caller reports "unknown", never an error).
+ * @param rootDir - absolute path of `<repoRoot>/.rdd/goal-trees`.
+ */
+export async function readClaimSession(rootDir: string, runId: string, nodeId: string): Promise<string | null> {
+  const claim = await readJson(join(rootDir, runId, 'state', 'claims', `${nodeId}.json`))
+  if (claim === undefined) return null
+  if (str(claim.node_id) !== nodeId) return null
+  return str(claim.dsh_session_id)
+}
+
+// --- wire projection (plugin-perf L3) ------------------------------------------
+//
+// The /runs endpoint's default payload: run summaries plus slim nodes. The
+// strip renders ONE run per session; the full every-run-every-field payload
+// (task texts, doc links with absolute paths, mockup chips) was ~111KB per
+// poll. The default now carries full detail ONLY for runs with a LIVE
+// dsh-bound claim (the run some worker session renders NOW — its view needs
+// the task text and doc chips; the live-claim rule itself lives in
+// ./index.ts where the agents registry is); every other run — including
+// concluded runs whose claim sidecars outlived their sessions — ships a
+// summary: all run-level scalars (state/census/budget — the bar header)
+// plus per-node census fields (the view-gating join needs claimSessionId,
+// the tree list needs id/title/status/owner/depth). The heavy per-node
+// fields (task text, docs, verdict, confidence) are omitted; the additive
+// `detail` marker flags the shape and the `?run=<id>` detail parameter
+// returns that one run in full. Old clients stay functional on the default
+// payload (every field they read is present — slim nodes merely degrade the
+// tree list's tooltip to the title); new clients backfill `?run=` for a
+// slim run they expand.
+
+/** The wire node shape: every heavy field optional (absent on slim runs). */
+export type GoalTreeWireNode = Omit<GoalTreeNodeView, 'task' | 'docs' | 'verdict' | 'confidence'> &
+  Partial<Pick<GoalTreeNodeView, 'task' | 'docs' | 'verdict' | 'confidence'>>
+
+/** The wire run shape: same run-level scalars, nodes possibly slim, detail marker. */
+export interface GoalTreeWireRun extends Omit<GoalTreeRunView, 'nodes'> {
+  nodes: GoalTreeWireNode[]
+  /** false = this run's nodes are slim (fetch `?run=<id>` for full detail). */
+  detail: boolean
+}
+
+/**
+ * Project one aggregated run into its wire shape (plugin-perf L3). Default
+ * detail rule (the pure fallback): a run with ANY dsh-bound claim ships
+ * full. The /runs route OVERRIDES this with the live-claim rule
+ * (hasLiveClaimSession in ./index.ts): only a claim whose session still
+ * resolves in the agents registry forces full detail — historical claims of
+ * dead sessions ship slim (no session renders them as its worker view), which
+ * is what actually shrinks the default payload on repos with many concluded
+ * runs. The explicit `detail` argument wins either way (the `?run=` detail
+ * route always asks full). Pure: the aggregated input is never mutated
+ * (fresh objects out).
+ */
+export function projectRunView(run: GoalTreeRunView, detail?: boolean): GoalTreeWireRun {
+  const wantDetail = detail ?? run.nodes.some(node => node.claimSessionId !== null)
+  if (wantDetail) return { ...run, nodes: [...run.nodes], detail: true }
+  return {
+    ...run,
+    nodes: run.nodes.map(node => ({
+      id: node.id,
+      parent: node.parent,
+      title: node.title,
+      type: node.type,
+      status: node.status,
+      claimedBy: node.claimedBy,
+      claimSessionId: node.claimSessionId,
+      blockedBy: node.blockedBy,
+      depth: node.depth,
+    })),
+    detail: false,
+  }
 }
 
 /**
@@ -647,22 +846,25 @@ function parseLedgerEntry(line: string, runId: string): GoalTreeReportEntry | nu
 
 /**
  * Collect every ledger report entry across the runs of one goal-trees root —
- * the watcher's input for Planner callbacks. Per-run reads and per-line
- * projection live in the helpers above; corrupt lines are skipped (the
- * engine quarantines them); a missing ledger yields no entries.
+ * the watcher's input for Planner callbacks. Run ledgers are read
+ * concurrently (plugin-perf L1; the run list itself comes back from the
+ * aggregation cache); per-line projection lives in {@link parseLedgerEntry};
+ * corrupt lines are skipped (the engine quarantines them); a missing ledger
+ * yields no entries.
  * @param rootDir - absolute path of `<repoRoot>/.rdd/goal-trees`.
  */
 export async function collectReportEntries(rootDir: string): Promise<GoalTreeReportEntry[]> {
   const { runs } = await aggregateGoalTrees(rootDir)
+  const ledgers = await Promise.all(runs.map(run => readLedgerText(rootDir, run.runId)))
   const entries: GoalTreeReportEntry[] = []
-  for (const run of runs) {
-    const ledger = await readLedgerText(rootDir, run.runId)
-    if (ledger === null) continue
+  runs.forEach((run, index) => {
+    const ledger = ledgers[index] ?? null
+    if (ledger === null) return
     for (const line of ledger.split('\n')) {
       const entry = parseLedgerEntry(line, run.runId)
       if (entry !== null) entries.push(entry)
     }
-  }
+  })
   return entries
 }
 
@@ -685,15 +887,46 @@ export function artifactLine(entry: GoalTreeReportEntry): string {
 }
 
 /**
+ * Resolve one run's archive root from the bridge's own record
+ * (`<runDir>/bridge.json` → `archive_rel`, written at promulgate). The unified
+ * decision ledger lives at the ARCHIVE root, NOT the run dir
+ * (planner-midrun-derive: 账本是长期分析资产、归档是长期载体) — the watcher
+ * must read the very source the engine writes, or auto-mode escalation
+ * delivery breaks silently. Null when the run carries no bridge.json
+ * (plain goal-tree runs — the caller then falls back to the pre-migration
+ * run-dir location).
+ * @param rootDir - absolute path of `<repoRoot>/.rdd/goal-trees`.
+ */
+async function readBridgeArchiveDir(rootDir: string, runId: string): Promise<string | null> {
+  const bridge = await readJson(join(rootDir, runId, 'bridge.json'))
+  const archiveRel = bridge === undefined ? null : str(bridge.archive_rel)
+  if (archiveRel === null) return null
+  if (isAbsolute(archiveRel)) return archiveRel
+  return join(dirname(dirname(rootDir)), ...archiveRel.split(/[\\/]+/).filter(segment => segment !== ''))
+}
+
+/**
  * Read one run's decision-ledger text; null when absent (a run without pure
- * auto mode — the default — never writes decisions.jsonl).
+ * auto mode — the default — writes no ledger). Archive-level first (the single
+ * standard), legacy run-dir second (pre-migration AutoMode runs wrote the
+ * ledger beside the run state); the first readable candidate wins, and a
+ * missing ledger yields no entries instead of an error.
  */
 async function readDecisionsText(rootDir: string, runId: string): Promise<string | null> {
-  try {
-    return await readFile(join(rootDir, runId, 'decisions.jsonl'), 'utf8')
-  } catch {
-    return null
+  const runDir = join(rootDir, runId)
+  const archiveDir = await readBridgeArchiveDir(rootDir, runId)
+  const candidates = [
+    ...(archiveDir === null ? [] : [join(archiveDir, 'decisions.jsonl')]),
+    join(runDir, 'decisions.jsonl'),
+  ]
+  for (const file of candidates) {
+    try {
+      return await readFile(file, 'utf8')
+    } catch {
+      // try the next candidate; all-missing reads as null
+    }
   }
+  return null
 }
 
 /**
@@ -719,15 +952,20 @@ function parseDecisionEntry(line: string, runId: string): Record<string, unknown
  * (planner-auto-mode). An escalation is open until a resolution/overturn
  * entry references it via ref_entry (join-derived, ledger never rewritten);
  * an escalation that lands already-resolved never notifies (nothing to
- * adjudicate). Corrupt lines are skipped; a missing ledger yields no entries.
+ * adjudicate). Decision ledgers are read concurrently (plugin-perf L1) — each
+ * run's ledger resolved at its archive root via bridge.json, run-dir legacy
+ * fallback (readDecisionsText) — and read fresh every call: it is NOT part of
+ * the aggregation fingerprint, so a just-appended resolution takes effect
+ * immediately. Corrupt lines are skipped; a missing ledger yields no entries.
  * @param rootDir - absolute path of `<repoRoot>/.rdd/goal-trees`.
  */
 export async function collectDecisionEntries(rootDir: string): Promise<GoalTreeDecisionEntry[]> {
   const { runs } = await aggregateGoalTrees(rootDir)
+  const texts = await Promise.all(runs.map(run => readDecisionsText(rootDir, run.runId)))
   const open: GoalTreeDecisionEntry[] = []
-  for (const run of runs) {
-    const text = await readDecisionsText(rootDir, run.runId)
-    if (text === null) continue
+  runs.forEach((run, index) => {
+    const text = texts[index] ?? null
+    if (text === null) return
     const raw = text.split('\n')
       .map(line => parseDecisionEntry(line, run.runId))
       .filter((e): e is Record<string, unknown> => e !== null)
@@ -756,6 +994,6 @@ export async function collectDecisionEntries(rootDir: string): Promise<GoalTreeD
         at: str(entry.at),
       })
     }
-  }
+  })
   return open
 }

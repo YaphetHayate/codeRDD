@@ -1,6 +1,6 @@
 # 需求审视方法论与 ReviewFile 生产流程
 
-> 本文件是 AUDITOR 的方法论文档——SKILL.md 给出身份与宪法层，本文件给出可执行的方法论、契约模板、记账规范、驳回指引。设计侧审视方法论（#2 落地后）将由同源文档扩展，不在本需求范围。
+> 本文件是审视方法论文档（auditor-subagent-review 后兼具**评审子代理提示词素材**定位）——SKILL.md 给出三禁纪律与双形态定位，本文件给出可执行的方法论、契约模板、记账规范、驳回指引。规划者派需求审视子代理时，`rdd-engine/references/review-input-template.md` §2 的提示词骨架直指本方法论（子代理**直读**本文档）。设计侧方法论见 `design-review.md`。
 
 ---
 
@@ -68,27 +68,31 @@
 
 **可测锚点示例**：
 - ✅ `start-role.cmd -Role AUDITOR -DryRun` 输出含身份装载与归档相对路径
-- ✅ `node scripts/build-dsh-presets.mjs` 生成 preset 数量从 7 升至 8
+- ✅ `node scripts/build-dsh-presets.mjs --check` 退出码 0（默认 8 组 preset 与技能源一致）
 - ❌ `接口设计合理`（无量化锚点）
 
 ---
 
 ## 三、ReviewFile Schema
 
-> 与 `rdd-engine/references/planner-guide.md` 硬约束 6 既有契约**同构**——消费端（`delivery-bridge.ps1`）只看非空 ReviewFile 与 `verdicts[]` 字段，值域零改动。区别只在 `reviewer` 字段：PLANNER 形态 = `"planner"`，AUDITOR 形态 = `"auditor"`。
+> 与 `rdd-engine/references/planner-guide.md` 硬约束 6 既有契约**同构**——消费端（`delivery-bridge.ps1`）只看非空 ReviewFile 与 `verdicts[]` 字段，值域零改动。`reviewer` 字段取值（单源 `review-input-template.md` 常量表）：`auditor-delegated`（子代理形态产出，主路径）/ `auditor`（强形态独立会话产出）/ `planner`（存量只读，不再产出）。
 
 ### 完整形
 
 ```json
 {
   "reviewed_at": "2026-10-02T12:34:56+08:00",
-  "reviewer": "auditor",
+  "reviewer": "auditor-delegated",
   "archive": "2026-10-02-auditor-independent-review",
   "trigger": "longTask" | "manual" | "planner-dispatch",
+  "production": {
+    "mode": "subagent" | "session",
+    "template": "rdd-engine/references/review-input-template.md"
+  },
   "deployment_check": {
     "preset_id": "rdd-auditor",
     "present": true,
-    "note": "preset 注册就位 / 缺席降级提示已落"
+    "note": "legacy 字段（缺键链部署探测留痕）；新链以 bridge.json review_mode 为准，本字段可省"
   },
   "verdicts": [
     {
@@ -132,7 +136,7 @@
 - `pass` 不得携带 `depends_on_override` / `merged_into_task_id`
 - `tree_adjudicated` 的 `depends_on_override` 与 `merged_into_task_id` 不得同现于一条 verdict（合并任务不建节点）
 - 同任务重复 verdict、指向不在归档的任务均拒（消费端 `REVIEW_FILE_INVALID` / `REVIEW_TASK_NOT_FOUND`）
-- `reject_return` 的前置动作：需求文档「## 驳回记录」追加行（仅追加不改本体）+ `rdd-flow.cmd reject -From AUDITOR -To PM -Reason "..."`
+- `reject_return` 的前置动作：需求文档「## 驳回记录」追加行（仅追加不改本体）+ `rdd-flow.cmd reject -From <AUDITOR-DELEGATED|AUDITOR> -To PM -Reason "..."`（子代理形态由规划者代递，署名 `AUDITOR-DELEGATED`）
 
 ---
 
@@ -184,7 +188,7 @@
 {
   "at": "2026-10-02T12:34:56+08:00",
   "archive": "2026-10-02-auditor-independent-review",
-  "reviewer": "auditor",
+  "reviewer": "auditor-delegated",
   "kind": "gap",
   "task_id": 2,
   "gap_type": "coverage_hole",
@@ -198,7 +202,7 @@
 |------|------|------|
 | `at` | string | ISO-8601 时间戳 |
 | `archive` | string | 归档名 |
-| `reviewer` | string | 固定 `"auditor"`（PLANNER 形态 `"planner"`；#2 设计的 `#2` 形态 `"auditor"` + `kind="blocking"`） |
+| `reviewer` | string | 枚举 `auditor-delegated`（子代理形态）/ `auditor`（强形态会话）/ `planner`（存量只读）——单源 `review-input-template.md` 常量表；设计侧 blocking 条目同枚举 + `kind="blocking"` |
 | `kind` | string | `"gap"`（本条）/ `"blocking"`（#2 预留） |
 | `task_id` | number \| null | 涉及的任务 ID（无涉及则为 null） |
 | `gap_type` | string \| null | 枚举 `coverage_hole / orphan_requirement / dependency_mislabel / merge_candidate / untestable_acceptance`（无 gap 则为 null） |
@@ -214,12 +218,12 @@
 
 ## 六、驳回指引（`reject_return` 前置动作）
 
-> `reject_return` 的完整协议见 `rdd-engine/references/rejection-protocol.md`「AUDITOR 发起的驳回」节；本节是 AUDITOR 侧的实操指引。
+> `reject_return` 的完整协议见 `rdd-engine/references/rejection-protocol.md`「评审方发起的驳回」节（双形态）；本节是审视者侧的实操指引。
 
 ### 前置动作（两件）
 
-1. **在目标需求文档的「## 驳回记录」表格追加一行**（仅追加；发起方 = `AUDITOR`、状态 = `待回应`）——不改写需求文档其余内容本体，**包括遗留的 `## 流转控制 > 当前责任人` 字段**（路由事实以 task.json 为准，文档本体归 PM）
-2. **更新路由**：`rdd-flow.cmd -Command reject -Archive "<归档>" -TaskId <n> -From AUDITOR -To PM -Reason "<理由>"`
+1. **在目标需求文档的「## 驳回记录」表格追加一行**（仅追加；发起方 = `AUDITOR-DELEGATED`（子代理形态，规划者代递）/ `AUDITOR`（强形态会话）、状态 = `待回应`）——不改写需求文档其余内容本体，**包括遗留的 `## 流转控制 > 当前责任人` 字段**（路由事实以 task.json 为准，文档本体归 PM）
+2. **更新路由**：`rdd-flow.cmd -Command reject -Archive "<归档>" -TaskId <n> -From <AUDITOR-DELEGATED|AUDITOR> -To PM -Reason "<理由>"`
 
 ### ReviewFile 与驳回的衔接
 
@@ -244,13 +248,13 @@
 
 **消费端契约现成零改动**（设计保证）：
 - `delivery-bridge.ps1` 仅检查 ReviewFile 非空 + `verdicts[]` 字段合法性 + 字段约束
-- `reviewer` 字段值（`"auditor"` vs `"planner"`）对消费端透明
+- `reviewer` 字段值（枚举 `auditor-delegated` / `auditor` / `planner`）对消费端透明（仅查非空）
 - `reject_return` / `tree_adjudicated` / `pass` 三态处置流程不变
-- **错误码清单**（消费端可预期的确定性反馈，planner-guide「异常处置速查」同源）：
+- **错误码清单**（消费端可预期的确定性反馈，planner-scenarios「异常处置速查」同源）：
   - `REVIEW_FILE_INVALID` — ReviewFile 不可解析 / schema 违规 / 字段一致性冲突（pass 带_override|merged、一 verdict 双字段、task_id 重复等），建树前零残留
   - `REVIEW_TASK_NOT_FOUND` — verdict/override/合并目标指向的 task_id 不在该归档
   - `REVIEW_EXCLUDED_DEP` — 某任务依赖被驳回排除的任务：依赖不会被静默丢弃，planner 须补裁定该任务（`depends_on_override` 或一并驳回）
 
 **审计追溯**：
-- `bridge.json v2` 顶层 `review` 段落盘（含 `reviewer` 字段，便于区分 AUDITOR 与 PLANNER 形态）
+- `bridge.json v2` 顶层 `review` 段落盘（含 `reviewer` 字段，便于区分生产形态）
 - run 侧 `report/review.md`（人读镜像，逐条结论表）——与归档 `review/requirement-review.md` 并存，前者是 run 消费端镜像，后者是归档内产物镜像，**两者并存职责不同**

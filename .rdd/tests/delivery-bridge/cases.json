@@ -24,9 +24,13 @@
                       ".rdd/tests/delivery-bridge/inplace-redo-qa-verify.ps1",
                       "rdd-engine/tests/test-bridge-design-review.ps1",
                       ".rdd/tests/delivery-bridge/design-review-qa-verify.ps1",
-                      ".rdd/tests/delivery-bridge/independent-review-chain-e2e.ps1"
+                      ".rdd/tests/delivery-bridge/independent-review-chain-e2e.ps1",
+                      ".rdd/tests/delivery-bridge/midrun-derive-qa-verify.ps1",
+                      ".rdd/tests/delivery-bridge/midrun-derive-watcher-qa-verify.mjs",
+                      "rdd-engine/tests/test-bridge-derive.ps1",
+                      "rdd-engine/tests/test-decision-ledger.ps1"
                  ],
-    "lastChange":  "2026-10-02-auditor-independent-review",
+    "lastChange":  "2026-10-07-planner-midrun-derive",
     "cases":  [
                   {
                       "id":  "TC-B01",
@@ -2759,6 +2763,321 @@
                                     "断言 run 账本含 QA verification 条目、review-ledger.jsonl 同时含 kind=gap（Layer1）与 kind=design_review（Layer2）条目"
                                 ],
                       "expected":  "三层产物（ReviewFile/DesignReviewFile/QA 验证结论）各自独立可审计；AUDITOR 只写 review/；触发记账回流有账可查（≥3 阈值路径由 TC-B144 回归覆盖）"
-                  }
-               ]
+                   },
+                   {
+                       "id":  "TC-B153",
+                       "title":  "derive 入口防御与 propose 机读登记：action/title/rationale 门 + 账本四要素 + DRV 编号 + depends_on 去重 + owners 收窄 + 呈报双裁决路径",
+                       "type":  "positive",
+                       "priority":  "P0",
+                       "acceptance":  "MD-AC-1/MD-AC-2",
+                       "codeRef":  ".rdd/tests/delivery-bridge/midrun-derive-qa-verify.ps1:181",
+                       "sourceChange":  "2026-10-07-planner-midrun-derive",
+                       "status":  "active",
+                       "crossFeature":  [],
+                       "precondition":  "qa-main fixture（1 DEV 任务，promulgate -NoPush）已建 run",
+                       "steps":  [
+                                     "derive 缺 -Action / 未知 action（ValidateSet 层 fail-loud）/ propose 缺 Title / 缺 Rationale",
+                                     "propose 带 -DependsOn 1,1（重复）与 -Owners CTO+QA",
+                                     "读归档 decisions.jsonl 首条与 bridge.derivations[0]"
+                                 ],
+                       "expected":  "四入口门确定性错误码（DERIVE_ACTION_REQUIRED/DERIVE_TITLE_REQUIRED/DERIVE_RATIONALE_REQUIRED，未知 action 在参数层拒绝无伪 JSON）；账本 D1 kind=derive_proposal 四要素齐 + derivation_id=DRV1 + depends_on 去重为 [1] + owners=[CTO,QA] 机读；bridge derivations[] 状态 proposed 零副作用；present_to_user 含 confirm/withdraw 双路径与「无确认记录不派遣」硬门句；next_step 携带 CLI/Plus 会话内呈现指引"
+                   },
+                   {
+                       "id":  "TC-B154",
+                       "title":  "用户确认硬门确定性（验收 2）：缺 -UserVerdict 与空白串同码 DERIVE_CONFIRMATION_MISSING（exit 1）；两次拒绝零状态漂移；未知 id DERIVE_NOT_FOUND（exit 2）",
+                       "type":  "negative",
+                       "priority":  "P0",
+                       "acceptance":  "MD-AC-2",
+                       "codeRef":  ".rdd/tests/delivery-bridge/midrun-derive-qa-verify.ps1:206",
+                       "sourceChange":  "2026-10-07-planner-midrun-derive",
+                       "status":  "active",
+                       "crossFeature":  [],
+                       "precondition":  "DRV1 处于 proposed",
+                       "steps":  [
+                                     "confirm 不带 -UserVerdict",
+                                     "confirm 带 -UserVerdict 全空白串",
+                                     "复读 bridge 断言状态仍 proposed",
+                                     "confirm/withdraw 对不存在 DRV999"
+                                 ],
+                       "expected":  "前两形态同码 DERIVE_CONFIRMATION_MISSING 且 exit 1（无确认记录的 derive 拒绝执行）；两次拒绝后 derivations 零漂移；未知 id 双命令均 DERIVE_NOT_FOUND 且 exit 2——硬门确定性可依赖"
+                   },
+                   {
+                       "id":  "TC-B155",
+                       "title":  "withdraw proposed 零副作用 + 裁决留痕（decider=user/ref_entry 回指）+ 派生号不复用（withdrawn 占号）",
+                       "type":  "boundary",
+                       "priority":  "P1",
+                       "acceptance":  "MD-AC-2",
+                       "codeRef":  ".rdd/tests/delivery-bridge/midrun-derive-qa-verify.ps1:218",
+                       "sourceChange":  "2026-10-07-planner-midrun-derive",
+                       "status":  "active",
+                       "crossFeature":  [],
+                       "precondition":  "DRV1 proposed（qa-main）",
+                       "steps":  [
+                                     "withdraw DRV1 带 -Reason",
+                                     "读账本 ruling 条目",
+                                     "再次 propose 新标题"
+                                 ],
+                       "expected":  "withdrawn 且 pruned_node=null（proposed 无节点可剪，零副作用）；账本 ruling decider=user、ref_entry 回指 D1；新提案编号 DRV2（withdrawn 编号永不复用，审计链不断裂）"
+                   },
+                   {
+                       "id":  "TC-B156",
+                       "title":  "confirm 落地：用户裁决原文逐字留痕（中文标点/空格）+ PM 节点 graft 为 goal 根子节点（role=pm）+ plan-log scope_derived 事件 + 二次 confirm 拒",
+                       "type":  "positive",
+                       "priority":  "P0",
+                       "acceptance":  "MD-AC-1/MD-AC-7",
+                       "codeRef":  ".rdd/tests/delivery-bridge/midrun-derive-qa-verify.ps1:227",
+                       "sourceChange":  "2026-10-07-planner-midrun-derive",
+                       "status":  "active",
+                       "crossFeature":  [
+                                           "goal-tree"
+                                       ],
+                       "precondition":  "DRV2 proposed（含中文标点裁决文本预置）",
+                       "steps":  [
+                                     "confirm DRV2 带 -UserVerdict（含中文标点/逗号/空格）",
+                                     "读账本 ruling.decision 与 ref_entry",
+                                     "读树节点 parent/role",
+                                     "读 plan-log kind=deviation event=scope_derived",
+                                     "重复 confirm 同一 DRV"
+                                 ],
+                       "expected":  "confirmed + node_id 非空；ruling.decision 与输入逐字一致（-ceq 级）、decider=user、ref_entry 回指提案条目；PM 节点 parent=goal 根且 role=pm（验收 1 桥接 graft）；plan-log scope_derived 携带 derivation/ledger_entry/depends_on 载荷（验收 7）；二次 confirm DERIVE_STATE_INVALID"
+                   },
+                   {
+                       "id":  "TC-B157",
+                       "title":  "PM settle 受控入册：add-task 桥代写（phase=DESIGN/requirement/remark 幂等锚）+ task.json 生命周期同构 + bridge.tasks dep_task_ids 机读 + acceptance 升级 derived_upgrade 判据锚 live-read",
+                       "type":  "positive",
+                       "priority":  "P0",
+                       "acceptance":  "MD-AC-3/MD-AC-5/MD-AC-6",
+                       "codeRef":  ".rdd/tests/delivery-bridge/midrun-derive-qa-verify.ps1:246",
+                       "sourceChange":  "2026-10-07-planner-midrun-derive",
+                       "status":  "active",
+                       "crossFeature":  [
+                                           "task-claim"
+                                       ],
+                       "precondition":  "PM 节点已交付（新需求文档 + overview「## 整体验收判据」增补条目）并 report",
+                       "steps":  [
+                                     "settle PM 节点",
+                                     "读 task.json 新任务（id/phase/requirement/remark/currentOwners）",
+                                     "读 bridge.tasks.<new>.dep_task_ids 与 acceptance 段"
+                                 ],
+                       "expected":  "flow_operation 含 derivation registered（add-task 代写非手工双写）；新任务 phase=DESIGN、requirement 指向派生文档、remark 含 derivation=DRV2 锚、默认 owners 全链 [CTO,UX,QA]——生命周期与既有任务同构；dep_task_ids=[1] 机读同构（验收 6）；acceptance.basis=derived_upgrade 且 criteria_ref 锚定 overview 判据段 live-read（验收 5）"
+                   },
+                   {
+                       "id":  "TC-B158",
+                       "title":  "派生依赖建树传导：链头树侧 depends_on 指向依赖任务链头 + 依赖未满足 claim 被 NODE_BLOCKED_BY_DEPS 拦 + 上游终态后解锁",
+                       "type":  "positive",
+                       "priority":  "P0",
+                       "acceptance":  "MD-AC-6",
+                       "codeRef":  ".rdd/tests/delivery-bridge/midrun-derive-qa-verify.ps1:260",
+                       "sourceChange":  "2026-10-07-planner-midrun-derive",
+                       "status":  "active",
+                       "crossFeature":  [
+                                           "goal-tree"
+                                       ],
+                       "precondition":  "DRV2 已入册（task #2 链头已预挂）",
+                       "steps":  [
+                                     "读 #2 CTO 链头树节点 depends_on",
+                                     "主任务 DEV 未 settle 时 claim #2 链头",
+                                     "主任务全链 settle 后再 claim"
+                                 ],
+                       "expected":  "链头 depends_on 含依赖任务 DEV 链头（建树依赖推导对派生节点同样生效）；未解锁 claim 报 NODE_BLOCKED_BY_DEPS 且消息指向阻塞源；上游终态后 claim 成功——依赖传导行为面与既有任务同构"
+                   },
+                   {
+                       "id":  "TC-B159",
+                       "title":  "replan 吸收与阶段闸门：未吸收派生链头 claim/dispatch 双拒 NODE_BLOCKED_BY_GATE → replan 白名单放行 registered 派生 id → derivations_absorbed → 闸门开",
+                       "type":  "positive",
+                       "priority":  "P0",
+                       "acceptance":  "MD-AC-4",
+                       "codeRef":  ".rdd/tests/delivery-bridge/midrun-derive-qa-verify.ps1:264",
+                       "sourceChange":  "2026-10-07-planner-midrun-derive",
+                       "status":  "active",
+                       "crossFeature":  [],
+                       "precondition":  "DRV2 registered 未吸收",
+                       "steps":  [
+                                     "dispatch -DryRun 派生链头（未吸收）",
+                                     "withdraw registered 派生（应拒并指引 deprecate）",
+                                     "replan 提交含 task #2 的修订计划",
+                                     "replan 后再 dispatch -DryRun"
+                                 ],
+                       "expected":  "未吸收链头 NODE_BLOCKED_BY_GATE（唯一出路 replan）；withdraw registered 拒 DERIVE_STATE_INVALID 且消息指引 deprecate（边界：只管新增不管改既有）；replan 幽灵 id 校验对已登记派生 id 白名单放行且 derivations_absorbed 含 DRV2；吸收后闸门放行——阶段闸门/验收链/自动推送对新链同构生效"
+                   },
+                   {
+                       "id":  "TC-B160",
+                       "title":  "派生链全链同构收敛：claim 双上下文（task_id+requirement 指针）+ DESIGN→IMPL→VERIFY 阶段链 + 双任务全终态（单 run 收敛）",
+                       "type":  "positive",
+                       "priority":  "P0",
+                       "acceptance":  "MD-AC-4",
+                       "codeRef":  ".rdd/tests/delivery-bridge/midrun-derive-qa-verify.ps1:283",
+                       "sourceChange":  "2026-10-07-planner-midrun-derive",
+                       "status":  "active",
+                       "crossFeature":  [
+                                           "goal-tree"
+                                       ],
+                       "precondition":  "主任务 #1 已终态；派生 #2 链头已解锁",
+                       "steps":  [
+                                     "claim #2 CTO 链头读双上下文",
+                                     "CTO→UX→QA(DESIGN) 串行 settle 至 IMPL 链头 graft",
+                                     "DEV→QA(VERIFY) settle 至 completed",
+                                     "读 task.json 两任务 lifecycle"
+                                 ],
+                       "expected":  "claim 响应同时携带 task_id 与派生需求文档指针（双上下文与既有任务同构）；DESIGN 收敛出 IMPL 链头、IMPL settle 出 VERIFY 链头（阶段链同构）；两任务 lifecycle=completed——派生需求并入当前 run 走完整链（验收 4 同构性）"
+                   },
+                   {
+                       "id":  "TC-B161",
+                       "title":  "conclude 门与 annex 呈现：挂起派生 DERIVATION_PENDING 拒结案 + withdraw 后 achieved + annex「需求派生」清单（withdrawn 拒绝留痕/registered 已入 plan）+ 根目标达成口径行",
+                       "type":  "positive",
+                       "priority":  "P0",
+                       "acceptance":  "MD-AC-7",
+                       "codeRef":  ".rdd/tests/delivery-bridge/midrun-derive-qa-verify.ps1:310",
+                       "sourceChange":  "2026-10-07-planner-midrun-derive",
+                       "status":  "active",
+                       "crossFeature":  [],
+                       "precondition":  "双任务全终态 + 验收链（集成/整体验收）已过且结论=通过",
+                       "steps":  [
+                                     "propose DRV3 后 conclude",
+                                     "withdraw DRV3 后再 conclude",
+                                     "读 report/delivery-annex.md"
+                                 ],
+                       "expected":  "开放派生阻塞结案（DERIVATION_PENDING，硬门）；withdraw 后 conclude achieved（单 run 收敛）；annex 含「## 需求派生（mid-run derive）」节：DRV1 withdrawn 行呈现拒绝记录、DRV2 registered 行呈现已入 plan 与 #2 映射、含「根目标口径补充：N 条 run 中途派生需求并入」行——留痕三联之三"
+                   },
+                   {
+                       "id":  "TC-B162",
+                       "title":  "settle 前确认复核（验收 2 硬门第二触点）：篡改账本抹掉 ruling 条目 → settle 拒 DERIVE_CONFIRMATION_MISSING 不入册（task.json 不动）+ status 巡检同拒不自愈",
+                       "type":  "negative",
+                       "priority":  "P0",
+                       "acceptance":  "MD-AC-2",
+                       "codeRef":  ".rdd/tests/delivery-bridge/midrun-derive-qa-verify.ps1:339",
+                       "sourceChange":  "2026-10-07-planner-midrun-derive",
+                       "status":  "active",
+                       "crossFeature":  [],
+                       "precondition":  "qa-tamper fixture：DRV1 confirmed + PM 节点已交付 report；手工从归档 decisions.jsonl 删除 ruling 行（模拟无确认记录）",
+                       "steps":  [
+                                     "settle PM 节点",
+                                     "读 task.json 断言任务数不变",
+                                     "status 触碰巡检后复读 task.json"
+                                 ],
+                       "expected":  "settle 拒绝 DERIVE_CONFIRMATION_MISSING（exit 1）且零流转——确认记录复核在入册前二次把关（propose/confirm 命令面之外）；task.json 不新增任务；derivation 停留 confirmed-without-registration；status 巡检不越过硬门自愈入册"
+                   },
+                   {
+                       "id":  "TC-B163",
+                       "title":  "旧 run 兼容 + 防滥用默认阈值：无 derivations 段 bridge.json status 不崩且 propose 重建段；默认阈值 3 前三条无警告、第四条 DERIVATION_LIMIT_WARNING 警告不硬拒",
+                       "type":  "boundary",
+                       "priority":  "P1",
+                       "acceptance":  "MD-边界",
+                       "codeRef":  ".rdd/tests/delivery-bridge/midrun-derive-qa-verify.ps1:368",
+                       "sourceChange":  "2026-10-07-planner-midrun-derive",
+                       "status":  "active",
+                       "crossFeature":  [],
+                       "precondition":  "qa-legacy fixture（手工剥除 bridge.derivations 段）；qa-limit fixture 不带 -MaxDerivations 颁布",
+                       "steps":  [
+                                     "status 读 legacy run",
+                                     "legacy run 上 propose",
+                                     "qa-limit 连续 propose 四条读 limit_warning"
+                                 ],
+                       "expected":  "缺键兼容：status success 不崩；propose 重建 derivations 段（DRV1 起算）；默认阈值 3：前三条 limit_warning 空、第四条警告含 DERIVATION_LIMIT_WARNING 且仍 success（警告上报节奏异常不硬拒）"
+                   },
+                   {
+                       "id":  "TC-B164",
+                       "title":  "add-task 桥接门（验收 3 受控调用面）：活动 run 无 -BridgeRun 拒 ADD_TASK_BRIDGE_RUN_REQUIRED / 错值 MISMATCH / 匹配大小写不敏感 / 无 run 归档 legacy 直加。【缺陷锚 R2：concluded run 门不释放——探测 state/manifest.json 永不存在，conclude 实写顶层 manifest.json；修复后本锚断言翻转为期望放行（2026-10-08 复验轮已实证）】",
+                       "type":  "negative",
+                       "priority":  "P0",
+                       "acceptance":  "MD-AC-3",
+                       "codeRef":  ".rdd/tests/delivery-bridge/midrun-derive-qa-verify.ps1:423",
+                       "sourceChange":  "2026-10-07-planner-midrun-derive",
+                       "status":  "active",
+                       "crossFeature":  [
+                                           "task-claim"
+                                       ],
+                       "precondition":  "qa-gate fixture（活动 run）；qa-plain fixture（无 run 归档）",
+                       "steps":  [
+                                     "活动 run 归档 add-task 不带 -BridgeRun",
+                                     "带错值 -BridgeRun",
+                                     "带大小写变形的正确 run id",
+                                     "手工置顶层 manifest.json state=concluded 后无 -BridgeRun 再试（修复锚：期望放行）",
+                                     "复位 state=running 后再试（期望门重新武装、活探针）",
+                                     "无 run 归档 add-task"
+                                 ],
+                       "expected":  "前三形态：REQUIRED/MISMATCH/匹配成功（大小写不敏感）；第四形态：门释放、直加成功（success:true+added:true，探测顶层 manifest.json 命中 state=concluded）；第五形态：复位 running 后门重新武装 REQUIRED（状态现读、非缓存裁定）；第六形态：legacy 路径照常直加。以下为 R2 修复前记录（锚已翻转）：concluded 判定永不命中，违背 Find-ActiveBridgeRunForArchive 自身「concluded→no gate」承诺）——2026-10-08 验证轮以 [DEFECT-REPRO] 锚记录，DEV 修复后断言翻转为成功直加；第五形态：legacy 路径照常直加"
+                   },
+                   {
+                       "id":  "TC-B165",
+                       "title":  "预算硬门与 withdraw 收口：confirm 先记账后预算检查 → DERIVE_BUDGET_EXCEEDED 状态卡 confirmed 无节点（不自动重试）；withdraw 关闭死局零剪枝",
+                       "type":  "negative",
+                       "priority":  "P1",
+                       "acceptance":  "MD-AC-1",
+                       "codeRef":  "rdd-engine/tests/test-bridge-derive.ps1:253",
+                       "sourceChange":  "2026-10-07-planner-midrun-derive",
+                       "status":  "active",
+                       "crossFeature":  [
+                                           "goal-tree"
+                                       ],
+                       "precondition":  "pd-budget fixture 以 -MaxNodes 3 颁布（预算即将耗尽）",
+                       "steps":  [
+                                     "confirm 超预算派生",
+                                     "读账本断言 ruling 已记、bridge 状态 confirmed 无 node",
+                                     "withdraw 该派生"
+                                 ],
+                       "expected":  "DERIVE_BUDGET_EXCEEDED 且未尝试 graft；用户裁决先于预算失败入账（事实已记不丢失）；状态 confirmed-without-node 不可自动重试；withdraw 收口无剪枝副作用——预算死局有确定性出口"
+                   },
+                   {
+                       "id":  "TC-B166",
+                       "title":  "中断幂等自愈巡检：入册与 replan 之间中断（task_id 丢失）→ status 触碰重入册 + remark 锚去重（task.json 不重复建任务）",
+                       "type":  "boundary",
+                       "priority":  "P0",
+                       "acceptance":  "MD-边界",
+                       "codeRef":  "rdd-engine/tests/test-bridge-derive.ps1:229",
+                       "sourceChange":  "2026-10-07-planner-midrun-derive",
+                       "status":  "active",
+                       "crossFeature":  [],
+                       "precondition":  "registered 派生手工抹除 task_id（模拟崩溃窗口）",
+                       "steps":  [
+                                     "status 触碰巡检",
+                                     "断言 task_id 恢复且 task.json 任务不重复",
+                                     "复核 bridge 映射"
+                                 ],
+                       "expected":  "巡检状态机按 bridge.tasks 登记状态幂等续跑：重入册成功、remark 幂等锚去重（同任务不二次 add-task）、映射回写一致——入册/replan 两步间中断可安全重入"
+                   },
+                   {
+                       "id":  "TC-B167",
+                       "title":  "决策账本写读同源锚（R1 回归面）：真引擎 escalate 写归档级账本 → 插件产物 collectDecisionEntries 读回；阴性对照（archive_rel 失效读空）+ resolution 现读收敛 + legacy run 目录兜底",
+                       "type":  "positive",
+                       "priority":  "P0",
+                       "acceptance":  "MD-AC-7",
+                       "codeRef":  ".rdd/tests/delivery-bridge/midrun-derive-qa-verify.ps1:468",
+                       "sourceChange":  "2026-10-07-planner-midrun-derive",
+                       "status":  "active",
+                       "crossFeature":  [
+                                            "goal-tree"
+                                        ],
+                       "precondition":  "一次性夹具仓：qa-watch run 以 -AutoMode -NoPush 颁布并 claim DEV 节点；插件构建产物 dsh/rdd-goal-tree/lib/goaltrees.js 已构建（驱动器 midrun-derive-watcher-qa-verify.mjs 只读 FS）",
+                       "steps":  [
+                                     "escalate 写开放升级条目；断言归档根 decisions.jsonl 存在且 run 目录同名文件不存在",
+                                     "node 驱动器以夹具仓为 repoRoot 调 collectDecisionEntries 读回",
+                                     "把 bridge.json archive_rel 指向不存在归档后再读（阴性对照），随后还原再读",
+                                     "decide -Kind resolution 收敛后再读",
+                                     "另建无 bridge.json 的 legacy run（账本在 run 目录）后再读"
+                                 ],
+                       "expected":  "写端只在归档根落盘；读端经 bridge.json archive_rel 命中同一条目（runId/entryId 精确、wire 形态 checkpoint/question/nodeId/risk 完整）；archive_rel 失效时读空（证明读的是该指针解析出的那份，无 run 目录兜底命中）；还原后立即复现（现读、非缓存裁定）；resolution 后同入口立即收敛（无陈旧投递）；legacy run 目录账本仍可读——R1（读端退回 run 目录 → auto-mode 升级投递静默断链）在本锚下必然 FAIL"
+                   },
+                   {
+                       "id":  "TC-B168",
+                       "title":  "派生 PM 节点回收复用 reclaim 同族通道（需求边界「中断幂等」）：dead-claim → steal 重推；rejected-delivery（无 verification 的不合格重报）→ prune + 同源重建 PM 节点 + derivations[].node 重锚",
+                       "type":  "boundary",
+                       "priority":  "P0",
+                       "acceptance":  "MD-边界",
+                       "codeRef":  ".rdd/tests/delivery-bridge/midrun-derive-qa-verify.ps1:516",
+                       "sourceChange":  "2026-10-07-planner-midrun-derive",
+                       "status":  "active",
+                       "crossFeature":  [
+                                            "goal-tree"
+                                        ],
+                       "precondition":  "qa-reclaim fixture：propose+confirm 后 PM 节点 graft 完成；节点先被 claim（无 dsh session 绑定 → liveness=unknown，-DeadClaimMinutes 0 使其可证死）",
+                       "steps":  [
+                                     "claim 派生 PM 节点后调 reclaim -DeadClaimMinutes 0",
+                                     "断言回收模式/steal_count/节点 park 归属",
+                                     "以当前持有者身份重报不合格证据（verdict=done 但无 extras.verification）",
+                                     "再次 reclaim 并断言旧节点 prune、新节点 graft、bridge derivations 重锚"
+                                 ],
+                       "expected":  "①dead-claim：mode='dead-claim (tree-level derivation PM node)'、steal_count=1、节点 id 不变且 park 在 planner-reclaim；②rejected-delivery：mode='rejected-delivery (tree-level derivation PM node)'、pruned_node=原节点、新节点为 goal 根 pm 子节点（pending 待认领）、bridge derivations[DRV1].node 指向新节点且 status 保持 confirmed、task_id 仍空（未误入册）——派生链中断后回收复用既有同族通道，单 run 收敛路径不破"
+                   }
+                ]
 }

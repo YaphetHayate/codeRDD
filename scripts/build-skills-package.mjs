@@ -51,8 +51,8 @@ const fail = msg => { console.error(`✗ ${msg}`); process.exit(1) }
 /** 9 个角色技能目录（8 流程角色 + rdd-engine）。 */
 const SKILL_ROLES = ['rdd-pm', 'rdd-cto', 'rdd-ux', 'rdd-dev', 'rdd-qa', 'rdd-eval', 'rdd-pse', 'rdd-auditor', 'rdd-engine']
 
-/** 9 组 preset 生成物（8 流程角色 + rdd-planner 引导 preset；engine 职能由 rdd-explore 插件 + CLI 承接，无 preset）。 */
-const PRESET_ROLES = ['rdd-pm', 'rdd-cto', 'rdd-ux', 'rdd-dev', 'rdd-qa', 'rdd-eval', 'rdd-pse', 'rdd-auditor', 'rdd-planner']
+/** 8 组 preset 生成物（7 流程角色 + rdd-planner 引导 preset；engine 职能由 rdd-explore 插件 + CLI 承接，无 preset）。rdd-auditor 退出默认产品面（auditor-subagent-review 设计 #8：评审内生于规划者会话），强形态独立会话 preset 按需经 build-dsh-presets.mjs --with-auditor 重建（不入包）。 */
+const PRESET_ROLES = ['rdd-pm', 'rdd-cto', 'rdd-ux', 'rdd-dev', 'rdd-qa', 'rdd-eval', 'rdd-pse', 'rdd-planner']
 
 const SKILLS_VERSION = '1.0.0'
 const PKG_NAME = '@coderrdd/rdd-skills'
@@ -136,12 +136,12 @@ for (const role of PRESET_ROLES) {
   const skillsDirs = readdirSync(join(stagingRoot, 'skills'))
   const presetDirs = readdirSync(join(stagingRoot, 'presets'))
   if (skillsDirs.length !== 9 || !SKILL_ROLES.every(r => skillsDirs.includes(r))) fail(`staging skills/ 子树不完整: ${skillsDirs.join(', ')}`)
-  if (presetDirs.length !== 9 || !PRESET_ROLES.every(r => presetDirs.includes(r))) fail(`staging presets/ 子树不完整: ${presetDirs.join(', ')}`)
+  if (presetDirs.length !== 8 || !PRESET_ROLES.every(r => presetDirs.includes(r))) fail(`staging presets/ 子树不完整: ${presetDirs.join(', ')}`)
   const engineSubtree = readdirSync(join(stagingRoot, 'skills', 'rdd-engine'))
   if (engineSubtree.length !== 1 || engineSubtree[0] !== 'SKILL.md') {
     fail(`skills/rdd-engine 子树必须仅含 SKILL.md（实际: ${engineSubtree.join(', ')}）——协议文档经引擎定位链解析，不随技能包重复`)
   }
-  console.log(`ok - staging assembled: 9 skills + 9 presets (${copied.length} files)`)
+  console.log(`ok - staging assembled: 9 skills + 8 presets (${copied.length} files)`)
 }
 
 if (checkMode) {

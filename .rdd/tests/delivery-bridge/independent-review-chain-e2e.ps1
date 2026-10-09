@@ -1,4 +1,4 @@
-# independent-review-chain-e2e.ps1 - integration/e2e chain probe (tree-level
+﻿# independent-review-chain-e2e.ps1 - integration/e2e chain probe (tree-level
 # integration node) for
 # deliver-2026-10-02-auditor-independent-review node n9.
 #
@@ -74,9 +74,18 @@ function Assert-True { param([bool]$Cond, [string]$Name, [string]$Detail = '')
 }
 function Invoke-Ps1 { param([string]$Script, [string[]]$ArgList)
     $all = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $Script) + $ArgList
-    $out = & powershell @all 2>&1 | Out-String
+    # 期望的 stderr（负向用例的参数校验 / fail-loud 信封 / 控制台警告）在 EAP=Stop 下会
+    # 变成 NativeCommandError 直接掀掉探针本身——合流捕获局部降 Continue，finally 还原。
+    $prev = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try { $out = & powershell @all 2>&1 | Out-String } finally { $ErrorActionPreference = $prev }
     $code = $LASTEXITCODE
+    $json = $null
     try { $json = ($out | ConvertFrom-Json) } catch { $json = $null }
+    if ($null -eq $json) {
+        $envLines = @($out -split "`r?`n" | Where-Object { $_ -match '^\s*\{\s*"success"' })
+        for ($i = $envLines.Count - 1; $i -ge 0; $i--) { try { $json = ($envLines[$i] | ConvertFrom-Json); break } catch { } }
+    }
     return @{ json = $json; exit = $code; raw = $out }
 }
 function Invoke-Bridge { param([string[]]$A) Invoke-Ps1 $BridgePs1 $A }
