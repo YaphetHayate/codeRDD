@@ -17,7 +17,9 @@ import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-import { isExcludedPath, resolveDataRoot } from '../dashboard/lib/paths.mjs'
+import { isExcludedPath, resolveDataRoot, validateProjectRoot } from '../dashboard/lib/paths.mjs'
+import { createDataRootHolder } from '../dashboard/lib/data-root.mjs'
+import { pickDirectory } from '../dashboard/lib/native-dialog.mjs'
 import { readArchives, readArchiveDetail } from '../dashboard/lib/readers/archives.mjs'
 import { readExploration } from '../dashboard/lib/readers/exploration.mjs'
 import { readHitRate } from '../dashboard/lib/readers/query-log.mjs'
@@ -273,6 +275,128 @@ try {
 }
 assertTrue(missingRootError.includes('未找到 .rdd/'), 'root: the cwd walk skips non-data .rdd roots and fails loudly', missingRootError || '(no error thrown)')
 
+// ── unit: validateProjectRoot (two-verdict, single-source wording) ────
+const validRoot = validateProjectRoot(richRoot)
+assertTrue(
+  validRoot.ok === true && validRoot.projectRoot === resolve(richRoot) && validRoot.rddRoot === join(richRoot, '.rdd'),
+  'validate: a real data root passes with both paths'
+)
+const noRddVerdict = validateProjectRoot(join(richRoot, 'no-such-dir'))
+assertTrue(
+  noRddVerdict.ok === false && noRddVerdict.code === 'no-rdd-dir' && noRddVerdict.message.includes('没有 .rdd/') && noRddVerdict.message.includes('不是 RDD 项目目录'),
+  'validate: a directory without .rdd/ is a no-rdd-dir rejection'
+)
+const notRootVerdict = validateProjectRoot(skillsOnlyRoot)
+assertTrue(
+  notRootVerdict.ok === false && notRootVerdict.code === 'not-data-root' && notRootVerdict.message.includes('不是项目数据根') && notRootVerdict.message !== noRddVerdict.message,
+  'validate: a marker-less .rdd is a distinguishable not-data-root rejection'
+)
+assertTrue(validateProjectRoot('   ').code === 'no-rdd-dir', 'validate: a blank candidate is rejected')
+
+// ── unit: data-root holder (per-instance state, atomic switch) ─────────
+const switchTargetRoot = buildSparseRoot()
+const holderRich = createDataRootHolder({ projectRoot: richRoot, rddRoot: join(richRoot, '.rdd') })
+const holderSparse = createDataRootHolder({ projectRoot: switchTargetRoot, rddRoot: join(switchTargetRoot, '.rdd') })
+assertTrue(holderRich.getCurrent().projectRoot === richRoot && holderSparse.getCurrent().projectRoot === switchTargetRoot, 'holder: two holders start isolated (factory, not a singleton)')
+const holderSwitch = holderRich.switchTo(switchTargetRoot)
+assertTrue(
+  holderSwitch.ok === true && holderSwitch.projectRoot === resolve(switchTargetRoot) && holderSwitch.previousRoot === richRoot,
+  'holder: a valid switch returns the new and previous roots'
+)
+assertTrue(holderRich.getCurrent().projectRoot === resolve(switchTargetRoot) && holderRich.getCurrent().source === 'runtime-switch', 'holder: the current root flips after a switch')
+assertTrue(holderSparse.getCurrent().projectRoot === switchTargetRoot, 'holder: one holder switching never touches the other')
+const holderReject = holderRich.switchTo(join(richRoot, 'no-such-dir'))
+assertTrue(holderReject.ok === false && holderReject.code === 'no-rdd-dir', 'holder: an invalid candidate is refused')
+assertTrue(holderRich.getCurrent().projectRoot === resolve(switchTargetRoot), 'holder: a refused switch leaves the current root untouched')
+
+// ── unit: native picker outcomes (injected fake children — deterministic; ─
+//   no real dialog and no real subprocess: the sandbox denies piped stdio)
+function fakePickerChild() {
+  const handlers = new Map()
+  return {
+    killed: false,
+    stdout: { on: (type, handler) => handlers.set(`stdout:${type}`, handler) },
+    stderr: { on: () => {} },
+    on: (type, handler) => handlers.set(`child:${type}`, handler),
+    kill() {
+      this.killed = true
+      const close = handlers.get('child:close')
+      if (close !== undefined) close(null, null)
+    },
+    emitStdout: (text) => {
+      const data = handlers.get('stdout:data')
+      if (data !== undefined) data(text)
+    },
+    emitClose: (code) => {
+      const close = handlers.get('child:close')
+      if (close !== undefined) close(code)
+    },
+    emitError: (error) => {
+      const errored = handlers.get('child:error')
+      if (errored !== undefined) errored(error)
+    },
+  }
+}
+
+function spawnScript(lines) {
+  return () => {
+    const child = fakePickerChild()
+    setImmediate(() => {
+      child.emitStdout(lines)
+      child.emitClose(0)
+    })
+    return child
+  }
+}
+
+const unsupportedPick = await pickDirectory({ platform: 'linux' })
+assertTrue(unsupportedPick.status === 'failed' && unsupportedPick.code === 'unsupported' && unsupportedPick.message.includes('对话框'), 'pick: non-Windows returns unsupported with a paste hint')
+const busyChildRef = { child: null }
+const spawnNeverCloses = () => {
+  busyChildRef.child = fakePickerChild()
+  return busyChildRef.child
+}
+const busyPick = pickDirectory({ spawnImpl: spawnNeverCloses })
+const busySecond = await pickDirectory({ spawnImpl: spawnNeverCloses })
+assertTrue(busySecond.status === 'failed' && busySecond.code === 'busy', 'pick: a second concurrent pick is rejected busy (single-flight)', JSON.stringify(busySecond))
+busyChildRef.child.emitClose(0)
+const busyOutcome = await busyPick
+assertTrue(busyOutcome.status === 'failed' && busyOutcome.code === 'exit', 'pick: a silent child is an exit failure and the lock is released afterwards', JSON.stringify(busyOutcome))
+const timeoutChildRef = { child: null }
+const spawnSlow = () => {
+  timeoutChildRef.child = fakePickerChild()
+  return timeoutChildRef.child
+}
+const timeoutPick = await pickDirectory({ spawnImpl: spawnSlow, timeoutMs: 120 })
+assertTrue(timeoutPick.status === 'failed' && timeoutPick.code === 'timeout', 'pick: the timeout path reports timeout', JSON.stringify(timeoutPick))
+assertTrue(timeoutChildRef.child.killed === true, 'pick: the timed-out child is killed')
+const afterTimeoutPick = await pickDirectory({ spawnImpl: spawnScript('{"status":"canceled"}\n') })
+assertTrue(afterTimeoutPick.status === 'canceled', 'pick: the lock is free again after a timeout (canceled protocol parsed)', JSON.stringify(afterTimeoutPick))
+const pickedPick = await pickDirectory({ spawnImpl: spawnScript('{"status":"picked","path":"D:\\\\pick\\\\proj"}\n') })
+assertTrue(pickedPick.status === 'picked' && pickedPick.path === 'D:\\pick\\proj', 'pick: the picked JSON protocol round-trips a Windows path', JSON.stringify(pickedPick))
+const cjkPick = await pickDirectory({ spawnImpl: spawnScript(`${JSON.stringify({ status: 'picked', path: 'D:\\项目\\甲' })}\n`) })
+assertTrue(cjkPick.status === 'picked' && cjkPick.path === 'D:\\项目\\甲', 'pick: a CJK project path survives the protocol', JSON.stringify(cjkPick))
+const garbagePick = await pickDirectory({ spawnImpl: spawnScript('not json\n') })
+assertTrue(garbagePick.status === 'failed' && garbagePick.code === 'exit', 'pick: garbage output is an exit failure', JSON.stringify(garbagePick))
+const syncFailPick = await pickDirectory({
+  spawnImpl: () => {
+    throw new Error('ENOENT')
+  },
+})
+assertTrue(syncFailPick.status === 'failed' && syncFailPick.code === 'spawn' && syncFailPick.message.includes('启动失败'), 'pick: a synchronously throwing spawn degrades to a spawn failure', JSON.stringify(syncFailPick))
+const errorChildRef = { child: null }
+const asyncFailPick = pickDirectory({
+  spawnImpl: () => {
+    errorChildRef.child = fakePickerChild()
+    setImmediate(() => errorChildRef.child.emitError(new Error('EPERM')))
+    return errorChildRef.child
+  },
+})
+assertTrue((await asyncFailPick).code === 'spawn', 'pick: an async spawn error (EPERM) degrades to a spawn failure')
+const afterErrorPick = await pickDirectory({ spawnImpl: spawnScript('{"status":"canceled"}\n') })
+assertTrue(afterErrorPick.status === 'canceled', 'pick: the lock is free again after a spawn error')
+
+
 // ── unit: single-domain isolation (AC 2) ──────────────────────────────
 const brokenDomains = readAllDomains({ projectRoot: null, rddRoot: null })
 assertTrue(Object.keys(brokenDomains).length === 6, 'isolation: all six domains are always present in the payload')
@@ -391,6 +515,55 @@ const sparseOverview = pageText((await fetchPage(sparseBase, '/')).html)
 assertTrue(sparseOverview.includes('稀疏数据域的单独需求'), 'HTTP: other domains stay healthy when one domain is unavailable')
 const sparseTrees = pageText((await fetchPage(sparseBase, '/goal-trees')).html)
 assertTrue(sparseTrees.includes('暂无真实交付树'), 'HTTP: empty delivery-tree domain renders its own three-part empty state')
+
+// ── HTTP: runtime project switch (control plane, per-request root) ────
+async function postJson(base, path, body) {
+  const response = await fetch(`${base}${path}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  })
+  return { status: response.status, payload: await response.json().catch(() => null) }
+}
+const richTipsCount = (await (await fetch(`${base}/api/tips`)).json()).data.count
+const switchToSparse = await postJson(base, '/api/project/switch', { path: sparseRoot })
+assertTrue(
+  switchToSparse.status === 200 && switchToSparse.payload.ok === true && switchToSparse.payload.projectRoot === resolve(sparseRoot) && switchToSparse.payload.previousRoot === richRoot,
+  'switch: a valid root switches in place and reports from/to'
+)
+assertTrue(!('domain' in switchToSparse.payload), 'switch: the control-plane response is not wrapped in the data envelope')
+const switchedHome = (await fetchPage(base, '/')).html
+assertTrue(switchedHome.includes(sparseRoot) && !switchedHome.includes(richRoot), 'switch: the very first GET after the switch already shows the new root (immediate effect)')
+assertTrue((await (await fetch(`${base}/api/tips`)).json()).data.count === 0, 'switch: the tips domain reads the new root (sparse has none)')
+
+const rejectNoRdd = await postJson(base, '/api/project/switch', { path: join(richRoot, 'no-such-dir') })
+assertTrue(
+  rejectNoRdd.status === 422 && rejectNoRdd.payload.ok === false && rejectNoRdd.payload.code === 'no-rdd-dir' && rejectNoRdd.payload.message.includes('.rdd') && rejectNoRdd.payload.message.includes('拒绝'),
+  'switch: a no-.rdd candidate is refused with a specific reason (422)'
+)
+const rejectNotRoot = await postJson(base, '/api/project/switch', { path: skillsOnlyRoot })
+assertTrue(
+  rejectNotRoot.payload.code === 'not-data-root' && rejectNotRoot.payload.message.includes('不是项目数据根') && rejectNotRoot.payload.message !== rejectNoRdd.payload.message,
+  'switch: a marker-less .rdd is refused with a distinguishable reason'
+)
+assertTrue((await fetchPage(base, '/')).html.includes(sparseRoot), 'switch: refusals leave the current root untouched')
+const badJson = await fetch(`${base}/api/project/switch`, { method: 'POST', body: 'not json' })
+assertTrue(badJson.status === 400 && (await badJson.json()).code === 'invalid-payload', 'switch: a malformed body is a 400, not a 500')
+const missingPath = await postJson(base, '/api/project/switch', {})
+assertTrue(missingPath.status === 400 && missingPath.payload.code === 'invalid-payload', 'switch: a body without path is a 400')
+const wrongMethod = await fetch(`${base}/api/project/switch`)
+assertTrue(wrongMethod.status === 405, 'switch: the endpoint rejects non-POST methods')
+assertTrue((await fetch(`${base}/api/project/pick`)).status === 405, 'pick: the endpoint rejects non-POST methods')
+
+const isolateTarget = await postJson(sparseBase, '/api/project/switch', { path: richRoot })
+assertTrue(isolateTarget.status === 200 && isolateTarget.payload.ok === true, 'switch: the second server instance accepts its own switch')
+assertTrue((await fetchPage(base, '/')).html.includes(sparseRoot), 'switch: instance A keeps its root while instance B switches (holder isolation over HTTP)')
+assertTrue((await fetchPage(sparseBase, '/')).html.includes(richRoot), 'switch: instance B now serves the rich root')
+const backToRich = await postJson(base, '/api/project/switch', { path: richRoot })
+assertTrue(backToRich.status === 200 && (await (await fetch(`${base}/api/tips`)).json()).data.count === richTipsCount, 'switch: switching back restores the original domain truth (round trip)')
+const trailing = await postJson(base, '/api/project/switch', { path: `${sparseRoot}\\` })
+assertTrue(trailing.status === 200 && trailing.payload.ok === true, 'switch: a trailing separator is normalized and accepted')
+await postJson(base, '/api/project/switch', { path: richRoot })
 
 // ── launcher + port conflict (AC 1 / AC 6) ─────────────────────────────
 const rootLauncher = join(engineDir, '..', 'ops-dashboard.cmd')

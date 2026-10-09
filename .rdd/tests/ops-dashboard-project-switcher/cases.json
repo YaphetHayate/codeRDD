@@ -1,0 +1,336 @@
+{
+  "feature": "ops-dashboard-project-switcher",
+  "status": "active",
+  "relatedCode": [
+    "rdd-engine/dashboard/server.mjs",
+    "rdd-engine/dashboard/lib/paths.mjs",
+    "rdd-engine/dashboard/lib/layout.mjs",
+    "rdd-engine/dashboard/static/app.js",
+    "rdd-engine/dashboard/lib/readers/"
+  ],
+  "testCode": [
+    ".rdd/tests/ops-dashboard-project-switcher/project-switcher-qa-verify.ps1"
+  ],
+  "lastChange": "2026-10-09-ops-dashboard-project-switcher",
+  "cases": [
+    {
+      "id": "TC-005",
+      "title": "选择入口与切换接线可发现：根页含项目选择入口元素，且存在可机读驱动的切换接线（fetch/表单）",
+      "type": "positive",
+      "priority": "P0",
+      "acceptance": "AC-1",
+      "codeRef": ".rdd/tests/ops-dashboard-project-switcher/project-switcher-qa-verify.ps1:470",
+      "sourceChange": "2026-10-09-ops-dashboard-project-switcher",
+      "status": "active",
+      "crossFeature": ["ops-dashboard"],
+      "precondition": "看板服务已起（QA 探针以隔离数据根自起实例）；测试不预设 UI 文案与路由——入口按需求语义词族（选择项目/切换项目/…/ops-project 类 id）匹配，接线从 static/app.js 的 fetch/表单提取",
+      "steps": [
+        "GET / 断言存在项目选择入口标记",
+        "GET /static/app.js 解析 fetch 端点与载荷字段（或页面表单 action+input）",
+        "以合法 rootB 实证驱动候选，能翻转数据根者定为切换通道"
+      ],
+      "expected": "入口存在且切换通道可被独立驱动（界面发起=需求硬表面，黑盒可复现）"
+    },
+    {
+      "id": "TC-010",
+      "title": "切换闭环 A→B：校验通过后数据根标识（页脚全路径/顶栏截断/stdout 宣告）与多域数据全部变为 B 真值，服务 PID 不变",
+      "type": "positive",
+      "priority": "P0",
+      "acceptance": "AC-1",
+      "codeRef": ".rdd/tests/ops-dashboard-project-switcher/project-switcher-qa-verify.ps1:474",
+      "sourceChange": "2026-10-09-ops-dashboard-project-switcher",
+      "status": "active",
+      "crossFeature": ["ops-dashboard"],
+      "precondition": "主实例以 RDD_PROJECT_ROOT=rootA 启动；夹具 A=2 tips+1 归档+无 exploration，B=3 tips+2 归档+exploration 1 条（两根多域真值可判别）",
+      "steps": [
+        "经切换通道提交 rootB",
+        "断言页脚数据根=B 全路径、顶栏=shortenPath(B,46) 复刻口径",
+        "断言 /api/tips count=3 且 tokenB1 现 tokenA1 隐；/tips、/requirements 页面 token 互换；/api/requirements totalCount=2；exploration 含 B 独有 token",
+        "断言服务进程 PID 前后一致（不重启）"
+      ],
+      "expected": "标识+六域数据=新根真值、PID 不变——选择与切换闭环成立"
+    },
+    {
+      "id": "TC-015",
+      "title": "无 .rdd/ 目录拒绝：提交 rootC1 → 失败且提示具体到 .rdd 缺失语义，数据根保持原值不切换",
+      "type": "negative",
+      "priority": "P0",
+      "acceptance": "AC-2",
+      "codeRef": ".rdd/tests/ops-dashboard-project-switcher/project-switcher-qa-verify.ps1:495",
+      "sourceChange": "2026-10-09-ops-dashboard-project-switcher",
+      "status": "active",
+      "crossFeature": [],
+      "precondition": "当前数据根为 B；rootC1 为无 .rdd/ 的普通目录；拒绝原因信号取切换响应体+随后页面+/api/overview 三面",
+      "steps": [
+        "经切换通道提交 rootC1",
+        "提取拒绝原因信号并断言含 .rdd 语义",
+        "断言数据根仍为 B、域数据未变"
+      ],
+      "expected": "清晰拒绝（非笼统报错）且零切换"
+    },
+    {
+      "id": "TC-020",
+      "title": "数据域非法拒绝：.rdd/ 存在但零数据域标记的 rootC2 → 拒绝原因与「无 .rdd」类可区分，数据根保持原值",
+      "type": "negative",
+      "priority": "P0",
+      "acceptance": "AC-2",
+      "codeRef": ".rdd/tests/ops-dashboard-project-switcher/project-switcher-qa-verify.ps1:502",
+      "sourceChange": "2026-10-09-ops-dashboard-project-switcher",
+      "status": "active",
+      "crossFeature": [],
+      "precondition": "当前数据根为 B；rootC2 含空 .rdd/（缺 changes/tips/exploration 等标记）；已留存 TC-015 的 C1 拒绝原因文本供对比",
+      "steps": [
+        "经切换通道提交 rootC2",
+        "断言拒绝原因存在且与 C1 原因不同文、含数据域/数据根/标记/域目录类语义",
+        "断言数据根仍为 B"
+      ],
+      "expected": "两类非法可区分（判据 #2 的可检验形态），零切换"
+    },
+    {
+      "id": "TC-025",
+      "title": "拒绝后恢复：连续两次非法拒绝后再选合法目录 → 正常切换成功",
+      "type": "positive",
+      "priority": "P0",
+      "acceptance": "AC-2",
+      "codeRef": ".rdd/tests/ops-dashboard-project-switcher/project-switcher-qa-verify.ps1:511",
+      "sourceChange": "2026-10-09-ops-dashboard-project-switcher",
+      "status": "active",
+      "crossFeature": [],
+      "precondition": "TC-015/TC-020 的两次拒绝刚发生（防护状态未卡死）",
+      "steps": [
+        "经切换通道提交合法 rootA",
+        "断言切换成功（页脚=A）",
+        "断言 tips 数据为 A 真值"
+      ],
+      "expected": "恢复路径走通——拒绝不留下粘滞失败态"
+    },
+    {
+      "id": "TC-030",
+      "title": "多次往返切换（含切回原项目）：A→B→A→B→A 五连全部生效，PID 全程不变",
+      "type": "positive",
+      "priority": "P0",
+      "acceptance": "AC-4",
+      "codeRef": ".rdd/tests/ops-dashboard-project-switcher/project-switcher-qa-verify.ps1:554",
+      "sourceChange": "2026-10-09-ops-dashboard-project-switcher",
+      "status": "active",
+      "crossFeature": [],
+      "precondition": "切换通道已实证可用",
+      "steps": [
+        "依序切换 A→B→A→B→A，每步立即观测",
+        "断言每次页脚数据根=目标",
+        "断言服务进程全程同一 PID，终态为 A 真值"
+      ],
+      "expected": "往返成立、无状态漂移、不重启"
+    },
+    {
+      "id": "TC-035",
+      "title": "无混合态：终态下各数据面（//tips/requirements//api/tips）新根 token 出现∧旧根 token 缺失，连续两次读取一致",
+      "type": "boundary",
+      "priority": "P0",
+      "acceptance": "AC-4",
+      "codeRef": ".rdd/tests/ops-dashboard-project-switcher/project-switcher-qa-verify.ps1:565",
+      "sourceChange": "2026-10-09-ops-dashboard-project-switcher",
+      "status": "active",
+      "crossFeature": [],
+      "precondition": "终态 A（TC-030 收尾）；token 按域取族（tips 面=tips token，requirements 面=归档标题 token）",
+      "steps": [
+        "前置自校准锚 BASE-stable-double-read：零切换基线双读（归一化后）必须相等，否则 TC-035 结论不可信",
+        "逐面两次 GET（归一化口径：掩蔽每请求时间戳类易变字段 data-at/generatedAt/分钟级文案）",
+        "断言新根 token 在、旧根 token 无",
+        "断言两次读取归一化后无差异（无闪烁/迟滞混合；n10 修正：原始字节比较把毫秒级 data-at/generatedAt 噪声误判为不稳态假红——基线取证=零切换双读同样不等，tip 20261009T055816Z-DEV-c471）"
+      ],
+      "expected": "刷新即见新根数据，无新旧根数据混合态（验收硬要求）"
+    },
+    {
+      "id": "TC-040",
+      "title": "弹窗失败降级（无桌面会话）：触发弹窗路径后服务仍 200、有清晰降级提示信号、手动兜底通道可用",
+      "type": "exception",
+      "priority": "P0",
+      "acceptance": "AC-1,AC-3",
+      "codeRef": ".rdd/tests/ops-dashboard-project-switcher/project-switcher-qa-verify.ps1:611",
+      "sourceChange": "2026-10-09-ops-dashboard-project-switcher",
+      "status": "active",
+      "crossFeature": [],
+      "precondition": "沙箱环境恒无桌面会话（弹窗必失败/超时）；弹窗端点若与切换通道内联则提示子断言降级 SKIP 并转人工协议",
+      "steps": [
+        "发现并触发弹窗类端点（30s 观察窗，容忍慢失败）",
+        "断言触发后服务仍 200 且不挂",
+        "断言响应或页面含弹窗/失败/超时/桌面/手动类提示",
+        "断言手动粘贴路径兜底通道存在可用"
+      ],
+      "expected": "降级路径完整：不卡死、有提示、可兜底"
+    },
+    {
+      "id": "TC-045",
+      "title": "手动粘贴路径兜底等价：兜底通道提交合法路径走通同一切换路径，且切换后选择入口仍在（可再切）",
+      "type": "positive",
+      "priority": "P0",
+      "acceptance": "AC-3",
+      "codeRef": ".rdd/tests/ops-dashboard-project-switcher/project-switcher-qa-verify.ps1:628",
+      "sourceChange": "2026-10-09-ops-dashboard-project-switcher",
+      "status": "active",
+      "crossFeature": [],
+      "precondition": "切换通道即兜底通道（需求钉死：兜底输入与弹窗选择共用同一校验与切换路径）；黑盒等价证据=任意路径直接驱动同一通道即翻转",
+      "steps": [
+        "经通道提交合法 rootB 断言走通",
+        "GET / 断言项目选择入口仍渲染（可发起下一次切换）"
+      ],
+      "expected": "兜底与弹窗共用路径成立、入口常在"
+    },
+    {
+      "id": "TC-050",
+      "title": "只读不变量：套件全程（起服→切换→拒绝→往返→实时读盘）对 4 个夹具根零回写（SHA256 树快照对账）",
+      "type": "negative",
+      "priority": "P0",
+      "acceptance": "AC-5",
+      "codeRef": ".rdd/tests/ops-dashboard-project-switcher/project-switcher-qa-verify.ps1:663",
+      "sourceChange": "2026-10-09-ops-dashboard-project-switcher",
+      "status": "active",
+      "crossFeature": ["ops-dashboard"],
+      "precondition": "夹具构建后即拍全树快照（文件清单+SHA256）；TC-065 的新增 tips 在用例内删除还原",
+      "steps": [
+        "套件收尾时对 A/B/C1/C2 重算树快照",
+        "逐根严格比对（新增/丢失/改写均违规）"
+      ],
+      "expected": "全程零回写——只读 .rdd/ 不变量保持"
+    },
+    {
+      "id": "TC-055",
+      "title": "夹具排除单源不旁路：切换到 B 后 qa- 植物 tips 与 2097-12-31-qa- 植物归档不计入任何计数/页面，页脚声明排除口径",
+      "type": "negative",
+      "priority": "P0",
+      "acceptance": "AC-5",
+      "codeRef": ".rdd/tests/ops-dashboard-project-switcher/project-switcher-qa-verify.ps1:517",
+      "sourceChange": "2026-10-09-ops-dashboard-project-switcher",
+      "status": "active",
+      "crossFeature": ["ops-dashboard"],
+      "precondition": "rootB 预埋两株植物（qa- 前缀 tips 文件 + 哨兵日期归档目录）；排除规则单源 isExcludedPath 不得因数据根切换被旁路",
+      "steps": [
+        "切换到 B 后取 /api/tips、/api/requirements、/tips、/requirements 与 /",
+        "断言植物不计数（3/2）、标题不出页面",
+        "断言页脚出现「已排除 N 个测试夹具目录」声明"
+      ],
+      "expected": "切换后的统计口径仍走既有排除单源，零泄漏"
+    },
+    {
+      "id": "TC-060",
+      "title": "六域信封结构保持：切换前（A）与切换后（B）七端点全部 {domain,available,meta,data} 同构，缺数据域 available=false 不报错",
+      "type": "positive",
+      "priority": "P0",
+      "acceptance": "AC-5",
+      "codeRef": ".rdd/tests/ops-dashboard-project-switcher/project-switcher-qa-verify.ps1:401",
+      "sourceChange": "2026-10-09-ops-dashboard-project-switcher",
+      "status": "active",
+      "crossFeature": ["ops-dashboard"],
+      "precondition": "A 根缺 exploration/query-log 等（available=false 路径）；B 根有 exploration（available=true 路径）",
+      "steps": [
+        "对 /api/overview+六域逐端点断言 200 与四键+meta 三字段",
+        "切换 B 后重复同构断言（探针 :513 段）"
+      ],
+      "expected": "单域隔离信封与降级语义在切换前后均不变"
+    },
+    {
+      "id": "TC-065",
+      "title": "切换后实时读盘：向当前根新增/删除一条 tips → 刷新即见/即退，服务不重启（不引入缓存）",
+      "type": "positive",
+      "priority": "P0",
+      "acceptance": "AC-5",
+      "codeRef": ".rdd/tests/ops-dashboard-project-switcher/project-switcher-qa-verify.ps1:542",
+      "sourceChange": "2026-10-09-ops-dashboard-project-switcher",
+      "status": "active",
+      "crossFeature": ["ops-dashboard"],
+      "precondition": "当前根为 B；探针写入带时间戳唯一 id 的 tips 文件并在断言后删除（树快照严格还原）",
+      "steps": [
+        "新增 tips 文件 → 刷新断言 count+1 且标题出现",
+        "删除 → 刷新断言 count 回退",
+        "断言 PID 不变"
+      ],
+      "expected": "每请求实时读盘语义对切换后的根同样成立"
+    },
+    {
+      "id": "TC-070",
+      "title": "启动语义回归：RDD_PROJECT_ROOT 指向无 .rdd 目录启动失败退出+可处置提示；指向合法 B 正常启动且数据根=B",
+      "type": "boundary",
+      "priority": "P0",
+      "acceptance": "AC-5",
+      "codeRef": ".rdd/tests/ops-dashboard-project-switcher/project-switcher-qa-verify.ps1:643",
+      "sourceChange": "2026-10-09-ops-dashboard-project-switcher",
+      "status": "active",
+      "crossFeature": ["ops-dashboard"],
+      "precondition": "独立短生命周期实例（主实例不受影响）；现行三级解析行为即基线（测试先行形态下即绿）",
+      "steps": [
+        "以 rootC1 为 RDD_PROJECT_ROOT 起实例 → 断言非零退出+stderr 含 .rdd 语义",
+        "以 rootB 起实例 → 断言宣告行含 数据根 B 后收尾"
+      ],
+      "expected": "运行时切换是增量能力，启动期三级解析语义不变"
+    },
+    {
+      "id": "TC-075",
+      "title": "UX Token/组件体系（含 a11y）保持：切换前后页面同构（DOCTYPE/lang/样式表/--ops-* Token/skip-link/app.js module/aria-*）",
+      "type": "positive",
+      "priority": "P0",
+      "acceptance": "AC-5",
+      "codeRef": ".rdd/tests/ops-dashboard-project-switcher/project-switcher-qa-verify.ps1:416",
+      "sourceChange": "2026-10-09-ops-dashboard-project-switcher",
+      "status": "active",
+      "crossFeature": ["ops-dashboard"],
+      "precondition": "以现有 AppShell 契约为基线锚（切换前 A 面 :401 段、切换后 B 面 :619 段对照）",
+      "steps": [
+        "A 态抓 / 断言七项 shell 契约",
+        "切换 B 后重复断言同构"
+      ],
+      "expected": "切换不改变 UX Token/组件体系与 a11y 锚"
+    },
+    {
+      "id": "TC-080",
+      "title": "即时生效：每次切换 HTTP 响应完成后的第一次 GET（零等待/零二次刷新）即呈现新根",
+      "type": "positive",
+      "priority": "P1",
+      "acceptance": "AC-1,AC-4",
+      "codeRef": ".rdd/tests/ops-dashboard-project-switcher/project-switcher-qa-verify.ps1:490",
+      "sourceChange": "2026-10-09-ops-dashboard-project-switcher",
+      "status": "active",
+      "crossFeature": [],
+      "precondition": "全 suite 所有切换调用均记录「响应后首次 GET 是否=目标根」标志位",
+      "steps": [
+        "汇总全部切换的即时标志",
+        "断言无一次需要等待或二次刷新"
+      ],
+      "expected": "切换即时生效（非延迟生效/非二次刷新生效）"
+    },
+    {
+      "id": "TC-085",
+      "title": "路径容错边界：尾随反斜杠路径规范化后成功；不存在路径拒绝且服务存活",
+      "type": "boundary",
+      "priority": "P2",
+      "acceptance": "AC-2",
+      "codeRef": ".rdd/tests/ops-dashboard-project-switcher/project-switcher-qa-verify.ps1:584",
+      "sourceChange": "2026-10-09-ops-dashboard-project-switcher",
+      "status": "active",
+      "crossFeature": [],
+      "steps": [
+        "提交 rootB+'\\' 断言切换成功",
+        "提交不存在的临时子路径断言不切换、服务 200"
+      ],
+      "expected": "路径输入容错且失败不致崩"
+    },
+    {
+      "id": "TC-090",
+      "title": "切换瞬间在途请求存活：5 路并发 GET 期间执行切换，全部请求干净响应、服务存活、PID 不变",
+      "type": "exception",
+      "priority": "P2",
+      "acceptance": "AC-4",
+      "codeRef": ".rdd/tests/ops-dashboard-project-switcher/project-switcher-qa-verify.ps1:593",
+      "sourceChange": "2026-10-09-ops-dashboard-project-switcher",
+      "status": "active",
+      "crossFeature": [],
+      "precondition": "不断言在途请求的数据根归属（设计待裁定项）——只断无 5xx/无挂死/无进程死亡",
+      "steps": [
+        "HttpClient 异步发起 5 路 GET（//requirements/exploration/tips//api/overview）",
+        "在途期间执行一次切换",
+        "WaitAll 后断言全部 2xx、服务仍 200、PID 不变"
+      ],
+      "expected": "切换冲击下服务稳定性成立"
+    }
+  ]
+}

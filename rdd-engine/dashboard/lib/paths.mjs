@@ -102,6 +102,38 @@ function findRootUpwards(startDir) {
 }
 
 /**
+ * Two-verdict validation of a candidate project root (single source for the
+ * runtime data-root switch AND the RDD_PROJECT_ROOT branch — the rejection
+ * wording must never drift between the two callers).
+ * Reuses looksLikeDataRoot only; it never invents a second marker rule.
+ * @param {string} candidate directory the user picked or pasted
+ * @returns {{ok: true, projectRoot: string, rddRoot: string}|{ok: false, code: 'no-rdd-dir'|'not-data-root', message: string}}
+ */
+export function validateProjectRoot(candidate) {
+  const input = String(candidate ?? '').trim()
+  if (input === '') {
+    return { ok: false, code: 'no-rdd-dir', message: '路径为空，未提供 RDD 项目目录。' }
+  }
+  const projectRoot = resolve(input)
+  const rddRoot = join(projectRoot, '.rdd')
+  if (!existsSync(rddRoot)) {
+    return {
+      ok: false,
+      code: 'no-rdd-dir',
+      message: `所选目录下没有 .rdd/ 数据目录。${projectRoot} 不是 RDD 项目目录。`,
+    }
+  }
+  if (looksLikeDataRoot(rddRoot)) {
+    return { ok: true, projectRoot, rddRoot }
+  }
+  return {
+    ok: false,
+    code: 'not-data-root',
+    message: `.rdd/ 缺少数据域标记。${rddRoot} 存在 .rdd/ 但没有 changes/、tips/、exploration/ 等数据目录，不是项目数据根。`,
+  }
+}
+
+/**
  * Resolve the RDD project root and its data root.
  * Priority: RDD_PROJECT_ROOT env var, then nearest ".rdd" ancestor of cwd.
  * Missing roots throw with an actionable message instead of serving empty data.
@@ -114,16 +146,11 @@ export function resolveDataRoot(options = {}) {
   const explicit = (env.RDD_PROJECT_ROOT ?? '').trim()
   if (explicit !== '') {
     const projectRoot = isAbsolute(explicit) ? explicit : resolve(cwd, explicit)
-    const rddRoot = join(projectRoot, '.rdd')
-    if (!existsSync(rddRoot)) {
-      throw new Error(`RDD_PROJECT_ROOT 指向的目录下没有 .rdd/：${projectRoot}`)
+    const verdict = validateProjectRoot(projectRoot)
+    if (verdict.ok !== true) {
+      throw new Error(`RDD_PROJECT_ROOT 无效：${verdict.message}`)
     }
-    if (!looksLikeDataRoot(rddRoot)) {
-      throw new Error(
-        `RDD_PROJECT_ROOT 指向的 .rdd/ 不是项目数据根（缺少 changes/、tips/、exploration/ 等数据目录）：${rddRoot}`
-      )
-    }
-    return { projectRoot, rddRoot, source: 'RDD_PROJECT_ROOT' }
+    return { projectRoot: verdict.projectRoot, rddRoot: verdict.rddRoot, source: 'RDD_PROJECT_ROOT' }
   }
   const found = findRootUpwards(cwd)
   if (found === null) {

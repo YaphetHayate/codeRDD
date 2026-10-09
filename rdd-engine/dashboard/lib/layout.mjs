@@ -31,9 +31,21 @@ function renderSidebar(activeKey, counts) {
   return `<aside class="sidebar" id="ops-sidebar"><div class="brand"><span class="brand-mark">${icon('overview', 'brand-icon')}</span><div class="brand-text"><span class="brand-name">RDD 看板</span><span class="brand-sub">只读 · 本地</span></div></div><div class="nav-group"><span class="nav-group-title">数据域</span>${items}</div><div class="sidebar-foot"><span class="chip chip-strong">只读数据面</span><span class="sidebar-note">消费 .rdd/，不回写</span></div></aside>`
 }
 
-/** TopBar: data root, freshness, refresh + theme controls. */
+/** Switcher panel skeleton (UX §5.2/§5.7) — SSR so it is truthful without JS. */
+function renderSwitcherPanel(options) {
+  return `<section class="switcher" id="ops-project-panel" role="region" aria-label="切换数据根" hidden>
+<div class="switcher-head"><div class="switcher-title">切换数据根（项目）</div><div class="switcher-current">当前 <code>${esc(options.projectRoot)}</code></div><button type="button" class="btn btn-ghost switcher-close" id="ops-project-close">${icon('chevron', 'btn-icon')}<span class="btn-text">收起</span></button></div>
+<div class="switcher-primary"><button type="button" class="btn btn-primary" id="ops-project-pick">${icon('switch', 'btn-icon')}<span class="btn-text">浏览目录选择…</span></button><p class="switcher-hint">在弹出的 Windows 目录选择窗口中选定另一个 RDD 项目目录；服务不重启，切换即时生效。</p></div>
+<div class="switcher-divider"><span>或 手动输入路径</span></div>
+<div class="switcher-manual"><label class="switcher-label" for="ops-project-path">项目路径</label><input class="switcher-input" id="ops-project-path" type="text" placeholder="D:\\work\\other-rdd-project" autocomplete="off" spellcheck="false"><button type="button" class="btn" id="ops-project-apply"><span class="btn-text">校验并切换</span></button></div>
+<div class="switcher-note" id="ops-project-note" aria-live="polite"></div>
+</section>`
+}
+
+/** TopBar: data root, project switch, freshness, refresh + theme controls. */
 function renderTopBar(options) {
-  return `<header class="topbar"><span class="root-chip">数据根 <code>${esc(shortenPath(options.projectRoot, 46))}</code></span><span class="freshness" id="ops-freshness" data-at="${esc(options.generatedAt)}">最近更新 <b>${esc(dateTime(options.generatedAt))}</b> <span class="freshness-tz">UTC</span></span><span class="topbar-actions"><button type="button" class="btn btn-primary" id="ops-refresh" aria-live="polite">${icon('refresh', 'btn-icon')}<span class="btn-text">刷新</span></button><button type="button" class="btn" id="ops-theme" aria-pressed="false">${icon('theme', 'btn-icon')}<span class="btn-text">深色</span></button></span></header>`
+  const switcherTitle = '切换数据根（快捷键 P）'
+  return `<header class="topbar"><span class="root-chip">数据根 <code>${esc(shortenPath(options.projectRoot, 46))}</code></span><button type="button" class="btn btn-ghost topbar-switch" id="ops-project-switch" aria-expanded="false" aria-controls="ops-project-panel" title="${esc(switcherTitle)}" aria-label="${esc(switcherTitle)}">${icon('switch', 'btn-icon')}<span class="btn-text">切换</span></button><span class="freshness" id="ops-freshness" data-at="${esc(options.generatedAt)}">最近更新 <b>${esc(dateTime(options.generatedAt))}</b> <span class="freshness-tz">UTC</span></span><span class="topbar-actions"><button type="button" class="btn btn-primary" id="ops-refresh" aria-live="polite">${icon('refresh', 'btn-icon')}<span class="btn-text">刷新</span></button><button type="button" class="btn" id="ops-theme" aria-pressed="false">${icon('theme', 'btn-icon')}<span class="btn-text">深色</span></button></span>${renderSwitcherPanel(options)}</header>`
 }
 
 /** Page footer: read-only statement, data root, generation time, accounting. */
@@ -74,6 +86,7 @@ ${renderSidebar(input.activeKey, input.counts)}
 <div class="main">
 ${renderTopBar(options)}
 <main class="content" id="ops-main">
+<div id="ops-flash-slot" hidden></div>
 ${input.body}
 </main>
 ${renderFooter(options)}

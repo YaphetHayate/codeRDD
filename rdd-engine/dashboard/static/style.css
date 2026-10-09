@@ -525,6 +525,77 @@ code {
 .copy-hint { font-size: var(--ops-font-aux); color: var(--ops-action-on-tertiary); margin-left: var(--ops-space-2); }
 .filter-bar { display: flex; gap: var(--ops-space-2); }
 
+/* ── 5.17 ProjectSwitcher（运行时数据根切换，UX project-switcher §5） ── */
+:root { --ops-shadow-pop: 0 10px 28px rgba(15, 17, 21, 0.14); }
+html[data-theme="dark"] { --ops-shadow-pop: 0 10px 28px rgba(0, 0, 0, 0.5); }
+.note-success { border-left-color: var(--ops-success); }
+
+.topbar-switch { flex: 0 0 auto; }
+.switcher {
+  position: absolute; top: 100%; left: 32px; margin-top: var(--ops-space-2);
+  width: min(560px, calc(100% - 40px));
+  z-index: 19;
+  background: var(--ops-bg-surface);
+  border: 1px solid var(--ops-border-default);
+  border-radius: var(--ops-radius-panel);
+  box-shadow: var(--ops-shadow-pop);
+  padding: var(--ops-space-4);
+  display: flex; flex-direction: column; gap: var(--ops-space-3);
+  animation: switcher-in 160ms cubic-bezier(0.2, 0, 0, 1);
+}
+.switcher[hidden] { display: none; }
+@keyframes switcher-in {
+  from { opacity: 0; transform: translateY(-4px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+.switcher-head { display: flex; align-items: center; gap: var(--ops-space-3); flex-wrap: wrap; }
+.switcher-title { font-size: var(--ops-font-aux-lg); font-weight: 700; color: var(--ops-text-primary); }
+.switcher-current {
+  flex: 1 1 200px; min-width: 0;
+  font-size: var(--ops-font-aux); color: var(--ops-text-secondary);
+  overflow-wrap: anywhere;
+}
+.switcher-current code { background: transparent; padding: 0; }
+.switcher-close { height: 26px; padding: 0 10px; flex: 0 0 auto; }
+.switcher-primary { display: flex; flex-direction: column; gap: var(--ops-space-2); }
+.switcher-primary .btn { align-self: flex-start; }
+.switcher-hint { margin: 0; font-size: var(--ops-font-aux); color: var(--ops-text-secondary); }
+.switcher-divider {
+  display: flex; align-items: center; gap: var(--ops-space-3);
+  font-size: var(--ops-font-aux); color: var(--ops-text-secondary);
+}
+.switcher-divider::before, .switcher-divider::after {
+  content: ""; flex: 1; border-top: 1px solid var(--ops-border-subtle);
+}
+.switcher-manual { display: flex; align-items: center; gap: var(--ops-space-2); }
+.switcher-label { flex: 0 0 auto; font-size: var(--ops-font-aux); color: var(--ops-text-secondary); }
+.switcher-input {
+  flex: 1 1 auto; min-width: 0; height: var(--ops-hit); padding: 0 12px;
+  font-family: var(--ops-font-mono); font-size: var(--ops-font-aux-lg);
+  background: var(--ops-bg-surface); color: var(--ops-text-primary);
+  border: 1px solid var(--ops-border-default); border-radius: var(--ops-radius-card);
+  transition: border-color var(--ops-transition), box-shadow var(--ops-transition);
+}
+.switcher-input::placeholder { color: var(--ops-text-secondary); }
+.switcher-input:focus {
+  outline: none;
+  border-color: var(--ops-action-primary);
+  box-shadow: 0 0 0 2px var(--ops-accent-tertiary);
+}
+.switcher-input:disabled {
+  background: var(--ops-bg-subtle); color: var(--ops-text-secondary); cursor: not-allowed;
+}
+.switcher-note:empty { display: none; }
+.switcher-note .note-bar { padding: 8px 12px; }
+.switch-flash { align-self: stretch; }
+.switch-flash .btn { height: 26px; padding: 0 10px; flex: 0 0 auto; }
+#ops-flash-slot[hidden] { display: none; }
+@media (max-width: 640px) {
+  .switcher { left: 16px; width: calc(100% - 32px); }
+  .switcher-manual { flex-wrap: wrap; }
+  .switcher-manual .switcher-input { flex-basis: 100%; }
+}
+
 /* ── 4.2 视图布局：页头 / KPI 行 / 双列区 ───────────────────────────── */
 .domain-head { display: flex; flex-direction: column; gap: var(--ops-space-2); }
 .domain-title { display: flex; align-items: center; gap: var(--ops-space-3); flex-wrap: wrap; }

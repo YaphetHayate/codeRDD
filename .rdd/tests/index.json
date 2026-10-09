@@ -291,6 +291,23 @@
                          "deprecatedCount":  2,
                          "lastUpdated":  "2026-10-08",
                          "lastChange":  "2026-10-08-rdd-ops-dashboard"
+                     },
+                     {
+                         "feature":  "ops-dashboard-project-switcher",
+                         "relatedCode":  [
+                                             "rdd-engine/dashboard/server.mjs",
+                                             "rdd-engine/dashboard/lib/paths.mjs",
+                                             "rdd-engine/dashboard/lib/layout.mjs",
+                                             "rdd-engine/dashboard/static/app.js",
+                                             "rdd-engine/dashboard/lib/readers/"
+                                         ],
+                         "testCode":  [
+                                          ".rdd/tests/ops-dashboard-project-switcher/project-switcher-qa-verify.ps1"
+                                      ],
+                         "activeCount":  18,
+                         "deprecatedCount":  0,
+                         "lastUpdated":  "2026-10-09",
+                         "lastChange":  "2026-10-09-ops-dashboard-project-switcher"
                      }
                  ]
 }

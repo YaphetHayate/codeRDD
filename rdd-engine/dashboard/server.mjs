@@ -12,6 +12,8 @@ import { extname, join, normalize, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import { resolveDataRoot } from './lib/paths.mjs'
+import { createDataRootHolder } from './lib/data-root.mjs'
+import { pickDirectory } from './lib/native-dialog.mjs'
 import { readAllDomains, buildOverview, navCounts, DOMAIN_DEFS } from './lib/overview.mjs'
 import { readArchiveDetail } from './lib/readers/archives.mjs'
 import { makeEnvelope } from './lib/io.mjs'
@@ -64,6 +66,63 @@ function send(res, status, contentType, body) {
 /** JSON response (API face). */
 function sendJson(res, status, payload) {
   send(res, status, 'application/json; charset=utf-8', `${JSON.stringify(payload, null, 2)}\n`)
+}
+
+/** Largest accepted request body — switch payloads are one path, bytes at most. */
+const MAX_BODY_BYTES = 8192
+
+/** Read one request body as a UTF-8 string (oversized bodies reject). */
+function readRequestBody(req) {
+  return new Promise((resolveBody, rejectBody) => {
+    const chunks = []
+    let size = 0
+    req.on('data', (chunk) => {
+      size += chunk.length
+      if (size > MAX_BODY_BYTES) {
+        rejectBody(new Error('请求体超过大小上限'))
+        req.removeAllListeners('data')
+        return
+      }
+      chunks.push(chunk)
+    })
+    req.on('end', () => resolveBody(Buffer.concat(chunks).toString('utf8')))
+    req.on('error', rejectBody)
+  })
+}
+
+/** Parse the request body as a JSON object (null when absent or malformed). */
+async function parseJsonBody(req) {
+  const raw = await readRequestBody(req)
+  if (raw.trim() === '') return null
+  try {
+    const parsed = JSON.parse(raw)
+    return parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : null
+  } catch {
+    return null
+  }
+}
+
+/** POST /api/project/pick — spawn the native directory dialog (control plane). */
+async function handleProjectPick(res) {
+  const outcome = await pickDirectory()
+  if (outcome.status === 'picked') return sendJson(res, 200, { ok: true, path: outcome.path })
+  if (outcome.status === 'canceled') return sendJson(res, 200, { ok: false, code: 'canceled' })
+  return sendJson(res, 200, { ok: false, code: outcome.code, message: outcome.message })
+}
+
+/** POST /api/project/switch — validate + atomically swap the current root. */
+async function handleProjectSwitch(req, res, holder) {
+  const payload = await parseJsonBody(req)
+  if (payload === null || typeof payload.path !== 'string') {
+    return sendJson(res, 400, { ok: false, code: 'invalid-payload', message: '请求体必须是 JSON 对象：{"path": "<RDD 项目目录>"}。' })
+  }
+  const previousRoot = holder.getCurrent().projectRoot
+  const result = holder.switchTo(payload.path)
+  if (result.ok !== true) {
+    const tail = result.code === 'no-rdd-dir' ? `数据根保持 ${previousRoot} 不变，可重新选择。` : '数据根保持不变。'
+    return sendJson(res, 422, { ok: false, code: result.code, message: `拒绝切换：${result.message}${tail}` })
+  }
+  return sendJson(res, 200, { ok: true, projectRoot: result.projectRoot, previousRoot })
 }
 
 /** Read every domain once for this request and build the shared view input. */
@@ -137,8 +196,17 @@ function renderNotFound(pathname, context) {
   return renderOverview(input)
 }
 
-/** API routes — the CTO-contracted envelope per domain. */
-function serveApi(pathname, res, context) {
+/** API routes — the CTO-contracted envelope per domain, plus control plane. */
+function serveApi(pathname, req, res, holder) {
+  if (pathname === '/api/project/pick' || pathname === '/api/project/switch') {
+    if (req.method !== 'POST') {
+      sendJson(res, 405, { ok: false, code: 'method-not-allowed', message: '该端点只接受 POST。' })
+      return
+    }
+    if (pathname === '/api/project/pick') return handleProjectPick(res)
+    return handleProjectSwitch(req, res, holder)
+  }
+  const context = holder.getCurrent()
   if (pathname === '/api/overview') {
     const domains = readAllDomains(context)
     const overview = buildOverview(domains)
@@ -166,8 +234,8 @@ function serveApi(pathname, res, context) {
   return sendJson(res, 404, { error: 'unknown endpoint', path: pathname })
 }
 
-/** Build the request handler bound to a resolved data root. */
-function createHandler(context) {
+/** Build the request handler bound to a swappable data-root holder. */
+function createHandler(holder) {
   return (req, res) => {
     try {
       const sentinel = 'http://127.0.0.1'
@@ -179,10 +247,16 @@ function createHandler(context) {
         return
       }
       if (pathname.startsWith('/api/')) {
-        serveApi(pathname, res, context)
+        const outcome = serveApi(pathname, req, res, holder)
+        if (outcome instanceof Promise) {
+          outcome.catch((error) => {
+            const message = error instanceof Error ? error.message : String(error)
+            sendJson(res, 500, { ok: false, code: 'internal', message })
+          })
+        }
         return
       }
-      servePage(pathname, res, context)
+      servePage(pathname, res, holder.getCurrent())
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
       const body = `<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8"><title>取数失败</title></head><body><h1>该数据域取数失败（HTTP 500）</h1><p>其余数据域不受影响。请刷新重试；若持续失败，检查 .rdd/ 数据文件是否可读。</p><pre>${message.replace(/[<>&]/g, '')}</pre></body></html>`
@@ -204,8 +278,8 @@ function announce(context, port) {
 /** Start the server (exported for tests). */
 export function startServer(options = {}) {
   const port = options.port ?? DEFAULT_PORT
-  const context = options.context ?? resolveDataRoot()
-  const server = createServer(createHandler(context))
+  const holder = createDataRootHolder(options.context ?? resolveDataRoot())
+  const server = createServer(createHandler(holder))
   server.on('error', (error) => {
     if (error.code === 'EADDRINUSE') {
       process.stderr.write(
@@ -217,7 +291,7 @@ export function startServer(options = {}) {
     process.exit(1)
   })
   server.listen(port, HOST, () => {
-    if (options.quiet !== true) announce(context, port)
+    if (options.quiet !== true) announce(holder.getCurrent(), port)
     if (typeof options.onReady === 'function') options.onReady(server)
   })
   return server

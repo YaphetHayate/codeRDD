@@ -15,6 +15,7 @@ const ICONS = {
   bulb: '<path d="M9 21h6v-1H9zM12 2a7 7 0 0 0-4 12.7V17h8v-2.3A7 7 0 0 0 12 2z"/>',
   tree: '<path d="M11 3h2v5h4v2h-4v3h4v2h-4v4h-2v-4H7v-2h4V10H7V8h4z"/>',
   refresh: '<path d="M12 5V2L7 6l5 4V7a5 5 0 1 1-5 5H5a7 7 0 1 0 7-7z"/>',
+  switch: '<path d="M7 7h9.2l-2.6-2.6L14.9 3l5 5-5 5-1.3-1.3L16.2 9H7zM17 17H7.8l2.6 2.6L9.1 21l-5-5 5-5 1.3 1.3L7.8 15H17z"/>',
   copy: '<path d="M8 3h9v2H8zM6 6h13v14H6zM8 8v10h9V8z"/>',
   theme: '<path d="M12 3a9 9 0 1 0 9 9h-9z"/>',
   chevron: '<path d="M7 10l5 5 5-5z"/>',
