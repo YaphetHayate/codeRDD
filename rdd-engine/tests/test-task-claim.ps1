@@ -154,16 +154,20 @@ try {
     $t2 = Find-Task (Read-Tasks) 2
     Assert-True ($r.json.success -eq $true -and @($t2.currentWorker).Count -eq 0) 'A5 deprecate clears all claims (lifecycle)'
 
-    # ===== A5b: advance linkage (acceptance 5) =====
-    $r = Invoke-Flow @('-Command', 'advance', '-Archive', $ArchiveRel, '-TaskId', '1', '-From', 'DEV', '-To', 'QA')
+    # ===== A5b: set-route linkage (acceptance 5) =====
+    # set-route gates DEV exits (unified handoff gate — advance-era exemption is
+    # gone with the command), so the DEV->QA hop carries a skip-form credential.
+    $scanSkip = Join-Path $Work 'qa-skip.json'
+    Write-Utf8NoBom $scanSkip '{"skip":true,"reason":"claim-linkage fixture: no PowerShell change set"}'
+    $r = Invoke-Flow @('-Command', 'set-route', '-Archive', $ArchiveRel, '-TaskId', '1', '-To', 'QA', '-Phase', 'VERIFY', '-QualityScanFile', $scanSkip)
     $t1 = Find-Task (Read-Tasks) 1
-    Assert-True ($r.json.success -eq $true -and @($t1.currentWorker).Count -eq 0) 'A5 advance -From DEV clears DEV claim'
+    Assert-True ($r.json.success -eq $true -and @($t1.currentWorker).Count -eq 0) 'A5 set-route -To QA clears DEV claim'
     $r = Invoke-Flow @('-Command', 'claim', '-Archive', $ArchiveRel, '-Role', 'QA', '-TaskId', '1')
-    Assert-True ($r.json.success -eq $true -and $r.json.data.claimed -eq $true) 'A5 QA can claim after advance'
+    Assert-True ($r.json.success -eq $true -and $r.json.data.claimed -eq $true) 'A5 QA can claim after set-route'
     Assert-True ($r.json.data.task.workMode -eq 'requirement-guided') 'A5 QA claim info skips design (independence)'
 
     # ===== A5c: set-route linkage =====
-    # phase-model: task 1 sits at phase=VERIFY (advance DEV->QA re-initialized it);
+    # phase-model: task 1 sits at phase=VERIFY (set-route -To QA -Phase VERIFY switched it);
     # routing to PM is a cross-PHASE switch (VERIFY -> REQ) and demands -Phase.
     $r = Invoke-Flow @('-Command', 'set-route', '-Archive', $ArchiveRel, '-TaskId', '1', '-To', 'PM', '-Phase', 'REQ')
     $t1 = Find-Task (Read-Tasks) 1
@@ -217,8 +221,8 @@ try {
     Assert-True ($r.json.success -eq $true -and $r.json.data.claimed -eq $true) 'DEV re-claims after reopen'
 
     # ===== claim survives unrelated writes (passthrough risk P1) =====
-    $r = Invoke-Flow @('-Command', 'advance', '-Archive', $ArchiveRel, '-TaskId', '3', '-From', 'PM', '-To', 'DEV')
-    Assert-True ($r.json.success -eq $true) 'unrelated advance succeeds'
+    $r = Invoke-Flow @('-Command', 'set-route', '-Archive', $ArchiveRel, '-TaskId', '3', '-To', 'DEV', '-Phase', 'IMPL')
+    Assert-True ($r.json.success -eq $true) 'unrelated set-route succeeds'
     $r = Invoke-Flow @('-Command', 'add-design', '-Archive', $ArchiveRel, '-TaskId', '1', '-Path', 'design/a.md')
     Assert-True ($r.json.success -eq $true) 'unrelated add-design succeeds'
     $t6 = Find-Task (Read-Tasks) 6

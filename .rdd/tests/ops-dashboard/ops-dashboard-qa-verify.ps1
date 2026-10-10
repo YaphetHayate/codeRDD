@@ -131,8 +131,12 @@ function Get-ArchiveTruth {
 }
 
 function Get-QueryLogTruth {
-    # 查询流水地面真值：keys 非空的记录视为命中（数据层判定，不依赖词汇）。
-    $truth = @{ logLines = 0; logHits = 0; logLastQuery = $null }
+    # 查询流水地面真值：命中按 outcome 字段判定（旧记录无 outcome 字段时回退 keys 非空）。
+    # 口径与看板 readers/query-log.mjs 的冻结聚合规则一致：分母 = hit + miss，
+    # **forced（强制派发，绕过缓存召回）不入分母**——把它并进分母会在分母上凭空
+    # 多算一行（n13 实测：流水含 1 行 forced 时旧公式 41.7% 对看板 43.5%，差异
+    # 全部来自这一行，不是看板缺陷）。
+    $truth = @{ logLines = 0; logHits = 0; logMisses = 0; logForced = 0; logLastQuery = $null }
     $logPath = Join-Path $Script:RepoRoot '.rdd\exploration\query-log.jsonl'
     if (-not (Test-Path -LiteralPath $logPath -PathType Leaf)) { return $truth }
     foreach ($line in @([System.IO.File]::ReadAllLines($logPath, [System.Text.Encoding]::UTF8))) {
@@ -140,7 +144,12 @@ function Get-QueryLogTruth {
         try {
             $r = $line | ConvertFrom-Json
             $truth.logLines++
-            if (@($r.keys).Count -gt 0) { $truth.logHits++ }
+            $outcome = [string]$r.outcome
+            if ($outcome -eq 'forced') { $truth.logForced++ }
+            elseif ($outcome -eq 'miss') { $truth.logMisses++ }
+            elseif ($outcome -eq 'hit') { $truth.logHits++ }
+            elseif (@($r.keys).Count -gt 0) { $truth.logHits++ }
+            else { $truth.logMisses++ }
             $truth.logLastQuery = [string]$r.query
         } catch { }
     }
@@ -272,11 +281,12 @@ try {
         }
 
         # ---------- TC-125：命中率模块条件展示（口径对账地面真值） ----------
-        if ($gt.logLines -gt 0 -and $gt.logHits -gt 0) {
-            $gtPct = 100.0 * $gt.logHits / $gt.logLines
+        $gtDenominator = $gt.logHits + $gt.logMisses
+        if ($gt.logLines -gt 0 -and $gt.logHits -gt 0 -and $gtDenominator -gt 0) {
+            $gtPct = 100.0 * $gt.logHits / $gtDenominator
             $pcts = @([regex]::Matches($text, '(\d+(?:\.\d+)?)\s*%') | ForEach-Object { [double]$_.Groups[1].Value } )
             $near = @($pcts | Where-Object { [math]::Abs($_ - $gtPct) -le 1.0 })
-            Assert-True ($near.Count -gt 0) 'TC-125 hit-rate percentage shown and matches ground truth (+/-1)' ("gt=$([math]::Round($gtPct,1))% shown=[$($pcts -join ',')]")
+            Assert-True ($near.Count -gt 0) 'TC-125 hit-rate percentage shown and matches ground truth (+/-1)' ("gt=$([math]::Round($gtPct,1))% shown=[$($pcts -join ',')] hit/miss/forced=$($gt.logHits)/$($gt.logMisses)/$($gt.logForced)")
         } elseif ($gt.logLines -eq 0) {
             Assert-True ($true) 'TC-125 no query-log data yet: page must render placeholder path (no % fabriction asserted)' ('log absent - placeholder branch')
         } else {

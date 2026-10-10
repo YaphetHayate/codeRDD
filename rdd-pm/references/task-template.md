@@ -25,6 +25,7 @@
       "title": "需求标题",
       "requirement": "requirements/<name>.md",
       "currentOwners": ["CTO"],
+      "phase": "DESIGN",
       "designDocs": [
         { "path": "design/<name>-cto.md", "status": "pending" }
       ],
@@ -43,9 +44,10 @@
 | `id` | 不填，CLI 自动编号 | CLI 维护 |
 | `title` | 需求标题（对应需求文档一级标题） | — |
 | `requirement` | 需求文件路径（归档相对，如 `requirements/fixbug.md`） | — |
-| `currentOwners` | 该需求的下一条处理角色。单角色 `["DEV"]`，并行 `["CTO","UX"]` | CLI `advance`/`set-route` |
+| `currentOwners` | 该需求的下一条处理角色。单角色 `["DEV"]`，并行 `["CTO","UX"]` | CLI `set-route` |
+| `phase` | 一般**不填**（CLI 按 owner 集自动推断：`["CTO"]`/`["CTO","UX"]`→`DESIGN`、`["DEV"]`→`IMPL`、`["PM"]`→`REQ`）。**唯一必填场景**：测试先行路由 `["QA"]` 必须显式 `"phase": "DESIGN"`——缺省会推断为 `VERIFY`（无实现的验收阶段，语义错误） | CLI `set-route`（跨阶段切换/回退时随 `-Phase` 原子更新） |
 | `designDocs` | 预填预期设计文档位置，`status` 设为 `"pending"`；无设计文档填 `[]` | CLI `add-design`（CTO/UX 归档设计时） |
-| `currentWorker` | 不填（CLI 维护，缺省 `[]` = 空闲）。运行期由各角色 `claim` 写入认领记录（`[{ "<角色>": "<认领时间>" }]`），表达"该任务的某责任人正在处理" | CLI `claim`（认领/`-Force` 抢占）；`advance`/`reject`/`complete`/`reopen`/`deprecate`/`set-route` 自动剔除失效认领 |
+| `currentWorker` | 不填（CLI 维护，缺省 `[]` = 空闲）。运行期由各角色 `claim` 写入认领记录（`[{ "<角色>": "<认领时间>" }]`），表达"该任务的某责任人正在处理" | CLI `claim`（认领/`-Force` 抢占）；`reject`/`complete`/`reopen`/`deprecate`/`set-route` 自动剔除失效认领 |
 | `remark` | 并行标注、特殊说明；无则空字符串 | CLI `reject` 追加驳回摘要 |
 | `lifecycle` | 不填（默认 `"active"`） | CLI `complete`/`reopen`/`deprecate` |
 
@@ -55,7 +57,8 @@
 - 简单需求、单一模块/功能、无架构影响 → `["DEV"]`
 - 涉及多模块/架构变更/技术选型 → `["CTO"]`
 - 涉及页面设计/UI/交互体验 → `["UX"]`
-- 复合需求（技术+视觉耦合）→ 先 `["CTO"]`，CTO 完成后路由到 UX
+- 测试先行（验收用例设计先导）→ `["QA"]` + 显式 `"phase": "DESIGN"`
+- 复合需求（技术+视觉）→ 耦合（UX 依赖 CTO 方案）：先 `["CTO"]`，CTO 完成后 `set-route -To "UX"` 阶段内交接（串行由数据层保证）；独立可并行：`["CTO","UX"]`（并行语义，双方均可立即认领）或拆分两个需求文档分别路由
 
 ## 生成方式
 
@@ -76,19 +79,27 @@ $rdd = $null; $t = $null; try { $t = git rev-parse --show-toplevel } catch { }; 
     "designDocs": [
       { "path": "design/multi-owner-cto.md", "status": "pending" }
     ],
-    "remark": "复合需求，CTO+UX 并行"
+    "remark": "复合需求（前后端独立），CTO+UX 并行"
   },
   {
     "title": "修复登录Bug",
     "requirement": "requirements/fix-bug.md",
     "currentOwners": ["DEV"],
     "designDocs": []
+  },
+  {
+    "title": "支付链路验收用例设计",
+    "requirement": "requirements/qa-first.md",
+    "currentOwners": ["QA"],
+    "phase": "DESIGN",
+    "designDocs": [],
+    "remark": "测试先行：phase 必须显式 DESIGN，缺省推断为 VERIFY"
   }
 ]
 ```
 
 ## 历史兼容
 
-- 旧归档（有 task.md 无 task.json）：`rdd-flow.ps1` 自动回退解析 task.md，各命令仍可工作
+- 旧归档（有 task.md 无 task.json）：读侧命令**不再回退解析 task.md**（缺失即 fail-loud `TASK_JSON_NOT_FOUND`），先 `migrate` 一次性迁移后再读
 - 迁移旧归档：`rdd-flow.cmd -Command migrate -Archive <path>` 将 task.md 转为 task.json
 - 旧 task.md 的「角色参与计划」章节、✅⬜ 状态表一律忽略

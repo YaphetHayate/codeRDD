@@ -1,6 +1,6 @@
 ﻿[CmdletBinding()]
 param(
-    [ValidateSet("handoff", "validate", "next", "start", "show", "claim", "init", "add-task", "set-route", "advance", "add-design", "reject", "complete", "reopen", "deprecate", "check", "migrate", "version")]
+    [ValidateSet("handoff", "validate", "next", "start", "show", "claim", "init", "add-task", "set-route", "add-design", "reject", "complete", "reopen", "deprecate", "check", "migrate", "version")]
     [string]$Command = "handoff",
 
     [ValidateSet("PM", "CTO", "UX", "DEV", "QA")]
@@ -258,7 +258,7 @@ function Get-TaskPhaseIssues {
 }
 
 # Write-time phase re-initialization for commands that wholesale-rewrite owners
-# (advance/reject): a task that already carries a phase re-derives it from the
+# (reject): a task that already carries a phase re-derives it from the
 # resulting owner set (phase-pure results adopt their canonical phase, e.g.
 # ["QA"] -> VERIFY; spanning results degrade to null = legacy unconstrained);
 # a null-phase task (pre-phase archive) STAYS null — byte-identical legacy
@@ -435,7 +435,9 @@ function Get-FirstHeading {
 function Get-FlowControl {
     param([string]$Content)
 
-    $owner = Get-DocField -Content $Content -Name "当前责任人"
+    # Doc-side routing fields (当前责任人) are NOT parsed — task.json is the single
+    # routing source. Only the doc lifecycle status and pending-rejection marker are
+    # read here (both still gate handoff eligibility).
     $docStatus = Get-DocField -Content $Content -Name "文档状态"
     $frontStatus = $null
     $frontMatch = [regex]::Match($Content, '(?m)^status:\s*(.+?)\s*$')
@@ -454,7 +456,6 @@ function Get-FlowControl {
     $hasPendingRejection = $Content -match "待回应|待裁决"
 
     return @{
-        owner = $owner
         status = $status
         hasPendingRejection = $hasPendingRejection
     }
@@ -1422,7 +1423,7 @@ function Convert-TaskDataToHashtable {
 }
 
 # Pure filter enforcing the claim invariant: currentWorker ⊆ currentOwners ∩ lifecycle=active.
-# Called before persist by every routing write command (advance/reject/complete/reopen/
+# Called before persist by every routing write command (reject/complete/reopen/
 # deprecate/set-route) so handing off or finishing work releases the claim automatically —
 # roles never memorize an explicit release command. init/migrate never carry claims.
 function Sync-TaskClaims {
@@ -2093,59 +2094,6 @@ function Invoke-SetRoute {
     }
 }
 
-# --- advance ---
-# DEPRECATED as the main routing path (phase-model.md §3 决策表): its single-role
-# replace can mint cross-phase intermediate states (["CTO","UX"] -From CTO -To DEV
-# -> ["UX","DEV"] violates the whitelist). Kept UNCHANGED for backward compatibility;
-# new routing goes through `set-route [-Phase]` (atomic whole-set replacement). The
-# stored phase is passed through untouched — check flags any resulting violation.
-
-function Invoke-Advance {
-    param([string]$ArchivePath)
-
-    $data = Read-TaskJsonEditable -ArchivePath $ArchivePath
-    if ($null -eq $data) { Write-ErrorResult "TASK_JSON_NOT_FOUND" "task.json not found." 1 }
-
-    if ($TaskId -lt 1)                   { Write-ErrorResult "MISSING_TASK_ID" "-TaskId is required" 1 }
-    if ([string]::IsNullOrWhiteSpace($From)) { Write-ErrorResult "MISSING_FROM" "-From is required (the role advancing)" 1 }
-    if ([string]::IsNullOrWhiteSpace($To))   { Write-ErrorResult "MISSING_TO" "-To is required (the target role)" 1 }
-
-    $task = $null
-    $taskIndex = -1
-    for ($i = 0; $i -lt $data.tasks.Count; $i++) {
-        if ([int]$data.tasks[$i].id -eq $TaskId) { $task = $data.tasks[$i]; $taskIndex = $i; break }
-    }
-    if ($null -eq $task) { Write-ErrorResult "TASK_NOT_FOUND" "TaskId $TaskId not found" 1 }
-
-    $owners = @($task.currentOwners)
-    if ($owners -notcontains $From) {
-        Write-ErrorResult "FROM_NOT_OWNER" "'$From' is not in currentOwners of TaskId $($TaskId): $($owners -join '+')" 1
-    }
-
-    $newOwners = @()
-    foreach ($o in $owners) { if ($o -ne $From) { $newOwners += $o } }
-    if ($newOwners -notcontains $To) { $newOwners += $To }
-
-    $data.tasks[$taskIndex].currentOwners = $newOwners
-    # phase-model: keep the whitelist coherent on the legacy command (plain 4-step
-    # flows still route through advance). Same write-time re-derivation contract
-    # as reject — see Update-PhaseFromOwners above for the full decision record.
-    $data.tasks[$taskIndex].phase = Update-PhaseFromOwners (Get-PhaseOrNull $task.phase) $newOwners
-    Sync-TaskClaims -Tasks $data.tasks
-
-    Write-TaskJson -ArchivePath $ArchivePath -Data $data
-
-    return @{
-        success = $true
-        data    = @{
-            taskId       = $TaskId
-            currentOwners = $newOwners
-            advancedFrom = $From
-            advancedTo   = $To
-        }
-    }
-}
-
 # --- add-design ---
 
 function Invoke-AddDesign {
@@ -2214,7 +2162,7 @@ function Invoke-Reject {
     $data.tasks[$taskIndex].currentOwners = @($To)
     # phase-model: owners are wholesale-rewritten here — re-derive phase from the
     # target (write-time rule) so the whitelist invariant survives the rejection
-    # hop. Same contract as advance — see Update-PhaseFromOwners above.
+    # hop. See Update-PhaseFromOwners above for the full decision record.
     $data.tasks[$taskIndex].phase = Update-PhaseFromOwners (Get-PhaseOrNull $task.phase) @($To)
     $rejectSummary = "$From 打回 $To：$Reason"
     if ([string]::IsNullOrWhiteSpace($task.remark) -or $task.remark -eq "-") {
@@ -2403,24 +2351,6 @@ function Invoke-Check {
         }
     }
 
-    # Routing single source: doc-side 当前责任人 is deprecated. Report drift only as
-    # an informational notice — task.json is authoritative, no doc remediation needed.
-    foreach ($t in $data.tasks) {
-        if ($t.lifecycle -eq "completed" -or $t.lifecycle -eq "deprecated") { continue }
-        if (-not $t.requirement) { continue }
-        $reqAbs = Join-Path $ArchivePath $t.requirement
-        if (-not (Test-Path -LiteralPath $reqAbs -PathType Leaf)) { continue }
-
-        $content = Read-TextFile $reqAbs
-        $flow = Get-FlowControl $content
-        if ($flow.owner) {
-            $taskOwners = @($t.currentOwners) -join "+"
-            if ($flow.owner -ne $taskOwners) {
-                $issues += "Task $($t.id): requirement doc carries deprecated 当前责任人='$($flow.owner)' differing from currentOwners='$taskOwners'; routing follows task.json, no doc edit required"
-            }
-        }
-    }
-
     return @{
         success = $true
         data    = @{
@@ -2589,11 +2519,7 @@ switch ($Command) {
         ConvertTo-PortableJson $result -Depth 6
     }
     "set-route" {
-        $result = Invoke-SetRoute -ArchivePath $archivePath
-        ConvertTo-PortableJson $result -Depth 6
-    }
-    "advance" {
-        $result = Invoke-Advance -ArchivePath $archivePath
+        $result = Invoke-SetRoute -ArchivePath $ArchivePath
         ConvertTo-PortableJson $result -Depth 6
     }
     "add-design" {

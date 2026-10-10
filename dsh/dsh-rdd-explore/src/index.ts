@@ -1,5 +1,7 @@
 /**
- * Cache-first code exploration as one model-facing tool. The tool reads the
+ * Cache-first code exploration as one model-facing tool, plus a live
+ * model-catalog tool (`rdd_models`, see ./models.ts) for dispatch-time model
+ * selection. The exploration tool reads the
  * repository's `.rdd/exploration` cache (shared with the rdd-engine CLI and
  * other AI clients) — merged over the hot zone and the persistent index, hot
  * first with the serving zone (`origin`) annotated — then runs the precision
@@ -46,12 +48,26 @@ import { lexicalRecaller } from './recallers/lexical.js'
 import { vectorRecaller } from './recallers/vector.js'
 import { buildDispatchPrompt } from './dispatch.js'
 import { appendQueryLog } from './query-log.js'
+import { registerModelsTool } from './models.js'
 
 export const name = 'rdd-explore'
-export const inject = ['tools', 'subagents']
+export const inject = ['tools', 'subagents', 'llm']
 
 /** This package's root on disk (lib/../) — anchors the vendored guide candidate. */
 const PACKAGE_ROOT = dirname(dirname(fileURLToPath(import.meta.url)))
+
+/**
+ * The vendored failure playbook — a second-level reference, deliberately NOT
+ * part of the tool description: failure handling is an expansive topic most
+ * calls never need. Error messages carry a one-line next step plus a pointer
+ * to this file, so the full detail enters context only at failure time.
+ */
+const PLAYBOOK_PATH = join(PACKAGE_ROOT, 'assets', 'troubleshooting.md')
+
+/** Pointer appended to every actionable error this tool throws. */
+function playbookHint(): string {
+  return `Recovery playbook (read the matching section before retrying): ${PLAYBOOK_PATH}`
+}
 
 /** Plugin configuration. */
 export interface Config {
@@ -113,6 +129,14 @@ export interface Config {
    * remains either way.
    */
   maintenanceIntervalMinutes?: number
+  /**
+   * Model-facing name of the live model-catalog tool registered beside the
+   * exploration tool (default `rdd_models`; empty string disables it). The
+   * tool reads the host's registered provider routes and their advertised
+   * models, so dispatch-time model selection works off what the deployment
+   * actually serves instead of a statically configured list.
+   */
+  modelsToolName?: string
 }
 
 export const Config: z<Config> = z.object({
@@ -131,6 +155,7 @@ export const Config: z<Config> = z.object({
   writePrefixes: z.array(z.string()).default(undefined as unknown as string[]),
   sessionReadOnly: z.boolean().default(undefined as unknown as boolean),
   maintenanceIntervalMinutes: z.number().step(1).min(0).default(60),
+  modelsToolName: z.string().default('rdd_models'),
 })
 
 /**
@@ -207,7 +232,9 @@ const TOOL_DESCRIPTION =
   + 'worker subagent that explores the code, writes a paired record and summary under '
   + '.rdd/exploration/artifacts/, registers them into the hot zone, and returns the worker\'s report '
   + '(force_dispatch: true skips the cache and dispatches immediately). Use it for recurring exploration '
-  + 'themes (module overviews, middleware chains, data flows); use direct glob/grep for one-off lookups.'
+  + 'themes (module overviews, middleware chains, data flows); use direct glob/grep for one-off lookups. '
+  + 'Dispatching spawns a subagent and typically takes tens of seconds to a few minutes; a failed dispatch '
+  + 'never mutates the cache, and its error message carries its own recovery guidance.'
 
 /**
  * Walk up from a start directory to the nearest `.git` marker; with none,
@@ -259,7 +286,8 @@ export function resolveEngineRoot(configured: string | undefined, repoRoot: stri
     throw new Error(
       `rdd-explore: no rdd-engine skill directory found (looked for references/exploration-guide.md under: ${candidates.join('; ')}). `
       + 'The plugin ships a vendored guide at assets/rdd-engine inside the package — if this error appears, the installation is broken. '
-      + 'Reinstall the plugin (dsh plugin --profile <name> add <dsh-rdd-explore.tgz>) or set engineRoot in the plugin row config.',
+      + 'Reinstall the plugin (dsh plugin --profile <name> add <dsh-rdd-explore.tgz>) or set engineRoot in the plugin row config. '
+      + `Not query-related — do not retry with a different query.\n${playbookHint()}`,
     )
   }
   return found
@@ -271,16 +299,16 @@ function stopReasonError(result: SubagentResult): string | undefined {
     case 'completed':
       return undefined
     case 'aborted':
-      return 'exploration worker was cancelled'
+      return 'exploration worker was cancelled — do not auto-retry; ask the user whether they still want the exploration'
     case 'error':
-      return 'exploration worker failed'
+      return 'exploration worker failed — retry once with the same query, then narrow it; after repeated failures fall back to grep/glob'
     case 'max-tokens':
-      return 'exploration worker hit its token limit before finishing'
+      return 'exploration worker hit its token limit before finishing — the query is too broad; retry with a narrower scope'
     case 'refusal':
-      return 'exploration worker declined the task'
+      return 'exploration worker declined the task — rephrase the query once; do not loop on refusals'
     // Merge-extensible union: treat an unknown terminal reason as a failure.
     default:
-      return `exploration worker ended abnormally (${String(result.stopReason)})`
+      return `exploration worker ended abnormally (${String(result.stopReason)}) — treat as a worker failure: one retry, then fall back to grep/glob`
   }
 }
 
@@ -306,7 +334,8 @@ async function settleWorkerRun(run: SubagentRun): Promise<SubagentResult> {
       if (error !== undefined) {
         const diagnostic = result.diagnostic === undefined ? '' : `\nDiagnostic: ${result.diagnostic}`
         const partial = textOf(result)
-        throw new Error(partial === '' ? `${error}${diagnostic}` : `${error}${diagnostic}\nPartial output before the run ended:\n${partial}`)
+        const hint = `\n${playbookHint()}`
+        throw new Error(partial === '' ? `${error}${diagnostic}${hint}` : `${error}${diagnostic}${hint}\nPartial output before the run ended:\n${partial}`)
       }
       return result
     }),
@@ -347,7 +376,9 @@ function structuredPayloadOf(result: SubagentResult): ExplorationPayload {
   if (typeof value !== 'object' || value === null) {
     throw new Error(
       'exploration worker finished without a structured result; the run may have ended before capturing it '
-      + '(registerMode plugin requires the outputSchema capability on the provider)',
+      + '(registerMode plugin requires the outputSchema capability on the provider) '
+      + '— retry once with the same query; if it repeats, the cause is the provider boundary, not the query'
+      + `\n${playbookHint()}`,
     )
   }
   const payload = value as Partial<ExplorationPayload>
@@ -362,7 +393,9 @@ function structuredPayloadOf(result: SubagentResult): ExplorationPayload {
     || !payload.files.every(file => typeof file === 'string' && file.trim() !== '')
   ) {
     throw new Error(
-      'exploration worker returned an incomplete structured result; expected non-empty { key, tags[] (>=1), brief, summary, full, files[] (>=1) }',
+      'exploration worker returned an incomplete structured result; expected non-empty { key, tags[] (>=1), brief, summary, full, files[] (>=1) } '
+      + '— retry once with the same query; if it repeats, the cause is the provider boundary, not the query'
+      + `\n${playbookHint()}`,
     )
   }
   // The guard above verified every field; the cast records that runtime fact.
@@ -376,6 +409,15 @@ function structuredPayloadOf(result: SubagentResult): ExplorationPayload {
  */
 export function apply(ctx: Context, config: Config): void {
   const toolName = config.toolName ?? 'rdd_explore'
+
+  // The live model catalog rides beside the exploration tool: dispatch-time
+  // model selection (the RDD UX fork-join, or any delegation that assigns
+  // models) reads what the host actually serves. `ctx.llm` is structural —
+  // only the two read methods are passed across, never the runtime itself.
+  const modelsToolName = config.modelsToolName ?? 'rdd_models'
+  if (modelsToolName !== '') {
+    registerModelsTool(ctx, ctx.llm, modelsToolName)
+  }
 
   const forbidden = config.forbiddenSkills !== undefined && config.forbiddenSkills.length > 0
     ? new Set(config.forbiddenSkills)

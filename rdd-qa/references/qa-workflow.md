@@ -309,6 +309,8 @@ DEV 修复后重新进入 QA 验证。
 
 ### 7.3 写 archive 增量（时点快照）
 
+本会话经用户确认的检查点决策（验收口径改定、放行取舍等）先入统一决策账本留痕：`delivery-bridge.cmd -Command decide -Kind checkpoint -Archive <归档> -Checkpoint <名> -Decision <结论> [-Reason] [-Options <A|B>] [-Background] [-Role QA]`——条目落归档级 `decisions.jsonl`（四要素 + decider=user）。
+
 在归档目录创建 `tests/cases.json`，**只记本次动过的用例**，不复制完整内容：
 
 ```json

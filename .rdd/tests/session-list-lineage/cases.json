@@ -1,0 +1,171 @@
+{
+  "feature": "session-list-lineage",
+  "status": "active",
+  "relatedCode": [
+    "../dsh/deepseek-harness/packages/host/apiproxy/src/api/sessions.ts",
+    "../dsh/deepseek-harness/packages/host/apiproxy/src/api/sessions.schema.ts",
+    "../dsh/deepseek-harness/packages/host/apiproxy/src/api-proxy.ts",
+    "../dsh/deepseek-harness/packages/client/ui-workspace/src/client/tree.ts",
+    "../dsh/deepseek-harness/packages/client/ui-workspace/src/client/rows/Rows.tsx",
+    "../dsh/deepseek-harness/packages/client/ui-workspace/src/client/WorkspaceBrowser.tsx",
+    "../dsh/deepseek-harness/packages/client/ui-workspace/src/client/stores.ts",
+    "rdd-engine/scripts/start-role.ps1"
+  ],
+  "testCode": [
+    "../dsh/deepseek-harness/packages/host/apiproxy/tests/api-proxy-session-lineage.spec.ts",
+    "../dsh/deepseek-harness/packages/client/ui-workspace/tests/tree.client.spec.ts",
+    "../dsh/deepseek-harness/packages/client/ui-workspace/tests/rows.client.spec.tsx",
+    "../dsh/deepseek-harness/packages/client/ui-workspace/tests/workspace-browser.client.spec.tsx"
+  ],
+  "lastChange": "2026-10-09-session-list-lineage-bundling",
+  "userRulings": [
+    "打包范围：所有带血统的会话（planner 派生 worker + 用户 fork 统一归组，非仅 rdd-* 角色）",
+    "排序单位：组内任一会话活跃即整组上浮（家族 max updatedAt）",
+    "默认姿态：折叠（planner 行 + 子数徽标，点 chevron 展开）"
+  ],
+  "cases": [
+    {
+      "id": "TC-001",
+      "title": "session.create 带 parentSessionId 落 header 并经 session.list 透传（无 origin）",
+      "type": "positive",
+      "priority": "P0",
+      "codeRef": "../dsh/deepseek-harness/packages/host/apiproxy/tests/api-proxy-session-lineage.spec.ts:107",
+      "sourceChange": "2026-10-09-session-list-lineage-bundling",
+      "status": "active",
+      "crossFeature": ["session-badges"],
+      "precondition": "apiproxy 真服务 harness（Session/Agent/Storage 实例）",
+      "steps": ["create 父会话", "create 子会话带 parentSessionId", "session.list"],
+      "expected": "子行含 parentSessionId=父 id 且 origin 为空（保持顶层可见性，打包是客户端派生不是隐藏）"
+    },
+    {
+      "id": "TC-002",
+      "title": "parentSessionId 仅作用于新建：显式 id 复用/收养不覆写既有血统",
+      "type": "boundary",
+      "priority": "P1",
+      "codeRef": "../dsh/deepseek-harness/packages/host/apiproxy/tests/api-proxy-session-lineage.spec.ts:141",
+      "sourceChange": "2026-10-09-session-list-lineage-bundling",
+      "status": "active",
+      "crossFeature": [],
+      "precondition": "已存在的无血统会话（显式 sessionId 首建）",
+      "steps": ["同 id 二次 create 且带新 parentSessionId", "session.list"],
+      "expected": "行 parentSessionId 仍为空（resume/live 分支不写 meta.parentSession）"
+    },
+    {
+      "id": "TC-003",
+      "title": "wire schema 对未知父放行、对自父拒绝",
+      "type": "negative",
+      "priority": "P1",
+      "codeRef": "../dsh/deepseek-harness/packages/host/apiproxy/tests/api-proxy-session-lineage.spec.ts:155",
+      "sourceChange": "2026-10-09-session-list-lineage-bundling",
+      "status": "active",
+      "crossFeature": [],
+      "precondition": "无（纯 schema 单元）",
+      "steps": ["parse 任意 parentSessionId", "parse sessionId===parentSessionId"],
+      "expected": "前者通过（fail-soft 血统由客户端降级）；后者抛 parentSessionId must differ from sessionId"
+    },
+    {
+      "id": "TC-004",
+      "title": "默认折叠：血统子行不占顶层位，根行携带 descendantCount 徽标事实",
+      "type": "positive",
+      "priority": "P0",
+      "codeRef": "../dsh/deepseek-harness/packages/client/ui-workspace/tests/tree.client.spec.ts:591",
+      "sourceChange": "2026-10-09-session-list-lineage-bundling",
+      "status": "active",
+      "crossFeature": [],
+      "precondition": "planner + 两 worker（parentId=planner）+ 无关会话，未展开任何 bundle",
+      "steps": ["deriveFlat"],
+      "expected": "顶层仅 [planner, 无关]；planner 行 descendantCount=2 且 children 未物化"
+    },
+    {
+      "id": "TC-005",
+      "title": "展开按层最新优先递归物化；current 会话揭示整条祖先链",
+      "type": "positive",
+      "priority": "P0",
+      "codeRef": "../dsh/deepseek-harness/packages/client/ui-workspace/tests/tree.client.spec.ts:601",
+      "sourceChange": "2026-10-09-session-list-lineage-bundling",
+      "status": "active",
+      "crossFeature": [],
+      "precondition": "planner→worker→grandchild 三级血统",
+      "steps": ["expandedBundles=[planner] 派生", "current=grandchild 派生（无展开集）"],
+      "expected": "children 按 updatedAt 降序；嵌套 bundle 折叠但自带 descendantCount；current 场景三级全揭示（否则当前行不可见）"
+    },
+    {
+      "id": "TC-006",
+      "title": "打包成一体：任一成员活跃按家族 max updatedAt 上浮整组",
+      "type": "positive",
+      "priority": "P0",
+      "codeRef": "../dsh/deepseek-harness/packages/client/ui-workspace/tests/tree.client.spec.ts:621",
+      "sourceChange": "2026-10-09-session-list-lineage-bundling",
+      "status": "active",
+      "crossFeature": ["session-list-recency"],
+      "precondition": "planner(10)+worker(50) 同族，stranger(30) 独立",
+      "steps": ["deriveFlat 家族排序", "WorkspaceBrowser.nextSessionOrderAccount 晋升（lineageFacts 同键）"],
+      "expected": "组按家族 max(50) 排在 stranger(30) 前；账户序为 root 领队+成员尾随（expandFamilyOrder 连续单槽位）"
+    },
+    {
+      "id": "TC-007",
+      "title": "组内自包含：父会话不在本组时子行退为本组顶层行",
+      "type": "boundary",
+      "priority": "P1",
+      "codeRef": "../dsh/deepseek-harness/packages/client/ui-workspace/tests/tree.client.spec.ts:656",
+      "sourceChange": "2026-10-09-session-list-lineage-bundling",
+      "status": "active",
+      "crossFeature": [],
+      "precondition": "planner 在组外，worker 单独成组",
+      "steps": ["deriveGroups（作用域=组成员 record）"],
+      "expected": "worker 以顶层行渲染（descendantCount=0），不被组外父认领"
+    },
+    {
+      "id": "TC-008",
+      "title": "脏血统永不挂死/丢行：环链终止、孤儿父降级",
+      "type": "negative",
+      "priority": "P1",
+      "codeRef": "../dsh/deepseek-harness/packages/client/ui-workspace/tests/tree.client.spec.ts:668",
+      "sourceChange": "2026-10-09-session-list-lineage-bundling",
+      "status": "active",
+      "crossFeature": [],
+      "precondition": "A↔B 环链 + parentId 指向不存在 id 的孤儿",
+      "steps": ["lineageFacts 走链", "deriveFlat 派生"],
+      "expected": "环链双方均渲染（孤儿兜底为顶层行，按序尾随）；孤儿以顶层行降级；无死循环"
+    },
+    {
+      "id": "TC-009",
+      "title": "渲染：chevron 徽标/aria 展开态、缩进逐层 16px、子行无拖拽",
+      "type": "positive",
+      "priority": "P0",
+      "codeRef": "../dsh/deepseek-harness/packages/client/ui-workspace/tests/rows.client.spec.tsx:663",
+      "sourceChange": "2026-10-09-session-list-lineage-bundling",
+      "status": "active",
+      "crossFeature": [],
+      "precondition": "SessionNodeBranch 挂载三级 bundle（展开）与折叠行",
+      "steps": ["点折叠 chevron", "断言展开 chevron 无计数", "点子行标题", "检 draggable/aria-level/paddingLeft"],
+      "expected": "toggle 只切展开不开会话；depth N 行 paddingLeft=8+16N、aria-level=N+1、draggable=false（组随根整体移动）；行注释级联到 SessionNodeBranch 递归"
+    },
+    {
+      "id": "TC-010",
+      "title": "引擎 start-role：DSH_SESSION_ID 在场时 create 载荷带 parentSessionId，缺席逐字节回落",
+      "type": "positive",
+      "priority": "P0",
+      "codeRef": "rdd-engine/scripts/start-role.ps1:832",
+      "sourceChange": "2026-10-09-session-list-lineage-bundling",
+      "status": "active",
+      "crossFeature": ["role-handoff"],
+      "precondition": "dsh 后端 DryRun（powershell.exe 5.1，BOM 保持）",
+      "steps": ["设 DSH_SESSION_ID=test-planner-session-123 跑 -DryRun", "清空变量重跑"],
+      "expected": "在场：RPC 2 payload 行追加 parentSessionId=…（血统打包）；缺席：payload 行与 legacy 逐字节一致（回归锚）"
+    },
+    {
+      "id": "TC-011",
+      "title": "存量会话（升级前创建）无血统字段——不打包，行为与旧版一致",
+      "type": "boundary",
+      "priority": "P2",
+      "codeRef": "../dsh/deepseek-harness/packages/host/apiproxy/tests/api-proxy-session-lineage.spec.ts:121",
+      "sourceChange": "2026-10-09-session-list-lineage-bundling",
+      "status": "active",
+      "crossFeature": [],
+      "precondition": "header 无 parentSession 的既有 worker 会话",
+      "steps": ["session.list 派生侧栏"],
+      "expected": "无 parentId 的行照旧顶层平铺（零退化）；打包仅对升级后新派生会话生效（已知边界，不做回填）"
+    }
+  ]
+}

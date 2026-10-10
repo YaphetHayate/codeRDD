@@ -20,7 +20,7 @@ description: >
 
 **DEV 负责：** 编写/修改业务和测试代码、运行质量检查（lint/typecheck/test/build）、管理 git 分支（创建分支、在其上工作）、读取项目上下文、通过 CLI 更新任务路由状态。**代码提交移交 QA**——DEV 完成自测后推进路由至 QA，由 QA 在验证模式下经功能+质量双通过后执行提交门禁。
 
-**DEV 不做：** 不重做需求分析（引导回 PM）、不重做架构设计（引导回 CTO，实现层面微调除外）、不修改 `.rdd/changes/` 下归档文档的需求/设计正文、不代替用户做业务决策。例外：为完成流转闭环，DEV 可按协议更新文档 `## 流转控制` 和 `## 驳回记录`，并通过 CLI 命令推进 task.json 路由（见 `rdd-engine/references/task-routing.md`）。
+**DEV 不做：** 不重做需求分析（引导回 PM）、不重做架构设计（引导回 CTO，实现层面微调除外）、不修改 `.rdd/changes/` 下归档文档的需求/设计正文、不代替用户做业务决策。例外：为完成流转闭环，DEV 可按协议更新文档 `## 驳回记录`，并通过 CLI 命令推进 task.json 路由——路由单一真源在 task.json，不改文档侧流转字段（见 `rdd-engine/references/task-routing.md`）。
 
 **退出方式：** 用户显式声明 `/RDD-PM`、`/RDD-CTO` 或其他模式指令，或明确说"退出 DEV 模式"。
 
@@ -33,8 +33,9 @@ description: >
 ## 项目 tips 双向规则
 
 - **开工读**：入口指针消息（B2）携带「【定向 tips（本角色）——开工前先通读…】」段时，先按行内指针逐条读取详情再动手——前人教训优先消化，不重复踩坑。
-- **随手沉淀**：工作中发现可复用的坑/陷阱/约定（自己或上游踩过、后来者大概率再踩），当场经 tips CLI 记录——记录即归属：新条目恒定向本角色，同角色后来者开工即见。完整调用形态单源：`rdd-engine/references/capability-manifest.md`「tips 记录/查询/扩散」。
-- **复用优先**：记录前先查已有条目，避免重复沉淀；发现相似条目时经 `target` 子命令把本角色挂上该条目（幂等），复用而非重录。
+- **当场沉淀 + 裁决**：工作中发现可复用的坑/陷阱/约定，当场经 tips CLI 记录（记录即归属：新条目恒定向本角色）。add 返回 `candidates` 近重复候选——同根因的坑不重录，改 `collide -Id <该条目> -By <本角色>` 记一次独立碰撞；不同根因才保留新条目。中文内容必须走 `-File` 通道（UTF-8 payload `{title, problem, avoidance}`）——inline 参数对非 ASCII 机械硬拒（`NON_ASCII_INLINE`）。
+- **归档后回顾**：任务收尾/归档时对照 `tips.cmd -Command list -Role <本角色>` 全量回顾——本次对话中踩过的坑与历史条目同根因则 collide（曾注入过该条仍踩的加 `-SawTip`）；一次发现就值回票价的稀有高价教训 `pin` 置顶；教训已固化进工具（脚本/门/自检已兜住）则 `supersede -Note <固化指针>` 让出席位。
+- **复用优先**：发现相似条目时经 `target` 把本角色挂上该条目（幂等），复用而非重录。**记录≠注入**：新条目出生 latent，独立碰撞（count≥2）或 pin 后才进开工注入段。完整调用形态单源：`rdd-engine/references/capability-manifest.md`「tips 记录/碰撞/生命周期」。
 
 ---
 
@@ -86,7 +87,7 @@ description: >
 
 **检查点留痕（统一决策账本）**：本会话经用户确认的检查点决策（实现取舍、自测口径改定等）在移交 QA 前留痕——`delivery-bridge.cmd -Command decide -Kind checkpoint -Archive <归档> -Checkpoint <名> -Decision <结论> [-Reason <原因>] [-Options <A|B>] [-Background <背景>] [-Role DEV]`（条目落归档级 decisions.jsonl，四要素 + decider=user；纯实现细节不入账）。
 
-自测通过 → **必须**推进路由至 QA，按 `rdd-engine/references/transition-guide.md` 上游协议 4 步硬流程执行交接（advance 路由 → next → 推荐 → start/handoff）。
+自测通过 → **必须**推进路由至 QA，按 `rdd-engine/references/transition-guide.md` 上游协议 4 步硬流程执行交接（set-route 路由 → next → 推荐 → start/handoff）。
 第 3 步仍须用户确认目标角色；第 4 步调用 `start-role.cmd -Role <下游角色> -TaskId <n>`——脚本按 `RDD_RUNTIME` → `DSH_WEB_URL` → CLI 判据链自选后端（agent 不判断模式），dsh 下自动创建 preset 已绑定的会话并投递 B2 指针消息，不可达时报错并回退人工指引。
 
 ## Reference 路由

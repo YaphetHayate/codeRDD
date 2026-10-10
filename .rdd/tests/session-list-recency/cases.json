@@ -1,0 +1,133 @@
+{
+  "feature": "session-list-recency",
+  "status": "active",
+  "relatedCode": [
+    "../dsh/deepseek-harness/packages/host/apiproxy/src/api/session-activity.ts",
+    "../dsh/deepseek-harness/packages/host/apiproxy/src/api-proxy.ts",
+    "../dsh/deepseek-harness/packages/host/apiproxy/src/api/sessions.ts",
+    "../dsh/deepseek-harness/packages/client/runtime/src/client/sessions/manager.ts",
+    "../dsh/deepseek-harness/packages/client/ui-workspace/src/client/WorkspaceBrowser.tsx"
+  ],
+  "testCode": [
+    "../dsh/deepseek-harness/packages/host/apiproxy/tests/session-activity.spec.ts",
+    "../dsh/deepseek-harness/packages/host/apiproxy/tests/api-proxy-projections.spec.ts",
+    "../dsh/deepseek-harness/packages/host/apiproxy/tests/api-proxy-cold.spec.ts",
+    "../dsh/deepseek-harness/packages/client/runtime/tests/sessions-service.client.spec.ts",
+    "../dsh/deepseek-harness/packages/client/ui-workspace/tests/workspace-browser.client.spec.tsx"
+  ],
+  "lastChange": "2026-09-27-session-list-recency-wakeful-callback",
+  "cases": [
+    {
+      "id": "TC-001",
+      "title": "人类 prompt（user/message + source.kind=user）计入会话列表活动",
+      "type": "positive",
+      "priority": "P0",
+      "acceptance": "AC-2",
+      "codeRef": "../dsh/deepseek-harness/packages/host/apiproxy/tests/session-activity.spec.ts:30",
+      "sourceChange": "2026-09-27-session-list-recency-wakeful-callback",
+      "status": "active",
+      "crossFeature": [],
+      "precondition": "无（纯函数单元）",
+      "steps": ["构造 user/message 事件（source.kind=user，time=950）", "调用 sessionListActivityAt"],
+      "expected": "返回事件时间 950（唤醒上浮与人类消息行为一致的对照基线）"
+    },
+    {
+      "id": "TC-002",
+      "title": "唤醒式插件投递（agent/inbox/spliced + wakeup:true，插件源）计入活动",
+      "type": "positive",
+      "priority": "P0",
+      "acceptance": "AC-2",
+      "codeRef": "../dsh/deepseek-harness/packages/host/apiproxy/tests/session-activity.spec.ts:34",
+      "sourceChange": "2026-09-27-session-list-recency-wakeful-callback",
+      "status": "active",
+      "crossFeature": ["goal-tree"],
+      "precondition": "无（纯函数单元）",
+      "steps": ["构造 agent/inbox/spliced 事件（wakeup:true，time=900）", "调用 sessionListActivityAt"],
+      "expected": "返回事件时间 900"
+    },
+    {
+      "id": "TC-003",
+      "title": "同型事件无 wakeup（log-only 注入）不计入活动",
+      "type": "negative",
+      "priority": "P0",
+      "acceptance": "AC-2",
+      "codeRef": "../dsh/deepseek-harness/packages/host/apiproxy/tests/session-activity.spec.ts:38",
+      "sourceChange": "2026-09-27-session-list-recency-wakeful-callback",
+      "status": "active",
+      "crossFeature": ["goal-tree"],
+      "precondition": "无（纯函数单元）",
+      "steps": ["构造 agent/inbox/spliced 事件（无 wakeup，time=50）", "调用 sessionListActivityAt"],
+      "expected": "返回 undefined（列表不因 log-only 事件抖动）"
+    },
+    {
+      "id": "TC-004",
+      "title": "插件源的 user/message 不计入活动（仅 kind=user 计）",
+      "type": "negative",
+      "priority": "P1",
+      "acceptance": "AC-2",
+      "codeRef": "../dsh/deepseek-harness/packages/host/apiproxy/tests/session-activity.spec.ts:42",
+      "sourceChange": "2026-09-27-session-list-recency-wakeful-callback",
+      "status": "active",
+      "crossFeature": [],
+      "precondition": "无（纯函数单元）",
+      "steps": ["构造 user/message 事件（source.kind=plugin）", "调用 sessionListActivityAt"],
+      "expected": "返回 undefined（活动判定只认人类源，与'插件不伪装用户源'边界对偶）"
+    },
+    {
+      "id": "TC-005",
+      "title": "普通生命周期/快照事件（turn/start、session/title、session/end-seed）不计入活动",
+      "type": "boundary",
+      "priority": "P1",
+      "acceptance": "AC-2",
+      "codeRef": "../dsh/deepseek-harness/packages/host/apiproxy/tests/session-activity.spec.ts:50",
+      "sourceChange": "2026-09-27-session-list-recency-wakeful-callback",
+      "status": "active",
+      "crossFeature": [],
+      "precondition": "无（纯函数单元）",
+      "steps": ["逐个构造普通事件类型", "调用 sessionListActivityAt"],
+      "expected": "全部返回 undefined"
+    },
+    {
+      "id": "TC-006",
+      "title": "planner 会话被后建会话埋底后，唤醒回调使其回到 session.list 顶端",
+      "type": "positive",
+      "priority": "P0",
+      "acceptance": "AC-3",
+      "codeRef": "../dsh/deepseek-harness/packages/host/apiproxy/tests/api-proxy-projections.spec.ts:433",
+      "sourceChange": "2026-09-27-session-list-recency-wakeful-callback",
+      "status": "active",
+      "crossFeature": ["goal-tree"],
+      "precondition": "工作区处于'最近更新'排序；planner（先建）已被 sibling（后建+人类 prompt）压到列表第二位",
+      "steps": ["向 planner 会话追加唤醒式投递（wakeup:true，time 晚于 sibling 活动）", "调用 session.list"],
+      "expected": "planner 行回到列表首位（updatedAt 降序），blank 事实不受影响"
+    },
+    {
+      "id": "TC-007",
+      "title": "乱序重放的旧唤醒事件不回退已晋升行的 updatedAt",
+      "type": "boundary",
+      "priority": "P1",
+      "acceptance": "AC-3",
+      "codeRef": "../dsh/deepseek-harness/packages/client/runtime/tests/sessions-service.client.spec.ts:144",
+      "sourceChange": "2026-09-27-session-list-recency-wakeful-callback",
+      "status": "active",
+      "crossFeature": [],
+      "precondition": "客户端实时门已将行晋升到 updatedAt=900",
+      "steps": ["投递时间更早（300）的唤醒式事件帧"],
+      "expected": "行 updatedAt 保持 900（max 防回退）"
+    },
+    {
+      "id": "TC-008",
+      "title": "Manual 模式禁用晋升、Last-updated 模式晋升一次（既有回归）",
+      "type": "negative",
+      "priority": "P1",
+      "acceptance": "AC-4",
+      "codeRef": "../dsh/deepseek-harness/packages/client/ui-workspace/tests/workspace-browser.client.spec.tsx:276",
+      "sourceChange": "2026-09-27-session-list-recency-wakeful-callback",
+      "status": "active",
+      "crossFeature": [],
+      "precondition": "工作区浏览器处于 Manual / Last updated 两种排序模式",
+      "steps": ["在 Manual 模式下推进会话 updatedAt", "切入 Last updated 后再次推进"],
+      "expected": "Manual 保持用户显式顺序不重排；Last updated 下仅晋升一次"
+    }
+  ]
+}

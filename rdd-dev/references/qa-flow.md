@@ -7,7 +7,7 @@
 
 **本条需求**开发完成并自测通过后，按 `rdd-engine/references/transition-guide.md` 的**上游协议 4 步硬流程**推进路由至 QA：
 
-1. 推进 task.json 路由：`rdd-flow advance` 将对应行 `currentOwners` 改为 QA，同步需求/设计文档 `## 流转控制 > 当前责任人`
+1. 推进 task.json 路由：`rdd-flow set-route -To QA -Phase VERIFY`（DEV 退场**须带 `-QualityScanFile` 质量扫描凭据**，凭据组装见 `execution-rules.md`，门禁语义见 rdd-engine/references/task-routing.md「统一交接门」）——路由单一真源在 task.json，不改文档侧流转字段
 2. 运行 `rdd-flow next -Format markdown`，展示可流转角色
 3. 推荐 QA 并请求用户确认：
 
@@ -51,8 +51,7 @@ QA 进入后依次完成（详见 `rdd-qa/references/qa-workflow.md` 第四~七�
 QA 在验证模式下完成提交后，由 **QA** 标记任务闭环：
 
 1. 调用 `rdd-flow complete` 标记任务闭环
-2. 同步各需求文档 `## 流转控制 > 当前责任人` 为 `已完成`（QA 完成，两处须一致）
-3. 后续若发现问题，将 `已完成` 改回对应角色（如 `DEV`）即可重启流转
+2. 后续若发现问题，经 `rdd-flow reopen -To DEV`（或对应角色）重启流转——路由只活在 task.json，无需改任何文档
 
 > `已完成` 是唯一终端信号：`rdd-flow.ps1` 不会把它匹配给任何角色，`next`/`start` 天然跳过已闭环需求。EVAL 通过它判定哪些需求可做完整评价。
 > DEV 不再执行标记完成——提交与标记闭环统一由 QA 在验证模式下完成。

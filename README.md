@@ -242,7 +242,7 @@ release tag 统一 `vX.Y.Z`（仓库主版本，起步 v1.0.0，`--tag` 覆盖�
 上游角色完成产物归档后，按 transition-guide 的 4 步硬流程交接（命令均经引擎三级定位链定位 `$rdd`，此处以 `rdd-flow` / `start-role` 代指）：
 
 ```
-rdd-flow advance（推进 task.json 路由到下游角色）
+rdd-flow set-route（推进 task.json 路由到下游角色：阶段内收窄不带 -Phase，跨阶段切换显式 -Phase）
   → rdd-flow next（展示可流转角色与任务数）→ 推荐目标角色，请用户确认
   → start-role.cmd -Role <角色> -TaskId <n>
       脚本按判据链（RDD_RUNTIME → DSH_WEB_URL → CLI）自动选后端：

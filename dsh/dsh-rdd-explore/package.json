@@ -1,7 +1,7 @@
 {
   "name": "@coderrdd/dsh-rdd-explore",
-  "version": "0.2.0",
-  "description": "dsh profile bundle: cache-first code exploration (the rdd_explore tool) over the rdd-engine .rdd/exploration index, dispatching worker subagents through ctx.subagents",
+  "version": "0.3.0",
+  "description": "dsh profile bundle: cache-first code exploration (the rdd_explore tool) over the rdd-engine .rdd/exploration index, dispatching worker subagents through ctx.subagents; plus the rdd_models live model-catalog tool for dispatch-time model selection",
   "type": "module",
   "main": "./lib/index.js",
   "types": "./lib/index.d.ts",

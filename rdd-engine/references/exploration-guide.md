@@ -87,7 +87,7 @@ search 的排序由以下**冻结公式**确定（`explore.ps1` + `explore-store
 
 ### 召回器插件协议
 
-召回器放在 `scripts/recallers/*.ps1`（按文件名排序 dot-source，即注册序 = F7 累计序）：调 `Register-Recaller -Name <name> -DefaultEnabled <true|false|"auto"> [-AutoReady <scriptblock>] -ScriptBlock <block>`。输入 `{ query, docs, config, paths }`，输出 `{ name, scores, qualified[按名次], warning? }`；抛异常被管线捕获 → 空贡献 + failed 状态。`"auto"` 启用判定由 AutoReady 只读评估（不调 API）。新增一路召回 = 加一个文件，既有路径零改动。
+召回器放在 `scripts/recallers/*.ps1`（按文件名排序 dot-source，即注册序 = F7 累计序；装载与 `Register-Recaller` 注册表自 P1 抽取起统一在 `scripts/lib/recall-shared.ps1`，explore.ps1 与 tips 候选召回同源共用）：调 `Register-Recaller -Name <name> -DefaultEnabled <true|false|"auto"> [-AutoReady <scriptblock>] -ScriptBlock <block>`。输入 `{ query, docs, config, paths }`，输出 `{ name, scores, qualified[按名次], warning? }`；抛异常被管线捕获 → 空贡献 + failed 状态。`"auto"` 启用判定由 AutoReady 只读评估（不调 API）。新增一路召回 = 加一个文件，既有路径零改动。
 
 ### 运行时文件（`.rdd/exploration/`）
 
@@ -147,7 +147,7 @@ $rdd = $null; $t = $null; try { $t = git rev-parse --show-toplevel } catch { }; 
 - **`results` 为空 = 未命中**：返回体附 `dispatchPrompt` → 用它派遣 `rdd-explore` 子代理（可写 worker）
 
 > 检索接口**返回位置而非内容**——调用方按位置自取，不再全量倾倒 candidates 内嵌 ~9KB prompt。命中载荷保持精简。
-> 旧三分支中的"results 非空但均不相关 → 改调 explore"分支已删除：Top-K 截断 + 相关性阈值保证非空即相关。`-Type explore`（兼容面，dispatchPrompt 恒附）仅供旧调用方零改动过渡。
+> 旧三分支中的"results 非空但均不相关 → 改调 explore"分支已删除：Top-K 截断 + 相关性阈值保证非空即相关。旧兼容面 `-Type explore`（candidates + 恒附 dispatchPrompt）亦已删除，残留调用报 `INVALID_TYPE`；未迁移调用方一律改用 `-Type search`。
 
 ### worker 侧：探索完成后注册（写面 explore-store）
 
@@ -162,7 +162,7 @@ $rdd = $null; $t = $null; try { $t = git rev-parse --show-toplevel } catch { }; 
 
 register 会校验 `{slug}.md` 与 `{slug}.summary.md` 配对存在、计算每个文件的 SHA-256、**在热区内**按 key/产物去重后追加（index 同 key 旧条目保留不动，由检索的热区优先与转正的去重替换收口）。注册即落热区，下一次检索立即可见。向量配置齐备（endpoint + model + dimensions + `$env:RDD_EMBED_APIKEY`）时，register 会**同步 embedding 单条**（复用 textHash 一致的既有向量；失败仅告警不阻断注册，输出 `embed.status` = skipped/reused/embedded/failed）；配置缺失则跳过（`skipped`）。DSH 插件代注册的产物无此钩子，靠词法召回 + `embed-backfill` 补齐。
 
-> **旧路径兼容**：`explore.cmd -Type register` 仍可用——薄转发到 explore-store，输出附 `deprecation` 提示。新代码一律直调 explore-store。
+> **旧路径已删除**：`explore.cmd -Type register`（薄转发到 explore-store）与 `-Type explore`（候选兼容面）已移除（删除时仓内与各角色 SKILL 零调用方），残留调用报 `INVALID_TYPE`（fail-loud，不再静默空转）。注册一律直调 `explore-store.cmd -Type register`。
 
 ### 向量补齐：embed-backfill
 
@@ -219,10 +219,6 @@ Top-K 截断（F8 总分序）：score DESC → hot 优先 → registeredAt DESC
 ```
 
 > **脚本内置精度排序**。相关性由冻结公式在管线内确定（分数非空即相关），调用方按两分支协议消费，不再自行扫 tags 判断。
-
-### `explore.cmd -Type explore`（兼容面）
-
-与 search 相同的双 zone 合并，但输出字段名保留旧契约 `candidates`，且 **dispatchPrompt 恒附**（无论命中与否）。旧调用方零改动可用；条目新增 `origin` 为超集增量。
 
 ### `explore-store.cmd -Type register`（写热区）
 

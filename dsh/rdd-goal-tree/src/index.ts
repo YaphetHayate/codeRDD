@@ -9,6 +9,15 @@
  * no lock. The browser half (exports["./client"], discovered via the
  * `dsh.client` declaration) polls this endpoint and renders the dock strip.
  *
+ * Payload (plugin-perf L3): the default response carries run SUMMARIES —
+ * every run-level scalar plus slim census nodes; full node detail (task
+ * texts, doc links, mockup chips) ships only for runs with a LIVE dsh-bound
+ * claim (the run some worker session renders now) or through the
+ * `&run=<runId>` detail form, which returns that one run in full. The
+ * aggregation itself runs concurrently behind a per-run mtime-fingerprint
+ * cache (plugin-perf L1/L2), so a poll re-stats a handful of files instead
+ * of re-reading every run from zero.
+ *
  * The callback side (see ./watcher.ts) watches ledgers of the repositories
  * the endpoint served. Each NEW ledger report entry / open escalation is
  * delivered once into the CURRENT effective planner session via
@@ -30,7 +39,7 @@ import type { SessionId } from '@deepseek-ai/dsh-session'
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
 // Type-only: pulls the webServer Context declaration merge (ctx.webServer).
 import type {} from '@deepseek-ai/dsh-host-webserver'
-import { aggregateGoalTrees } from './goaltrees.js'
+import { aggregateGoalTrees, projectRunView, readClaimSession } from './goaltrees.js'
 import { PlannerCallbackWatcher } from './watcher.js'
 
 export const name = 'rdd-goal-tree'
@@ -65,10 +74,36 @@ const ENDPOINT_PATH = '/rdd-goal-tree/runs'
 const LIVENESS_PATH = '/rdd-goal-tree/liveness'
 
 /**
- * Serve `GET /rdd-goal-tree/runs?cwd=…`: the whole run list for the session's
- * repository, JSON-serialized {@link aggregateGoalTrees} output.
+ * Whether one run carries a LIVE dsh-bound claim (plugin-perf L3's detail
+ * rule): a claim sidecar whose session still resolves in the agents registry
+ * — the same liveness source the callback delivery and the liveness route
+ * use. Historical claims (finished runs, dead sessions) are exactly the runs
+ * NO session renders as its worker view, so they ship slim; a live worker
+ * session implies its run ships full, which is precisely when the task text
+ * and doc chips are needed. Registry lookups are in-memory — cheap enough
+ * to run per request over every node.
  */
-async function serve(req: IncomingMessage, res: ServerResponse, config: Config, learnRoot: (root: string) => void): Promise<void> {
+function hasLiveClaimSession(run: { nodes: ReadonlyArray<{ claimSessionId: string | null }> }, ctx: Context): boolean {
+  return run.nodes.some(node => {
+    if (node.claimSessionId === null) return false
+    try {
+      return ctx.agents.get(node.claimSessionId as SessionId) !== undefined
+    } catch {
+      return false
+    }
+  })
+}
+
+/**
+ * Serve `GET /rdd-goal-tree/runs?cwd=…`: the run list for the session's
+ * repository. Default form — run summaries plus slim nodes; full detail only
+ * for runs with a LIVE dsh-bound claim (the run some worker session renders
+ * NOW — see {@link hasLiveClaimSession}). Detail form `?cwd=…&run=<runId>` —
+ * exactly that run with full node detail, in the same `{repoRoot, runs}`
+ * envelope (an unknown run yields an empty list, never an error, so
+ * old-host/new-client mixes degrade to the slim rendering).
+ */
+async function serve(req: IncomingMessage, res: ServerResponse, config: Config, ctx: Context, learnRoot: (root: string) => void): Promise<void> {
   const send = (status: number, body: unknown): void => {
     res.writeHead(status, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' })
     res.end(JSON.stringify(body))
@@ -88,13 +123,24 @@ async function serve(req: IncomingMessage, res: ServerResponse, config: Config, 
     send(400, { error: 'missing cwd query parameter' })
     return
   }
+  const runParam = url.searchParams.get('run')
   try {
     const repoRoot = config.repoRoot !== undefined ? resolve(config.repoRoot) : findRepoRoot(cwd)
     learnRoot(repoRoot)
     // repoRoot passed explicitly so doc-pointer resolution (node-doc-links)
     // never depends on the two-level-parent derivation.
     const { runs } = await aggregateGoalTrees(join(repoRoot, '.rdd', 'goal-trees'), repoRoot)
-    send(200, { repoRoot, runs })
+    if (runParam !== null && runParam.trim() !== '') {
+      // detail form (plugin-perf L3): one run, full node detail — a client
+      // expanding a slim run fetches exactly what it renders.
+      const one = runs.find(r => r.runId === runParam)
+      send(200, { repoRoot, runs: one === undefined ? [] : [projectRunView(one, true)] })
+      return
+    }
+    // default form: summaries + slim nodes; full detail only for runs a LIVE
+    // worker session renders — every run-level scalar stays present so the
+    // bar header (and old clients) render unchanged.
+    send(200, { repoRoot, runs: runs.map(r => projectRunView(r, hasLiveClaimSession(r, ctx))) })
   } catch (error) {
     send(500, { error: error instanceof Error ? error.message : String(error) })
   }
@@ -150,10 +196,10 @@ async function serveLiveness(
   const cwd = url.searchParams.get('cwd') ?? ''
   try {
     const repoRoot = config.repoRoot !== undefined ? resolve(config.repoRoot) : findRepoRoot(cwd)
-    const { runs } = await aggregateGoalTrees(join(repoRoot, '.rdd', 'goal-trees'))
-    const view = runs.find(r => r.runId === run)
-    const viewNode = view?.nodes.find(n => n.id === node) ?? null
-    const sessionId = viewNode?.claimSessionId ?? null
+    // Liveness shortcut (plugin-perf L2): the node-keyed probe reads the one
+    // claim sidecar directly instead of aggregating every run — the binding
+    // lives in state/claims/<node>.json and nothing else is needed.
+    const sessionId = await readClaimSession(join(repoRoot, '.rdd', 'goal-trees'), run, node)
     if (sessionId === null) {
       send(200, { run, node, session_id: null, liveness: 'unknown', reason: 'no dsh session binding on the claim sidecar' })
       return
@@ -186,7 +232,7 @@ export function apply(ctx: Context, config: Config = {}): void {
       handler: (req: IncomingMessage, res: ServerResponse): Promise<void> | void => {
         const pathname = decodeURIComponent(new URL(req.url ?? '/', 'http://localhost').pathname)
         if (pathname === LIVENESS_PATH) return serveLiveness(req, res, config, ctx)
-        return serve(req, res, config, root => watcher.learn(root))
+        return serve(req, res, config, ctx, root => watcher.learn(root))
       },
     }),
     'rdd-goal-tree: read-only run status + claim liveness route',

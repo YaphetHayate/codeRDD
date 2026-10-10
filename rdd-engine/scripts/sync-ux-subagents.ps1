@@ -1,15 +1,23 @@
 ﻿#Requires -Version 5.1
 <#
 .SYNOPSIS
-  同步 UX 视觉稿生成子代理配置。
+  按 UX 模型策略物化 opencode 执行器。
 .DESCRIPTION
-  真相源是 rdd-ux/ux_subagent.json。本脚本根据 json 的 agents（活跃）与 managed（所有权）
-  列表，对 .opencode/agent/ux-mockup-*.md 执行 Create / Update / Delete：
-    - agents 有、磁盘无           → Create（从模板生成，正文统一）
-    - agents 有、磁盘有、字段不一致 → Update（只改 frontmatter 的 model/temperature）
-    - managed 有、agents 无        → Delete（删文件 + 从 managed 移除）
-    - 磁盘有、managed 与 agents 均无 → orphan 警告（不自动删，安全）
-  agent 正文不随 model 变化——正文是通用执行器职责，固化在本脚本模板中。
+  真相源是 rdd-ux/ux_subagent.json 的模型策略状态机（mode: uninitialized | inherit |
+  random | pinned）——本脚本不再消费 agents 模型清单（schema v1 已废弃）。
+  执行器约定集固定三名：ux-mockup-a / ux-mockup-b / ux-mockup-c（对应 fork-join
+  三方向；方向知识永不进入执行器）。frontmatter 的 model 绑定按 mode 推导：
+    - pinned                      → 第 i 条 pinned.model 绑到第 i 个执行器
+                                    （清单不足 3 时其余执行器无绑定；超出只用前 3）
+    - inherit / random /          → 全部执行器无 model 绑定（跟随会话模型 /
+      uninitialized                  random 在 opencode 下降级为无绑定 + 简报差异化）
+  对 .opencode/agent/ux-mockup-*.md 执行 Create / Update / Delete：
+    - 约定集有、磁盘无            → Create（从模板生成，正文统一）
+    - 磁盘有、绑定与期望不一致     → Update（只改 frontmatter 的 model 行）
+    - managed 有、约定集无        → Delete（删文件 + 从 managed 移除）
+    - 磁盘有、managed 与约定集均无 → orphan 警告（不自动删，安全）
+  agent 正文不随策略变化——正文是通用执行器职责，固化在本脚本模板中。
+  dsh 运行时不消费本脚本（策略实时生效）；仅 opencode 需要物化 + 重启。
 .PARAMETER WhatIf
   干跑模式：只报告会做什么，不实际执行写/删操作，也不回写 json。
 .EXAMPLE
@@ -84,16 +92,45 @@ try {
   exit 1
 }
 
-$active = @($config.agents)
+# ---------- 策略解析（schema v2：mode 状态机）----------
+$mode = $config.mode
+if (-not $mode) {
+  Write-Host "[ERROR] ux_subagent.json 仍是旧版 agents 模型清单（schema v1，已废弃）。" -ForegroundColor Red
+  Write-Host "        现在的真相源是模型策略状态机（mode: uninitialized | inherit | random | pinned），" -ForegroundColor Red
+  Write-Host "        初始为空、不预绑模型。请按 rdd-ux/references/mockup-generation.md「模型策略与运行时适配」" -ForegroundColor Red
+  Write-Host "        更新该文件（或让 UX 在首次 fork-join 触发时征询落定）。" -ForegroundColor Red
+  exit 1
+}
+if (@('uninitialized','inherit','random','pinned') -notcontains $mode) {
+  Write-Host "[ERROR] mode 取值非法：$mode（合法：uninitialized | inherit | random | pinned）" -ForegroundColor Red
+  exit 1
+}
+
 $managed = @($config.managed)
 if (-not $managed) { $managed = @() }
 
-# 校验 agents 无重名
-$activeNames = $active | ForEach-Object { $_.name }
-$dups = $activeNames | Group-Object | Where-Object { $_.Count -gt 1 }
-if ($dups) {
-  Write-Host "[ERROR] agents 存在重名：$($dups.Name -join ', ')" -ForegroundColor Red
-  exit 1
+# 执行器约定集（固定三名，对应 fork-join 三方向）
+$trio = @('ux-mockup-a', 'ux-mockup-b', 'ux-mockup-c')
+
+# 按 mode 推导每个执行器的期望 model 绑定（$null = 无绑定）
+$expected = @{}
+foreach ($name in $trio) { $expected[$name] = $null }
+$notes = @()
+if ($mode -eq 'pinned') {
+  $pinned = @($config.pinned)
+  if (-not $pinned) { $pinned = @() }
+  for ($i = 0; $i -lt $trio.Count; $i++) {
+    if ($i -lt $pinned.Count) {
+      $m = [string]$pinned[$i].model
+      if (-not [string]::IsNullOrWhiteSpace($m)) { $expected[$trio[$i]] = $m }
+    }
+  }
+  if ($pinned.Count -gt 0 -and $pinned.Count -lt $trio.Count) {
+    $notes += "pinned 清单 $($pinned.Count) 条 < 3：其余执行器无绑定（跟随会话模型）"
+  }
+  if ($pinned.Count -gt $trio.Count) {
+    $notes += "pinned 清单 $($pinned.Count) 条 > 3：只用前 3 条"
+  }
 }
 
 # ---------- 工具函数 ----------
@@ -114,15 +151,22 @@ function Get-AgentField {
 }
 
 function Update-AgentFrontmatter {
-  param([string]$Path, [string]$Model, [string]$TempStr)
+  param([string]$Path, [string]$Model)
+  # 期望绑定 = $Model；$null = 无绑定（删除 model 行）。同时清除遗留 temperature 行
+  # （策略状态机不再携带温度——dsh 侧 agent() 覆盖对不支持，opencode 走默认值）。
   $content = [System.IO.File]::ReadAllText($Path)
   if ($content -match '(?s)^(---\r?\n)(.*?)(\r?\n---\r?\n)(.*)$') {
     $open = $matches[1]
     $yaml = $matches[2]
     $close = $matches[3]
     $body = $matches[4]
-    $yaml = $yaml -replace '(?m)^\s*model\s*:.*$', "model: $Model"
-    $yaml = $yaml -replace '(?m)^\s*temperature\s*:.*$', "temperature: $TempStr"
+    $yaml = $yaml -replace '(?m)^\s*model\s*:.*$', ''
+    $yaml = $yaml -replace '(?m)^\s*temperature\s*:.*$', ''
+    $yaml = ($yaml -split "`r?`n" | Where-Object { $_ -ne '' }) -join "`n"
+    if (-not [string]::IsNullOrEmpty($Model)) {
+      # 插回 model 行：permission 行之前（模板形状由本脚本管理，锚点稳定）
+      $yaml = $yaml -replace '(?m)^(permission\s*:)', "model: $Model`n`$1"
+    }
     $newContent = $open + $yaml + $close + $body
     [System.IO.File]::WriteAllText($Path, $newContent, $utf8Bom)
   } else {
@@ -130,21 +174,18 @@ function Update-AgentFrontmatter {
   }
 }
 
-# agent 正文模板（与手动维护的 agent 正文完全一致；model/temperature 用占位符）
-$agentTemplate = @'
+# agent 正文模板（正文是通用执行器职责，固化在本脚本模板中；model 行按策略条件生成）
+$agentTemplateHead = @'
 ---
 description: >
-  UX 视觉稿生成子代理。RDD-UX 专属，由 UX 通过 Task 工具派遣，
-  按注入的方向简报生成单张 UI mockup（图片或 HTML）。不进入 @ 菜单，
-  不接受其他角色调用。model 与方向解耦——本代理只绑 model，具体设计方向
-  由 UX dispatch 时动态注入。本文件由 sync-ux-subagents 脚本管理，
-  请勿手改正文（改了也会被下次同步覆盖）；model/temperature 的真相源是
-  rdd-ux/ux_subagent.json。
+  UX 视觉稿生成子代理。RDD-UX 专属，由 UX 派遣，按注入的方向简报生成单张
+  UI mockup（图片或 HTML）。不进入 @ 菜单，不接受其他角色调用。模型与方向
+  解耦——本代理不持有方向定义，具体设计方向由 UX dispatch 时动态注入；
+  model 绑定由 ux_subagent.json 的策略状态机推导（本文件由 sync-ux-subagents
+  脚本管理，请勿手改，改了也会被下次同步覆盖）。
 mode: subagent
 hidden: true
-model: __MODEL__
-temperature: __TEMP__
-permission:
+__MODEL_LINE__permission:
   read: allow
   glob: allow
   grep: allow
@@ -158,11 +199,14 @@ permission:
   websearch: deny
 ---
 
+'@
+
+$agentTemplateBody = @'
 你是 UX 视觉稿生成子代理，RDD-UX 专属。
 
 ## 基本职责
 
-UX 派遣你时会通过 Task prompt 注入一份**方向简报**，其中包含：本方向的设计目标、主变量、驱动要素（布局/配色/风格关键词）、共享参数（内容领域、响应式目标、Phase 2 配色方向、设计规格草案要点）、素材类型（image 或 html）、输出路径，以及本方向的**完整生成指令**（image 素材的 prompt 骨架、html 素材的生成约束、差异化关键句）。
+UX 派遣你时会注入一份**方向简报**，其中包含：本方向的设计目标、主变量、驱动要素（布局/配色/风格关键词）、共享参数（内容领域、响应式目标、Phase 2 配色方向、设计规格草案要点）、素材类型（image 或 html）、输出路径，以及本方向的**完整生成指令**（image 素材的 prompt 骨架、html 素材的生成约束、差异化关键句）。
 
 你的职责是**严格执行注入的方向简报**：
 - 素材类型 = image → 按注入的 prompt 骨架填充，调用 runtime 可用的图片生成工具，存储到指定路径
@@ -185,8 +229,9 @@ UX 派遣你时会通过 Task prompt 注入一份**方向简报**，其中包含
 '@
 
 function New-AgentFile {
-  param([string]$Path, [string]$Model, [string]$TempStr)
-  $content = $agentTemplate.Replace('__MODEL__', $Model).Replace('__TEMP__', $TempStr)
+  param([string]$Path, [string]$Model)
+  $modelLine = if ([string]::IsNullOrEmpty($Model)) { '' } else { "model: $Model`n" }
+  $content = $agentTemplateHead.Replace('__MODEL_LINE__', $modelLine) + $agentTemplateBody
   [System.IO.File]::WriteAllText($Path, $content, $utf8Bom)
 }
 
@@ -197,7 +242,6 @@ Get-ChildItem -LiteralPath $agentDir -Filter "ux-mockup-*.md" -File -ErrorAction
   $disk[$name] = @{
     Path  = $_.FullName
     Model = (Get-AgentField -Path $_.FullName -Field "model")
-    Temp  = (Get-AgentField -Path $_.FullName -Field "temperature")
   }
 }
 
@@ -206,47 +250,45 @@ $changes = @()
 $warnings = @()
 $newManaged = @($managed)
 
-# Create + Update（遍历活跃 agents）
-foreach ($agent in $active) {
-  $name = $agent.name
-  $model = $agent.model
-  $tempStr = ($agent.temperature).ToString("G", [System.Globalization.CultureInfo]::InvariantCulture)
+# Create + Update（遍历约定集）
+foreach ($name in $trio) {
+  $model = $expected[$name]
+  $modelDisplay = if ([string]::IsNullOrEmpty($model)) { '(无绑定，跟随会话模型)' } else { $model }
   $path = Join-Path $agentDir "$name.md"
 
   if (-not $disk.ContainsKey($name)) {
     # Create
-    $changes += "created: $name  (model=$model, temperature=$tempStr)"
+    $changes += "created: $name  (model=$modelDisplay)"
     if (-not $WhatIf) {
-      New-AgentFile -Path $path -Model $model -TempStr $tempStr
+      New-AgentFile -Path $path -Model $model
     }
     if ($newManaged -notcontains $name) { $newManaged += $name }
   } else {
-    # Update 检测
+    # Update 检测：磁盘 model 字段 vs 期望（无绑定时磁盘应无 model 行）
     $current = $disk[$name]
+    $currentModel = $current.Model
     $needUpdate = $false
-    $detail = @()
-    if ($current.Model -ne $model) {
-      $detail += "model: $($current.Model) -> $model"
-      $needUpdate = $true
-    }
-    if ($current.Temp -ne $tempStr) {
-      $detail += "temperature: $($current.Temp) -> $tempStr"
-      $needUpdate = $true
-    }
-    if ($needUpdate) {
-      $changes += "updated: $name  ($($detail -join '; '))"
-      if (-not $WhatIf) {
-        Update-AgentFrontmatter -Path $current.Path -Model $model -TempStr $tempStr
+    if ([string]::IsNullOrEmpty($model)) {
+      if (-not [string]::IsNullOrEmpty($currentModel)) {
+        $changes += "updated: $name  (model: $currentModel -> 无绑定；mode=$mode)"
+        $needUpdate = $true
       }
+    } elseif ($currentModel -ne $model) {
+      $from = if ([string]::IsNullOrEmpty($currentModel)) { '(无绑定)' } else { $currentModel }
+      $changes += "updated: $name  (model: $from -> $model)"
+      $needUpdate = $true
+    }
+    if ($needUpdate -and -not $WhatIf) {
+      Update-AgentFrontmatter -Path $current.Path -Model $model
     }
   }
 }
 
-# Delete（遍历 managed，不在 active 的 → 删）
+# Delete（遍历 managed，不在约定集的 → 删；约定集固定三名，此处仅清理遗留记录）
 foreach ($name in @($managed)) {
-  if ($activeNames -notcontains $name) {
+  if ($trio -notcontains $name) {
     if ($disk.ContainsKey($name)) {
-      $changes += "deleted: $name  (已从 agents 移除，清理对应 .md)"
+      $changes += "deleted: $name  (不在执行器约定集，清理对应 .md)"
       if (-not $WhatIf) {
         Remove-Item -LiteralPath $disk[$name].Path -Force
       }
@@ -257,9 +299,9 @@ foreach ($name in @($managed)) {
   }
 }
 
-# Orphan 检测（磁盘有、managed 和 active 都没有 → 警告）
+# Orphan 检测（磁盘有、managed 和约定集都没有 → 警告）
 foreach ($name in @($disk.Keys)) {
-  if ($managed -notcontains $name -and $activeNames -notcontains $name) {
+  if ($managed -notcontains $name -and $trio -notcontains $name) {
     $warnings += "orphan: $name  (磁盘存在但非本系统管理，已跳过。如需纳入管理请加入 ux_subagent.json 的 managed 列表)"
   }
 }
@@ -282,10 +324,16 @@ if ($managedChanged -and -not $WhatIf) {
 
 # ---------- 报告 ----------
 Write-Host ""
-Write-Host "=== UX 子代理同步 ===" -ForegroundColor Cyan
+Write-Host "=== UX 子代理同步（策略驱动）===" -ForegroundColor Cyan
 Write-Host "真相源：$jsonPath"
+Write-Host "当前策略：mode=$mode"
+Write-Host "执行器约定集：$($trio -join ' / ')"
 Write-Host "目标目录：$agentDir"
 if ($WhatIf) { Write-Host "模式：干跑（-WhatIf，未实际执行）" -ForegroundColor Yellow }
+if ($notes.Count -gt 0) {
+  Write-Host ""
+  foreach ($n in $notes) { Write-Host "  note: $n" -ForegroundColor DarkYellow }
+}
 Write-Host ""
 
 if ($changes.Count -eq 0 -and $warnings.Count -eq 0) {

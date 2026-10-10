@@ -12,14 +12,15 @@
 
 1. 按 `../references/self-check.md` 完成交付前自检
 2. 将设计规格写入 `design/{需求文件名}-ux.md`（需求文件名从 task.json 的 requirement 字段获取，去掉 `.md` 后缀）
-3. 设置文档 `## 流转控制`：当前责任人 = DEV，状态 = active
-4. 调用 rdd-flow add-design 追加设计文档路径，然后 advance -From UX -To DEV 推进路由（见 rdd-engine/references/task-routing.md）
-5. 更新 `.rdd/design-system/` 累积资产（详见 SKILL.md「设计系统累积视角」）：
+3. 文档 frontmatter 保持 `status: active`（路由归属只活在 task.json，**不写文档侧流转字段**——存量「当前责任人」已废弃）
+4. 本条经用户确认的检查点决策（交互方案定稿/视觉稿取舍）入统一决策账本留痕：`delivery-bridge.cmd -Command decide -Kind checkpoint -Archive <归档> -Checkpoint <名> -Decision <结论> [-Reason] [-Options <A|B>] [-Background] [-Role UX]`
+5. 调用 rdd-flow add-design 追加设计文档路径，然后 `set-route` 推进路由——同任务还有其他设计角色 → 阶段内收窄（不带 `-Phase`）；自己是最后一个 → `set-route -To "DEV" -Phase IMPL`（见 rdd-engine/references/task-routing.md）
+6. 更新 `.rdd/design-system/` 累积资产（详见 SKILL.md「设计系统累积视角」）：
    - 新增的 Primitive/Semantic Token 追加到 `tokens.md`
    - 新增的组件追加到 `components.md`
    - 目录不存在时创建并写入本次设计的基础 Token 和组件清单
-6. 如有 Phase 2.5 视觉稿产物（`mockups/final.html` 和 `mockups/images/reference.png`），将路径写入设计规格文档的「视觉稿参考」章节
-7. 呈现给用户确认后，按 `../../rdd-engine/references/transition-guide.md` 的**上游协议 4 步硬流程**执行角色交接（next → 推荐 → 确认 → handoff packet）
+7. 如有 Phase 2.5 视觉稿产物（`mockups/final.html` 和 `mockups/images/reference.png`），将路径写入设计规格文档的「视觉稿参考」章节
+8. 呈现给用户确认后，按 `../../rdd-engine/references/transition-guide.md` 的**上游协议 4 步硬流程**执行角色交接（next → 推荐 → 确认 → handoff packet）
 
 **推荐角色分支**：
 - **UX 仍有待办**（`next` 显示 UX `taskCount > 0`）→ 推荐重入 UX（新会话）处理下一条。话术补充："本条设计已闭环，UX 还有 N 条待设计，建议 `/new` 开新会话继续。"

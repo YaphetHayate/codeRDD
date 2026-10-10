@@ -37,9 +37,9 @@
 
 ### 2. 快速归档
 
-跳过场景对话和需求评估，按 `references/archive-rules.md` 执行归档，以下列差异覆盖：
+跳过场景对话，按 `references/archive-rules.md` 执行归档，以下列差异覆盖：
 
-- **步骤 2**（overview.md）：背景段简短即可
+- **步骤 2**（overview.md）：背景段简短即可；**豁免「需求全貌（确认版）」段**（单需求、描述直接引用用户原文，需求件即全貌）
 - **步骤 3**（需求文件）：只生成**一个**需求文件，不拆分；描述直接引用用户原文，不做"方案→问题"的转译；如用户提供了验收标准直接采用，否则写一条最简标准；如用户提供了具体做法标注"用户预设方案"
 - **步骤 5**（路由判定）：按 `references/artifact-routing.md` 规则判定路由目标（可能是 DEV、CTO 或 UX），不对目标角色做任何预设
 - **步骤 6**（代码探索）：快速通道默认跳过，不委托 engine 探索代码
@@ -47,8 +47,10 @@
 
 ```powershell
 $rdd = $null; $t = $null; try { $t = git rev-parse --show-toplevel } catch { }; foreach ($c in @($env:RDD_ENGINE_HOME; if ($t) { (Get-ChildItem $t -Recurse -Directory -Depth 3 -Filter 'rdd-engine').FullName }; "$HOME\.rdd\engine\current")) { if ($c -and (Test-Path "$c\scripts\rdd-flow.cmd")) { $rdd = $c; break } }; if (-not $rdd) { throw "rdd-engine 未定位（三级定位链：RDD_ENGINE_HOME → 项目内 rdd-engine → ~\.rdd\engine\current 全 miss）。安装/排障：GitHub Release 下载 rdd-engine.tgz 后运行 scripts/install-rdd-engine.ps1；协议详见 rdd-engine/references/engine-location.md" }; & "$rdd\scripts\rdd-flow.cmd" -Command next -Archive ".rdd/changes/archive/YYYY-MM-DD-short-name" -Format markdown
-$rdd = $null; $t = $null; try { $t = git rev-parse --show-toplevel } catch { }; foreach ($c in @($env:RDD_ENGINE_HOME; if ($t) { (Get-ChildItem $t -Recurse -Directory -Depth 3 -Filter 'rdd-engine').FullName }; "$HOME\.rdd\engine\current")) { if ($c -and (Test-Path "$c\scripts\rdd-flow.cmd")) { $rdd = $c; break } }; if (-not $rdd) { throw "rdd-engine 未定位（三级定位链：RDD_ENGINE_HOME → 项目内 rdd-engine → ~\.rdd\engine\current 全 miss）。安装/排障：GitHub Release 下载 rdd-engine.tgz 后运行 scripts/install-rdd-engine.ps1；协议详见 rdd-engine/references/engine-location.md" }; & "$rdd\scripts\rdd-flow.cmd" -Command start -Role <目标角色> -Archive ".rdd/changes/archive/YYYY-MM-DD-short-name" -Format markdown
+$rdd = $null; $t = $null; try { $t = git rev-parse --show-toplevel } catch { }; foreach ($c in @($env:RDD_ENGINE_HOME; if ($t) { (Get-ChildItem $t -Recurse -Directory -Depth 3 -Filter 'rdd-engine').FullName }; "$HOME\.rdd\engine\current")) { if ($c -and (Test-Path "$c\scripts\rdd-flow.cmd")) { $rdd = $c; break } }; if (-not $rdd) { throw "rdd-engine 未定位（三级定位链：RDD_ENGINE_HOME → 项目内 rdd-engine → ~\.rdd\engine\current 全 miss）。安装/排障：GitHub Release 下载 rdd-engine.tgz 后运行 scripts/install-rdd-engine.ps1；协议详见 rdd-engine/references/engine-location.md" }; & "$rdd\scripts\start-role.cmd" -Role <目标角色> -TaskId <n>
 ```
+
+> 第 1 条对应 4 步硬流程的 Step 2（`next` 展示可流转角色）；第 2 条是用户确认后的交接统一入口（Step 4）——`start-role.cmd` 按判据链自动选后端（Plus / dsh / CLI），不要改用 `rdd-flow start` 自行生成交接包。
 
 ### 3. 完成后
 

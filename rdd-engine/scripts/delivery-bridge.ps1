@@ -42,7 +42,9 @@
 #               keeps the phase; the phase's LAST settle switches atomically via
 #               -Phase) or complete -> convergence graft of the next phase heads
 #               -> dependency-driven auto-push of newly unlocked nodes; null-phase
-#               (legacy archive) tasks keep the byte-identical advance path
+#               (legacy archive) tasks keep the byte-identical legacy path
+#               (set-route without -Phase; only phase-ambiguous hops — QA — pass
+#               -Phase VERIFY explicitly)
 #   rollback    cross-phase reverse transition (phase-model explicit target):
 #               prune the reported-but-unqualified node (ledger keeps the
 #               audit) -> sibling-graft ONE rebuilt node per -To role at the
@@ -167,7 +169,7 @@
 # (verdict=done / citations non-empty and real paths / extras.verification non-empty
 # / role handoff gate — DEV deliveries carry extras.quality_scan, the code-metrics
 # credential; dev-quality-prescan-gate) before any task.json transition. Manual
-# rdd-flow advance under a bridged run is forbidden by protocol (see
+# rdd-flow routing writes under a bridged run are forbidden by protocol (see
 # references/planner-guide.md).
 
 [CmdletBinding()]
@@ -6648,22 +6650,39 @@ function Invoke-FlowCompleteTail {
     return @{ bridge = $Bridge; warnings = @() }
 }
 
+function Get-LegacyHopPhase {
+    # The advance-era bridge tail (and its pending_sync replays) routed through the
+    # removed rdd-flow advance command; set-route needs an explicit -Phase only when
+    # the hop target is phase-ambiguous (QA spans DESIGN/VERIFY — the legacy chain's
+    # DEV->QA hop is acceptance, so VERIFY). Unambiguous targets keep phase=null
+    # (byte-identical legacy semantics; migrate is the designated filler).
+    param([string]$NextStage)
+    $covers = @($script:PhaseOrder | Where-Object { @($script:PhaseRoles[$_]) -contains $NextStage })
+    if ($covers.Count -gt 1) { return "VERIFY" }
+    return $null
+}
+
 function Invoke-LegacySettleFlow {
     # LEGACY null-phase flow tail — byte-identical pre-phase-model behavior
     # (conservative degrade for old archives; new archives always carry phase):
-    # terminal stage -> flow complete; otherwise advance + single next-stage
-    # graft. Half-failures land in pending_sync. Returns the settle-tail shape
+    # terminal stage -> flow complete; otherwise set-route onto the single
+    # next-stage graft (unambiguous target keeps phase=null; QA passes -Phase
+    # VERIFY). Half-failures land in pending_sync. Returns the settle-tail shape
     # @{ bridge; warnings; graftedNext; graftedNextNodes; flowOperation; taskLifecycle }.
     # $NextStage stays untyped: a null (terminal stage) must survive binding as
-    # null — a [string] cast would turn it into "" and flip the advance/complete fork.
-    param([string]$RunDir, $Bridge, $Task, [string]$NodeId, [string]$Stage, $NextStage)
+    # null — a [string] cast would turn it into "" and flip the route/complete fork.
+    param([string]$RunDir, $Bridge, $Task, [string]$NodeId, [string]$Stage, $NextStage, [string]$QualityScanFile = $null)
     $taskId = [int]$Task.id
     $res = @{ bridge = $Bridge; warnings = @(); graftedNext = $null; graftedNextNodes = @(); flowOperation = ""; taskLifecycle = "" }
     if ($null -ne $NextStage) {
-        $r2 = Invoke-RddFlow @("-Command", "advance", "-TaskId", "$taskId", "-From", $Stage, "-To", $NextStage, "-Archive", $Bridge.archive)
+        $routeArgs = @("-Command", "set-route", "-TaskId", "$taskId", "-To", $NextStage, "-Archive", $Bridge.archive)
+        $hopPhase = Get-LegacyHopPhase $NextStage
+        if ($null -ne $hopPhase) { $routeArgs += @("-Phase", $hopPhase) }
+        if (-not [string]::IsNullOrWhiteSpace($QualityScanFile)) { $routeArgs += @("-QualityScanFile", $QualityScanFile) }
+        $r2 = Invoke-RddFlow $routeArgs
         if ($r2.exit -ne 0 -or $null -eq $r2.json -or -not $r2.json.success) {
-            $res.warnings += "flow advance failed after tree settle — recorded as pending_sync: $($r2.text)"
-            $res.bridge = Add-PendingSync $RunDir $Bridge $NodeId "advance" $Stage $NextStage ($r2.text)
+            $res.warnings += "flow set-route failed after tree settle — recorded as pending_sync: $($r2.text)"
+            $res.bridge = Add-PendingSync $RunDir $Bridge $NodeId "set-route" $Stage $NextStage ($r2.text) -PhaseArg $hopPhase -ScanEvidence $QualityScanFile
         }
         else {
             $g = Invoke-GraftNextStage $RunDir $Bridge $Task $NodeId $NextStage
@@ -6672,7 +6691,7 @@ function Invoke-LegacySettleFlow {
                 $res.graftedNext = $g.node_id
             }
             else {
-                $res.warnings += "next-stage graft failed (flow side already advanced): $($g.error)"
+                $res.warnings += "next-stage graft failed (flow side already routed): $($g.error)"
             }
         }
     }
@@ -6681,7 +6700,7 @@ function Invoke-LegacySettleFlow {
         $res.bridge = $done.bridge
         $res.warnings += @($done.warnings)
     }
-    $res.flowOperation = $(if ($null -eq $NextStage) { "complete" } else { "advance ${Stage}->${NextStage}" })
+    $res.flowOperation = $(if ($null -eq $NextStage) { "complete" } else { "set-route ${Stage}->${NextStage}" })
     $res.taskLifecycle = $(if ($null -eq $NextStage) { "completed" } else { "active @ $NextStage" })
     return $res
 }
@@ -6831,12 +6850,12 @@ function Test-SettleFlowReady {
             Write-ErrorResult "PHASE_INVALID" "TaskId $taskId carries phase '$taskPhase' not in $($script:PhaseOrder -join '/') — fix task.json (rdd-flow check) before settling" 1
         }
         if ($owners -notcontains $Target.stage) {
-            Write-ErrorResult "FLOW_ADVANCE_WOULD_FAIL" "Precheck: '$($Target.stage)' is not in currentOwners of TaskId $taskId ([$($owners -join '+')]) — the phase-side set-route would mis-narrow. Fix routing or use rdd-flow set-route first." 1
+            Write-ErrorResult "FLOW_SETROUTE_WOULD_FAIL" "Precheck: '$($Target.stage)' is not in currentOwners of TaskId $taskId ([$($owners -join '+')]) — the phase-side set-route would mis-narrow. Fix routing or use rdd-flow set-route first." 1
         }
     }
     elseif ($null -ne $Target.next_stage) {
         if ($owners -notcontains $Target.stage) {
-            Write-ErrorResult "FLOW_ADVANCE_WOULD_FAIL" "Precheck: '$($Target.stage)' is not in currentOwners of TaskId $taskId ([$($owners -join '+')]) — advance would fail. Fix routing or use rdd-flow set-route first." 1
+            Write-ErrorResult "FLOW_SETROUTE_WOULD_FAIL" "Precheck: '$($Target.stage)' is not in currentOwners of TaskId $taskId ([$($owners -join '+')]) — the set-route would mis-replace. Fix routing or use rdd-flow set-route first." 1
         }
     }
     return @{ task = $task; task_phase = $taskPhase; owners = $owners }
@@ -6874,10 +6893,9 @@ function Invoke-SettleFlowTransition {
     if ($null -eq $Ready.task_phase) {
         # LEGACY null-phase task: conservative degrade — byte-identical pre-phase
         # behavior (StageNext chain + single graft). New archives always carry phase.
-        # advance carries no handoff gate (deprecated command, behavior frozen —
-        # dev-quality-prescan-gate decision 6), so the legacy tail needs no
-        # credential passthrough.
-        $tail = Invoke-LegacySettleFlow $RunDir $Bridge $Ready.task $NodeId $Target.stage $Target.next_stage
+        # The legacy tail is a set-route too, so the credential passthrough applies
+        # uniformly (a DEV exit hits the chain-side handoff gate either way).
+        $tail = Invoke-LegacySettleFlow $RunDir $Bridge $Ready.task $NodeId $Target.stage $Target.next_stage -QualityScanFile $QualityScanFile
     }
     else {
         # PHASE MODE (phase-model.md §5.2). Owners narrowing keeps the phase and only
@@ -7190,6 +7208,16 @@ function Get-NodeTaskText {
 function Invoke-GraftNextStage {
     param([string]$RunDir, $Bridge, $Task, [string]$ParentNodeId, [string]$NextStage, $RedoContext)
     $taskId = [int]$Task.id
+    # duplicate-graft hard gate (settle-route-narrow-duplicate-graft): refuse when
+    # a LIVE node already maps to (task, stage) — the single choke point every
+    # stage-graft path passes through (EnsureStageNodes guards first; rollback /
+    # legacy-settle land here with the old node already terminal). A live mapping
+    # means this graft would duplicate in-flight work AND poison bridge.tasks
+    # .stages (the whitelist overwrite keeps only the latest node per role).
+    $live = Get-LiveStageNode -RunId ([string]$Bridge.run_id) -Bridge $Bridge -TaskId $taskId -Role $NextStage
+    if ($null -ne $live) {
+        return @{ success = $false; error = "DUPLICATE_STAGE_GRAFT: task #$taskId already has a live $NextStage node ($live) — graft refused, in-flight mapping not overwritten" }
+    }
     $title = [string]$Task.title
     $reqRel = ([string]$Task.requirement -replace '\\', '/')
     $designRels = @()
@@ -7231,8 +7259,18 @@ function Get-LiveStageNode {
         }
     }
     if ($null -eq $existing) { return $null }
-    $node = Get-NodeFromTree (Get-TreeStatusView $RunId) $existing
-    $status = if ($node) { [string]$node.status } else { "missing" }
+    # settle-route-narrow-duplicate-graft (2026-10-09 incident, ops-dashboard-
+    # project-switcher): status MUST come from the NORMALIZED view resolver. The
+    # raw Get-NodeFromTree passes the claimed/reported buckets' rich objects
+    # through AS-IS and those carry NO status field (bucket membership IS the
+    # status there), so `.status` evaluated to "" — every claimed/reported peer
+    # looked dead here and each settle narrowing re-grafted live owners
+    # (duplicate nodes + duplicate dispatches; bridge.tasks.stages poisoned by
+    # the whitelist overwrite). Pending peers worked by accident: the bare-id
+    # string buckets synthesize a status field. Use Get-NodeViewState (the
+    # shape-normalized resolver this bug motivated) for every bucket shape.
+    $view = Get-NodeViewState (Get-TreeStatusView $RunId) $existing
+    $status = if ($view) { [string]$view.status } else { "missing" }
     if ($status -in @("pending", "claimed", "reported")) { return $existing }
     return $null
 }
@@ -7299,7 +7337,18 @@ function Repair-PendingSync {
             $r = Invoke-RddFlow @("-Command", "reopen", "-TaskId", "$taskId", "-To", [string]$e.to, "-Archive", $Bridge.archive)
         }
         else {
-            $r = Invoke-RddFlow @("-Command", "advance", "-TaskId", "$taskId", "-From", [string]$e.from, "-To", [string]$e.to, "-Archive", $Bridge.archive)
+            # legacy 'advance'-op entries (engine predating the advance removal):
+            # replay as set-route — -Phase only when the hop target is phase-
+            # ambiguous (QA -> VERIFY, the legacy acceptance hop); unambiguous
+            # targets keep the null-phase legacy semantics.
+            $retryArgs = @("-Command", "set-route", "-TaskId", "$taskId", "-To", [string]$e.to, "-Archive", $Bridge.archive)
+            $hopPhase = Get-LegacyHopPhase ([string]$e.to)
+            if ($null -ne $hopPhase) { $retryArgs += @("-Phase", $hopPhase) }
+            $ev = [string]$e.scan_evidence
+            if ($ev -ne '' -and (Test-Path -LiteralPath $ev -PathType Leaf)) {
+                $retryArgs += @("-QualityScanFile", $ev)
+            }
+            $r = Invoke-RddFlow $retryArgs
         }
         if ($r.exit -eq 0 -and $null -ne $r.json -and $r.json.success) {
             $repaired += @{ node = $e.node; op = $e.op }

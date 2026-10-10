@@ -1,12 +1,7 @@
 [CmdletBinding()]
 param(
     [string]$Type,
-    [string]$Query,
-    [string]$Key,
-    [string]$Tags,
-    [string]$Path,
-    [string]$Brief,
-    [string]$Files
+    [string]$Query
 )
 
 $ErrorActionPreference = "Stop"
@@ -56,18 +51,20 @@ function Resolve-RepoRoot {
 $repoRoot = Resolve-RepoRoot
 
 # explore.ps1 is the READ face of the exploration cache (explore-store.ps1
-# is the write face):
-#   -Type explore  -> legacy candidates face: merged dual-zone fresh entries
-#                     (hot first), dispatchPrompt ALWAYS attached. Superset of
-#                     the old single-zone output (each candidate gains `origin`).
-#   -Type search   -> the retrieval contract: precision-ranked data LOCATIONS
-#                     (summaryPath / fullPath). Pluggable multi-recall (lexical
-#                     BM25 + vector cosine, see recallers/*.ps1) -> RRF fusion
-#                     -> Top-K truncation run INSIDE this interface; results
-#                     non-empty = HIT (relevance decided here, deterministically),
-#                     empty = MISS (dispatchPrompt attached).
-#   -Type register -> DEPRECATED pass-through to explore-store.ps1 (register
-#                     now writes the hot zone); output gains a deprecation note.
+# is the write face). -Type search is the ONLY face: the retrieval contract —
+# precision-ranked data LOCATIONS (summaryPath / fullPath). Pluggable
+# multi-recall (lexical BM25 + vector cosine, see recallers/*.ps1) -> RRF
+# fusion -> Top-K truncation run INSIDE this interface; results non-empty =
+# HIT (relevance decided here, deterministically), empty = MISS
+# (dispatchPrompt attached).
+#
+# The legacy `-Type explore` candidates face and the deprecated `-Type
+# register` pass-through were removed (zero callers at removal time). Any
+# other -Type value — including omitted/empty — fails loud at input
+# validation (MISSING_TYPE / INVALID_TYPE): a stale caller must never get a
+# silent empty success. Registration lives at explore-store.cmd -Type
+# register.
+#
 # Stale entries (hash mismatch / deleted) are evicted from their own zone;
 # a stale hot entry is dropped, never promoted.
 
@@ -399,223 +396,36 @@ function ConvertTo-LocationViews {
 #            qualified list (identical in the dsh plugin mirror).
 #   F8 Top-K score DESC -> origin hot first -> registeredAt DESC (persistent
 #            treated as oldest) -> key ordinal ASC (total order).
-# Config lives in .rdd/exploration/search-config.json (all fields optional,
-# missing = built-in defaults below; PS/TS read the SAME file, so it is the
-# runtime single source of behavior parity). Defaults are frozen mirrors of
-# dsh packages/local/rdd-explore/src/cache.ts SEARCH_CONFIG_DEFAULTS.
+# The recall machinery itself -- frozen search-config defaults + fail-soft
+# merge, the recaller plugin registry (recallers/*.ps1 loading included),
+# the generic recaller invocation loop, the F7 fusion, and a comparator-
+# driven insertion sort -- lives in the SHARED library lib/recall-shared.ps1
+# (single source, dot-sourced by explore.ps1 and tips.ps1 alike; never fork
+# a copy -- a second implementation would become a third mirror to keep in
+# sync). Host-owned below: the exploration-specific glue -- tuning-file /
+# vectors-sidecar paths, the merged-pool -> doc mapping, and the F8 Top-K
+# views. Config lives in .rdd/exploration/search-config.json (all fields
+# optional, missing = built-in defaults; PS/TS read the SAME file, so it is
+# the runtime single source of behavior parity).
 
-$SearchDefaults = @{
-    topK        = 5
-    recallDepth = 20
-    rrfK        = 60
-    recallers   = @{
-        lexical = @{
-            enabled = $true
-            weight  = 1.0
-            bm25K1  = 1.2
-            bm25B   = 0.75
-        }
-        vector  = @{
-            enabled         = "auto"
-            weight          = 1.0
-            endpoint        = ""
-            model           = ""
-            dimensions      = 0
-            minCosine       = 0.30
-            timeoutSeconds  = 10
-        }
-    }
-}
+. (Join-Path $scriptRoot "lib\recall-shared.ps1")
 
 function Get-SearchConfigPath { Join-Path (Get-ExplorationDir) "search-config.json" }
 function Get-VectorsPath      { Join-Path (Get-ExplorationDir) "vectors.json" }
 
-function Get-SearchConfigValue {
-    # Typed, range-checked single-field override; invalid or unknown values
-    # silently keep the default (only file-level corruption warns — a tuning
-    # file fails soft, unlike the fail-loud index data).
-    param($Obj, [string]$Name, $Current, [scriptblock]$Valid)
-    if ($null -ne $Obj) {
-        $prop = $Obj.PSObject.Properties[$Name]
-        if ($null -ne $prop) {
-            $v = $prop.Value
-            if (& $Valid $v) { return $v }
-        }
-    }
-    return $Current
-}
-
-function Get-SearchFieldValidator {
-    # Single copy of every field predicate, shared by the section mergers
-    # below (semantics identical to the dsh cache.ts pick() validators).
-    # An unknown kind yields a never-matching predicate: the tuning file
-    # fails soft, like every other config path here.
-    param([string]$Kind)
-    switch ($Kind) {
-        "posInt"    { { param($v) $v -is [int] -and $v -ge 1 } }
-        "posNum"    { { param($v) ($v -is [int] -or $v -is [double]) -and [double]$v -gt 0 } }
-        "isEnabled" { { param($v) $v -is [bool] -or ($v -is [string] -and $v -eq "auto") } }
-        "isString"  { { param($v) $v -is [string] } }
-        "isDim"     { { param($v) $v -is [int] -and $v -ge 0 } }
-        "isK1"      { { param($v) ($v -is [int] -or $v -is [double]) -and [double]$v -ge 0 } }
-        "isB"       { { param($v) ($v -is [int] -or $v -is [double]) -and [double]$v -ge 0 -and [double]$v -le 1 } }
-        "isCos"     { { param($v) ($v -is [int] -or $v -is [double]) -and [double]$v -ge -1 -and [double]$v -le 1 } }
-        "isTimeout" { { param($v) ($v -is [int] -or $v -is [double]) -and [double]$v -ge 1 } }
-        default     { { param($v) $false } }
-    }
-}
-
-function Merge-LexicalRecallerConfig {
-    param($Section, $Defaults)
-    return @{
-        enabled = Get-SearchConfigValue $Section "enabled" $Defaults.enabled (Get-SearchFieldValidator "isEnabled")
-        weight  = Get-SearchConfigValue $Section "weight"  $Defaults.weight  (Get-SearchFieldValidator "posNum")
-        bm25K1  = Get-SearchConfigValue $Section "bm25K1"  $Defaults.bm25K1  (Get-SearchFieldValidator "isK1")
-        bm25B   = Get-SearchConfigValue $Section "bm25B"   $Defaults.bm25B   (Get-SearchFieldValidator "isB")
-    }
-}
-
-function Merge-VectorRecallerConfig {
-    param($Section, $Defaults)
-    return @{
-        enabled        = Get-SearchConfigValue $Section "enabled"        $Defaults.enabled        (Get-SearchFieldValidator "isEnabled")
-        weight         = Get-SearchConfigValue $Section "weight"         $Defaults.weight         (Get-SearchFieldValidator "posNum")
-        endpoint       = Get-SearchConfigValue $Section "endpoint"       $Defaults.endpoint       (Get-SearchFieldValidator "isString")
-        model          = Get-SearchConfigValue $Section "model"          $Defaults.model          (Get-SearchFieldValidator "isString")
-        dimensions     = Get-SearchConfigValue $Section "dimensions"     $Defaults.dimensions     (Get-SearchFieldValidator "isDim")
-        minCosine      = Get-SearchConfigValue $Section "minCosine"      $Defaults.minCosine      (Get-SearchFieldValidator "isCos")
-        timeoutSeconds = Get-SearchConfigValue $Section "timeoutSeconds" $Defaults.timeoutSeconds (Get-SearchFieldValidator "isTimeout")
-    }
-}
-
 function Read-SearchConfig {
-    $config = $SearchDefaults
-
-    $obj = $null
-    $p = Get-SearchConfigPath
-    if (Test-Path -LiteralPath $p -PathType Leaf) {
-        try {
-            $raw = [System.IO.File]::ReadAllText($p, [System.Text.Encoding]::UTF8)
-            $obj = $raw | ConvertFrom-Json
-        }
-        catch {
-            [Console]::Error.WriteLine("search-config.json unreadable (built-in defaults apply): $($_.Exception.Message)")
-            return $config
-        }
-    }
-    if ($null -eq $obj) { return $config }
-
-    $lex = $null
-    $vec = $null
-    if ($null -ne $obj.recallers) {
-        $lex = $obj.recallers.lexical
-        $vec = $obj.recallers.vector
-    }
-    return @{
-        topK        = Get-SearchConfigValue $obj "topK" $config.topK (Get-SearchFieldValidator "posInt")
-        recallDepth = Get-SearchConfigValue $obj "recallDepth" $config.recallDepth (Get-SearchFieldValidator "posInt")
-        rrfK        = Get-SearchConfigValue $obj "rrfK" $config.rrfK (Get-SearchFieldValidator "posNum")
-        recallers   = @{
-            lexical = Merge-LexicalRecallerConfig -Section $lex -Defaults $config.recallers.lexical
-            vector  = Merge-VectorRecallerConfig -Section $vec -Defaults $config.recallers.vector
-        }
-    }
-}
-
-# --- Recaller plugin registry (each recallers/*.ps1 self-registers) ---
-
-$script:Recallers = @()
-
-function Register-Recaller {
-    # Plugin contract (mirrored in dsh src/cache.ts Recaller): a recaller only
-    # SCORES docs — never fuses, never truncates. $DefaultEnabled is what an
-    # unconfigured recaller falls back to ($true / $false / "auto").
-    # $AutoReady evaluates the "auto" rule without running the recaller; it
-    # receives the WHOLE config and returns @{ ready; reason? }. Recallers
-    # take everything through $ctx and never reference host functions back.
-    param(
-        [string]$Name,
-        $DefaultEnabled,
-        [scriptblock]$AutoReady,
-        [scriptblock]$ScriptBlock
-    )
-    $script:Recallers += @{
-        Name           = $Name
-        DefaultEnabled = $DefaultEnabled
-        AutoReady      = $AutoReady
-        ScriptBlock    = $ScriptBlock
-    }
-}
-
-# Dot-source every plugin (sorted by name = frozen registration order, which
-# F7's accumulation order depends on: lexical.ps1 before vector.ps1).
-$recallerDir = Join-Path $scriptRoot "recallers"
-if (Test-Path -LiteralPath $recallerDir -PathType Container) {
-    foreach ($plugin in @(Get-ChildItem -LiteralPath $recallerDir -Filter "*.ps1" -File | Sort-Object -Property Name)) {
-        . $plugin.FullName
-    }
-}
-if ($script:Recallers.Count -eq 0) {
-    [Console]::Error.WriteLine("no recallers registered (expected scripts/recallers/*.ps1); search degrades to always-miss")
-}
-
-function Get-RecallerSection {
-    # Null-safe config-section lookup. A third-party recaller (a new file in
-    # recallers/) has NO section in search-config.json nor $SearchDefaults —
-    # it must get $null here, never a null-array index crash. Frozen mirror
-    # of the dsh plugin's `config.recallers[recaller.name]` optional access.
-    param([hashtable]$Config, [string]$Name)
-    if ($null -eq $Config -or $null -eq $Config.recallers) { return $null }
-    return $Config.recallers[$Name]
-}
-
-function Resolve-RecallerEnabled {
-    # run/skip decision for one recaller. An unconfigured recaller falls back
-    # to its self-reported DefaultEnabled (frozen mirror of the dsh
-    # `section?.enabled ?? recaller.defaultEnabled`); "auto" consults the
-    # plugin's AutoReady against the WHOLE config, forwarding its reason.
-    param($Recaller, $Section, [hashtable]$Config)
-    $enabledValue = $null
-    if ($null -ne $Section) { $enabledValue = $Section["enabled"] }
-    if ($null -eq $enabledValue) { $enabledValue = $Recaller.DefaultEnabled }
-    if ($enabledValue -eq $true) { return @{ run = $true } }
-    if ($enabledValue -ne "auto") { return @{ run = $false } }
-    $verdict = @{ ready = $true }
-    if ($null -ne $Recaller.AutoReady) { $verdict = & $Recaller.AutoReady $Config }
-    if ($verdict.ready) { return @{ run = $true } }
-    return @{ run = $false; warning = ([string]$verdict.reason) }
-}
-
-function Invoke-SingleRecaller {
-    # Runs one recaller; any throw degrades to a failed outcome (the
-    # pluggability guarantee: one broken path never breaks the interface).
-    param($Recaller, [hashtable]$Ctx, [double]$Weight)
-    try {
-        $res = & $Recaller.ScriptBlock $Ctx
-        $qualified = @($res.qualified)
-        $outcome = @{
-            name      = [string]$res.name
-            status    = "ok"
-            qualified = $qualified.Count
-        }
-        if (-not [string]::IsNullOrEmpty([string]$res.warning)) { $outcome["warning"] = [string]$res.warning }
-        return @{
-            outcome = $outcome
-            list    = @{ name = [string]$res.name; qualified = $qualified; weight = $Weight }
-        }
-    }
-    catch {
-        return @{
-            outcome = @{ name = $Recaller.Name; status = "failed"; qualified = 0; warning = "$($_.Exception.Message)" }
-        }
-    }
+    # Thin host wrapper over the shared fail-soft reader (lib/recall-shared.ps1):
+    # same defaults, same per-field validators, pointed at the exploration
+    # tuning file.
+    return (Read-RecallConfigFile -Path (Get-SearchConfigPath))
 }
 
 function Invoke-AllRecallers {
-    # Runs every registered recaller (registration order = F7 accumulation
-    # order); a disabled/failed path yields an empty contribution plus a
-    # rankMeta outcome — the interface stays complete on any single-path
-    # failure (pluggability guarantee).
+    # Host wrapper over the shared Invoke-Recallers (lib/recall-shared.ps1):
+    # maps the merged fresh pool into corpus doc records (key/tags/brief feed
+    # the recallers' F1 composition; path/origin ride along in the recaller
+    # ctx contract), then runs the shared registry loop against the
+    # exploration vectors sidecar.
     param([string]$Query, [array]$Merged, [hashtable]$Config)
 
     $docs = @()
@@ -628,55 +438,8 @@ function Invoke-AllRecallers {
             origin = $m.origin
         }
     }
-    $ctx = @{
-        query  = $Query
-        docs   = $docs
-        config = $Config
-        paths  = @{ vectorsPath = (Get-VectorsPath) }
-    }
 
-    $outcomes = @()
-    $qualifiedLists = @()
-    foreach ($r in $script:Recallers) {
-        $section = Get-RecallerSection -Config $Config -Name $r.Name
-        $decision = Resolve-RecallerEnabled -Recaller $r -Section $section -Config $Config
-        if (-not $decision.run) {
-            $outcome = @{ name = $r.Name; status = "disabled"; qualified = 0 }
-            if ($null -ne $decision.warning) { $outcome["warning"] = $decision.warning }
-            $outcomes += $outcome
-            continue
-        }
-        $weight = 1.0
-        if ($null -ne $section -and $null -ne $section["weight"]) { $weight = [double]$section["weight"] }
-        $ran = Invoke-SingleRecaller -Recaller $r -Ctx $ctx -Weight $weight
-        $outcomes += $ran.outcome
-        if ($null -ne $ran.list) { $qualifiedLists += $ran.list }
-    }
-
-    return @{ outcomes = $outcomes; lists = $qualifiedLists }
-}
-
-function Invoke-RRFFusion {
-    # F7 (frozen): accumulate in registration order over each qualified list.
-    # Ordinal key tables so PS's default case-insensitive hashtables can never
-    # collide two distinct entry keys.
-    param([array]$QualifiedLists, [int]$RrfK)
-
-    $scores = [System.Collections.Hashtable]::new([System.StringComparer]::Ordinal)
-    $recalledBy = [System.Collections.Hashtable]::new([System.StringComparer]::Ordinal)
-    foreach ($list in $QualifiedLists) {
-        $rank = 0
-        foreach ($key in @($list.qualified)) {
-            $rank++
-            if (-not $scores.ContainsKey($key)) {
-                $scores[$key] = 0.0
-                $recalledBy[$key] = @()
-            }
-            $scores[$key] = [double]$scores[$key] + [double]$list.weight / ($RrfK + $rank)
-            $recalledBy[$key] = @($recalledBy[$key]) + @($list.name)
-        }
-    }
-    return @{ scores = $scores; recalledBy = $recalledBy }
+    return (Invoke-Recallers -Query $Query -Docs $docs -Config $Config -VectorsPath (Get-VectorsPath))
 }
 
 function New-RankedCandidates {
@@ -718,19 +481,11 @@ function Compare-RankedCandidates {
 }
 
 function Sort-RankedCandidates {
-    # In-place insertion sort over the F8 total order: no culture-sensitive
-    # comparisons, so the ordering is frozen-identical to the dsh mirror.
+    # F8 total order via the shared comparator-driven insertion sort
+    # (lib/recall-shared.ps1); the ordering itself — Compare-RankedCandidates
+    # — is the frozen part (no culture-sensitive comparisons anywhere).
     param([object[]]$Items)
-    for ($i = 1; $i -lt $Items.Count; $i++) {
-        $cur = $Items[$i]
-        $j = $i - 1
-        while ($j -ge 0 -and (Compare-RankedCandidates -Cur $cur -Other $Items[$j]) -lt 0) {
-            $Items[$j + 1] = $Items[$j]
-            $j--
-        }
-        $Items[$j + 1] = $cur
-    }
-    return $Items
+    return (Invoke-InsertionSort -Items $Items -Compare { param($Cur, $Other) (Compare-RankedCandidates -Cur $Cur -Other $Other) })
 }
 
 function ConvertTo-TopKResultViews {
@@ -851,40 +606,18 @@ function Write-QueryLog {
 }
 
 # === Input validation ===
+# search is the ONLY face. The legacy `explore` candidates face and the
+# deprecated `register` pass-through were removed (zero callers at removal
+# time) — stale callers fail loud here instead of getting a silent no-op.
 
 if ([string]::IsNullOrWhiteSpace($Type)) {
-    Write-ErrorResult "MISSING_TYPE" "-Type is required. Valid values: explore, search, register" 1
+    Write-ErrorResult "MISSING_TYPE" "-Type is required. Valid values: search" 1
 }
-if ($Type -notin @("explore", "search", "register")) {
-    Write-ErrorResult "INVALID_TYPE" "Unknown type: '$Type'. Valid values: explore, search, register" 1
-}
-
-# === Type: explore (legacy candidates face; dispatchPrompt always attached) ===
-# Returns ALL fresh candidates from BOTH zones (hot first), each with `origin`.
-# The caller LLM inspects tags + brief to decide relevance itself. Semantic
-# matching is NOT done here.
-
-if ($Type -eq "explore") {
-    if ([string]::IsNullOrWhiteSpace($Query)) {
-        Write-ErrorResult "MISSING_QUERY" "-Query is required and cannot be empty" 1
-    }
-
-    $result = Get-MergedFresh
-    $candidates = @(ConvertTo-LocationViews -Merged $result.Merged)
-
-    ConvertTo-PortableJson @{
-        success = $true
-        data    = @{
-            query          = $Query
-            candidates     = $candidates
-            staleRemoved   = $result.StaleRemoved
-            dispatchPrompt = (Build-DispatchPrompt -QueryText $Query)
-        }
-    } -Depth 6
-    exit 0
+if ($Type -ne "search") {
+    Write-ErrorResult "INVALID_TYPE" "Unknown type: '$Type'. search is the only read face (explore.cmd -Type search -Query '...'); the legacy 'explore' and 'register' faces were removed; registration lives at explore-store.cmd -Type register." 1
 }
 
-# === Type: search (retrieval contract: precision-ranked locations) ===
+# === Type: search (retrieval contract: precision-ranked locations) — the only face ===
 # Multi-recall -> RRF fusion -> Top-K truncation run INSIDE this branch, over
 # the merged fresh pool. The caller protocol is TWO branches: results
 # non-empty = HIT (relevance is the interface's deterministic verdict — read
@@ -940,51 +673,4 @@ if ($Type -eq "search") {
 
     ConvertTo-PortableJson @{ success = $true; data = $data } -Depth 8
     exit 0
-}
-
-# === Type: register (DEPRECATED pass-through to explore-store.ps1) ===
-# The write face moved to explore-store.ps1; registration now lands in the
-# hot zone. Old callers keep working unchanged; the output gains a
-# `deprecation` field pointing at explore-store.
-
-if ($Type -eq "register") {
-    $storeScript = Join-Path $scriptRoot "explore-store.ps1"
-    if (-not (Test-Path -LiteralPath $storeScript -PathType Leaf)) {
-        Write-ErrorResult "STORE_NOT_FOUND" "register moved to explore-store.ps1, which was not found at: $storeScript" 2
-    }
-
-    $raw = $null
-    try {
-        $raw = & $storeScript -Type register -Key $Key -Tags $Tags -Path $Path -Brief $Brief -Files $Files
-    }
-    catch {
-        Write-ErrorResult "REGISTER_FORWARD_FAILED" "explore-store.ps1 register invocation failed: $($_.Exception.Message)" 1
-    }
-    $forwardExit = $LASTEXITCODE
-    if ($null -eq $forwardExit) { $forwardExit = 0 }
-
-    $text = ""
-    if ($null -ne $raw) { $text = ($raw -join [System.Environment]::NewLine) }
-    if ([string]::IsNullOrWhiteSpace($text)) {
-        Write-ErrorResult "REGISTER_FORWARD_FAILED" "explore-store.ps1 register produced no output (exit=$forwardExit)" 1
-    }
-
-    $obj = $null
-    try { $obj = $text | ConvertFrom-Json } catch { $obj = $null }
-
-    if ($null -eq $obj -or -not $obj.success) {
-        # Forward failures (and unparseable output) verbatim.
-        $text
-        exit $forwardExit
-    }
-
-    # Rebuild as a plain hashtable (PS 5.1 ConvertTo-Json deadlock defense)
-    # and add the deprecation note.
-    $dataHt = @{}
-    if ($null -ne $obj.data) {
-        foreach ($p in $obj.data.PSObject.Properties) { $dataHt[$p.Name] = $p.Value }
-    }
-    $dataHt["deprecation"] = "explore.ps1 -Type register is deprecated and forwards to explore-store.ps1 (registration lands in the hot zone .rdd/exploration/hot.json). Call rdd-engine/scripts/explore-store.cmd -Type register directly."
-    ConvertTo-PortableJson @{ success = $true; data = $dataHt } -Depth 4
-    exit $forwardExit
 }

@@ -2,6 +2,9 @@
 #
 # Drives the lifecycle of a tree-shaped long-running task run:
 #   start / graft / prune / settle / conclude / round-start / round-end / status / resume
+#   dispatch — pull a role session for ONE pending node (generic runs: no
+#              task.json archive behind the tree; bridge runs keep using
+#              delivery-bridge dispatch, which owns stage/conflict gating)
 #
 # Layout (per the archived tree-run engine CTO design):
 #   .rdd/goal-trees/<run-id>/
@@ -21,7 +24,7 @@
 
 [CmdletBinding()]
 param(
-    [ValidateSet("start", "graft", "prune", "redo", "settle", "conclude", "round-start", "round-end", "status", "resume", "deps")]
+    [ValidateSet("start", "graft", "prune", "redo", "settle", "conclude", "round-start", "round-end", "status", "resume", "deps", "dispatch")]
     [string]$Command = "status",
 
     [string]$RunId,
@@ -71,6 +74,17 @@ param(
     [ValidateSet("add", "remove", "list")]
     [string]$DepAction = "list",
     [string]$On,
+
+    # dispatch (planner-tree-dispatch): pull a role session for ONE pending
+    # node of a NON-bridge run (module/ops subjects — no task.json). Role and
+    # node are explicit params; the task is NOT a parameter — it rides the
+    # node itself (graft wrote it, single source) into the worker pointer via
+    # start-role -TaskBrief, binding role+task+node in the dispatched message.
+    [ValidateSet("PM", "CTO", "UX", "DEV", "QA", "EVAL", "PSE", "AUDITOR")]
+    [string]$Role,
+    [string]$SessionLabel,
+    [string]$EmployeeId,
+    [switch]$DryRun,
 
     # conclude / round-end
     [ValidateSet("achieved", "budget_exhausted", "space_exhausted")]
@@ -138,6 +152,29 @@ $script:Utf8NoBom = New-Object System.Text.UTF8Encoding($false)
 $script:GoalTreesRoot = Join-Path $repoRoot ".rdd/goal-trees"
 $script:LockStream = $null
 $script:LockPath = $null
+$script:ScriptDir = $PSScriptRoot
+
+# === Engine-CLI invocation (dispatch shells out to start-role) =================
+# Same discipline as delivery-bridge's Invoke-EngineCli: capture stdout + exit
+# code; EAP is relaxed around the call (PS 5.1 turns native stderr lines into
+# NativeCommandError records under ErrorActionPreference=Stop).
+
+function Invoke-EngineCli {
+    param([string]$Script, [string[]]$ArgList)
+    $prevEap = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    $output = $null
+    $exitCode = 0
+    try {
+        $output = & $Script @ArgList 2>$null
+        $exitCode = $LASTEXITCODE
+    }
+    finally {
+        $ErrorActionPreference = $prevEap
+    }
+    $text = ($output | Out-String).Trim()
+    return @{ exit = $exitCode; text = $text }
+}
 
 # === Generic helpers ===
 
@@ -811,6 +848,39 @@ function Add-DepsLogLine {
     if ($all.Count -eq 0) { Write-ErrorResult "DEPSLOG_READBACK_FAILED" "deps-log.jsonl empty after append" 3 }
     try { $null = $all[-1] | ConvertFrom-Json }
     catch { Write-ErrorResult "DEPSLOG_READBACK_FAILED" "deps-log.jsonl last line failed to parse after append" 3 }
+}
+
+# === state/dispatch-log.jsonl (append-only dispatch audit) =====================
+# One line per REAL (non-dry) dispatch: {event: dispatch, node, role, worker,
+# round, exit, at}. Gives the Planner's status view its "who was pulled for
+# which node, when" face — the generic-run twin of the bridge pushes ledger.
+
+function Get-DispatchLogPath { param([string]$RunDir); Join-Path (Get-StateDir $RunDir) "dispatch-log.jsonl" }
+
+function Add-DispatchLogLine {
+    param([string]$RunDir, $Entry)
+    $p = Get-DispatchLogPath $RunDir
+    $line = ConvertTo-Json $Entry -Depth 5 -Compress
+    [System.IO.File]::AppendAllText($p, $line + "`n", $script:Utf8NoBom)
+    # read-back finish: last non-empty line must parse (same contract as deps-log)
+    $all = @([System.IO.File]::ReadAllLines($p) | Where-Object { $_.Trim() -ne "" })
+    if ($all.Count -eq 0) { Write-ErrorResult "DISPATCHLOG_READBACK_FAILED" "dispatch-log.jsonl empty after append" 3 }
+    try { $null = $all[-1] | ConvertFrom-Json }
+    catch { Write-ErrorResult "DISPATCHLOG_READBACK_FAILED" "dispatch-log.jsonl last line failed to parse after append" 3 }
+}
+
+function Read-DispatchLog {
+    # fail-soft read for status surfacing: missing/unparseable lines are skipped
+    # (the log is an observability sidecar, never a gate)
+    param([string]$RunDir)
+    $p = Get-DispatchLogPath $RunDir
+    if (-not (Test-Path -LiteralPath $p -PathType Leaf)) { return @() }
+    $out = @()
+    foreach ($line in @([System.IO.File]::ReadAllLines($p))) {
+        if ([string]::IsNullOrWhiteSpace($line)) { continue }
+        try { $out += ($line | ConvertFrom-Json) } catch { }
+    }
+    return @($out)
 }
 
 # === Node dependency graph (depends_on[]) ===
@@ -2184,6 +2254,33 @@ function Invoke-Status {
             $warnings += "no pending/claimed/reported nodes left — consider conclude (space_exhausted or achieved)"
         }
 
+        # dispatch audit view (planner-tree-dispatch): last pull per node — the
+        # "who was dispatched where, when" face for generic runs (bridge runs
+        # surface their own pushes ledger via delivery-bridge status). Fail-soft
+        # by construction: no log file -> null view, nothing surfaced.
+        # NOTE the @() wrap: a single-entry log unrolls to a bare PSCustomObject
+        # on return, and PS 5.1's .Count on such an object is $null (not 1) —
+        # without the wrap a one-dispatch run would surface as "no dispatches".
+        $dispatchLines = @(Read-DispatchLog $RunDir)
+        $dispatchView = $null
+        if ($dispatchLines.Count -gt 0) {
+            $lastDispatch = @{}
+            $failedDispatches = @()
+            foreach ($d in $dispatchLines) {
+                if ($null -eq $d -or [string]::IsNullOrWhiteSpace([string]$d.node)) { continue }
+                $lastDispatch[[string]$d.node] = $d
+                if ([int]$d.exit -ne 0) { $failedDispatches += $d }
+            }
+            $dispatchView = [ordered]@{
+                total  = $dispatchLines.Count
+                failed = @($failedDispatches)
+                nodes  = @($lastDispatch.Keys | Sort-Object | ForEach-Object { $lastDispatch[$_] })
+            }
+            if ($failedDispatches.Count -gt 0 -and $manifest.state -eq "running") {
+                $warnings += "$($failedDispatches.Count) failed dispatch(es): $(($failedDispatches | ForEach-Object { "node $($_.node)->$($_.role) exit=$($_.exit)" }) -join ', ')"
+            }
+        }
+
         return @{
             success = $true
             data    = [ordered]@{
@@ -2212,6 +2309,7 @@ function Invoke-Status {
                 }
                 coverage       = $coverageView
                 dependencies   = $depView
+                dispatches     = $dispatchView
                 integrity      = @{ tree_read_from_backup = $readBack.used_backup; warnings = $warnings }
                 lock           = $lockInfo
             }
@@ -2441,6 +2539,171 @@ function Invoke-Deps {
     }
 }
 
+# === Dispatch (planner-tree-dispatch) ==========================================
+#
+# The generic-tree growth lever: pull a ROLE session for one pending node
+# (subjects without a task.json archive behind them — module work, ops tasks).
+# Role and node are explicit; the TASK is not a parameter — it rides the node
+# (graft wrote it, single source) into the worker pointer via start-role
+# -TaskBrief, so one dispatch binds role + task + node. The dispatched
+# session's first action is goal-tree-leaf claim (worker label = role
+# lowercase, dictated by the pointer), so the round/dep/goal gates that guard
+# leaf claim are pre-checked here for deterministic EARLY feedback (a dispatch
+# that would pull a session into an immediate claim failure is rejected
+# up front). Bridge runs (delivery-bridge promulgate) keep their own dispatch:
+# stage/conflict gates + task.json anchoring live there.
+#
+# Locking is two-phase on purpose: validation holds the run lock (tree read is
+# consistent), then the lock is RELEASED before shelling out to start-role
+# (dsh handoffs make HTTP calls — holding the run mutex across them would
+# starve concurrent leaf writers), and a short second lock covers the audit
+# append. Race window between phases is benign: leaf claim remains the
+# serialization point (a second claimer gets NODE_NOT_CLAIMABLE and moves on).
+
+function Invoke-Dispatch {
+    param([string]$RunDir)
+
+    if ([string]::IsNullOrWhiteSpace($NodeId)) { Write-ErrorResult "MISSING_NODE_ID" "-NodeId is required for dispatch" 1 }
+    if ([string]::IsNullOrWhiteSpace($Role))   { Write-ErrorResult "MISSING_ROLE" "-Role (PM/CTO/UX/DEV/QA/EVAL/PSE/AUDITOR) is required for dispatch" 1 }
+
+    # --- phase 1: gated validation under the run lock -----------------------
+    $lockInfo = $null
+    $round = 0
+    $brief = ""
+    $title = ""
+    $workerLabel = $Role.ToLower()
+    $lockInfo = Enter-RunLock $RunDir
+    try {
+        $manifest = Read-ManifestEditable $RunDir
+        Assert-Running $manifest
+        $roundState = Get-RoundState $RunDir
+        Assert-OpenRound $roundState
+        $round = [int]$roundState.open_round
+
+        $readBack = Read-TreeEditable $RunDir
+        $tree = $readBack.tree
+        $node = Find-Node $tree $NodeId
+        if ($null -eq $node) { Write-ErrorResult "NODE_NOT_FOUND" "Node not found: $NodeId" 2 }
+        if ([string]$node.type -eq 'goal') {
+            Write-ErrorResult "GOAL_NODE_NOT_DISPATCHABLE" "Node $NodeId is the goal root (type=goal — the run's final objective anchor): it is never a work unit. Graft sub-nodes under it and dispatch those." 1
+        }
+        if ($node.status -ne "pending") {
+            Write-ErrorResult "NODE_NOT_DISPATCHABLE" "Node $NodeId is '$($node.status)'; dispatch targets open work only (pending). Stuck 'claimed' nodes are recovered via goal-tree-leaf claim -Steal by the next worker; 'reported' nodes await your settle/prune; 'done'/'pruned' are terminal." 1
+        }
+        $depState = Get-NodeBlockedDeps $tree $node
+        if ($depState.blocked.Count -gt 0) {
+            Write-ErrorResult "NODE_BLOCKED_BY_DEPS" "Node $NodeId is blocked by unsatisfied dependencies: [$($depState.blocked -join ', ')] — dispatch would pull a session whose first claim fails. Settle or prune the blockers first (or dispatch them)." 1
+        }
+
+        # task binding: the node IS the task source (single source); the brief
+        # rides the pointer in TWO channels (dispatch-brief-file):
+        #   * full text (title + untrimmed task) → state/briefs/<node>.md,
+        #     passed to start-role as an ASCII -TaskBriefFile path — the
+        #     goal-tree → start-role hop crosses cmd.exe %* re-parsing, where
+        #     unbounded rich text (%, &, |, quotes, CJK) risks silent mangling;
+        #     a short path is gauntlet-proof (same discipline as graft
+        #     -TasksFile / report -CallbackFile / start -GoalFile).
+        #   * legacy inline -TaskBrief (360-char trimmed) survives as the
+        #     fail-soft fallback when the file write fails — dispatch never
+        #     dies on brief transport. The claim response's node view remains
+        #     the canonical full-text read either way.
+        # Written also under -DryRun: the artifact is content-idempotent (task
+        # text is immutable post-graft), touches no audit log and no node
+        # state — start-role -DryRun needs it to render the message.
+        $title = [string]$node.title
+        $taskText = [string]$node.task
+        $briefFull = $title
+        $brief = $title
+        if (-not [string]::IsNullOrWhiteSpace($taskText)) {
+            $t = $taskText.Trim()
+            # brief file: title line + blank line + task body (structured two-
+            # section form — no colon-glue, no title/body doubling when a task
+            # opens by echoing its own title). The INLINE fallback below keeps
+            # the legacy single-line "title：task" shape (newline-free by
+            # design: it still rides the CLI argument channel).
+            if ($t -ne $title) { $briefFull = "$title`n`n$t" }
+            if ($t.Length -gt 360) { $t = $t.Substring(0, 360).TrimEnd() + "…" }
+            if ($t -ne $title) { $brief = "${title}：$t" }
+        }
+        $briefFile = ""
+        try {
+            $briefsDir = Join-Path (Get-StateDir $RunDir) "briefs"
+            New-Item -ItemType Directory -Path $briefsDir -Force | Out-Null
+            $briefFile = Join-Path $briefsDir "$NodeId.md"
+            [System.IO.File]::WriteAllText($briefFile, $briefFull, $script:Utf8NoBom)
+        } catch {
+            $briefFile = ""   # write failed → inline fallback keeps dispatch alive
+        }
+    }
+    finally {
+        Exit-RunLock
+    }
+
+    # --- phase 2: pull the role session (NO run lock held) -------------------
+    $startArgs = @(
+        "-Role", $Role,
+        "-GoalTreeRun", $RunId,
+        "-GoalTreeNode", $NodeId,
+        "-GoalTreeWorker"
+    )
+    if (-not [string]::IsNullOrWhiteSpace($briefFile)) {
+        # file channel: full task text rides the UTF-8 file; only its ASCII
+        # path crosses the CLI gauntlet
+        $startArgs += @("-TaskBriefFile", $briefFile)
+    }
+    else {
+        # fallback: legacy inline brief (360-char trimmed)
+        $startArgs += @("-TaskBrief", $brief)
+    }
+    if (-not [string]::IsNullOrWhiteSpace($SessionLabel)) { $startArgs += @("-SessionLabel", $SessionLabel) }
+    else { $startArgs += @("-SessionLabel", "$RunId/$NodeId/$Role") }
+    if (-not [string]::IsNullOrWhiteSpace($title)) { $startArgs += @("-TaskSummary", "$title（$RunId/$NodeId）") }
+    if (-not [string]::IsNullOrWhiteSpace($EmployeeId)) { $startArgs += @("-EmployeeId", $EmployeeId) }
+    if ($DryRun) { $startArgs += @("-DryRun") }
+
+    $r = Invoke-EngineCli (Join-Path $script:ScriptDir "start-role.cmd") $startArgs
+
+    # --- phase 3: audit append (real dispatches only — dry runs touch nothing)
+    if (-not $DryRun) {
+        $lockInfo = Enter-RunLock $RunDir
+        try {
+            Add-DispatchLogLine $RunDir ([ordered]@{
+                event  = "dispatch"
+                node   = [string]$NodeId
+                role   = $Role
+                worker = $workerLabel
+                round  = $round
+                exit   = [int]$r.exit
+                at     = (Get-UtcNowIso)
+            })
+        }
+        finally {
+            Exit-RunLock
+        }
+    }
+
+    if ($r.exit -ne 0) {
+        Write-ErrorResult "DISPATCH_FAILED" "start-role exited $($r.exit): $($r.text)" 1
+    }
+
+    return @{
+        success = $true
+        data    = @{
+            run_id       = $RunId
+            node_id      = $NodeId
+            role         = $Role
+            worker_label = $workerLabel
+            task_brief      = $brief
+            task_brief_file = $briefFile
+            round        = $round
+            dry_run      = [bool]$DryRun
+            start_role   = @{ exit = $r.exit; output = $r.text }
+            next_step    = "the dispatched session's first action: goal-tree-leaf.cmd -Command claim -RunId $RunId -NodeId $NodeId -Worker $workerLabel"
+            lock         = $lockInfo
+        }
+    }
+}
+
 # === Dispatch ===
 
 switch ($Command) {
@@ -2455,6 +2718,7 @@ switch ($Command) {
     "status"      { $runDir = Resolve-RunDir $RunId; $result = Invoke-Status $runDir }
     "resume"      { $runDir = Resolve-RunDir $RunId; $result = Invoke-Resume $runDir }
     "deps"        { $runDir = Resolve-RunDir $RunId; $result = Invoke-Deps $runDir }
+    "dispatch"    { $runDir = Resolve-RunDir $RunId; $result = Invoke-Dispatch $runDir }
 }
 
 ConvertTo-PortableJson $result -Depth 14

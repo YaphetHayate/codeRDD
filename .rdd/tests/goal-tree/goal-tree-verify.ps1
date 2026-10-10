@@ -18,6 +18,7 @@
 #   e2e      根因调查式全流程 + 中断恢复 —— TC-051~052
 #   deps      节点依赖管理:声明/门禁/字段存活/审计/渲染/兼容/并行 —— TC-067~073
 #   goalroot  目标根节点:type=goal/不可认领/禁入依赖/根语义终局/白名单存活 —— TC-074~081
+#   dispatch  通用树派发:校验矩阵/DryRun 三绑定/失败审计与 status 透出 —— TC-088~090
 #   all      全部
 #
 # 严重度语义:P0 失败=阻塞(退出码 1);P1 失败=严重不阻塞;P2 失败=备忘警告(WARN)。
@@ -27,7 +28,7 @@
 # 测试产生的运行目录(.rdd/goal-trees/qa-verify-*)默认结束后清理,-KeepRuns 保留供排查。
 
 param(
-    [ValidateSet("all", "basic", "consume", "callback", "recovery", "ending", "e2e", "deps", "goalroot")]
+    [ValidateSet("all", "basic", "consume", "callback", "recovery", "ending", "e2e", "deps", "goalroot", "dispatch")]
     [string]$Suite = "all",
     [switch]$KeepRuns,
     [switch]$Json
@@ -1329,6 +1330,133 @@ function Suite-GoalRoot {
 }
 
 # ============================================================
+# 套件:dispatch — TC-088 ~ TC-090 (planner-tree-dispatch)
+# ============================================================
+# 通用树派发命令(模块/运维主体,无 task.json 归档):角色+任务+节点三绑定,
+# 经 start-role -GoalTreeWorker 拉角色会话。测试全程不开真实会话:
+# DryRun 走计划输出;真实路径用不可达 DSH 地址强制 start-role 失败,
+# 只断言引擎侧的失败语义与审计记账(DISPATCH_FAILED + dispatch-log)。
+
+function Suite-Dispatch {
+    Write-Host "`n== suite: dispatch (DSP-AC 通用树派发) =="
+
+    Run-Tc "TC-088" "dispatch 校验矩阵:缺角色/缺节点/非法角色/目标根/非 pending/依赖阻塞/无开放轮 全部机械拒绝" "P0" "DSP-AC-1" {
+        param($c)
+        $rid = New-RunId "dispatch-validate"
+        $null = TRun @("-Command", "start", "-RunId", $rid, "-Goal", "dispatch suite: validation matrix", "-RefRoots", $PlaneRepoRel, "-CreatedBy", "QA")
+        $null = TRun @("-Command", "round-start", "-RunId", $rid)
+        $tf = Write-TasksFile @(
+            @{ title = "a"; task = "ta" },
+            @{ title = "b"; task = "tb"; depends_on = @("n2") }
+        )
+        $null = TRun @("-Command", "graft", "-RunId", $rid, "-Parent", "n1", "-TasksFile", $tf)
+        # 1. 缺 -Role
+        $r1 = TRun @("-Command", "dispatch", "-RunId", $rid, "-NodeId", "n2")
+        Assert $c ($r1.exit -eq 1 -and $r1.json.error.code -eq "MISSING_ROLE") "缺 -Role 未报 MISSING_ROLE: $($r1.text)"
+        # 2. 节点不存在
+        $r2 = TRun @("-Command", "dispatch", "-RunId", $rid, "-NodeId", "n99", "-Role", "DEV")
+        Assert $c ($r2.exit -eq 2 -and $r2.json.error.code -eq "NODE_NOT_FOUND") "缺失节点未报 NODE_NOT_FOUND: $($r2.text)"
+        # 3. 非法角色(ValidateSet 参数级拒绝;PLANNER 是树维护者不进 worker 枚举)
+        #    EAP 放宽:参数校验失败经原生日志 stderr 传播,Stop 偏好会把它变成异常
+        $prevEap = $ErrorActionPreference
+        $ErrorActionPreference = "Continue"
+        try { $r3 = TRun @("-Command", "dispatch", "-RunId", $rid, "-NodeId", "n2", "-Role", "PLANNER") }
+        finally { $ErrorActionPreference = $prevEap }
+        Assert $c ($r3.exit -ne 0) "非法角色未被参数校验拒绝"
+        # 4. 目标根(type=goal)不可派发
+        $goalPath = Write-TempFile "goal-dispatch.md" "# 目标`n`n描述"
+        $ridG = New-RunId "dispatch-goalroot"
+        $null = TRun @("-Command", "start", "-RunId", $ridG, "-Goal", "g", "-Title", "目标", "-GoalRoot", "-GoalFile", $goalPath, "-RefRoots", ".")
+        $null = TRun @("-Command", "round-start", "-RunId", $ridG)
+        $r4 = TRun @("-Command", "dispatch", "-RunId", $ridG, "-NodeId", "n1", "-Role", "DEV")
+        Assert $c ($r4.exit -eq 1 -and $r4.json.error.code -eq "GOAL_NODE_NOT_DISPATCHABLE") "目标根未拒派发: $($r4.text)"
+        # 5. claimed 节点不可再派发
+        $null = TLeaf @("-Command", "claim", "-RunId", $rid, "-NodeId", "n2", "-Worker", "w1")
+        $r5 = TRun @("-Command", "dispatch", "-RunId", $rid, "-NodeId", "n2", "-Role", "DEV")
+        Assert $c ($r5.exit -eq 1 -and $r5.json.error.code -eq "NODE_NOT_DISPATCHABLE") "claimed 节点未拒派发: $($r5.text)"
+        # 6. 依赖未满足
+        $r6 = TRun @("-Command", "dispatch", "-RunId", $rid, "-NodeId", "n3", "-Role", "QA")
+        Assert $c ($r6.exit -eq 1 -and $r6.json.error.code -eq "NODE_BLOCKED_BY_DEPS" -and $r6.text.Contains("n2")) "依赖阻塞未拒: $($r6.text)"
+        # 7. 无开放轮(收轮后)
+        $null = TRun @("-Command", "round-end", "-RunId", $rid, "-Summary", "s", "-Decision", "continue")
+        $r7 = TRun @("-Command", "dispatch", "-RunId", $rid, "-NodeId", "n3", "-Role", "QA")
+        Assert $c ($r7.exit -eq 1 -and $r7.json.error.code -eq "NO_OPEN_ROUND") "收轮后派发未拒: $($r7.text)"
+    }
+
+    Run-Tc "TC-089" "dispatch DryRun 三绑定:角色+任务+节点进 worker 指针;dry 零副作用(无审计行/节点不动)" "P0" "DSP-AC-2" {
+        param($c)
+        # 固定 dsh 后端(不可达地址亦可):DryRun 只打印计划不触网,
+        # 避免 CLI 后端对 opencode 可执行文件的硬依赖影响可移植性
+        $savedUrl = $env:DSH_WEB_URL
+        $env:DSH_WEB_URL = "http://127.0.0.1:9"
+        try {
+            $rid = New-RunId "dispatch-dryrun"
+            $null = TRun @("-Command", "start", "-RunId", $rid, "-Goal", "dispatch suite: dry run binding", "-RefRoots", $PlaneRepoRel, "-CreatedBy", "QA")
+            $null = TRun @("-Command", "round-start", "-RunId", $rid)
+            $tf = Write-TasksFile @( @{ title = "实现模块X"; task = "按规范实现 X 并自测,产出实现说明" } )
+            $null = TRun @("-Command", "graft", "-RunId", $rid, "-Parent", "n1", "-TasksFile", $tf)
+            $r = TRun @("-Command", "dispatch", "-RunId", $rid, "-NodeId", "n2", "-Role", "DEV", "-DryRun")
+            Assert $c ($r.exit -eq 0 -and $r.json.success) "DryRun 派发失败: $($r.text)"
+            $d = $r.json.data
+            # 三绑定:role 显式 / task_brief 取自节点(title:task) / node 显式
+            Assert $c ([string]$d.role -eq "DEV" -and [string]$d.node_id -eq "n2") "返回体缺角色/节点绑定"
+            Assert $c ([string]$d.worker_label -eq "dev") "worker label 应为角色小写: $($d.worker_label)"
+            Assert $c ([string]$d.task_brief -like "实现模块X*按规范实现*") "task_brief 未携带节点任务: $($d.task_brief)"
+            # 指针消息含硬顺序协议 + goal-tree-run 尾标
+            $out = [string]$d.start_role.output
+            Assert $c ($out.Contains("goal-tree-leaf.cmd -Command claim") -and $out.Contains("-Worker dev")) "指针缺 claim 指令"
+            Assert $c ($out.Contains("goal-tree-run=$rid node=n2")) "指针缺 goal-tree-run 尾标"
+            Assert $c ($out.Contains("report/workers/n2.md")) "指针缺 full_report 落点指引"
+            # dry 零副作用:无审计行、节点仍 pending
+            $logPath = Join-Path (Get-RunDirPath $rid) "state\dispatch-log.jsonl"
+            Assert $c (-not (Test-Path -LiteralPath $logPath)) "DryRun 不应落 dispatch-log"
+            $t = Read-RunTree $rid
+            $n2 = @($t.nodes | Where-Object id -eq "n2")[0]
+            Assert $c ($n2.status -eq "pending") "DryRun 后节点应仍 pending: $($n2.status)"
+        }
+        finally {
+            if ($savedUrl) { $env:DSH_WEB_URL = $savedUrl } else { Remove-Item Env:DSH_WEB_URL -ErrorAction SilentlyContinue }
+        }
+    }
+
+    Run-Tc "TC-090" "dispatch 真实失败审计:start-role 失败报 DISPATCH_FAILED;dispatch-log 落行(exit=1);status 透出 failed 派发与告警;节点不受损" "P0" "DSP-AC-3" {
+        param($c)
+        $savedUrl = $env:DSH_WEB_URL
+        $env:DSH_WEB_URL = "http://127.0.0.1:9"   # 不可达:强制 start-role dsh 分支连接失败(不降级开窗)
+        try {
+            $rid = New-RunId "dispatch-fail-audit"
+            $null = TRun @("-Command", "start", "-RunId", $rid, "-Goal", "dispatch suite: failure audit", "-RefRoots", $PlaneRepoRel, "-CreatedBy", "QA")
+            $null = TRun @("-Command", "round-start", "-RunId", $rid)
+            $tf = Write-TasksFile @( @{ title = "a"; task = "ta" } )
+            $null = TRun @("-Command", "graft", "-RunId", $rid, "-Parent", "n1", "-TasksFile", $tf)
+            $r = TRun @("-Command", "dispatch", "-RunId", $rid, "-NodeId", "n2", "-Role", "QA")
+            Assert $c ($r.exit -eq 1 -and $r.json.error.code -eq "DISPATCH_FAILED") "start-role 失败未报 DISPATCH_FAILED: $($r.text)"
+            # 审计:失败派发也落行,exit 记 1
+            $logPath = Join-Path (Get-RunDirPath $rid) "state\dispatch-log.jsonl"
+            Assert $c (Test-Path -LiteralPath $logPath) "dispatch-log.jsonl 缺失"
+            $entries = @([System.IO.File]::ReadAllLines($logPath) | Where-Object { $_.Trim() -ne "" } | ForEach-Object { $_ | ConvertFrom-Json })
+            Assert $c ($entries.Count -eq 1) "dispatch-log 应恰一行: $($entries.Count)"
+            Assert $c ([string]$entries[0].node -eq "n2" -and [string]$entries[0].role -eq "QA" -and [string]$entries[0].worker -eq "qa") "审计行字段不完整: $($entries[0] | ConvertTo-Json -Compress)"
+            Assert $c ([int]$entries[0].exit -eq 1 -and [int]$entries[0].round -eq 1) "审计行 exit/round 不符"
+            # status 透出:total/failed/节点视角 + 告警
+            $st = TRun @("-Command", "status", "-RunId", $rid)
+            $dv = $st.json.data.dispatches
+            Assert $c ($null -ne $dv -and [int]$dv.total -eq 1) "status dispatches.total 应为 1"
+            Assert $c (@($dv.failed).Count -eq 1) "status dispatches.failed 应为 1"
+            $warnText = @($st.json.data.integrity.warnings) -join " "
+            Assert $c ($warnText.Contains("failed dispatch")) "status 告警未含失败派发: $warnText"
+            # 节点不受损:仍 pending 可继续派发
+            $t = Read-RunTree $rid
+            $n2 = @($t.nodes | Where-Object id -eq "n2")[0]
+            Assert $c ($n2.status -eq "pending") "失败派发后节点应仍 pending: $($n2.status)"
+        }
+        finally {
+            if ($savedUrl) { $env:DSH_WEB_URL = $savedUrl } else { Remove-Item Env:DSH_WEB_URL -ErrorAction SilentlyContinue }
+        }
+    }
+}
+
+# ============================================================
 # 正交性终检(TC-003,任何套件执行后对比)
 # ============================================================
 
@@ -1347,7 +1475,7 @@ function Invoke-OrthogonalityCheck {
 Write-Host "goal-tree-verify — repo: $RepoRoot"
 Write-Host "suite: $Suite  (runs under .rdd/goal-trees/, stamp: $script:RunStamp)"
 
-$selected = if ($Suite -eq "all") { @("basic", "consume", "callback", "recovery", "ending", "e2e", "deps", "goalroot") } else { @($Suite) }
+$selected = if ($Suite -eq "all") { @("basic", "consume", "callback", "recovery", "ending", "e2e", "deps", "goalroot", "dispatch") } else { @($Suite) }
 foreach ($s in $selected) {
     switch ($s) {
         "basic"    { Suite-Basic }
@@ -1358,6 +1486,7 @@ foreach ($s in $selected) {
         "e2e"      { Suite-E2E }
         "deps"     { Suite-Deps }
         "goalroot" { Suite-GoalRoot }
+        "dispatch" { Suite-Dispatch }
     }
 }
 if ($Suite -in @("all", "basic")) { Invoke-OrthogonalityCheck }

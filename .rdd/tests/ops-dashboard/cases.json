@@ -138,15 +138,15 @@
                       "type":  "positive",
                       "priority":  "P0",
                       "acceptance":  "AC-2",
-                      "codeRef":  ".rdd/tests/ops-dashboard/ops-dashboard-qa-verify.ps1:258",
+                      "codeRef":  ".rdd/tests/ops-dashboard/ops-dashboard-qa-verify.ps1:289",
                       "sourceChange":  "2026-10-08-rdd-ops-dashboard",
                       "status":  "active",
                       "crossFeature":  [
                                            "explore-query-log"
                                        ],
-                      "precondition":  "真实仓 query-log.jsonl 存在且有命中记录（#1 已交付）；地面真值按 keys 非空判命中",
+                      "precondition":  "真实仓 query-log.jsonl 存在且有命中记录（#1 已交付）；地面真值按 outcome 字段判命中/未命中（旧记录无该字段时回退 keys 非空），分母 = hit + miss，forced（强制派发）不入分母——与 readers/query-log.mjs 冻结口径一致（n13 修正：旧公式把 forced 并进分母，流水含 forced 行时假红）",
                       "steps":  [
-                                    "从流水独立计算命中率",
+                                    "从流水独立计算命中率（三分类分开计数）",
                                     "抓取页面所有百分比数字",
                                     "断言之一与真值差 ≤1"
                                 ],
@@ -337,7 +337,7 @@
                       "type":  "positive",
                       "priority":  "P0",
                       "acceptance":  "AC-1,AC-3",
-                      "codeRef":  ".rdd/tests/ops-dashboard/ops-dashboard-acceptance.ps1:150",
+                      "codeRef":  ".rdd/tests/ops-dashboard/ops-dashboard-acceptance.ps1:207",
                       "sourceChange":  "2026-10-08-rdd-ops-dashboard",
                       "status":  "active",
                       "crossFeature":  [
@@ -358,20 +358,21 @@
                       "type":  "positive",
                       "priority":  "P0",
                       "acceptance":  "AC-2,AC-4",
-                      "codeRef":  ".rdd/tests/ops-dashboard/ops-dashboard-acceptance.ps1:207",
+                      "codeRef":  ".rdd/tests/ops-dashboard/ops-dashboard-acceptance.ps1:250",
                       "sourceChange":  "2026-10-08-rdd-ops-dashboard",
                       "status":  "active",
                       "crossFeature":  [
                                            "explore-query-log"
                                        ],
-                      "precondition":  "看板运行中；hit 侧经 explore-store 注册带唯一 token 的探针条目（收尾删除），miss 侧 nonce 与缓存条目零共享 token；两次查询均为真实 CLI 调用（真流水，不清除）",
+                      "precondition":  "看板运行中；hit 侧经 explore-store 注册带唯一 token 的探针条目（收尾删除），miss 侧 nonce 与缓存条目零共享 token；两次查询均为真实 CLI 调用（真流水，不清除）；地面真值口径 = hit/(hit+miss)，forced 不入分母（n13 修正）",
                       "steps":  [
                                     "从 jsonl 独立算基线命中率并与页面百分比对账",
                                     "CLI 做一次 miss 查询 → 断言流水 +1 miss 且刷新后数字重算并变化",
                                     "注册探针条目 → CLI 做一次 hit 查询 → 断言 +1 hit 且数字再次变化",
-                                    "断言两条 query 逐字出现在明细面、明细覆盖全量流水、服务全程未重启"
+                                    "断言两条 query 逐字出现在明细面、明细覆盖全量流水、服务全程未重启",
+                                    "（n13 补）API 面按 UTC 日的 trend 桶与磁盘独立复算逐项对账（B9）；API total/hit/miss/forced 四字段与冻结契约一致、forced 不入分母（B10）"
                                 ],
-                      "expected":  "判据 #2 的 9 条断言全过：命中率随真实流水重算并两次变化，明细逐字可查，服务零重启"
+                      "expected":  "判据 #2 的 11 条断言全过（B0..B10）：命中率随真实流水重算并两次变化、趋势桶与磁盘一致、forced 半开语义正确、明细逐字可查、服务零重启"
                   }
               ]
 }

@@ -20,7 +20,7 @@ $MANIFEST_NAME = ".rdd-install.json"
 $BACKUP_NAME = ".rdd-install-backup"
 $EXCLUDE_DIRS = @(".idea", ".claude", "node_modules", ".git")
 
-$ALL_ROLES = @("pm", "cto", "ux", "dev", "qa", "eval", "pse")
+$ALL_ROLES = @("pm", "cto", "ux", "dev", "qa", "eval", "pse", "auditor")
 $MINIMAL_ROLES = @("pm", "cto", "dev")
 $ROLE_COMMANDS = @{
     pm  = "rdd-pm.md"

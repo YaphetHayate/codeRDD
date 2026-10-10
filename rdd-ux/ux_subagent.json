@@ -1,38 +1,20 @@
 {
-  "$schema": "ux-subagent-config",
-  "comment": "UX 视觉稿生成子代理的 model 清单。这是单一真相源——本文件定义了哪些 subagent 可用、各自绑定哪个 model。修改本文件后运行 rdd-engine/scripts/sync-ux-subagents.cmd 完成同步（脚本自动 Create/Update/Delete 对应的 .opencode/agent/*.md），然后重启 opencode（见 rdd-ux/references/mockup-generation.md「子代理配置维护」）。",
-  "agents": [
-    {
-      "name": "ux-mockup-a",
-      "model": "deepseek/deepseek-v4-pro",
-      "temperature": 0.8,
-      "capability": "结构严谨 / 长上下文",
-      "note": "默认绑定 A 执行器。换 provider 时按可用 model 的能力画像就近替换，name 不变。"
-    },
-    {
-      "name": "ux-mockup-b",
-      "model": "minimax/minimax-m3",
-      "temperature": 0.8,
-      "capability": "均衡表达 / 通用",
-      "note": "默认绑定 B 执行器。"
-    },
-    {
-      "name": "ux-mockup-c",
-      "model": "mimo/mimo-v2.5-pro",
-      "temperature": 0.9,
-      "capability": "创意表现 / 长上下文",
-      "note": "默认绑定 C 执行器。温度调高增大差异化。"
-    }
-  ],
+  "$schema": "ux-model-policy",
+  "comment": "UX 视觉稿生成子代理的模型策略（单一真相源）。本文件不再预绑任何模型——方向预设（严谨/均衡/创意）是方向层属性，永远活在 mockup-generation.md 的方向定义库；本文件只回答一个问题：fork-join 派遣时执行器用什么模型。mode 状态机：uninitialized=首次触发时 UX 须征询用户同意（拒绝→inherit 全部跟随当前对话模型；允许→random 由 UX 每次派遣时自主分配，或 pinned 由用户点名）；inherit=全部跟随当前对话模型；random=每次派遣前从当前可用模型目录自主分配（跨 provider 优先，按方向画像就近匹配）；pinned=只用 pinned 清单内的模型。用户（运营端）可随时直接编辑本文件，UX 每次派遣前现读、不缓存、免重启；文件损坏或缺字段时安全回落为 uninitialized 重新征询。opencode 运行时经 rdd-engine/scripts/sync-ux-subagents.cmd 按当前 mode 物化执行器定义后需重启 opencode；dsh 运行时实时生效（rdd_models 工具 + workflow 派遣覆盖对）。详见 rdd-ux/references/mockup-generation.md「模型策略与运行时适配」。",
+  "mode": "uninitialized",
+  "pinned": [],
+  "history": [],
   "managed": [
     "ux-mockup-a",
     "ux-mockup-b",
     "ux-mockup-c"
   ],
   "rules": {
-    "count": "agents 条目数 = 可用执行器数量。fork-join 默认派 3 个方向，若条目 <3 则部分方向会复用同一 model（差异化退化，UX 派遣时应提示用户）；条目 >3 时 UX 按需求选定参与 fork-join 的子集。",
-    "managed": "managed 列表记录本系统（sync 脚本）创建过所有权的全部 agent name。只有在此列表中的 agent 才允许被脚本删除——这是防止误删用户手建 agent 的安全机制。脚本 Create 时追加 name，Delete 时移除 name。",
-    "decoupling": "方向（信息/任务/体验优先等）不绑定到本文件。方向由 UX 在 mockup-generation.md 定义并在 dispatch 简报中动态注入到执行器。本文件只管 model 层。",
-    "fallback": "换 provider 导致 model 不可用时：① 编辑本文件 agents 替换为 provider 可用 model（按 capability 就近匹配）；② 运行 sync-ux-subagents.cmd 同步 agent 定义；③ 重启 opencode。若要废弃某执行器：从 agents 删除该条目（保留在 managed 里），再跑脚本，脚本会自动删除对应 .md。"
+    "mode": "uninitialized | inherit | random | pinned。initial 为 uninitialized（模型清单为空，不预设）。UX 是本文件唯一写入者，且仅在首次同意交互后写入一次决策结果（mode + 可选 pinned + history 留痕）；之后的一切变更由用户直接编辑完成。",
+    "pinned": "仅 mode=pinned 时生效：[{ \"provider\": \"<路由 key，dsh 必填；opencode 可省略>\", \"model\": \"<模型 id>\" }]。派遣前 UX 须校验清单仍可解析（dsh 对照 rdd_models 目录；opencode 对照可用 agent），失效路由报错并提示用户改配置，不静默降级。",
+    "history": "决策留痕（append-only）：[{ \"time\": \"<ISO8601>\", \"decider\": \"user\", \"mode\": \"<落定的 mode>\", \"reason\": \"<一句话>\" }]。仅作审计，不参与运行时判定。",
+    "random": "UX 每次派遣时自主分配：先发现当前可用模型（dsh 经 rdd_models 工具；opencode 经已物化执行器），再按方向画像就近匹配（严谨→结构化能力强的模型、创意→表达发散的模型，依据名称/描述启发式），并跨 provider 优先——不同训练分布天然产生风格分化，这是 fork-join 三方向差异化的根基。可用模型不足 3 个时允许同模型复用，但须向用户明示差异化退化。",
+    "inherit": "全部执行器跟随当前对话模型（dsh：workflow agent() 不传 provider/model，子代理原生继承父会话路由；opencode：执行器定义去 model 绑定）。零配置安全态。",
+    "managed": "managed 列表记录 sync 脚本创建过所有权的全部 agent name（opencode 运行时专用）。只有列表内的 agent 允许被脚本删除——防止误删用户手建 agent。dsh 运行时不消费本字段。"
   }
 }

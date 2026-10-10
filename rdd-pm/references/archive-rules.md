@@ -43,6 +43,10 @@ New-Item -ItemType Directory -Path ".rdd/changes/archive/YYYY-MM-DD-short-name/r
 
 > **快速通道差异**：背景段简短即可。
 
+**需求全貌段（标准流程）**：`## 需求全貌（确认版）` 必须是**拆解前经用户确认的版本**（对话中以草稿形态完成确认，见 `standard-flow.md` 第三步，归档时落盘）。快速通道豁免全貌段（见 `fast-track.md`）。
+
+**归档前变更**：用户在拆解后补充/修改需求时，先回写全貌段（标注变更）并经用户确认，再增量更新需求件与索引/判据——禁止只改拆解件绕过全貌。
+
 ### 3. 生成需求文件
 
 写入 `requirements/{name}.md`（文件名由 PM 确定简短主题名词），按 `references/requirement-item-template.md` 模板格式。
@@ -59,13 +63,14 @@ $rdd = $null; $t = $null; try { $t = git rev-parse --show-toplevel } catch { }; 
 
 字段填写指南见 `references/task-template.md`，路由判定规则见 `references/artifact-routing.md`。`currentOwners` 设为该需求的下一条处理角色。
 
-### 5. 设置流转控制
+### 5. 路由判定（已含于 task.json，不写文档侧）
 
-为每个需求文档设置 `## 流转控制 > 当前责任人`，按 `references/artifact-routing.md` 的路由判定规则：
+路由目标随上一步 `init` 的 `currentOwners` 一并落盘（**路由单一真源在 task.json，需求文档不设置 `## 流转控制` 等流转字段**），按 `references/artifact-routing.md` 的判定规则：
 - 简单需求、单一模块/功能、无架构影响 → `DEV`
 - 涉及多模块/架构变更/技术选型 → `CTO`
 - 涉及页面设计/UI/交互体验/前端界面 → `UX`
-- 复合需求（技术+视觉耦合）→ 先 `CTO`，CTO 完成后再路由到 `UX`
+- 测试先行（验收用例设计先导）→ `["QA"]` 且**必须显式 `"phase": "DESIGN"`**（tasks-init.json 内逐条填写；缺省会被推断为 `VERIFY`——无任何实现的验收阶段，语义错误）
+- 复合需求（技术+视觉）→ 耦合（UX 依赖 CTO 方案）：起步 `["CTO"]`，CTO 完成后 `set-route -To "UX"` 阶段内交接（串行由数据层保证，UX 抢跑无法 claim）；独立（可并行）：`["CTO","UX"]`（并行语义）或拆两个需求文档分别路由——详见 `references/artifact-routing.md`
 
 > **快速通道差异**：不对目标角色做任何预设（可能是 DEV、CTO 或 UX）。
 
@@ -77,7 +82,7 @@ $rdd = $null; $t = $null; try { $t = git rev-parse --show-toplevel } catch { }; 
 $rdd = $null; $t = $null; try { $t = git rev-parse --show-toplevel } catch { }; foreach ($c in @($env:RDD_ENGINE_HOME; if ($t) { (Get-ChildItem $t -Recurse -Directory -Depth 3 -Filter 'rdd-engine').FullName }; "$HOME\.rdd\engine\current")) { if ($c -and (Test-Path "$c\scripts\rdd-flow.cmd")) { $rdd = $c; break } }; if (-not $rdd) { throw "rdd-engine 未定位（三级定位链：RDD_ENGINE_HOME → 项目内 rdd-engine → ~\.rdd\engine\current 全 miss）。安装/排障：GitHub Release 下载 rdd-engine.tgz 后运行 scripts/install-rdd-engine.ps1；协议详见 rdd-engine/references/engine-location.md" }; & "$rdd\scripts\explore.cmd" -Type search -Query "分析 [需求简述] 涉及的代码模块"
 ```
 
-> engine 按 `rdd-engine/references/exploration-guide.md` 的策略执行：返回数据所在位置（已通过时效校验，热区优先），PM 扫 tags 判断后 Read 摘要或派 worker 探索并注册入热区。
+> engine 按 `rdd-engine/references/exploration-guide.md` 的冻结协议执行：返回排序后的数据位置（已通过时效校验，热区优先），**两分支消费**——`results` 非空即命中（相关性已由精度管线判定，直接 Read 首条 `summaryPath`，需细节再读 `fullPath`）；为空则用返回体附带的 `dispatchPrompt` 派遣 `rdd-explore` 子代理（可写 worker，探索并注册入热区）。无需也不应再自行扫 tags 判断。
 >
 > 如果变更范围简单（单文件/单模块），可跳过此步骤。快速通道默认跳过。
 
@@ -88,9 +93,9 @@ $rdd = $null; $t = $null; try { $t = git rev-parse --show-toplevel } catch { }; 
 1. task.json 路由已设置（Step 4 已在归档步骤完成）
 2. 运行 `next` 展示可流转角色
 3. 推荐角色 + 请求用户确认
-4. 用户确认后运行 `start` 生成交接包，按模式（self-driven / app-driven）分支执行
+4. 用户确认后调用交接脚本 `start-role.cmd -Role <目标角色> -TaskId <n>`——脚本按判据链（`RDD_RUNTIME` → `DSH_WEB_URL` → CLI）自动选择后端（Plus / dsh / CLI 三分支，agent 无需判断运行模式）
 
-> 完整流程、模式检测、交接包生成方式见 `rdd-engine/references/transition-guide.md`。
+> 完整流程、后端判据链、交接包生成方式见 `rdd-engine/references/transition-guide.md`。
 
 ### 8. 完成后
 
@@ -103,6 +108,6 @@ $rdd = $null; $t = $null; try { $t = git rev-parse --show-toplevel } catch { }; 
 ## 历史兼容
 
 - 旧归档结构（需求文件在根目录、无 requirements/ 子目录）各角色回退到旧逻辑处理
-- 旧归档有 task.md 无 task.json：`rdd-flow.ps1` 自动回退解析 task.md；可用 `rdd-flow.cmd -Command migrate -Archive <path>` 迁移为 task.json
+- 旧归档有 task.md 无 task.json：读侧命令不再回退解析 task.md（fail-loud `TASK_JSON_NOT_FOUND`）；先 `rdd-flow.cmd -Command migrate -Archive <path>` 一次性迁移为 task.json
 - 旧 task.md 格式（无路由总览、含已废弃的「角色参与计划」章节或旧版 ✅⬜ 状态表）各角色忽略 `角色参与计划`，从路由总览派生参与信息
 - 旧 rdd-flow 脚本会先在根目录查找需求文件，找不到时回退到 `requirements/` 子目录

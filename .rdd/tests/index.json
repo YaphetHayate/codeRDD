@@ -28,17 +28,18 @@
                                              "rdd-engine/references/task-dispatch-guide.md",
                                              "dsh/rdd-goal-tree/src/client/view-picker.ts",
                                              "dsh/rdd-goal-tree/src/client/index.tsx",
-                                             "scripts/build-dsh-goal-tree.mjs"
+                                             "scripts/build-dsh-goal-tree.mjs",
+                                             "rdd-engine/scripts/start-role.ps1"
                                          ],
                          "testCode":  [
                                           ".rdd/tests/goal-tree/goal-tree-verify.ps1",
                                           "rdd-engine/tests/test-goal-tree-gates.ps1",
                                           "dsh/rdd-goal-tree/tests/smoke.mjs"
                                       ],
-                         "activeCount":  54,
+                         "activeCount":  57,
                          "deprecatedCount":  0,
-                         "lastUpdated":  "2026-09-19",
-                         "lastChange":  "2026-09-18-planner-goal-tree-upgrade"
+                         "lastUpdated":  "2026-10-09",
+                         "lastChange":  "2026-10-09-planner-tree-dispatch"
                      },
                      {
                          "feature":  "delivery-bridge",
@@ -308,6 +309,29 @@
                          "deprecatedCount":  0,
                          "lastUpdated":  "2026-10-09",
                          "lastChange":  "2026-10-09-ops-dashboard-project-switcher"
+                     },
+                     {
+                         "feature":  "session-list-lineage",
+                         "relatedCode":  [
+                                             "../dsh/deepseek-harness/packages/host/apiproxy/src/api/sessions.ts",
+                                             "../dsh/deepseek-harness/packages/host/apiproxy/src/api/sessions.schema.ts",
+                                             "../dsh/deepseek-harness/packages/host/apiproxy/src/api-proxy.ts",
+                                             "../dsh/deepseek-harness/packages/client/ui-workspace/src/client/tree.ts",
+                                             "../dsh/deepseek-harness/packages/client/ui-workspace/src/client/rows/Rows.tsx",
+                                             "../dsh/deepseek-harness/packages/client/ui-workspace/src/client/WorkspaceBrowser.tsx",
+                                             "../dsh/deepseek-harness/packages/client/ui-workspace/src/client/stores.ts",
+                                             "rdd-engine/scripts/start-role.ps1"
+                                         ],
+                         "testCode":  [
+                                          "../dsh/deepseek-harness/packages/host/apiproxy/tests/api-proxy-session-lineage.spec.ts",
+                                          "../dsh/deepseek-harness/packages/client/ui-workspace/tests/tree.client.spec.ts",
+                                          "../dsh/deepseek-harness/packages/client/ui-workspace/tests/rows.client.spec.tsx",
+                                          "../dsh/deepseek-harness/packages/client/ui-workspace/tests/workspace-browser.client.spec.tsx"
+                                      ],
+                         "activeCount":  11,
+                         "deprecatedCount":  0,
+                         "lastUpdated":  "2026-10-09",
+                         "lastChange":  "2026-10-09-session-list-lineage-bundling"
                      }
                  ]
 }

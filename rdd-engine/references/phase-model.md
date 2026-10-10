@@ -19,7 +19,7 @@ $script:StageNext = @{ "CTO" = "DEV"; "UX" = "DEV"; "DEV" = "QA"; "QA" = $null }
 
 这带来三个缺口：
 
-1. **顺序缺口**：`StageNext[CTO]=DEV` 钉死 CTO→DEV，无法表达 `task-routing.md:327` 允许的 `advance -From CTO -To UX`（CTO→UX 顺序流转）。
+1. **顺序缺口**：`StageNext[CTO]=DEV` 钉死 CTO→DEV，无法表达旧 advance 命令允许的 CTO→UX 顺序流转（设计期历史问题；advance 已移除，本缺口记录仅存档）。
 2. **并行缺口**：`Resolve-InitialStage`（`:1242`）对 `currentOwners=["CTO","UX"]` 只取第一个角色建链头，UX 无节点 → UX 工作静默丢失。
 3. **树分裂缺口**：若强行多链头，`settle` 无条件 `graft` 下游（`:2631-2637`）+ `stages[stage]=node` 单值覆盖（`:821`），会导致两个并行分支各自 graft 一个 DEV，产生两个 DEV 节点。
 
@@ -134,7 +134,7 @@ rollback -RunId <id> -NodeId <失败节点> -To <回退角色集> -Phase <回退
 | `init`/`add-task` | — | 初始化 `phase` |
 | `check` | `Invoke-Check` | 加 `phase` 枚举校验 + `currentOwners ⊆ PhaseRoles[phase]` + lifecycle/phase 一致性 |
 | 读面 | `show`/`handoff`/`next`/`claim` | 透出 `phase` |
-| `advance` | `Invoke-Advance` | 不改实现，文档标注退场 |
+| `advance` | `Invoke-Advance` | 已移除（2026-10）——实现删除，文档收敛至 set-route |
 
 ### 7.2 delivery-bridge.ps1（bridge 层 = 编排）
 
@@ -149,7 +149,7 @@ rollback -RunId <id> -NodeId <失败节点> -To <回退角色集> -Phase <回退
 
 ### 7.3 文档
 
-`task-routing.md`（schema + set-route -Phase + 并行节重写）、`transition-guide.md`（角色速查按阶段对齐）、`planner-guide.md`（阶段链模型重写 + 命令签名）、`handoff-guide.md`（phase 透出）。
+`task-routing.md`（schema + set-route -Phase + 并行节重写）、`transition-guide.md`（角色速查按阶段对齐）、`planner-guide.md`（命令签名）+ `planner-scenarios.md`（阶段链模型，交付编排生命周期节）、`handoff-guide.md`（phase 透出）。
 
 ## 8. 错误码
 
@@ -182,4 +182,4 @@ rollback -RunId <id> -NodeId <失败节点> -To <回退角色集> -Phase <回退
 
 - 旧归档无 `phase`：读面返回 `phase=null`；`settle`/`check` 对 null 保守降级（不 crash），`migrate` 可后续一次性补 `phase`。
 - `lifecycle` 三值消费（58 处）零改动。
-- `advance` 命令保留（向后兼容），新流转统一 `set-route -Phase`。
+- `advance` 命令已移除（2026-10）：全部流转统一 `set-route -Phase`；桥接 legacy 尾部改道 set-route（歧义目标 QA 显式 `-Phase VERIFY`）。

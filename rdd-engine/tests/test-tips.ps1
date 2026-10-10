@@ -112,7 +112,10 @@ try {
     $entryBytes = [System.IO.File]::ReadAllBytes($entryFull)
     Assert-True ($entryBytes[0] -ne 239) 'S2 entry file stored UTF-8 without BOM' ("first=$($entryBytes[0])")
     $entryObj = ([System.IO.File]::ReadAllText($entryFull, [System.Text.Encoding]::UTF8) | ConvertFrom-Json)
-    Assert-True ($entryObj.schema -eq 'rdd-tip/1' -and $entryObj.deprecated -eq $false -and $entryObj.recordedBy -eq 'DEV') 'S2 entry schema/recordedBy/deprecated stamped by CLI' ($entryObj | ConvertTo-Json -Compress)
+    Assert-True ($entryObj.schema -eq 'rdd-tip/2' -and $entryObj.deprecated -eq $false -and $entryObj.recordedBy -eq 'DEV') 'S2 entry schema/recordedBy/deprecated stamped by CLI' ($entryObj | ConvertTo-Json -Compress)
+    Assert-True ($entryObj.status -eq 'latent' -and $entryObj.count -eq 1 -and @($entryObj.collidedBy).Count -eq 0 -and $r.json.data.status -eq 'latent' -and $r.json.data.count -eq 1) 'S2 v2 birth: latent, count=1, empty collidedBy (file + envelope)' ($entryObj | ConvertTo-Json -Compress)
+    Assert-True (@($r.json.data.candidates).Count -eq 0) 'S2 first add into an empty store: candidates=[]' ($r.raw)
+    $firstId = [string]$r.json.data.id
     Assert-True ((@($entryObj.roles) -join ',') -eq 'DEV' -and (@($r.json.data.roles) -join ',') -eq 'DEV') 'S2 record-then-own: entry roles = [-By] (file + envelope)' ($entryObj | ConvertTo-Json -Compress)
     Assert-True ($entryObj.id -eq [System.IO.Path]::GetFileNameWithoutExtension($entryFull) -and $entryObj.recordedAt -match '^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}') 'S2 entry id/recordedAt complete' ($entryObj | ConvertTo-Json -Compress)
 
@@ -198,6 +201,7 @@ try {
     # ---------- S7: full cmd chain (chcp 65001) — zh leg ----------
     $r = Invoke-TipsCmd @('-Command', 'add', '-By', 'DEV', '-File', $Zh2PayloadPath)
     Assert-True ($r.exit -eq 0 -and $r.json.data.title -eq $ZhTitle2 -and (@($r.json.data.roles) -join ',') -eq 'DEV') 'S7 cmd-chain zh add roundtrips, roles=[DEV]' ("exit=$($r.exit) raw=$($r.raw)")
+    $zh2Id = [string]$r.json.data.id
     $r = Invoke-TipsCmd @('-Command', 'list', '-Role', 'QA')
     $titles = @($r.json.data.entries | ForEach-Object { $_.title })
     Assert-True ($r.json.data.count -eq 2 -and ($titles -contains $ZhTitle) -and -not ($titles -contains $ZhTitle2)) 'S7 cmd-chain filtered list: zh titles intact, DEV-only zh2 excluded' (($titles -join '|'))
@@ -227,6 +231,110 @@ try {
     Remove-Item -LiteralPath $corruptPath -Force
     $r = Invoke-Tips @('-Command', 'list')
     Assert-True ($r.exit -eq 0 -and $r.json.data.count -eq 4) 'S9 store healthy again after removing the broken file' ("exit=$($r.exit) raw=$($r.raw)")
+
+    # ---------- S10: v2 add — near-duplicate candidates + legacy compat ----------
+    $r = Invoke-Tips @('-Command', 'add', '-By', 'DEV', '-Title', 'ascii tip one', '-Problem', 'p1 duplicate problem text', '-Avoidance', 'a1 again')
+    Assert-True ($r.exit -eq 0 -and $r.json.data.status -eq 'latent' -and $r.json.data.count -eq 1) 'S10 duplicate-ish add: born latent count=1' ("exit=$($r.exit) raw=$($r.raw)")
+    $dupId = [string]$r.json.data.id
+    $candTitles = @($r.json.data.candidates | ForEach-Object { $_.title })
+    Assert-True ($candTitles.Count -ge 1 -and $candTitles[0] -eq 'ascii tip one') 'S10 candidates: the original same-topic tip ranks first' (($candTitles -join '|') + ' raw=' + $r.raw)
+    $cand0 = @($r.json.data.candidates)[0]
+    Assert-True ($cand0.score -gt 0 -and @($cand0.recalledBy) -contains 'lexical' -and $cand0.count -ge 1) 'S10 candidate view: positive score + lexical recall + lifecycle fields' ($r.raw)
+    Assert-True (($candTitles -contains 'ascii cto tip')) 'S10 weaker lexical overlap (cto tip shares ascii/tip) also recalled' (($candTitles -join '|'))
+    $r = Invoke-Tips @('-Command', 'add', '-By', 'PM', '-Title', 'totally different subject xyzzy', '-Problem', 'nothing shared here quux', '-Avoidance', 'no overlap frobnicate')
+    Assert-True ($r.exit -eq 0 -and @($r.json.data.candidates).Count -eq 0) 'S10 unrelated add: zero lexical overlap -> empty candidates' ($r.raw)
+    $pmId = [string]$r.json.data.id
+    # legacy rdd-tip/1 file: read as active/1 (pre-migration view), still recallable
+    $legacyId = '20260101T000000Z-DEV-aaaa'
+    $legacyPath = Join-Path $Work ('.rdd\tips\entries\' + $legacyId + '.json')
+    [System.IO.File]::WriteAllText($legacyPath, '{"schema":"rdd-tip/1","id":"' + $legacyId + '","title":"legacy BOM trap tip","problem":"old BOM problem words","avoidance":"old BOM avoidance words","roles":["DEV"],"recordedBy":"DEV","recordedAt":"2026-01-01T00:00:00.0000000Z","deprecated":false}', $Utf8NoBom)
+    $r = Invoke-Tips @('-Command', 'list')
+    $legacyView = @($r.json.data.entries | Where-Object { $_.id -eq $legacyId })
+    Assert-True ($legacyView.Count -eq 1 -and $legacyView[0].status -eq 'active' -and $legacyView[0].count -eq 1) 'S10 legacy rdd-tip/1 file reads as active/1 (compat view)' ($r.raw)
+    $r = Invoke-Tips @('-Command', 'add', '-By', 'DEV', '-Title', 'BOM trap redux', '-Problem', 'BOM problem words again', '-Avoidance', 'BOM avoidance words again')
+    $candIds = @($r.json.data.candidates | ForEach-Object { $_.id })
+    Assert-True ($candIds -contains $legacyId) 'S10 legacy (schema/1) entry participates in the candidates corpus' (($candIds -join '|') + ' raw=' + $r.raw)
+
+    # ---------- S11: collide — evidence, auto-promotion, ordering ----------
+    $r = Invoke-Tips @('-Command', 'collide', '-Id', $ctoId, '-By', 'QA')
+    Assert-True ($r.exit -eq 0 -and $r.json.data.collided -eq $true -and $r.json.data.count -eq 2 -and $r.json.data.status -eq 'active' -and $r.json.data.promoted -eq $true -and $r.json.data.sawTip -eq $false) 'S11 collide promotes latent -> active at count=2' ("exit=$($r.exit) raw=$($r.raw)")
+    $r = Invoke-Tips @('-Command', 'collide', '-Id', $ctoId, '-By', 'dev', '-SawTip')
+    Assert-True ($r.exit -eq 0 -and $r.json.data.count -eq 3 -and $r.json.data.status -eq 'active' -and $r.json.data.promoted -eq $false -and $r.json.data.sawTip -eq $true) 'S11 second collide: count=3 stays active, sawTip stamped' ("exit=$($r.exit) raw=$($r.raw)")
+    $ctoEntry2 = ([System.IO.File]::ReadAllText((Join-Path $Work ('.rdd\tips\entries\' + $ctoId + '.json')), [System.Text.Encoding]::UTF8) | ConvertFrom-Json)
+    Assert-True ($ctoEntry2.schema -eq 'rdd-tip/2' -and @($ctoEntry2.collidedBy).Count -eq 2 -and @($ctoEntry2.collidedBy)[0].role -eq 'QA' -and @($ctoEntry2.collidedBy)[1].sawTip -eq $true) 'S11 collidedBy audit trail on disk (roles + sawTip)' ($ctoEntry2 | ConvertTo-Json -Compress)
+    $r = Invoke-Tips @('-Command', 'list')
+    Assert-True ($r.json.data.entries[0].id -eq $ctoId -and $r.json.data.entries[0].count -eq 3) 'S11 list: collision evidence (count=3) outranks recency' ($r.raw)
+    $r = Invoke-Tips @('-Command', 'collide', '-Id', '20990101T000000Z-DEV-0000', '-By', 'QA')
+    Assert-True ($r.exit -eq 1 -and $r.json.error.code -eq 'TIP_NOT_FOUND') 'S11 collide unknown id -> TIP_NOT_FOUND' ("exit=$($r.exit) raw=$($r.raw)")
+    $r = Invoke-Tips @('-Command', 'collide', '-Id', $ctoId)
+    Assert-True ($r.exit -eq 1 -and $r.json.error.code -eq 'MISSING_BY') 'S11 collide without -By -> MISSING_BY' ("exit=$($r.exit) raw=$($r.raw)")
+    $r = Invoke-Tips @('-Command', 'collide', '-Id', $ctoId, '-By', 'GODZILLA')
+    Assert-True ($r.exit -eq 1 -and $r.json.error.code -eq 'INVALID_ROLE') 'S11 collide unknown -By -> INVALID_ROLE' ("exit=$($r.exit) raw=$($r.raw)")
+    [System.IO.File]::WriteAllText((Join-Path $Work '.rdd\tips\entries\99999999T888888Z-DEV-badbad.json'), '{ not json', $Utf8NoBom)
+    $r = Invoke-Tips @('-Command', 'collide', '-Id', '99999999T888888Z-DEV-badbad', '-By', 'QA')
+    Assert-True ($r.exit -eq 3 -and $r.json.error.code -eq 'CORRUPT_ENTRY') 'S11 collide on corrupt entry -> CORRUPT_ENTRY exit 3' ("exit=$($r.exit) raw=$($r.raw)")
+    Remove-Item -LiteralPath (Join-Path $Work '.rdd\tips\entries\99999999T888888Z-DEV-badbad.json') -Force
+
+    # ---------- S12: pin / unpin / supersede ----------
+    $r = Invoke-Tips @('-Command', 'pin', '-Id', $zh2Id, '-By', 'QA')
+    Assert-True ($r.exit -eq 0 -and $r.json.data.pinned -eq $true -and $r.json.data.already -eq $false -and $r.json.data.status -eq 'pinned') 'S12 pin: latent -> pinned' ("exit=$($r.exit) raw=$($r.raw)")
+    $pinnedBytes = [System.IO.File]::ReadAllBytes((Join-Path $Work ('.rdd\tips\entries\' + $zh2Id + '.json')))
+    $r = Invoke-Tips @('-Command', 'pin', '-Id', $zh2Id, '-By', 'QA')
+    $pinnedAfter = [System.IO.File]::ReadAllBytes((Join-Path $Work ('.rdd\tips\entries\' + $zh2Id + '.json')))
+    Assert-True ($r.exit -eq 0 -and $r.json.data.already -eq $true -and ($pinnedBytes.Length -eq $pinnedAfter.Length)) 'S12 pin idempotent: already-pinned, file untouched' ("exit=$($r.exit) raw=$($r.raw)")
+    $r = Invoke-Tips @('-Command', 'unpin', '-Id', $zh2Id, '-By', 'QA')
+    Assert-True ($r.exit -eq 0 -and $r.json.data.unpinned -eq $true -and $r.json.data.status -eq 'latent') 'S12 unpin recomputes from evidence: count=1 -> latent' ("exit=$($r.exit) raw=$($r.raw)")
+    $r = Invoke-Tips @('-Command', 'unpin', '-Id', $zh2Id, '-By', 'QA')
+    Assert-True ($r.exit -eq 1 -and $r.json.error.code -eq 'INVALID_STATE') 'S12 unpin on non-pinned -> INVALID_STATE' ("exit=$($r.exit) raw=$($r.raw)")
+    $r = Invoke-Tips @('-Command', 'collide', '-Id', $zh2Id, '-By', 'CTO')
+    Assert-True ($r.exit -eq 0 -and $r.json.data.count -eq 2 -and $r.json.data.status -eq 'active') 'S12 zh2 collide promotes to active (count=2)' ("exit=$($r.exit) raw=$($r.raw)")
+    $r = Invoke-Tips @('-Command', 'pin', '-Id', $zh2Id, '-By', 'QA')
+    $r = Invoke-Tips @('-Command', 'unpin', '-Id', $zh2Id, '-By', 'QA')
+    Assert-True ($r.exit -eq 0 -and $r.json.data.status -eq 'active') 'S12 unpin after promotion falls back to active (count>=2)' ("exit=$($r.exit) raw=$($r.raw)")
+    $r = Invoke-Tips @('-Command', 'supersede', '-Id', $pmId, '-By', 'QA', '-Note', 'fixed-into-tool: start-role multi-archive warning')
+    Assert-True ($r.exit -eq 0 -and $r.json.data.superseded -eq $true -and $r.json.data.status -eq 'superseded') 'S12 supersede with ASCII note' ("exit=$($r.exit) raw=$($r.raw)")
+    $pmEntry = ([System.IO.File]::ReadAllText((Join-Path $Work ('.rdd\tips\entries\' + $pmId + '.json')), [System.Text.Encoding]::UTF8) | ConvertFrom-Json)
+    Assert-True ($pmEntry.status -eq 'superseded' -and $pmEntry.supersededBy -eq 'QA' -and $pmEntry.note -match 'fixed-into-tool') 'S12 supersede stamps supersededBy/note on disk' ($pmEntry | ConvertTo-Json -Compress)
+    $r = Invoke-Tips @('-Command', 'list')
+    Assert-True (($r.json.data.entries | Where-Object { $_.id -eq $pmId }).Count -eq 0) 'S12 superseded excluded from default list' ($r.raw)
+    $r = Invoke-Tips @('-Command', 'list', '-All')
+    Assert-True (($r.json.data.entries | Where-Object { $_.id -eq $pmId }).Count -eq 1 -and $r.json.data.all -eq $true) 'S12 -All includes the superseded entry' ($r.raw)
+    $r = Invoke-Tips @('-Command', 'add', '-By', 'PM', '-Title', 'totally different subject xyzzy', '-Problem', 'nothing shared here quux redux', '-Avoidance', 'overlap frobnicate again')
+    $candIds2 = @($r.json.data.candidates | ForEach-Object { $_.id })
+    Assert-True ($candIds2 -notcontains $pmId) 'S12 superseded entry leaves the candidates corpus' (($candIds2 -join '|') + ' raw=' + $r.raw)
+    $r = Invoke-Tips @('-Command', 'pin', '-Id', $pmId, '-By', 'QA')
+    Assert-True ($r.exit -eq 1 -and $r.json.error.code -eq 'INVALID_STATE') 'S12 pin on superseded -> INVALID_STATE (terminal)' ("exit=$($r.exit) raw=$($r.raw)")
+    $r = Invoke-Tips @('-Command', 'supersede', '-Id', $pmId, '-By', 'QA')
+    Assert-True ($r.exit -eq 1 -and $r.json.error.code -eq 'INVALID_STATE') 'S12 re-supersede -> INVALID_STATE' ("exit=$($r.exit) raw=$($r.raw)")
+    $r = Invoke-Tips @('-Command', 'supersede', '-Id', $firstId, '-By', 'QA', '-Note', $ZhTitle)
+    Assert-True ($r.exit -eq 1 -and $r.json.error.code -eq 'NON_ASCII_INLINE') 'S12 non-ASCII -Note -> NON_ASCII_INLINE' ("exit=$($r.exit) raw=$($r.raw)")
+
+    # ---------- S13: target normalizes a legacy file to v2 ----------
+    $r = Invoke-Tips @('-Command', 'target', '-Id', $legacyId, '-By', 'qa')
+    Assert-True ($r.exit -eq 0 -and $r.json.data.appended -eq $true -and (@($r.json.data.roles) -join ',') -eq 'DEV,QA' -and $r.json.data.status -eq 'active') 'S13 target on legacy entry: append + lifecycle view in envelope' ("exit=$($r.exit) raw=$($r.raw)")
+    $legacyEntry = ([System.IO.File]::ReadAllText($legacyPath, [System.Text.Encoding]::UTF8) | ConvertFrom-Json)
+    Assert-True ($legacyEntry.schema -eq 'rdd-tip/2' -and $legacyEntry.status -eq 'active' -and $legacyEntry.count -eq 1 -and (@($legacyEntry.roles) -join ',') -eq 'DEV,QA') 'S13 rewrite normalizes the legacy file to full v2 in place' ($legacyEntry | ConvertTo-Json -Compress)
+
+    # ---------- S14: migrate — legacy store -> v2 lifecycle ----------
+    $legacy2Id = '20260102T000000Z-QA-bbbb'
+    $legacy3Id = '20260103T000000Z-CTO-cccc'
+    foreach ($pair in @(@($legacy2Id, 'QA'), @($legacy3Id, 'CTO'))) {
+        [System.IO.File]::WriteAllText((Join-Path $Work ('.rdd\tips\entries\' + $pair[0] + '.json')), '{"schema":"rdd-tip/1","id":"' + $pair[0] + '","title":"migrate legacy ' + $pair[0] + '","problem":"old problem words","avoidance":"old avoidance words","roles":["' + $pair[1] + '"],"recordedBy":"' + $pair[1] + '","recordedAt":"2026-01-02T00:00:00.0000000Z","deprecated":false}', $Utf8NoBom)
+    }
+    $storeCount = Get-EntryCount
+    $r = Invoke-Tips @('-Command', 'migrate')
+    Assert-True ($r.exit -eq 1 -and $r.json.error.code -eq 'MISSING_BY') 'S14 migrate without -By -> MISSING_BY' ("exit=$($r.exit) raw=$($r.raw)")
+    $r = Invoke-Tips @('-Command', 'migrate', '-By', 'PLANNER', '-Pin', '20990101T000000Z-DEV-nope')
+    $legacy2Schema = ([System.IO.File]::ReadAllText((Join-Path $Work ('.rdd\tips\entries\' + $legacy2Id + '.json')), [System.Text.Encoding]::UTF8) | ConvertFrom-Json).schema
+    Assert-True ($r.exit -eq 1 -and $r.json.error.code -eq 'MIGRATE_PIN_UNKNOWN' -and $legacy2Schema -eq 'rdd-tip/1') 'S14 unknown -Pin id fails loud BEFORE any write (legacy file untouched)' ("exit=$($r.exit) schema=$legacy2Schema raw=$($r.raw)")
+    $r = Invoke-Tips @('-Command', 'migrate', '-By', 'PLANNER', '-Pin', $legacy2Id)
+    Assert-True ($r.exit -eq 0 -and $r.json.data.migrated -eq 2 -and (@($r.json.data.pinnedIds) -join ',') -eq $legacy2Id -and (@($r.json.data.latentIds) -join ',') -eq $legacy3Id -and $r.json.data.skippedV2 -eq ($storeCount - 2)) 'S14 migrate: pin-list entry pinned, other legacy latent, v2 skipped' ("exit=$($r.exit) raw=$($r.raw)")
+    $m2 = ([System.IO.File]::ReadAllText((Join-Path $Work ('.rdd\tips\entries\' + $legacy2Id + '.json')), [System.Text.Encoding]::UTF8) | ConvertFrom-Json)
+    $m3 = ([System.IO.File]::ReadAllText((Join-Path $Work ('.rdd\tips\entries\' + $legacy3Id + '.json')), [System.Text.Encoding]::UTF8) | ConvertFrom-Json)
+    Assert-True ($m2.schema -eq 'rdd-tip/2' -and $m2.status -eq 'pinned' -and $m2.pinnedBy -eq 'PLANNER') 'S14 pinned legacy file: v2 + pinnedBy stamped' ($m2 | ConvertTo-Json -Compress)
+    Assert-True ($m3.schema -eq 'rdd-tip/2' -and $m3.status -eq 'latent' -and $m3.count -eq 1) 'S14 non-pin legacy file: v2 latent count=1' ($m3 | ConvertTo-Json -Compress)
+    $r = Invoke-Tips @('-Command', 'migrate', '-By', 'PLANNER', '-Pin', $legacy2Id)
+    Assert-True ($r.exit -eq 0 -and $r.json.data.migrated -eq 0 -and $r.json.data.skippedV2 -eq $storeCount) 'S14 migrate idempotent: second run migrates nothing' ("exit=$($r.exit) raw=$($r.raw)")
 }
 finally {
     if ($null -eq $prevRoot) { Remove-Item Env:\RDD_PROJECT_ROOT -ErrorAction SilentlyContinue }

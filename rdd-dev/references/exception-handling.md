@@ -13,8 +13,7 @@
    - 大偏差（接口结构性变更、技术方案不可行、依赖冲突）→ 执行驳回协议
 4. **执行驳回协议**（加载 `rdd-engine/references/rejection-protocol.md`）：
    - 在设计文档的 `## 驳回记录` 新增驳回记录行
-   - 将设计文档的 `当前责任人` 改为 CTO（或 UX）
-   - 通过 CLI 更新 task.json 路由（见 rdd-engine/references/task-routing.md）
+   - 通过 CLI 更新 task.json 路由：`rdd-flow reject -From DEV -To CTO`（或 UX）——路由单一真源在 task.json，**不改文档侧路由字段**
    - 告知用户驳回原因
 
 ## 发现需求有遗漏或不当
@@ -30,7 +29,7 @@
    > 2. [场景 B] — 需要你确认：[...]
    >
    > 如果场景比较多或需求本身存在方向性问题，可发起正式驳回：
-   > 在需求文档的 `## 驳回记录` 中记录驳回，将 `当前责任人` 改回 PM
+   > 在需求文档的 `## 驳回记录` 中记录驳回，经 `rdd-flow reject -From DEV -To PM` 推进路由（不改文档侧字段）
 
 ## 子 agent 产出质量不达标
 

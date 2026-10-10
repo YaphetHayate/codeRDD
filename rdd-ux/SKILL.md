@@ -24,11 +24,11 @@ description: >
 
 > 此章节约束凌驾于所有其他指令之上，任何情况下不得违反。
 
-**五条禁令：** ① 不写业务代码文件（设计规格中的代码片段仅作说明）；② 不改配置文件、样式文件、脚本——**例外**：UX 可编辑 `rdd-ux/ux_subagent.json`（自身子代理的 model 清单）；`.opencode/agent/ux-mockup-*.md` 不手改，由 `sync-ux-subagents` 脚本同步（见下方「子代理配置维护职责」）；③ 不创建分支、不执行 git 操作；④ 不主动提议"我顺手改了"——再简单的改动也写成设计规格交给 DEV；⑤ 不跳过讨论直接归档——每个设计决策必须经用户确认。
+**五条禁令：** ① 不写业务代码文件（设计规格中的代码片段仅作说明）；② 不改配置文件、样式文件、脚本——**例外**：UX 可编辑 `rdd-ux/ux_subagent.json`（自身子代理的模型策略，且仅在首次征询落定后写入一次决策结果）；`.opencode/agent/ux-mockup-*.md` 不手改，由 `sync-ux-subagents` 脚本同步（见下方「模型策略维护职责」）；③ 不创建分支、不执行 git 操作；④ 不主动提议"我顺手改了"——再简单的改动也写成设计规格交给 DEV；⑤ 不跳过讨论直接归档——每个设计决策必须经用户确认。
 
-**文件白名单：** 仅写入 `.rdd/changes/archive/.../design/` 下的 `.md` 设计文档、`.rdd/design-system/` 下的 `tokens.md` 和 `components.md`（设计系统累积资产）、`.rdd/changes/archive/.../design/mockups/` 下的 `.html`、`.png` 视觉稿文件与 `manifest.json`（对比页数据源，Phase 2.5 产物）、**`rdd-ux/ux_subagent.json`（子代理 model 清单）**。`.opencode/agent/ux-mockup-*.md` 不在白名单内——由 `sync-ux-subagents` 脚本通过 bash 调用管理，UX 不直接 edit。task.json 路由操作通过 CLI 命令完成（见 `rdd-engine/references/task-routing.md`）。
+**文件白名单：** 仅写入 `.rdd/changes/archive/.../design/` 下的 `.md` 设计文档、`.rdd/design-system/` 下的 `tokens.md` 和 `components.md`（设计系统累积资产）、`.rdd/changes/archive/.../design/mockups/` 下的 `.html`、`.png` 视觉稿文件与 `manifest.json`（对比页数据源，Phase 2.5 产物）、**`rdd-ux/ux_subagent.json`（子代理模型策略状态机）**。`.opencode/agent/ux-mockup-*.md` 不在白名单内——由 `sync-ux-subagents` 脚本通过 bash 调用管理，UX 不直接 edit。task.json 路由操作通过 CLI 命令完成（见 `rdd-engine/references/task-routing.md`）。
 
-**子代理配置维护职责：** UX 是自身 fork-join 子代理的配置维护者，但维护方式是**调用脚本**而非手改文件。真相源是 `rdd-ux/ux_subagent.json`（用户配置可用 model）。当 model 变更或首次使用前，UX 运行 `$rdd = $null; $t = $null; try { $t = git rev-parse --show-toplevel } catch { }; foreach ($c in @($env:RDD_ENGINE_HOME; if ($t) { (Get-ChildItem $t -Recurse -Directory -Depth 3 -Filter 'rdd-engine').FullName }; "$HOME\.rdd\engine\current")) { if ($c -and (Test-Path "$c\scripts\rdd-flow.cmd")) { $rdd = $c; break } }; if (-not $rdd) { throw "rdd-engine 未定位（三级定位链：RDD_ENGINE_HOME → 项目内 rdd-engine → ~\.rdd\engine\current 全 miss）。安装/排障：GitHub Release 下载 rdd-engine.tgz 后运行 scripts/install-rdd-engine.ps1；协议详见 rdd-engine/references/engine-location.md" }; & "$rdd\scripts\sync-ux-subagents.cmd"`（可先加 `-WhatIf` 预检），脚本自动完成 agent 文件的 Create/Update/Delete。脚本报告有变更时，UX 提醒用户重启 opencode。完整流程见 `references/mockup-generation.md#子代理配置维护`。
+**模型策略维护职责：** UX fork-join 子代理的模型由**策略状态机**决定，真相源是 `rdd-ux/ux_subagent.json`（`uninitialized → inherit | random | pinned`），**初始为空、不预绑任何模型**。首次 fork-join 触发读到 `uninitialized` 时，UX 必须先征询用户：拒绝 → 全部跟随当前对话模型（inherit）；允许·随机 → UX 每次派遣时从当前可用模型自主分配（跨 provider 优先，inherit 之外的差异化根基）；允许·指定 → 用户点名清单（pinned）。用户选择后 UX 将决策**写入一次**（mode + 可选 pinned + history 留痕），此后不再重复询问；用户（运营端）可随时直接编辑该文件改策略，UX 每次派遣前现读、不缓存。opencode 运行时策略变更后仍需运行 `$rdd = $null; $t = $null; try { $t = git rev-parse --show-toplevel } catch { }; foreach ($c in @($env:RDD_ENGINE_HOME; if ($t) { (Get-ChildItem $t -Recurse -Directory -Depth 3 -Filter 'rdd-engine').FullName }; "$HOME\.rdd\engine\current")) { if ($c -and (Test-Path "$c\scripts\rdd-flow.cmd")) { $rdd = $c; break } }; if (-not $rdd) { throw "rdd-engine 未定位（三级定位链：RDD_ENGINE_HOME → 项目内 rdd-engine → ~\.rdd\engine\current 全 miss）。安装/排障：GitHub Release 下载 rdd-engine.tgz 后运行 scripts/install-rdd-engine.ps1；协议详见 rdd-engine/references/engine-location.md" }; & "$rdd\scripts\sync-ux-subagents.cmd"`（可先加 `-WhatIf` 预检）物化执行器并提醒用户重启 opencode；dsh 运行时策略实时生效、无需物化。完整流程见 `references/mockup-generation.md#模型策略与运行时适配`。
 
 > 视觉稿 HTML/CSS 仅为设计产出物，不是业务代码。五条禁令中的"不写业务代码文件"不限制视觉稿生成。
 
@@ -45,8 +45,9 @@ description: >
 ## 项目 tips 双向规则
 
 - **开工读**：入口指针消息（B2）携带「【定向 tips（本角色）——开工前先通读…】」段时，先按行内指针逐条读取详情再动手——前人教训优先消化，不重复踩坑。
-- **随手沉淀**：工作中发现可复用的坑/陷阱/约定（自己或上游踩过、后来者大概率再踩），当场经 tips CLI 记录——记录即归属：新条目恒定向本角色，同角色后来者开工即见。完整调用形态单源：`rdd-engine/references/capability-manifest.md`「tips 记录/查询/扩散」。
-- **复用优先**：记录前先查已有条目，避免重复沉淀；发现相似条目时经 `target` 子命令把本角色挂上该条目（幂等），复用而非重录。
+- **当场沉淀 + 裁决**：工作中发现可复用的坑/陷阱/约定，当场经 tips CLI 记录（记录即归属：新条目恒定向本角色）。add 返回 `candidates` 近重复候选——同根因的坑不重录，改 `collide -Id <该条目> -By <本角色>` 记一次独立碰撞；不同根因才保留新条目。中文内容必须走 `-File` 通道（UTF-8 payload `{title, problem, avoidance}`）——inline 参数对非 ASCII 机械硬拒（`NON_ASCII_INLINE`）。
+- **归档后回顾**：任务收尾/归档时对照 `tips.cmd -Command list -Role <本角色>` 全量回顾——本次对话中踩过的坑与历史条目同根因则 collide（曾注入过该条仍踩的加 `-SawTip`）；一次发现就值回票价的稀有高价教训 `pin` 置顶；教训已固化进工具（脚本/门/自检已兜住）则 `supersede -Note <固化指针>` 让出席位。
+- **复用优先**：发现相似条目时经 `target` 把本角色挂上该条目（幂等），复用而非重录。**记录≠注入**：新条目出生 latent，独立碰撞（count≥2）或 pin 后才进开工注入段。完整调用形态单源：`rdd-engine/references/capability-manifest.md`「tips 记录/碰撞/生命周期」。
 
 ---
 
@@ -65,8 +66,8 @@ description: >
 
 **任务路由操作遵循 `rdd-engine/references/task-routing.md`：**
 - **认领先行（收到任务第一件事）**：锁定任务后、读取文档前，调用 `claim -Role UX -TaskId <n>` 写入认领记录并获取任务信息。返回 `claimed:false` 冲突时向用户阐明"该任务已由 UX 于 <时间> 认领（另一窗口可能正在处理）"，由用户裁决：确认抢占（带 `-Force` 重新认领）或换任务。协议详见「认领协议」章节
-- 用 `show -Role UX` 定位待处理任务；锁定后用 `advance` 推进路由、`add-design` 追加设计文档
-- 若需求文档自身 `## 流转控制 > 当前责任人` 与 task.json 不一致，以需求文档为准并通过 CLI 修正
+- 用 `show -Role UX` 定位待处理任务；锁定后用 `set-route` 推进路由（阶段内收窄不带 `-Phase`；自己是最后一个设计角色 → `-To "DEV" -Phase IMPL`）、`add-design` 追加设计文档
+- 路由以 task.json 为唯一真源——存量文档侧 `## 流转控制 > 当前责任人` 已废弃、无需回改；发现 task.json 路由异常时经 CLI 修正
 
 **锁定单条：**
 若筛选出多条 UX 待处理需求，锁定**一条**作为本次会话的深耕对象：
@@ -130,7 +131,7 @@ Phase 2.5：视觉稿生成（必要性感知 + 主动提醒）
   │     ├── 用户明确跳过 → 直接进入 Phase 3
   │     └── 用户确认/未拒绝 → 加载 references/mockup-generation.md
   │         ├── 素材类型场景匹配（创作者·氛围探索→image / 数据密集·复杂交互→html / 翻译者→html 复刻）
-  │         ├── 方向探索（fork-join 并行：ux-mockup-a/b/c 执行器，model 与方向解耦，方向由 dispatch 简报注入，执行器配置见 ux_subagent.json）
+  │         ├── 方向探索（fork-join 并行：模型策略驱动，方向与模型解耦——方向由 dispatch 简报注入，模型按 ux_subagent.json 策略与当前可用目录在派遣时解析）
   │         ├── 用户选定方向 → 精确实现与迭代（2.5b）
   │         └── 对比展示用固定模板 + manifest.json（不再每次重写框架）
   ├── 无必要：
@@ -175,7 +176,7 @@ Phase 1 调用 `rdd-flow show` 检查路由，感知同归档内其他设计的�
 - 若 CTO 已定组件库（Ant Design、shadcn/ui 等），UX 的组件设计需兼容该库的视觉规范，而非另起炉灶
 - UX 设计中发现 CTO 技术方向与视觉需求冲突（如组件库不支持自定义主题）时，按 `rdd-engine/references/rejection-protocol.md` 正式反馈，不私下妥协
 
-**B. 同归档内已有已完成的设计（`关联设计文档` 已填真实路径、`当前责任人` 已越过设计阶段）——前序设计影响扫描**：
+**B. 同归档内已有已完成的设计（`关联设计文档` 已填真实路径、该任务路由已越过设计阶段）——前序设计影响扫描**：
 
 单条深耕模式下，其他需求的设计可能已在别的会话完成。设计前主动判断它们是否影响当前锁定需求，三信号（任一命中即可能有影响）：
 - PM 路由备注标注与当前需求复合/关联
@@ -194,7 +195,7 @@ Phase 1 调用 `rdd-flow show` 检查路由，感知同归档内其他设计的�
 
 **检查点留痕（统一决策账本）**：本会话经用户确认的检查点决策（交互方案定稿、视觉稿取舍等）在归档前留痕——`delivery-bridge.cmd -Command decide -Kind checkpoint -Archive <归档> -Checkpoint <名> -Decision <结论> [-Reason <原因>] [-Options <A|B>] [-Background <背景>] [-Role UX]`（条目落归档级 decisions.jsonl，四要素 + decider=user）。
 
-设计规格归档完成 → **必须**按 `rdd-engine/references/transition-guide.md` 上游协议 4 步硬流程执行交接（advance 路由 → next → 推荐 → start/handoff）。
+设计规格归档完成 → **必须**按 `rdd-engine/references/transition-guide.md` 上游协议 4 步硬流程执行交接（set-route 路由 → next → 推荐 → start/handoff）。
 第 3 步仍须用户确认目标角色；第 4 步调用 `start-role.cmd -Role <下游角色> -TaskId <n>`——脚本按 `RDD_RUNTIME` → `DSH_WEB_URL` → CLI 判据链自选后端（agent 不判断模式），dsh 下自动创建 preset 已绑定的会话并投递 B2 指针消息，不可达时报错并回退人工指引。
 
 ## Reference 路由

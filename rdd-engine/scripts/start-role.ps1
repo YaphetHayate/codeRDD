@@ -31,6 +31,29 @@ param(
     # byte-for-byte identical to the pre-brief output (regression anchor).
     [string]$TaskBrief = "",
 
+    # file-channel variant of -TaskBrief (dispatch-brief-file): goal-tree
+    # dispatch passes an ASCII PATH to a UTF-8 brief file (the node's FULL
+    # title+task) instead of the text itself — the goal-tree → start-role hop
+    # crosses cmd.exe %* re-parsing, where unbounded rich text (%, &, |,
+    # quotes, CJK) risks silent mangling; a short ASCII path is gauntlet-proof
+    # (same content discipline as graft -TasksFile / report -CallbackFile /
+    # start -GoalFile). Resolved once before any message builder; the content
+    # REPLACES $TaskBrief verbatim. Absent (empty) → zero resolution,
+    # byte-for-byte identical output (regression anchor, same contract as
+    # -TaskBrief).
+    [string]$TaskBriefFile = "",
+
+    # goal-tree generic-run worker mode (planner-tree-dispatch): passed ONLY by
+    # goal-tree.cmd -Command dispatch. The target session is a worker of a
+    # NON-bridge tree run (module/ops subjects — no task.json archive exists),
+    # so every backend's message becomes the self-sufficient worker pointer
+    # (leaf claim → node task → leaf report) instead of the archive B2 form.
+    # In this mode -TaskBrief carries the NODE TASK statement (goal-tree
+    # dispatch composes it from the node's own title/task — single source).
+    # Absent (unset) → every backend's message stays byte-for-byte identical
+    # (regression anchor, same contract as -TaskBrief).
+    [switch]$GoalTreeWorker,
+
     # Session title label override (planner-session-roster): optional label for
     # the off-tree direct-handoff shape (-Handoff / planner direct dispatch).
     # Empty → the label derives from the handoff file's basename. Affects ONLY
@@ -284,10 +307,66 @@ function Get-AppendixSegment {
     return " $Appendix"
 }
 
-# === targeted tips (tips-startup-injection) ===================================
-# Zero config (same policy as the tips CLI): the summary cap and the segment
+function Build-GoalTreeWorkerMessage {
+    # goal-tree generic-run worker pointer (planner-tree-dispatch): the whole
+    # message is self-sufficient — run/node identity, THE one task (-TaskBrief
+    # carries the node task statement composed by goal-tree dispatch from the
+    # node's own title/task), and the hard-ordered tree protocol (leaf claim →
+    # task → leaf report). No archive resolution happens in this mode: the
+    # subjects behind generic runs (module work, ops tasks) have no task.json.
+    # The goal-tree marker still rides the tail (same trailing-anchor contract
+    # as the archive forms — role-side A0 recognition tolerates the mode).
+    if ($Role -eq "PLANNER") {
+        Write-Err "-GoalTreeWorker 不适用于 PLANNER（规划者是树维护者，不是 worker）。"
+    }
+    if ([string]::IsNullOrWhiteSpace($GoalTreeRun) -or [string]::IsNullOrWhiteSpace($GoalTreeNode)) {
+        Write-Err "-GoalTreeWorker 需要 -GoalTreeRun 与 -GoalTreeNode 同时非空（由 goal-tree dispatch 传入）。"
+    }
+    $roleLower = $Role.ToLower()
+    $taskPart = ""
+    if (-not [string]::IsNullOrWhiteSpace($TaskBrief)) {
+        # the brief may already end in a full stop (file-channel task text);
+        # trim sentence enders so the 「本次唯一任务：…。」 wrapper never doubles them
+        $taskPart = "本次唯一任务：$($TaskBrief.TrimEnd('。', '．', '.', '！', '!', '？', '?'))。"
+    }
+    # Layered layout (identity / work order / protocol): same content contract
+    # as the legacy single-line pointer — every load-bearing substring (identity
+    # sentence, 本次唯一任务 lead, hard-ordered steps with the exact CLI
+    # commands, guide pointer, tail marker) is preserved verbatim; only the
+    # carriage returns change. The work-order layer carries a precedence note
+    # because the full-text brief (file channel) coexists with the claim
+    # response's node view: claim stays the canonical read (deps/dep_note
+    # freshness), and a rejected claim voids the pre-injected copy (race →
+    # re-pick via next, whose response carries each candidate's full task).
+    return ("你是 goal-tree「$GoalTreeRun」的 worker（角色 $Role），负责节点 $GoalTreeNode（worker label: $roleLower）。`n" +
+        "`n" +
+        "## 工单（预注入副本）`n" +
+        "> 认领成功后以 claim 响应的 node 视图为准（含最新 deps 与 dep_note）；本副本仅供开工前建立上下文，claim 被拒时即作废。`n" +
+        "`n" +
+        "$taskPart`n" +
+        "`n" +
+        "## 执行协议（硬顺序）`n" +
+        "1) 领取节点（会话第一动作）：goal-tree-leaf.cmd -Command claim -RunId $GoalTreeRun -NodeId $GoalTreeNode -Worker $roleLower" +
+        "（被拒按输出提示处理：NODE_NOT_CLAIMABLE=他人已领可改领 next 清单其他节点，NODE_BLOCKED_BY_DEPS=依赖未满足）；`n" +
+        "2) 按任务与你的角色方法执行，证据引用范围以该 run 的 ref_roots 为准（越界引用会被引擎拒采）；`n" +
+        "3) 回写回调（先写文件后提交）：`n" +
+        "   a. 完整过程写 .rdd/goal-trees/$GoalTreeRun/report/workers/$GoalTreeNode.md（回调的 full_report 指向它）；`n" +
+        "   b. 回调 JSON 按 rdd-engine/references/goal-tree-guide.md 回调契约构造（verdict/confidence/summary≤600字符/citations/next_suggestion）；`n" +
+        "   c. goal-tree-leaf.cmd -Command report -RunId $GoalTreeRun -Worker $roleLower -CallbackFile <cb.json>；`n" +
+        "4) 回读 report 输出的 validation 字段（invalid→按 reasons 修正后重新 report；downgraded→正常入账）；claim/report 之外的树变更都由规划者负责。`n" +
+        (Get-GoalTreeMarker).TrimStart())
+}
+
+# === targeted tips (tips-startup-injection, v2 collision-driven) ================
+# Zero config (same policy as the tips CLI): the seat caps and the segment
 # copy are embedded constants — no switch, no env var, no new start-role param.
-$TipsSummaryCap = 10
+# Injection is EARNED, never granted at record time (tips v2): the eligible
+# pool is collision-proven / pinned entries (status active|pinned) capped at
+# $TipsEvergreenCap, plus $TipsTrialCap newest latent entries on trial — the
+# trial seats give fresh lessons a chance to be recognized as duplicates
+# (a collide earns them a permanent seat).
+$TipsEvergreenCap = 8
+$TipsTrialCap = 2
 
 function Write-TipsDegradedWarning {
     # tips are a prompt-layer gain, never a mission parameter: ANY fetch
@@ -355,31 +434,45 @@ function Get-RoleTips {
 }
 
 function Get-TipsSegment {
-    # Pointer-message targeted-tips segment (tips-startup-injection):
+    # Pointer-message targeted-tips segment (tips-startup-injection v2):
     # injected after the base sentence + handoff pointer and BEFORE the task
     # brief; the goal-tree marker keeps its trailing-anchor position. Shape
-    # (numbered-summary contract, 2026-10-08): a lead line naming the origin
-    # (lessons from past runs, newest first) + ONE numbered title line per
-    # entry ("1. <title>") — the ordinal is the LLM-facing reference key,
-    # the long entry id never enters the reading flow — + a single
+    # (seat contract, tips v2): a lead line naming the two pools — collision-
+    # proven / pinned evergreen lessons (status active|pinned, capped at
+    # $TipsEvergreenCap) + newest latent lessons on trial (capped at
+    # $TipsTrialCap, each trial line prefixed "[新] ") — ONE numbered title
+    # line per entry ("N. <title>"); the ordinal is the LLM-facing reference
+    # key, the long entry id never enters the reading flow — + a single
     # quarantined pointer line freezing the number->file mapping inside the
     # message itself (a mid-session tip add cannot silently renumber what
-    # this session already saw), capped at $TipsSummaryCap with an overflow
-    # hint only when more exist. Empty input returns "" so tip-less
-    # projects keep the message byte-for-byte identical (regression
-    # anchor, same contract as Get-TaskBriefSegment).
+    # this session already saw; it also freezes WHICH tips this session saw,
+    # so a later collide can stamp sawTip truthfully), + an overflow hint
+    # only when more exist. The entries arrive in list order (count DESC ->
+    # recordedAt DESC -> id DESC): evergreen seats fill by collision
+    # evidence, trial seats by recency. Entries lacking a status field (an
+    # older tips CLI) count as evergreen — an upgrade seam never zeroes the
+    # injection. Empty input returns "" so tip-less projects keep the
+    # message byte-for-byte identical (regression anchor, same contract as
+    # Get-TaskBriefSegment).
     param([array]$Entries, [string]$TargetRole)
     if (-not $Entries -or @($Entries).Count -eq 0) { return "" }
-    $shown = @($Entries | Select-Object -First $TipsSummaryCap)
-    $total = @($Entries).Count
-    $lines = @(("【定向 tips（{0}）——开工前先通读：以下 {1} 条为历史执行中沉淀的踩坑教训（新→旧），详情按序号查末行指针】" -f $TargetRole, $shown.Count))
+    $evergreenPool = @($Entries | Where-Object { $null -eq $_.status -or $_.status -eq "active" -or $_.status -eq "pinned" })
+    $latentPool = @($Entries | Where-Object { $_.status -eq "latent" })
+    $ev = @($evergreenPool | Select-Object -First $TipsEvergreenCap)
+    $tr = @($latentPool | Select-Object -First $TipsTrialCap)
+    $shown = @($ev) + @($tr)
+    if ($shown.Count -eq 0) { return "" }
+    $lines = @(("【定向 tips（{0}）——开工前先通读：以下 {1} 条为踩坑教训（{2} 条碰撞验证/置顶的常青教训 + {3} 条待碰撞验证的最新教训），详情按序号查末行指针】" -f $TargetRole, $shown.Count, $ev.Count, $tr.Count))
     for ($i = 0; $i -lt $shown.Count; $i++) {
-        $lines += ("{0}. {1}" -f ($i + 1), ([string]$shown[$i].title))
+        $marker = ""
+        if ($i -ge $ev.Count) { $marker = "[新] " }
+        $lines += ("{0}. {1}{2}" -f ($i + 1), $marker, ([string]$shown[$i].title))
     }
     $pointers = for ($j = 0; $j -lt $shown.Count; $j++) { "{0}={1}" -f ($j + 1), [string]$shown[$j].path }
     $lines += "详情指针：" + ($pointers -join "；")
-    if ($total -gt $shown.Count) {
-        $lines += ("（另有 {0} 条更早定向 tips 未列出，可经 tips.cmd -Command list -Role {1} 查看全量）" -f ($total - $shown.Count), $TargetRole)
+    $hidden = ($evergreenPool.Count - $ev.Count) + ($latentPool.Count - $tr.Count)
+    if ($hidden -gt 0) {
+        $lines += ("（另有 {0} 条未列出，可经 tips.cmd -Command list -Role {1} 查看全量）" -f $hidden, $TargetRole)
     }
     return "`n" + ($lines -join "`n") + "`n"
 }
@@ -541,6 +634,12 @@ function Build-PromptMessage {
         return "你是 RDD PLANNER（规划者）。先读 rdd-engine/references/planner-guide.md；接管后先按 rdd-engine/references/review-input-template.md 机械模板派需求审视子代理（独立上下文，禁转述），结论呈用户后用 delivery-bridge promulgate -TaskJson $taskJsonAbs 接管该归档的整批交付。"
     }
 
+    # goal-tree generic-run worker mode (planner-tree-dispatch): self-sufficient
+    # worker pointer instead of the archive form — CLI prefill IS the message.
+    if ($GoalTreeWorker) {
+        return Build-GoalTreeWorkerMessage
+    }
+
     if (-not [string]::IsNullOrWhiteSpace($Handoff)) {
         $abs = Resolve-AbsolutePath -Path $Handoff -Root $root
         if (-not $abs) { Write-Err "Handoff 文件不存在: $Handoff" }
@@ -642,6 +741,13 @@ function Build-PointerMessage {
         $archiveRel = Resolve-ArchiveRelativePath -TaskJsonAbs $taskJsonAbs -RootPath $root
         if (-not $archiveRel) { Write-Err "无法从 task.json 路径推导归档相对路径: $taskJsonAbs" }
         return "请以规划者（PLANNER）身份接管 ${archiveRel}的整批交付：先读 rdd-engine/references/planner-guide.md，按 rdd-engine/references/review-input-template.md 机械模板派需求审视子代理（独立上下文，禁转述）并把结论呈用户，随后执行 delivery-bridge -Command promulgate -TaskJson $taskJsonAbs 颁布交付节点并按需调动角色会话。"
+    }
+
+    # goal-tree generic-run worker mode (planner-tree-dispatch): same
+    # self-sufficient worker pointer as the CLI prefill — no archive
+    # resolution (generic runs have no task.json to point at).
+    if ($GoalTreeWorker) {
+        return Build-GoalTreeWorkerMessage
     }
 
     $taskJsonAbs = Resolve-TaskJsonAbsolute
@@ -803,6 +909,30 @@ function Invoke-DshApi {
     return @{ status = "business"; code = [string]$result.error.code; message = [string]$result.error.message; details = $result.error.details }
 }
 
+function New-DshHandoffSession {
+    # Workspace resolve-or-create + workspace-scoped session.create for the
+    # dsh handoff: the workspace step is realpath-normalized and idempotent
+    # (same step the GUI's New Session flow relies on), so the handoff
+    # session lands in the project's workspace folder rather than Ungrouped.
+    # session-list bundling: name the spawning session as the fresh session's
+    # lineage parent ($env:DSH_SESSION_ID — the harness injects the calling
+    # session's id into every tool process, so a planner dispatch records the
+    # planner itself). The Web GUI bundles spawned rows under their planner;
+    # CLI/Plus backends and bare terminals carry no id, so the key is omitted
+    # (byte-identical legacy payload). Fail-soft on the host side: an unknown
+    # parent simply renders the child as an ordinary top-level row.
+    # Returns the LAST api status object (ok only when the session exists);
+    # callers early-return on non-ok, success path exposes .value.sessionId.
+    param([string]$Preset)
+    $ws = Invoke-DshApi -Method "workspace.create" -Payload @{ path = $root }
+    if ($ws.status -ne "ok") { return $ws }
+    $createPayload = @{ workspaceId = [string]$ws.value.workspace.workspaceId; agentPreset = $Preset }
+    if (-not [string]::IsNullOrWhiteSpace($env:DSH_SESSION_ID)) {
+        $createPayload.parentSessionId = [string]$env:DSH_SESSION_ID
+    }
+    return Invoke-DshApi -Method "session.create" -Payload $createPayload
+}
+
 function Invoke-DshHandoff {
     # Four-shot dsh handoff over the /api carrier: preset pre-check,
     # workspace resolve-or-create, workspace-scoped session.create, then
@@ -822,14 +952,7 @@ function Invoke-DshHandoff {
         return @{ status = "preset-missing"; preset = $Preset; availablePresets = $availablePresets }
     }
 
-    # Resolve-or-create (realpath-normalized, idempotent): same step the GUI's
-    # New Session flow relies on, so the handoff session lands in the project's
-    # workspace folder rather than Ungrouped.
-    $ws = Invoke-DshApi -Method "workspace.create" -Payload @{ path = $root }
-    if ($ws.status -ne "ok") { return $ws }
-    $workspaceId = [string]$ws.value.workspace.workspaceId
-
-    $create = Invoke-DshApi -Method "session.create" -Payload @{ workspaceId = $workspaceId; agentPreset = $Preset }
+    $create = New-DshHandoffSession -Preset $Preset
     if ($create.status -ne "ok") { return $create }
     $sessionId = [string]$create.value.sessionId
 
@@ -940,6 +1063,22 @@ $mode = Resolve-RuntimeMode
 # fallback itself, a fresh session here would silently defeat the reuse intent.
 if (-not [string]::IsNullOrWhiteSpace($ExistingSessionId) -and $mode -ne "dsh") {
     Write-Err "SESSION_REUSE_UNSUPPORTED: -ExistingSessionId 只在 dsh 后端可用（当前后端 $mode 无法按 id 重入既有会话）。调用方应回落新建会话路径（reclaim 回落 / -NoReuse）。"
+}
+
+# --- TaskBriefFile resolution (dispatch-brief-file) ---------------------------
+# One resolution point before any backend dispatch (message builders stay pure
+# functions of $TaskBrief): the file content becomes $TaskBrief verbatim, so
+# every downstream consumer (GoalTreeWorker pointer, archive brief segment)
+# keeps a single source. Loud failure on missing/empty files — never proceed
+# with a half-delivered task statement.
+if (-not [string]::IsNullOrWhiteSpace($TaskBriefFile)) {
+    if (-not (Test-Path -LiteralPath $TaskBriefFile -PathType Leaf)) {
+        Write-Err "-TaskBriefFile not found: $TaskBriefFile"
+    }
+    $TaskBrief = [System.IO.File]::ReadAllText($TaskBriefFile, [System.Text.Encoding]::UTF8).TrimEnd()
+    if ([string]::IsNullOrWhiteSpace($TaskBrief)) {
+        Write-Err "-TaskBriefFile resolved to an empty brief: $TaskBriefFile"
+    }
 }
 
 # --- PLANNER uniqueness guard (planner-uniqueness-callback) ------------------
@@ -1063,7 +1202,10 @@ if ($mode -eq "dsh") {
         Write-Host "[DRYRUN] RPC 1:   POST $DshUrl/api/workspace.create" -ForegroundColor Yellow
         Write-Host "[DRYRUN] payload: path=$root（resolve-or-create，realpath 规范化）" -ForegroundColor Yellow
         Write-Host "[DRYRUN] RPC 2:   POST $DshUrl/api/session.create" -ForegroundColor Yellow
-        Write-Host "[DRYRUN] payload: workspaceId=<RPC 1 返回> agentPreset=$preset（入账 workspace，侧栏进项目文件夹）" -ForegroundColor Yellow
+        # session-list bundling: parentSessionId rides along only when the
+        # harness injected the caller's session id (planner-context dispatch).
+        $dryParent = if ([string]::IsNullOrWhiteSpace($env:DSH_SESSION_ID)) { "" } else { " parentSessionId=$env:DSH_SESSION_ID（血统打包：侧栏并入发起会话）" }
+        Write-Host "[DRYRUN] payload: workspaceId=<RPC 1 返回> agentPreset=$preset（入账 workspace，侧栏进项目文件夹）$dryParent" -ForegroundColor Yellow
         # planner-session-roster + session-list-badges: the setBadges/rename
         # RPCs print ONLY when they apply — an unmarked plain handoff keeps the
         # exact legacy DryRun lines (byte-for-byte regression anchor).

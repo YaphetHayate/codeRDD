@@ -1,6 +1,153 @@
-# 规划者场景细则（planner-scenarios）
+﻿# 规划者场景细则（planner-scenarios）
 
-> `planner-guide.md` 的场景下沉层：接管审查 / 收尾验收 / 并行冲突 / 设计审查 / 纯自动模式 / DEV 质量凭据。核心命令与硬约束见 planner-guide.md；本文各节仅在对应场景触发时阅读。
+> `planner-guide.md` 的场景下沉层：交付编排生命周期 / 交付角色分工 / 长程规划 / 交付回调四查 / 运行产物 / 需求审查门 / 收尾验收 / 并行冲突 / 设计审查 / 纯自动模式 / DEV 质量凭据 / 范围缺口派生。核心命令与硬约束见 planner-guide.md；本文各节仅在对应场景触发时阅读。
+
+## 交付编排生命周期（planner-delivery，主体：大需求）
+
+> **适用**：PM 归档后 `rdd-flow next` 输出 `longTask.triggered=true`（≥2 条非 deprecated 子需求且 ≥1 条进行中）时接管整批交付；或交付中断后由任意新规划者会话续跑。同归档重复启动被 `PLANNER_RUN_ACTIVE` 拒绝（续跑入口 `-RunId`）。
+
+```
+PM 归档（longTask 信号触发）→ start-role -Role PLANNER -TaskJson ...（或用户直接启动）
+  1. review      需求审查门（建树前）：派需求审视子代理（机械模板，独立上下文）
+                  产 ReviewFile → 呈用户 → promulgate -ReviewFile 机械消费
+                  —— 细则见 §需求审查门
+  1.5 规划       产出 PlanFile（必做，缺 → PLAN_MISSING）——见 §长程规划与滚动追踪
+  2. promulgate  颁布：归档任务集 → goal-tree run（目标根 + 链头 + 阶段链 + 依赖推导）
+                  → 尾部自动推送全部无前置依赖节点
+  3. （推送即调度）角色会话被自动拉起，第一动作 bridge claim
+  4. （worker）claim → 干活 → 完成即 leaf report 回调规划者
+                  （不 start-role 直交下游、不启动 PLANNER——worker 侧规则见各角色卡）
+  5. settle      四查门禁 → 阶段内收窄/末位汇聚/切换下阶段 → 自动推送新解锁节点；
+                  四查不过即拒（不合格交付不流转）——同阶段重做走 reclaim，
+                  跨阶段回退走 rollback（剪枝+重建+路由回退+自动重推；仅限活跃
+                  任务上 report 未过四查的交付，已 completed 的事后返工不在此列
+                  ——见 §交付角色分工与裁定触点 速查 7）
+  5.5 设计审查门  阶段边界五查汇聚：派评审子代理产 DesignReviewFile
+                  → design-review -Action submit 契约入库（pass 放行 IMPL，fail 自动
+                  重做波）；缺键 legacy run 照旧 graft [设计审查·S<k>] 节点结算
+                  —— 细则见 §设计汇聚审查
+  5.6 需求派生    run 中途范围缺口 → derive（用户确认硬门）→ PM 起草新需求文档
+                  → 受控入册 → replan 吸收并入当前 run——细则见 §范围缺口派生
+  6. 循环 4-5；中断后任意新规划者会话 resume 续跑（status 触碰兜底补推漏推节点）
+  7. 集成验收链  全部子任务终态 → [集成/联调]（DEV）→ [整体验收]（QA）
+                  —— 细则见 §整体验收闭环
+  8. conclude    结案：全部任务终态 + ACCEPT 结论=通过 硬门 → final-report
+                  + delivery-annex.md（含 rdd-flow check 与「整体验收结论」区）；
+                  未完结派生（proposed/confirmed/registered 未终态）拒结
+                  （DERIVATION_PENDING）——单 run 收敛
+```
+
+**职责分工**：推送全自动（解锁即推、同 task×role 存活会话复用、session-create 类失败自动重试），规划者的工作收敛为**裁定**（settle / reclaim / rollback / replan）与**异常处置**（pointer 类推送失败人工 `dispatch` 重推、依赖调整、驳回移交、冲突调和）。长任务纪律：等 > 询问用户 > 回收。
+
+**阶段链模型**：任务路由带 `phase`，全序 `REQ → DESIGN → IMPL → VERIFY → 完成`；阶段内角色白名单并行（DESIGN = CTO∥UX∥QA，QA 测试先行——尽量与 CTO 同期而非堆到 VERIFY，见速查 6）。多 owner 任务颁布时每角色各建一个链头节点；settle 阶段感知：阶段内收窄不流转，最后一个 owner settle 才整组切换阶段并收敛 graft 下一阶段链头。rollback 显式 `-To <角色集> -Phase <阶段>` 指定回退目标（回退 REQ 可达：`-To "PM" -Phase REQ`）；展示面用 `∥`（阶段内并行）/`→`（阶段间）渲染。旧归档（phase=null）保守降级为原线性链行为。阶段白名单真源 `references/phase-model.md`。
+
+**依赖**：promulgate 从各需求文档「依赖关系」字段机读推导（标注格式以 `rdd-pm/references/requirement-item-template.md` 为准；单遍建树只回连先建节点，前向引用需审查门 `depends_on_override` 兜底）；运行中调整走 `goal-tree deps add/remove`（DAG 校验 + 审计）。目标根（承载归档原始需求）不可认领、不参与依赖，是 conclude 的终局锚点。
+
+## 交付角色分工与裁定触点（裁定视角）
+
+> **用法**：这四张表是你的裁定依据——settle 前拿回调的 `citations`/`full_report` 对照「主产物落点」判断交付是否真正回应了节点任务；判不合格时按速查选 reclaim 还是 rollback；`derive -Owners` 取值、conflict 调和责任人同样以此为准。
+>
+> **非双源声明**：本表是**规划者裁定视角的摘要**；worker 侧行为载荷真源在各自角色卡（`rdd-<role>/SKILL.md`），阶段白名单真源在 `references/phase-model.md`——冲突时以那两者为准，本表只服务于裁定判断，不得作为派发 prompt 的正文引用。
+
+### 路由角色（桥接链上：`PhaseRoles` 白名单，可建节点 / 可 claim）
+
+| 角色 | 阶段 | 一句话职责 | 主产物落点（citations / full_report 抽查锚） | 交付凭据特征 |
+|------|------|-----------|--------------------------------------------|--------------|
+| **PM** | REQ | 把用户意图变成可执行需求集（含依赖关系、验收标准），归档时建 task.json | `<归档>/requirements/overview.md`（`## 整体验收判据` 固定段在此）· `requirements/<需求>.md` | 无特化门，四查通用 |
+| **CTO** | DESIGN | 定技术方向五问（技术/模块/关键要素/配置/涉及文件），不写实现 | `<归档>/design/<需求>-cto.md` · `<需求>-cto-decisions.md` | 无特化门 |
+| **UX** | DESIGN | 需求/参考图 → 可执行设计规格（具体值而非感受词）；必要时出视觉稿与设计系统累积 | `<归档>/design/<需求>-ux.md` · `design/mockups/`（`.html` / `.png` / `manifest.json`）· `.rdd/design-system/`（`tokens.md` / `components.md`） | 无特化门 |
+| **QA** | DESIGN | **测试先行（期望默认，非可选）**：只依需求设计用例规格（禁读 CTO 设计文档，保独立性）——用例在 DESIGN 成型，VERIFY 只做验收执行 | `.rdd/tests/{feature}/cases.json` · `.rdd/tests/index.json` · `<归档>/tests/cases.json` | 无特化门 |
+| **DEV** | IMPL | 按需求/设计实现代码并自测；**提交交 QA**（本阶段不 commit） | 业务代码改动 · `<归档>/dev/implementation-notes.md` | **角色交接门**：变更集触及 `.ps1` → `extras.quality_scan` 必填（code-metrics 凭据，`violation_count=0`）；无 PowerShell 变更走 `skip` + reason |
+| **QA** | VERIFY | 独立验收执行，功能 + 质量双通过后执行提交（用例应已在 DESIGN 成型——若在这里才从零写整套用例，说明路由漏了 QA 先行，见速查 6） | `<归档>/tests/verification-report.md` · `tests/cases.json` · 项目测试代码 | citations = 验收证据 |
+
+### 树级节点角色（无 TaskId，一批一会话，claim 走树级分支）
+
+| 节点 | 角色 | 职责 | 产物 / 门 |
+|------|------|------|-----------|
+| `[集成/联调]` | DEV | 真实串联各模块跑通原始需求整体场景（**不是**各模块独立跑通子验收） | citations · `tests/integration-acceptance.md` §1 |
+| `[整体验收]` | QA | 对照 overview 整体验收判据逐条核验真实链路 | 同文件 §2 / §3（§3 总结论 = conclude 硬门读源） |
+| `[设计审查·S<k>]` | AUDITOR | 阶段边界汇聚五查，pass 才放行 IMPL | `review/design-review-S<k>.json` + 同名 `.md`（角色交接门 `Test-DesignReviewFile`） |
+
+> 建树前的**需求审查门不是节点**：AUDITOR 的 ReviewFile 由 `promulgate -ReviewFile` 机械消费（硬约束 6），只有设计汇聚审查才物化为树级节点。
+
+### 非路由角色（不在 `PhaseRoles` / claim 白名单，run 内不建节点）
+
+| 角色 | 定位 | 在 run 内怎么处理 |
+|------|------|------------------|
+| **AUDITOR** | 独立审视（事前把关：需求侧 + 设计侧） | 只经需求审查门 + 树级设计审查节点登场（该节点自带 `role=AUDITOR`）；非 task.json 路由角色 |
+| **EVAL** | 验收评价（回顾性复盘，产出评价报告） | **不可建/不可领节点**（claim 白名单 = `PM/CTO/UX/DEV/QA`）；树外直交由用户驱动，或经 `register-session` 登记入花名册（仅溯源，不产生节点） |
+| **PSE** | 项目上下文文档（README / AGENT / code-quality） | 同上 |
+
+### 裁定触点速查
+
+1. **settle 语义复核**：`citations` 与该角色「主产物落点」不匹配（例：IMPL 节点只报测试文件、无实现改动）→ 机械四查可能通过但语义空洞，**照拒**（reclaim）。
+2. **不合格回退方向**：需求侧 → `rollback -To "PM" -Phase REQ`；设计侧 → `rollback -To "CTO+UX" -Phase DESIGN`；实现侧 → 同阶段 `reclaim`（reclaim 只在本阶段重做，跨阶段一律 rollback——但 rollback 仅限**活跃交付 report 不合格**；任务已 completed 的事后缺陷见 7）。**会话复用差异**：`reclaim` 无需传 SessionId——引擎从节点 claim 边车读原认领会话，探活后把重做指针+失败清单投回**原会话**（in-place，上下文连续即"缓存复用"），死会话才剪枝重建（`-NoReuse` 强制走重建）；`dispatch` 同理两级复用（节点现绑会话 → 同 task×role 存活会话）；**`rollback` 例外**：重建节点不复用原会话（inplace-redo v1 边界，进全新会话）——在意会话连续性优先 reclaim，必须跨阶段时接受换会话。
+3. **中途派生**：`derive -Owners` 只能取 DESIGN 白名单子集（`CTO` / `UX` / `QA`，可组合）——派生的是新需求，入册后落 DESIGN 相位。
+4. **冲突调和责任人**：`design` 冲突的调和结论出自设计生产者（CTO/UX），你裁定一致性并留痕；`file` 冲突的归属划分落在实施者（DEV）。
+5. **QA 两次登场**：DESIGN（用例设计）与 VERIFY（验收执行）是同一角色的两段职责——不要因"QA 已在 DESIGN 出现"就把后续 VERIFY 节点当重复而剪枝。
+6. **QA 尽量先行（与 CTO/UX 并行，不堆到交付尾部）**：QA 用例设计只依需求文档、对 CTO/UX 设计**零依赖**（禁读设计文档正是独立性根基），owner 集含 QA 即自动获得并行链头——用例在设计期成型，验收只剩执行。**接管/建树前审查时留意路由**：有可测验收标准的任务若 owner 集不含 QA，QA 就只会在 VERIFY 出现，整套用例被推迟到实现完成之后才开始写（最重的工作串行化到尾部）——建树前呈报用户或回流 PM 补路由（`set-route -To "CTO+UX+QA" -Phase DESIGN`；建树前 task.json 归 PM 管辖，不触硬约束 2 的双写禁区）。回退 DESIGN 且用例需返工 → `-To "CTO+UX+QA"` 把 QA 一并带回。
+7. **事后缺陷（任务已全链 settle / completed）不走 rollback**：引擎硬语义 `TASK_NOT_ACTIVE`——rollback 只覆盖**活跃**桥接任务的流转，completed 后的返工明确落在 `rdd-flow reopen` 语义。处置：`rdd-flow reopen`（如 `-To DEV`）把任务拉回活跃 → 按 rdd-flow 标准流转重做（树侧既有节点已终态，**不手工重建**；是否/如何再入桥接编排呈报用户裁定）。产品反馈可先在 run 目录 `report/` 落缺陷清单留痕（好习惯，非必需）——rollback 的失败上下文本就由引擎自动写入；失败清单指针是 `reclaim -FailureRef` 的参数。
+
+## 长程规划与滚动追踪（long-task-planning）
+
+> 长程交付 = 规划先行 + 滚动追踪 + 只增不减的阶段闸门。规划是对交付的显式承诺；任何偏差都必须经 `replan` 修正，不允许口头带过。
+
+**三载体**：PlanFile（`plan.json`，颁布时的规划承诺，必填）· bridge.json `plan` 段（当前态，闸门判定唯一读源）· `plan-log.jsonl`（append-only 事件台账：进度/偏差/修订）。
+
+**PlanFile 形态**（要素齐全 ≠ 篇幅：目标一句话即可）：
+
+```json
+{
+  "planned_at": "2026-09-24T00:00:00Z", "planner": "planner",
+  "stages": [{
+    "id": "S1", "goal": "阶段目标一句话", "milestone": "阶段里程碑",
+    "task_ids": [1, 2], "batches": [[1, 2]],
+    "acceptance_point": { "criteria_items": ["判据子集…"], "slice": "可运行整体切片形态（如 smoke 命令/演示路径）" }
+  }],
+  "risks": [{ "risk": "风险描述", "level": "P1", "note": "取舍说明" }]
+}
+```
+
+**规划方法**（从 task.json 推导）：
+
+1. 读 overview「## 整体验收判据」+ 各需求「依赖关系」，按**交付批次**划分阶段：被依赖的基础/独立需求在前（S1），依赖它们的后续需求其后（S2…）；K=1（单阶段）合法且行为等价旧版。
+2. 每条交付任务恰在**一个**阶段（`PLAN_FILE_INVALID`：全覆盖、无幽灵 id；不交付的 deprecated/树内合并/驳回回流豁免）。
+3. `batches` = 阶段内可并行批次：依赖边不得落在同一批次（`PLAN_BATCH_INVALID`）、依赖不得落后于被依赖者所在阶段（`PLAN_ORDER_INVALID`；同阶段合法，批次管细序）。
+4. 每阶段 `acceptance_point`：从整体验收判据选该阶段应可验证的**子集** + 一个可运行切片形态（缺一 → `PLAN_FILE_INVALID`）。k<K 的验收点在阶段任务全部终态时自动 graft `[集成验收·S<k>]`（role=QA）；末阶段绑定 R1 `[整体验收]` 节点。
+
+**阶段闸门（只增不减）**：任务推送/认领要求其之前所有阶段的 acceptance_point 均 `passed`（未过闸 → `NODE_BLOCKED_BY_GATE`，**无 Force 旁路**——出路只有 settle 对应 `[集成验收·S<k>]` 或 replan 重划阶段）。回退/回收/replan 波及已验收阶段时，引擎自动失效该阶段及之后的验收点（防闸门虚开）。偏差由引擎在五个观测点自动记账（settle / reclaim / rollback / status 巡检 / replan），修正只走 `replan -RunId <id> -PlanFile <修订版> -Reason <偏差>`（`-Reason` 必填；run 已结案或无 plan 段报 `REPLAN_NOT_ACTIVE`）。
+
+## 交付回调与四查门禁
+
+worker 完成即经 `goal-tree-leaf.cmd -Command report` 回调**你**（回调自动送达当前有效规划者会话——新鲜租约优先，投递机制无需关心）。各角色的产物落点与凭据特征见 §交付角色分工与裁定触点；下表是字段语义：
+
+| 回调字段 | 交付语义 |
+|----------|----------|
+| `verdict=done` | 交付自评完成（未 done 不得 settle） |
+| `citations[]`（`ref`=真实路径） | 改动清单（settle 逐条校验路径存在） |
+| `full_report` | 主产物文档指针（设计文档/实现说明；据此呈现 Doc 行，凭单条消息即可裁定） |
+| `extras.verification` | 验证结果（lint/test/build 摘要；缺失即拒） |
+| `extras.quality_scan` | DEV 出报必填（.ps1 变更时 code-metrics 凭据，violation_count=0；无 PowerShell 变更走 skip 形 `{skip:true,reason}`；完整字段与机械判定 R1-R6 见 §DEV 质量扫描凭据） |
+
+**真实性判断由 QA 阶段节点承担**：QA 会话的 citations = 验收证据，QA 节点 settle 即任务 complete。**QA 判不合格** → 回调带非 done verdict + 失败清单（full_report/extras）→ 你二选一：**同阶段重做** `reclaim -NodeId`（问题在本阶段可修；失败清单自动组装）或**跨阶段回退** `rollback -NodeId -To <角色集> -Phase <阶段> -Reason <理由>`。
+
+## 运行产物（run 目录 `.rdd/goal-trees/deliver-<归档名>/`，gitignore）
+
+| 文件 | 语义 |
+|------|------|
+| `bridge.json` | v2 权威映射：节点↔TaskId + goal 根锚 + pushes 推送账 + pending_sync + review/acceptance/plan/conflicts/design_maps/conventions/**derivations** 段（缺键=旧 run 兼容；v1 拒读） |
+| `plan-log.jsonl` | 长程规划台账：`P<n>` 进度 + `D<n>` 偏差（含 `scope_derived`）+ `R<n>` 修订（append-only，坏行隔离续写） |
+| `planner-lease.json` | 会话租约（holder / acquired_at / taken_over_from 留痕） |
+| `sessions.json` | 会话花名册：本体/桥接派发/直交全量清单（status 经 sessions 字段透出） |
+| `report/review.md` | 需求审查结论人读镜像（仅 `-ReviewFile` run） |
+| `report/delivery-annex.md` | 结案附录：根目标达成状态 + 每任务终态 + 阶段链 + 整体验收结论区 + rdd-flow check 结果 |
+| `report/design-conflicts.md` | 冲突治理人读镜像（机器可读单源 = bridge.json `conflicts` 段） |
+| `report/architecture-conventions.md` | 架构/风格约定副本（`-ConventionsFile` 注入） |
+| `state/dispatch-log.jsonl` | 通用派发审计（`goal-tree dispatch` 真实派发逐行：node/role/worker/round/exit/at；status `dispatches` 段透出） |
+| tree.json / ledger.jsonl / round-*.md / final-report.md | goal-tree 既有：树状态 / 回调账本 / 轮快照 / 结案报告 |
+
+> **统一决策账本 `decisions.jsonl` 位于归档根**（`.rdd/changes/archive/<归档名>/`，gitignore 由归档策略管理）——非 run 目录：账本是长期分析资产，归档是长期载体。条目四要素（background/options[]/decision/reason）+ decider（user / planner / auto\<规则\>@\<stage\>）；kinds：auto/escalation/resolution/overturn（AutoMode 既有）+ derive_proposal / checkpoint / ruling（rollback/reclaim/replan/conclude/conflict-resolve 命令尾 advisory 追加）。append-only 单调 `D<n>`，坏行隔离续写，旧形态缺字段容忍读。
+
 
 ## 需求审查门（建树前，接管归档时）
 
@@ -202,6 +349,7 @@
 | 症状 | 处置 |
 |------|------|
 | 需树外直交某角色（用户裁决/事故修复） | 写 brief 文件 → `start-role -DryRun` 验证指针全文 → 实发 `-Handoff <brief>` → `register-session` 登入花名册 |
+| `goal-tree dispatch` 报 `DISPATCH_FAILED` | start-role 会话拉起失败（指针类）——按 start_role.output 修正后重发即可（节点不受损仍 pending；失败已落 dispatch-log，status `dispatches.failed` 可见）；DryRun 先验指针再实发 |
 | 回调收到完成、但用户已手动直交下游 | 用户显式指令优先执行，但 worker 回调先行不可省——照常四查裁定 settle（ledger 留痕对账）；撞车由 `FLOW_CLAIM_CONFLICT`/`NODE_NOT_CLAIMABLE` 兜底 |
 | 同一节点第二个会话被唤起 | bridge claim 返回 `NODE_NOT_CLAIMABLE` + 认领者信息 + 可领清单，按清单改领 |
 | 节点被依赖阻塞 | `NODE_BLOCKED_BY_DEPS` 附阻塞源：等上游 settle（解锁后自动推送）或 `deps remove` |
@@ -215,7 +363,7 @@
 | reclaim 报 `RECLAIM_INPLACE_PROMPT_FAILED` | 重做指针投递原会话失败（节点零残留）——`dispatch -NodeId` 重投原会话，或 `reclaim -NoReuse` 重建 |
 | rollback 报 `ROLLBACK_REQUIRES_UNQUALIFIED` | 该节点证据合格——不该回退，settle 即可 |
 | rollback 报 `ROLLBACK_REQUIRES_REPORTED` | 节点非 report 态（claimed/pending/终态）——卡死认领走 `reclaim -NodeId`，待推节点等回调；rollback 只回退「report 未过四查」的交付 |
-| rollback 报 `TASK_NOT_ACTIVE` | 任务已 completed——rollback 不覆盖事后返工：`rdd-flow reopen`（如 `-To DEV`）拉回活跃后按 rdd-flow 流转重做，再入桥接编排呈报用户（见 planner-guide「裁定触点速查」7） |
+| rollback 报 `TASK_NOT_ACTIVE` | 任务已 completed——rollback 不覆盖事后返工：`rdd-flow reopen`（如 `-To DEV`）拉回活跃后按 rdd-flow 流转重做，再入桥接编排呈报用户（见 §交付角色分工与裁定触点 速查 7） |
 | rollback 报 `ROLLBACK_GRAFT_FAILED` | prune 已完成、graft 未成——**重跑同一条 rollback 命令**（幂等续跑，不二次剪枝） |
 | 推送失败（status pushes 账可见） | `session-create` 类：status 触碰自动重试；`pointer` 类：人工 `dispatch -NodeId` 重推（防会话堆积） |
 | 双规划者误起 | 启动即被 `PLANNER_RUN_ACTIVE` 拒绝；确认原会话已死后 `lease -Takeover` 留痕接管 |
@@ -223,7 +371,7 @@
 | promulgate 报 `REVIEW_FILE_INVALID`/`REVIEW_TASK_NOT_FOUND`/`REVIEW_EXCLUDED_DEP` | ReviewFile 契约/指向/依赖悬空——按错误消息修正后重试（建树前零残留）；见 §需求审查门 |
 | promulgate 报 `ACCEPTANCE_CRITERIA_MISSING` | overview.md 补「## 整体验收判据」条目或一行「无整体判据（理由：…）」显式声明——见 §整体验收闭环 |
 | promulgate 报 `CONVENTIONS_MISSING` | DESIGN 并行链头 ≥2 缺架构约定——产出 `report/architecture-conventions.md` 后补 `-ConventionsFile` |
-| promulgate 报 `PLAN_MISSING`/`PLAN_FILE_INVALID`/`PLAN_ORDER_INVALID`/`PLAN_BATCH_INVALID` | 按 planner-guide「长程规划与滚动追踪」节的规划方法产出/修正 PlanFile（建树前零残留） |
+| promulgate 报 `PLAN_MISSING`/`PLAN_FILE_INVALID`/`PLAN_ORDER_INVALID`/`PLAN_BATCH_INVALID` | 按 §长程规划与滚动追踪 的规划方法产出/修正 PlanFile（建树前零残留） |
 | claim/dispatch 报 `NODE_BLOCKED_BY_GATE` | settle 对应 `[集成验收·S<k>]` 开闸或 `replan` 重划阶段；**无 Force 旁路** |
 | claim/dispatch 报 `NODE_BLOCKED_BY_DESIGN_REVIEW` | 等设计裁定 pass（新链 `design-review -Action submit`；legacy settle 审查节点；fail 自动重做波）或 `replan`；见 §设计汇聚审查 |
 | 设计审查证据被拒 `SETTLE_EVIDENCE_REJECTED`（DesignReviewFile 契约） | 新链：按问题清单修复 DesignReviewFile 后重新 `design-review -Action submit`（状态仍 `ready`）；legacy：AUDITOR 会话按 `rdd-auditor/references/design-review.md` 修复重报，会话死走 `reclaim` |
@@ -242,7 +390,7 @@
 | settle 派生节点降级警告 `DERIVE_ADD_TASK_FAILED` | 桥代写 add-task 失败（task.json 未动）——status 触碰巡检自动重试 |
 | add-task 报 `ADD_TASK_BRIDGE_RUN_REQUIRED`/`ADD_TASK_BRIDGE_RUN_MISMATCH` | 归档处于活动 bridge run——mid-run 范围增长走 derive；确需直写则带匹配 `-BridgeRun` |
 | propose 返回 `DERIVATION_LIMIT_WARNING` | 超防滥用阈值（警告不硬拒）——mid-run 范围增长是节奏异常信号，如实呈报用户 |
-| settle/dispatch 报 `NODE_HELD_BY_CONFLICT` / conflict 报 `CONFLICT_*` | 见 §并行协作冲突治理细则与 planner-guide「并行协作冲突治理」（已 resolved 的裁定变更按新条目重开） |
+| settle/dispatch 报 `NODE_HELD_BY_CONFLICT` / conflict 报 `CONFLICT_*` | 见 §并行协作冲突治理细则（已 resolved 的裁定变更按新条目重开） |
 | status 报回执偏差/`DESIGN_MAP_INVALID` 警示 | 警示级不阻塞——核对变更地图是否漏报（重叠检测失明风险），见 §并行协作冲突治理细则 |
 | 用户推翻 planner 审查裁定 | 建树前：直接改 ReviewFile 重产出（未消费零残留）；已颁布：`rdd-flow reopen` 恢复 + `deps`/graft 补树内调整；会话内向用户留痕说明（详见 §需求审查门） |
 | status 报 `BRIDGE_FORMAT_UNSUPPORTED` | 旧版 v1 桥零兼容——重新 promulgate 或按本协议人工处置存量 run |

@@ -10,6 +10,12 @@
 
 ---
 
+## 节点标识（NodeId）与 run 标识（RunId）
+
+- **NodeId**：树内节点的稳定短标识，格式 `n<十进制序号>`（`n1`、`n2`…）。`n1` 恒为 `start` 创建的根节点（`-GoalRoot` 模式下 type=goal）；`graft` 新节点按建树顺序单调递增分配，**永不复用**（剪枝后序号不回收）。三个获取口：`graft` 返回值 `data.grafted[].id` / `status` 的 `data.nodes.{pending|claimed|reported|done|pruned}` 清单 / 消费面 `next` 的可领清单。一切节点寻址（deps / dispatch / settle / prune / redo / rollback）都以 NodeId 为准。
+- **根节点（`n1`）**：start 创建的树的根。树视图每行显示「编号 · 标题」（`{node.id} · {node.title}`）；`-GoalRoot` 模式且未传 `-Title` 时根标题默认为字符串 "goal"（故根行常显示 `n1 · goal`——传 `-Title` 可换成有意义的名字）。type=goal 的根是目标锚而非工作单元：承载 `-GoalFile` 目标全文，不可 claim / 不可 dispatch（`GOAL_NODE_NOT_DISPATCHABLE`）/ 不入依赖；第一层子任务经 `graft -Parent n1` 挂根下；conclude 以根为锚时要求全部直接子节点终态。非 `-GoalRoot` 的根为普通节点，可作工作单元（无 `-Title` 时标题默认 "root"）。
+- **RunId**：run 的稳定标识，正则 `^[A-Za-z0-9][A-Za-z0-9._-]*$`；一个 run 对应 `.rdd/goal-trees/<run-id>/` 一个目录（目录名清单 = 全部 run）。桥接 run（delivery-bridge promulgate）固定 `deliver-<归档名>`。
+
 ## 节点依赖（depends_on）与 ref 指针
 
 节点 schema 含两个透传字段（旧 tree.json 读取时自动规整为空值）：
@@ -66,7 +72,7 @@
 
 | 面 | CLI | 使用者 | 能做什么 | 不能做什么 |
 |----|-----|--------|---------|-----------|
-| **管理面** | `goal-tree.cmd` | 规划者 会话（发起长程任务的角色） | start / graft / prune / settle / conclude / round-start / round-end / status / resume | 不产生证据回调（不采证） |
+| **管理面** | `goal-tree.cmd` | 规划者 会话（发起长程任务的角色） | start / graft / prune / settle / redo / conclude / round-start / round-end / deps / status / resume / **dispatch（为 pending 节点拉角色会话，见 §dispatch 派发命令）** | 不产生证据回调（不采证） |
 | **消费面** | `goal-tree-leaf.cmd` | 子代理 worker | next / claim / report / status（本节点） | 物理上无法改动树结构（CLI 硬编码字段白名单，只更新本节点 claim/status 字段） |
 
 > 调用约定与 rdd-flow 相同：`$rdd` 指向 rdd-engine 目录（见 `task-routing.md`），输出 UTF-8 JSON。
@@ -82,7 +88,10 @@
 │   ├── tree.json                    # 权威树快照（写前 .bak + 写后 read-back；损坏自动回退 .bak）
 │   ├── ledger.jsonl                 # 回写账本（只追加；坏行隔离到 .corrupt，不静默丢行）
 │   ├── ledger.jsonl.corrupt         # 隔离区（保留原始坏行文本）
-│   └── round-log.jsonl              # 轮日志（只追加；每轮 start/end 两行制）
+│   ├── round-log.jsonl              # 轮日志（只追加；每轮 start/end 两行制）
+│   ├── deps-log.jsonl               # 依赖变更审计（dep-add/dep-remove 逐行）
+│   ├── dispatch-log.jsonl           # 派发审计（dispatch 逐行；status dispatches 段数据源）
+│   └── claims/                      # 认领边车（逐节点 worker×dsh 会话绑定，供状态条 join）
 ├── .lock                            # 每 run 一把互斥锁（所有写原语；持有者崩溃后 60s 可被接管）
 └── report/
     ├── rounds/round-NN.md           # 每轮人类可读快照
@@ -189,6 +198,8 @@ worker 的 `report` 必须提交固定核心 schema（引擎机械校验，领�
 
 给每个子代理的派发 prompt 模板（宿主扇出时逐 worker 填充）：
 
+> **两种派发形态**：角色会话型（下文 §dispatch 派发命令，拉 preset 角色会话，适用于 PM/CTO/UX/DEV/QA/AUDITOR/EVAL/PSE 承接的任务）与本模板的宿主扇出型（调查角色族卡片嵌入，适用于 data-prep 等无 preset 的卡片角色）。同一 run 内可混用；派发形态是运输方式，claim/report 消费契约两侧一致。
+
 > **角色卡嵌入点**：组装派发 prompt 时，按节点任务的承接性质取对应角色卡（调查类任务见 `rdd-engine/references/investigation-roles.md` 总览表 → `investigation-roles/<role-id>.md`）整卡嵌入本模板第 2 步之前，或按路径引用——worker 按卡中方法预设执行、按卡中交付 schema 回写（extras 结构与附录 A / 角色卡一致）。规划者不即兴改写卡内容；方法变更走权威文件同步（先权威后卡）。
 
 ```text
@@ -220,10 +231,21 @@ worker 的 `report` 必须提交固定核心 schema（引擎机械校验，领�
    你不能也不需要修改树结构——claim/report 之外的任何树变更都由 规划者 负责。
 ```
 
+## dispatch 派发命令（planner-tree-dispatch，管理面）
+
+**语义**：为**通用 run**（模块 / 运维任务——树后无 task.json 归档）的一个 pending 节点拉起角色会话。**角色 × 任务 × 节点三绑定**：`-Role` 与 `-NodeId` 显式指定，任务**不是参数**——取自节点本身（graft 写入的 title/task，单源）注入 worker 指针（`start-role -GoalTreeWorker` 模式，免归档解析；三后端一致）。worker label = 角色小写，派发指针规定新会话第一动作 = `goal-tree-leaf claim`，与消费面契约无缝衔接。
+
+**前置门（与 leaf claim 同源，提前确定性反馈）**：开放轮（`NO_OPEN_ROUND`）→ 节点存在（`NODE_NOT_FOUND`）→ 非 goal 根（`GOAL_NODE_NOT_DISPATCHABLE`——目标根是终局锚不是工作单元）→ 恰 pending（`NODE_NOT_DISPATCHABLE`——卡死 claimed 由下一 worker `claim -Steal` 回收；reported 等你 settle/prune）→ 依赖满足（`NODE_BLOCKED_BY_DEPS`——避免拉起一个第一动作必失败的会话）。
+
+**工单文件通道（dispatch-brief-file）**：dispatch 在锁内把节点完整工单（title + task 全文）落盘 `state/briefs/<node-id>.md`，以 ASCII 路径经 `-TaskBriefFile` 传给 start-role——goal-tree → start-role 一跳跨 cmd.exe 参数重解析，富文本走 CLI 有静默损伤风险（同一纪律：graft `-TasksFile` / report `-CallbackFile` / start `-GoalFile`）。写入失败降级回 360 字符内联 brief（fail-soft，dispatch 不因运输失败而死）。claim 响应的 node 视图仍是全文正典读；指针消息中的预注入副本在 claim 被拒时作废（改领以 `next`/claim 返回为准）。`-DryRun` 亦写该文件（内容幂等，不动审计与节点状态）。
+
+**审计与可见性**：真实派发（非 `-DryRun`）逐行落 `state/dispatch-log.jsonl`（node/role/worker/round/exit/at），status 新增 `dispatches` 段（total/failed/逐节点末次派发）+ 失败派发告警——这是通用 run 的"谁被派去哪个节点、何时"观测面（桥接 run 的对应物 = bridge pushes 账）。锁为两段式：校验持锁 → 释放后拉会话（dsh HTTP 调用不占 run 锁）→ 短锁记账；并发派发同一节点的竞态由 leaf claim 串行化（后者收 `NODE_NOT_CLAIMABLE` 按 next 清单改领）。
+
+**边界**：桥接 run（`deliver-<归档名>`，promulgate 颁布）不适用本命令——阶段闸门/冲突门/task.json 锚定归 `delivery-bridge dispatch` 承载。`-DryRun` 零副作用（不落审计、节点不动）。CLI/Plus/dsh 三后端经 start-role 自动选择；Plus 需 `-EmployeeId`。
+
 ## 宿主 workflow 扇出模板
 
 子代理的拉起是宿主能力（如 DSH `workflow` 的 `agent()` 扇出）。规划者 每轮：
-
 1. `goal-tree-leaf.cmd -Command next -RunId <id>` 拿 pending 节点清单
 2. 对每个节点组装上述派发模板（`workflow` 的 `pipeline`/`parallel` 钩子逐节点扇出 worker）
 3. 全部 worker 返回后，`goal-tree.cmd -Command status -RunId <id>` 查看本轮回写与校验状态
@@ -273,6 +295,11 @@ await pipeline(pendingNodes, [
 
 # 依赖维护（add/remove 限开放轮；环形/自依/目标不存在原子拒绝）
 & "$rdd\scripts\goal-tree.cmd" -Command deps -DepAction add|remove|list -RunId <id> -NodeId <nodeId> -On <targetId>
+
+# 派发（planner-tree-dispatch：为 pending 节点拉一个角色会话——角色×任务×节点三绑定；
+# 任务取自节点单源注入 worker 指针；worker label = 角色小写；前置门与 claim 同源；
+# 真实派发（非 -DryRun）落 state/dispatch-log.jsonl 审计，status dispatches 段透出）
+& "$rdd\scripts\goal-tree.cmd" -Command dispatch -RunId <id> -NodeId <nodeId> -Role <PM|CTO|UX|DEV|QA|EVAL|PSE|AUDITOR> [-SessionLabel <标签>] [-EmployeeId <uuid>] [-DryRun]
 
 # 剪枝（级联子树，理由必填，入审计）
 & "$rdd\scripts\goal-tree.cmd" -Command prune -RunId <id> -NodeId <nodeId> -Reason "<证伪/放弃理由>"

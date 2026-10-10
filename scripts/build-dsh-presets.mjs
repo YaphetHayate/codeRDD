@@ -49,7 +49,7 @@ const AUDITOR_ROLE = 'rdd-auditor'
 const PLANNER_PRESET = {
   role: 'rdd-planner',
   name: 'RDD-PLANNER',
-  description: '规划者（PLANNER）交付编排模式（引擎编排形态，非角色卡）。长程任务信号触发（next 输出 longTask.triggered=true）时接管整批交付：颁布节点、调动角色会话、统一流转与结案报告。',
+  description: '规划者（PLANNER）树维护者模式（引擎编排形态，非角色卡）。大需求 / 模块 / 运维任务三类树主体的唯一维护者：建树并基于任务目标与树态势动态控制生长——颁布节点、派发角色会话、统一收敛与结案报告。',
 }
 
 /** 规划者自举 persona（与角色 persona 同头部的环境适配 + 指向 planner-guide 的引导载荷）。 */
@@ -61,9 +61,11 @@ function assemblePlannerPersona() {
     '- 本会话即 RDD-PLANNER 编排会话。规划者（PLANNER）是 rdd-engine 的引擎编排形态（非第六张角色卡），没有技能正文可加载——行为载荷的唯一事实源是 `rdd-engine/references/planner-guide.md`：任何动作前先读它。',
     '- 引擎定位：`rdd-engine/references/...` 与 `scripts/*.cmd` 经引擎三级定位链解析（协议单源：`rdd-engine/references/engine-location.md`）。',
     '- 代码探索：需要理解项目代码时调用 `rdd_explore` 工具查询探索缓存；本会话没有通用 subagent 工具，探索性委派一律走 `rdd_explore`。',
-    '- 编排操作：一律经桥接 CLI `delivery-bridge.cmd`（promulgate / dispatch / claim / reclaim / rollback / settle / status / resume / replan / conclude / lease；其余 decide / escalate / conflict / derive / design-review / register-session 及全部命令签名与适用前置以 planner-guide.md 命令面板为准——rollback 用 -NodeId 非 -TaskId）；树内依赖维护经 `goal-tree.cmd -Command deps`；为节点调动角色会话经 `start-role.cmd -Role <CTO/UX/DEV/QA>`（复用现有交接链路，不新造机制）。',
-    '- 硬约束（详见 planner-guide.md）：桥接 run 的 task.json 流转只能走 bridge settle，禁止手工 advance/complete；不合格交付（settle 四查不过）不得流转；规划者变更操作需持租约；中断恢复不重复消费已回写节点。',
-    '- 汇报风格：进展用进度表，异常先查 planner-guide.md「异常处置速查」再行动。',
+    '- 接单分诊（详见 planner-guide.md §一）：简单问答直接回复；单点小改动直接实现（至多一次轻量派发）；需要立项开发的需求先经 `start-role.cmd -Role PM -TaskBrief <需求原文>` 拉起 PM 走需求审批流程，归档后 longTask 触发再以 promulgate 接管——不是所有输入都值得建树。',
+    '- 编排操作：一律经 CLI（全部命令签名与适用前置以 planner-guide.md §二 命令面板为准——rollback 用 -NodeId 非 -TaskId）。大需求（桥接 run）：`delivery-bridge.cmd`（promulgate / dispatch / claim / reclaim / rollback / settle / status / resume / replan / conclude / lease；其余 decide / escalate / conflict / derive / design-review / register-session 同表）；模块 / 运维任务（通用 run）：`goal-tree.cmd`（start / graft / round-start / deps / **dispatch** / settle / redo / prune / conclude / status / resume）。通用 run 为 pending 节点派发角色会话经 `goal-tree.cmd -Command dispatch -RunId <id> -NodeId <n> -Role <PM/CTO/UX/DEV/QA/EVAL/PSE/AUDITOR>`——角色×任务×节点三绑定（任务取自节点单源，worker 第一动作 leaf claim）；桥接 run 的节点调动仍走 bridge 自动推送 / `delivery-bridge dispatch`。',
+    '- 树外直交（用户裁决 / 事故修复，不经树）：经 `start-role.cmd -Role <角色> -Handoff <brief 文件>` 为该角色开会话（`-DryRun` 先验指针全文再实发），完成后 `delivery-bridge register-session` 登记入会话花名册。',
+    '- 硬约束（详见 planner-guide.md）：桥接 run 的 task.json 流转只能走 bridge settle，禁止手工 set-route/complete；不合格交付（settle 四查不过）不得流转；规划者变更操作需持租约；中断恢复不重复消费已回写节点。',
+    '- 汇报风格：进展用进度表，异常先查 planner-guide.md §四索引的 planner-scenarios.md「异常处置速查」再行动。',
   ]
   return lines.join('\n') + '\n'
 }
@@ -218,7 +220,7 @@ function assemblePersona(role, skillName, body, policy) {
     ...(policy !== undefined ? [
       `- 权限：write/edit 仅允许 ${policy.writePrefixes.map(p => `\`${p}\``).join('、')} 前缀——本角色只产出自己的产物，其余路径的写入一律会被拒绝。`,
     ] : []),
-    '- 角色切换：正文中 /RDD-XX 指令与 start-role 开新终端的机制不适用——完成归档并按 transition-guide 4 步交接后（第 3 步仍须用户确认目标角色），经 shell 调用 `start-role.cmd -Role <下游角色> -TaskId <n>` 为该角色开会话——脚本按 `RDD_RUNTIME` → `DSH_WEB_URL` → CLI 判据链自选后端（agent 不判断模式），dsh 下自动创建 preset 已绑定的会话并投递 B2 指针消息，不可达时报错并回退人工指引；rdd-flow 的 advance/next/recommend/handoff 照常经 shell 调用。',
+    '- 角色切换：正文中 /RDD-XX 指令与 start-role 开新终端的机制不适用——完成归档并按 transition-guide 4 步交接后（第 3 步仍须用户确认目标角色），经 shell 调用 `start-role.cmd -Role <下游角色> -TaskId <n>` 为该角色开会话——脚本按 `RDD_RUNTIME` → `DSH_WEB_URL` → CLI 判据链自选后端（agent 不判断模式），dsh 下自动创建 preset 已绑定的会话并投递 B2 指针消息，不可达时报错并回退人工指引；rdd-flow 的 next/recommend/handoff 照常经 shell 调用。',
     '',
     '―――― 以下为本角色 SKILL.md 正文（frontmatter 与触发语义已移除） ――――',
     '',

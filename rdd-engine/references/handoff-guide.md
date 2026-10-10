@@ -77,12 +77,12 @@ $rdd = $null; $t = $null; try { $t = git rev-parse --show-toplevel } catch { }; 
 ### 交接包包含
 
 每个 task 包含：
-- 需求标题、需求文件、当前责任人、备注
+- 需求标题、需求文件、当前责任人（`currentOwners`，源自 task.json）、备注
 - 阶段（`phase`：REQ/DESIGN/IMPL/VERIFY；旧归档无存储值时为 `null`——保守降级，消费方零推导，phase-model 见 `task-routing.md`）
 - 工作模式：`design-guided` / `requirement-guided`
 - 需求摘要：描述、验收标准、优先级、影响范围、用户场景、边界、依赖
 - 设计摘要：技术方向文档路径、需求概述、技术方案、风险提示、涉及文件
-- 忽略项：不属于当前角色、已废弃、存在待处理驳回、责任人不一致的文档
+- 忽略项：不属于当前角色、已废弃、存在待处理驳回的文档（路由以 task.json 为准，文档侧废弃字段不参与判定）
 
 此外，代码探索需求应委托 engine 执行（而非读取 archive 级文件）：
 ```powershell
@@ -122,7 +122,7 @@ $rdd = $null; $t = $null; try { $t = git rev-parse --show-toplevel } catch { }; 
 
 > 完整的角色交接协议（模式检测、上游 4 步硬流程、下游三入口识别）见 `transition-guide.md`。本节补充交接包的读取规则。
 
-上游角色完成归档或设计后，按 `transition-guide.md` 的上游协议执行交接（先运行 `next`，推荐角色请求确认，再运行 `start` 生成交接包）。
+上游角色完成归档或设计后，按 `transition-guide.md` 的上游协议执行交接（先运行 `next`，推荐角色请求确认，确认后调用交接脚本 `start-role.cmd -Role <目标角色> -TaskId <n>`，脚本按判据链自动选后端；`start` 命令仅用于预览交接包，不是交接入口）。
 
 ```powershell
 $rdd = $null; $t = $null; try { $t = git rev-parse --show-toplevel } catch { }; foreach ($c in @($env:RDD_ENGINE_HOME; if ($t) { (Get-ChildItem $t -Recurse -Directory -Depth 3 -Filter 'rdd-engine').FullName }; "$HOME\.rdd\engine\current")) { if ($c -and (Test-Path "$c\scripts\rdd-flow.cmd")) { $rdd = $c; break } }; if (-not $rdd) { throw "rdd-engine 未定位（三级定位链：RDD_ENGINE_HOME → 项目内 rdd-engine → ~\.rdd\engine\current 全 miss）。安装/排障：GitHub Release 下载 rdd-engine.tgz 后运行 scripts/install-rdd-engine.ps1；协议详见 rdd-engine/references/engine-location.md" }; & "$rdd\scripts\rdd-flow.cmd" -Command next

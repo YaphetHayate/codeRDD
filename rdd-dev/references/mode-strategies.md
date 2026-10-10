@@ -222,6 +222,12 @@ Step 6: 汇报
 
 ---
 
+## 检查点留痕（统一决策账本）
+
+会话中经用户确认的检查点决策（实现取舍、自测口径改定等改变交付走向的裁定）在移交 QA 前留痕：`delivery-bridge.cmd -Command decide -Kind checkpoint -Archive <归档> -Checkpoint <名> -Decision <结论> [-Reason] [-Options <A|B>] [-Background] [-Role DEV]`——条目落归档级 `decisions.jsonl`（四要素 + decider=user）。纯实现细节（文件命名、内部结构）不入账；有「当时为什么这么定」追问价值的才入。
+
+---
+
 ## UX 视觉稿处理原则
 
 UX 设计规格（`{name}-ux.md`）的「视觉稿参考」章节登记了 HTML mockup（通常为 `design/mockups/final.html`）。**这些 mockup 必须读取**，不属"不扫描归档目录"禁令范围（它们由设计规格显式登记，是交接内容的一部分）。

@@ -75,18 +75,63 @@ function Get-PageText { param([string]$Html)
 
 function Get-LogStats {
     # 流水地面真值：独立从 jsonl 逐行算，不信看板自报。
-    $stats = @{ lines = 0; hits = 0; misses = 0; queries = @() }
+    # 口径（与 readers/query-log.mjs 的冻结聚合规则一致，本探针独立复算）：
+    #   hit-rate = hit / (hit + miss)，**forced 不入分母**（强制派发绕过缓存召回，
+    #   既非命中亦非未命中，看板按独立字段展示）。三分类必须分开计数——把 forced
+    #   并进 miss 会在分母上凭空多一行（n13 实测：流水含 1 行 forced 时旧公式给出
+    #   38.9% 而看板 41.2%，差异全部来自这一行，不是看板缺陷）。
+    $stats = @{ lines = 0; hits = 0; misses = 0; forced = 0; other = 0; queries = @(); lastTs = '' }
     if (-not (Test-Path -LiteralPath $Script:LogPath)) { return $stats }
     foreach ($line in @([System.IO.File]::ReadAllLines($Script:LogPath, [System.Text.Encoding]::UTF8))) {
         if ([string]::IsNullOrWhiteSpace($line)) { continue }
         try {
             $record = $line | ConvertFrom-Json
             $stats.lines++
-            if ([string]$record.outcome -eq 'hit') { $stats.hits++ } else { $stats.misses++ }
+            switch ([string]$record.outcome) {
+                'hit' { $stats.hits++ }
+                'miss' { $stats.misses++ }
+                'forced' { $stats.forced++ }
+                default { $stats.other++ }
+            }
             $stats.queries += [string]$record.query
+            $stats.lastTs = [string]$record.ts
         } catch { }
     }
     return $stats
+}
+
+function Get-LogRatePercent {
+    # 命中率地面真值：分母只含 hit + miss（forced 排除），无分母时返回 $null。
+    param($Stats)
+    $denominator = [int]$Stats.hits + [int]$Stats.misses
+    if ($denominator -le 0) { return $null }
+    return 100.0 * [int]$Stats.hits / $denominator
+}
+
+function Get-LogDayBucket {
+    # 按 UTC 日历日复算流水桶（判据 #2 的「趋势」维度：看板 trend 的独立对账）。
+    param([string]$Day)
+    $bucket = @{ day = $Day; hit = 0; miss = 0; forced = 0; total = 0 }
+    if ([string]::IsNullOrWhiteSpace($Day) -or -not (Test-Path -LiteralPath $Script:LogPath)) { return $bucket }
+    foreach ($line in @([System.IO.File]::ReadAllLines($Script:LogPath, [System.Text.Encoding]::UTF8))) {
+        if ([string]::IsNullOrWhiteSpace($line)) { continue }
+        try {
+            $record = $line | ConvertFrom-Json
+            $ts = [string]$record.ts
+            if (-not $ts.StartsWith($Day)) { continue }
+            $bucket.total++
+            switch ([string]$record.outcome) {
+                'hit' { $bucket.hit++ }
+                'miss' { $bucket.miss++ }
+                'forced' { $bucket.forced++ }
+            }
+        } catch { }
+    }
+    return $bucket
+}
+
+function Get-HitRateApi {
+    try { return (Invoke-RestMethod -UseBasicParsing -Uri ($Script:BaseUrl.TrimEnd('/') + '/api/hit-rate') -TimeoutSec 10).data } catch { return $null }
 }
 
 function Get-DisplayedPercents { param([string]$Text)
@@ -206,18 +251,18 @@ try {
 
     # ================= 判据 #2：一 hit 一 miss 真实查询 → 刷新看板 → 数字与流水随之变化 =================
     $base = Get-LogStats
-    $basePct = if ($base.lines -gt 0) { 100.0 * $base.hits / $base.lines } else { 0.0 }
+    $basePct = Get-LogRatePercent $base
     $hitRateBase = Get-PageByPath '/hit-rate'
     $shownBase = Get-DisplayedPercents $hitRateBase.text
     $baseOk = @($shownBase | Where-Object { [math]::Abs($_ - $basePct) -le 0.1 }).Count -gt 0
-    Assert-True ($hitRateBase.ok -and $baseOk) 'B0 baseline: the shown hit-rate equals hit/(hit+miss) computed from the raw log' ("gt=$([math]::Round($basePct,1))% shown=[$($shownBase -join ',')] lines=$($base.lines)")
+    Assert-True ($hitRateBase.ok -and $baseOk) 'B0 baseline: the shown hit-rate equals hit/(hit+miss) computed from the raw log' ("gt=$([math]::Round($basePct,1))% shown=[$($shownBase -join ',')] lines=$($base.lines) forced=$($base.forced)")
 
     $missNonce = 'zzqx' + (Get-Random -Minimum 10000000 -Maximum 99999999)
     $null = & $Script:ExploreCmd -Type search -Query $missNonce 2>&1
     $afterMiss = Get-LogStats
     Assert-True (($afterMiss.lines -eq $base.lines + 1) -and ($afterMiss.misses -eq $base.misses + 1)) `
         'B1 a real miss (dispatch) query appends exactly one miss record' ("lines=$($base.lines)->$($afterMiss.lines) misses=$($base.misses)->$($afterMiss.misses)")
-    $missPct = 100.0 * $afterMiss.hits / $afterMiss.lines
+    $missPct = Get-LogRatePercent $afterMiss
     $hitRateMiss = Get-PageByPath '/hit-rate'
     $shownMiss = Get-DisplayedPercents $hitRateMiss.text
     Assert-True ((@($shownMiss | Where-Object { [math]::Abs($_ - $missPct) -le 0.1 }).Count -gt 0) -and ([math]::Abs($missPct - $basePct) -gt 0.05)) `
@@ -238,7 +283,7 @@ try {
     $afterHit = Get-LogStats
     Assert-True (($afterHit.lines -eq $afterMiss.lines + 1) -and ($afterHit.hits -eq $afterMiss.hits + 1)) `
         'B4 a real cache-hit query appends exactly one hit record' ("lines=$($afterMiss.lines)->$($afterHit.lines) hits=$($afterMiss.hits)->$($afterHit.hits)")
-    $hitPct = 100.0 * $afterHit.hits / $afterHit.lines
+    $hitPct = Get-LogRatePercent $afterHit
     $hitRateHit = Get-PageByPath '/hit-rate'
     $shownHit = Get-DisplayedPercents $hitRateHit.text
     Assert-True ((@($shownHit | Where-Object { [math]::Abs($_ - $hitPct) -le 0.1 }).Count -gt 0) -and ([math]::Abs($hitPct - $missPct) -gt 0.05)) `
@@ -249,6 +294,22 @@ try {
     Assert-True ($missingQueries.Count -eq 0 -or $distinct.Count -gt 200) `
         'B7 the flow detail covers the logged flow (all distinct queries, or an explicit truncation notice)' ("distinct=$($distinct.Count) missing=$(@($missingQueries).Count)")
     Assert-True (-not $Script:ServiceProc.HasExited) 'B8 the service was never restarted across the whole flow (same process throughout)' ("pid=$($Script:ServiceProc.Id)")
+
+    # 趋势维度（判据 #2 原文含「命中率统计数字与趋势随之变化」）+ 口径独立对账：
+    # 用 API 面把当前 UTC 日的桶与磁盘独立复算逐项比对，并钉住 forced 的半开语义。
+    $apiRate = Get-HitRateApi
+    $dayKey = if ($afterHit.lastTs.Length -ge 10) { $afterHit.lastTs.Substring(0, 10) } else { '' }
+    $apiBucket = @()
+    if ($null -ne $apiRate) { $apiBucket = @($apiRate.trend | Where-Object { [string]$_.day -eq $dayKey }) }
+    $diskBucket = Get-LogDayBucket $dayKey
+    Assert-True (($null -ne $apiRate) -and $apiBucket.Count -eq 1 `
+            -and [int]$apiBucket[0].hit -eq $diskBucket.hit -and [int]$apiBucket[0].miss -eq $diskBucket.miss `
+            -and [int]$apiBucket[0].forced -eq $diskBucket.forced -and [int]$apiBucket[0].total -eq $diskBucket.total) `
+        'B9 the trend bucket for the current UTC day equals an independent per-day recompute from the raw log' ("day=$dayKey api=$($apiBucket | ConvertTo-Json -Compress) disk=hit:$($diskBucket.hit)/miss:$($diskBucket.miss)/forced:$($diskBucket.forced)/total:$($diskBucket.total)")
+    Assert-True (($null -ne $apiRate) -and [int]$apiRate.total -eq $afterHit.lines -and [int]$apiRate.hit -eq $afterHit.hits `
+            -and [int]$apiRate.miss -eq $afterHit.misses -and [int]$apiRate.forced -eq $afterHit.forced `
+            -and [math]::Abs([double]$apiRate.hitRatePercent - $hitPct) -le 0.01) `
+        'B10 the domain aggregates on the frozen contract: forced rows are surfaced separately and kept out of the hit-rate denominator' ("api total/hit/miss/forced=$($apiRate.total)/$($apiRate.hit)/$($apiRate.miss)/$($apiRate.forced) rate=$($apiRate.hitRatePercent) gt=$([math]::Round($hitPct,2)) disk forced=$($afterHit.forced)")
 } catch {
     Assert-True $false 'ACCEPTANCE unexpected exception (degraded to FAIL)' ($_.Exception.Message)
 } finally {

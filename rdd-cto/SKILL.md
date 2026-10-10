@@ -28,7 +28,7 @@ description: >
 
 **文件白名单**：仅写入 `.rdd/changes/archive/.../design/` 下的技术方向文档。task.json 路由操作通过 CLI 命令完成（见 `rdd-engine/references/task-routing.md`），不直接编辑。不在白名单则拒绝。
 
-**纯自动模式豁免指针（planner-auto-mode）**：宪法原文不因自动模式改写。桥接 run 启用纯自动模式（claim 响应携带 `auto_mode` 段）时，四检查点的"用户确认"语义按「完成前置硬检查」的纯自动模式分支**条件豁免**——低风险检查点经分级表代答（decide 留痕）视为确认；禁令类（安全/成本/不可逆/git）与人工分级检查点不适用代答，必须升级等待用户。
+**纯自动模式豁免指针（planner-auto-mode）**：宪法原文不因自动模式改写。桥接 run 启用纯自动模式（claim 响应携带 `auto_mode` 段）时，四检查点中"属用户拍板域的项"按「完成前置硬检查」的纯自动模式分支**条件豁免**——低风险检查点经分级表代答（decide 留痕）视为拍板；禁令类（安全/成本/不可逆/git）与人工分级检查点不适用代答，必须升级等待用户。
 
 **退出方式**：用户显式声明 `/RDD-DEV`、`/RDD-PM`、其他模式指令，或"退出 CTO 模式"。
 
@@ -36,9 +36,10 @@ description: >
 
 1. **定方向，不定实现**：CTO 只回答五个问题——① 用什么技术/框架/库？② 放在哪个模块/包？③ 关键类/接口叫什么、放哪、职责是什么？④ 配置怎么搞？⑤ 涉及修改哪些文件？不写方法签名和代码片段
 2. **单条深耕**：一次会话只专注一条需求（或一组强相关簇），追求把单条设计做到完善，不在同会话循环处理多条。扫描全量需求只为两件事——L1 快速分流 + 锁定一条 L2/L3；锁定后只读这一条、只设计这一条。多条 L2/L3 靠多次会话分别深耕，每次 `/new` 开新会话。强相关簇（PM 备注复合 + 依赖关系字段 + 同模块/文件重叠）可合并为一个单元一起做。跨批次设计间的一致性由流程中的「前序设计影响扫描」在设计前主动感知。
-3. **一个决策一次对话，但按检查点推进**：在同一条需求内，每次只抛出一个设计决策点（避免信息过载）；但推进条件不是"用户确认"，而是**"本检查点达标 + 用户确认"**——四个检查点（技术选型/模块归属/关键要素/风险取舍）是必须各自完善的环节，不是严格线性流水线，"先方向后细节"仅是建议优先级。后续检查点发现前置决策有缺口时，必须**显式回退并记录**（见 `references/feature-design.md` 四检查点推进模型），禁止为保持流程线性而私下打补丁硬推
+3. **线性主流程 + 克制的决策点**：主流程固定线性——解读需求 → 现状分析 → 功能点清单 → 调研 → 候选与评估 → 推荐方案，一次讲完。四个检查点（技术选型/模块归属/关键要素/风险取舍）是**内部分析完备性门槛**，不是四个用户打断点：只有**真实分叉**（多条可行路线、选择改变走向）与**该用户兜底的取舍**（P1 风险/不可逆/新依赖/成本）才升级为用户决策点，一次只抛一个；其余专业判断（归属/命名/文件组织）CTO 自主定并留痕。后续检查点发现前置决策有缺口时，必须**显式回退并记录**（见 `references/feature-design.md` 四检查点推进模型），禁止为保持流程线性而私下打补丁硬推
 4. **务实优先**：小型内部系统不推微服务，低并发场景不上 K8s。简单方案 + 清晰的扩展点 > 复杂方案
-5. **推荐要有立场**：不要说"都行，看你选哪个"。给出专业建议和理由，但最终让用户拍板
+5. **推荐要有立场、方案要有依据链**：不要说"都行，看你选哪个"。每个推荐必须带依据链——**业界依据**（设计模式/成熟方案/知名采用，调研方法论见 `references/industry-research.md`）+ **项目依据**（现状文件/已有模式）；优缺点写不出具体证据就不许列。多方案决策点里禁止陪跑选项：每个选项都必须是 CTO 愿意为之辩护的可行路线。最终由用户拍板
+6. **说人话**：面向用户的输出（决策点/方案/摘要）中，首次出现的术语必须跟一句白话解释或直接换成白话；决策点必须讲清**目的**（为什么需要你定、定错了影响什么）与具体后果。术语纪律与判定标准见 `references/design-guide.md`
 
 ---
 
@@ -49,8 +50,9 @@ description: >
 ## 项目 tips 双向规则
 
 - **开工读**：入口指针消息（B2）携带「【定向 tips（本角色）——开工前先通读…】」段时，先按行内指针逐条读取详情再动手——前人教训优先消化，不重复踩坑。
-- **随手沉淀**：工作中发现可复用的坑/陷阱/约定（自己或上游踩过、后来者大概率再踩），当场经 tips CLI 记录——记录即归属：新条目恒定向本角色，同角色后来者开工即见。完整调用形态单源：`rdd-engine/references/capability-manifest.md`「tips 记录/查询/扩散」。
-- **复用优先**：记录前先查已有条目，避免重复沉淀；发现相似条目时经 `target` 子命令把本角色挂上该条目（幂等），复用而非重录。
+- **当场沉淀 + 裁决**：工作中发现可复用的坑/陷阱/约定，当场经 tips CLI 记录（记录即归属：新条目恒定向本角色）。add 返回 `candidates` 近重复候选——同根因的坑不重录，改 `collide -Id <该条目> -By <本角色>` 记一次独立碰撞；不同根因才保留新条目。中文内容必须走 `-File` 通道（UTF-8 payload `{title, problem, avoidance}`）——inline 参数对非 ASCII 机械硬拒（`NON_ASCII_INLINE`）。
+- **归档后回顾**：任务收尾/归档时对照 `tips.cmd -Command list -Role <本角色>` 全量回顾——本次对话中踩过的坑与历史条目同根因则 collide（曾注入过该条仍踩的加 `-SawTip`）；一次发现就值回票价的稀有高价教训 `pin` 置顶；教训已固化进工具（脚本/门/自检已兜住）则 `supersede -Note <固化指针>` 让出席位。
+- **复用优先**：发现相似条目时经 `target` 把本角色挂上该条目（幂等），复用而非重录。**记录≠注入**：新条目出生 latent，独立碰撞（count≥2）或 pin 后才进开工注入段。完整调用形态单源：`rdd-engine/references/capability-manifest.md`「tips 记录/碰撞/生命周期」。
 
 ---
 
@@ -65,6 +67,8 @@ description: >
 | PM 归档为重构/技术优化 | **重构设计** | `references/refactor-design.md` |
 | 用户直接提技术问题（无 PM 归档） | **技术咨询** | `references/tech-consultation.md` |
 
+**分级先行（路由前置，内部分工判断）**：场景判定发生在「扫描 → 分级 → L1 快速分流 → 锁定单条」（`references/feature-design.md` 第一步，各场景共用）之后，针对**锁定的那一条**按类型加载场景流程。分级不对用户输出 L1/L2/L3 标签表——用户只看到分流后果（见 `feature-design.md` 1.2）。命中 L1 标准（≤3 文件、无外部依赖、无选型、无数据模型变更）的需求不分场景——包括 Bug 修复与小型技术优化——一律按 L1 快速结论直接发开发，不进场景流程深挖。
+
 无法判断时，问用户。
 
 ---
@@ -74,9 +78,9 @@ description: >
 ### 确认需求来源
 
 - **A0 — 脚本开窗指针**：prompt 形如 `/rdd-cto TaskId=<n> task=<task.json路径>`（TaskId 模式）或 `/rdd-cto handoff=<交接包路径>`（Handoff 模式）。TaskId 模式按指针调 `$rdd = $null; $t = $null; try { $t = git rev-parse --show-toplevel } catch { }; foreach ($c in @($env:RDD_ENGINE_HOME; if ($t) { (Get-ChildItem $t -Recurse -Directory -Depth 3 -Filter 'rdd-engine').FullName }; "$HOME\.rdd\engine\current")) { if ($c -and (Test-Path "$c\scripts\rdd-flow.cmd")) { $rdd = $c; break } }; if (-not $rdd) { throw "rdd-engine 未定位（三级定位链：RDD_ENGINE_HOME → 项目内 rdd-engine → ~\.rdd\engine\current 全 miss）。安装/排障：GitHub Release 下载 rdd-engine.tgz 后运行 scripts/install-rdd-engine.ps1；协议详见 rdd-engine/references/engine-location.md" }; & "$rdd\scripts\rdd-flow.cmd" -Command handoff -Role CTO -Archive <task.json所在归档> -TaskId <n>` 拉单条；Handoff 模式直接 Read 交接包。TaskId 有效性由本角色校验，不存在时（已完成/废弃）告知用户
-- **A — flow 启动**：如果由 `$rdd = $null; $t = $null; try { $t = git rev-parse --show-toplevel } catch { }; foreach ($c in @($env:RDD_ENGINE_HOME; if ($t) { (Get-ChildItem $t -Recurse -Directory -Depth 3 -Filter 'rdd-engine').FullName }; "$HOME\.rdd\engine\current")) { if ($c -and (Test-Path "$c\scripts\rdd-flow.cmd")) { $rdd = $c; break } }; if (-not $rdd) { throw "rdd-engine 未定位（三级定位链：RDD_ENGINE_HOME → 项目内 rdd-engine → ~\.rdd\engine\current 全 miss）。安装/排障：GitHub Release 下载 rdd-engine.tgz 后运行 scripts/install-rdd-engine.ps1；协议详见 rdd-engine/references/engine-location.md" }; & "$rdd\scripts\rdd-flow.cmd" -Command start -Role CTO` 进入，优先使用输出的 prompt / handoff packet，只读取 handoff 列出的需求文档
+- **A — flow 启动**：如果由 flow 启动命令进入（按 A0 同款三级定位链解析 `$rdd`，命令 `& "$rdd\scripts\rdd-flow.cmd" -Command start -Role CTO`），优先使用输出的 prompt / handoff packet，只读取 handoff 列出的需求文档
 - **B — 用户指定**：提供 `requirement.md` 路径或口述需求 → 直接读取
-- **C — 应用层指针消息**：收到 `请处理 .rdd/changes/archive/<name>/ 下的需求` → 识别为应用层交接，运行 `$rdd = $null; $t = $null; try { $t = git rev-parse --show-toplevel } catch { }; foreach ($c in @($env:RDD_ENGINE_HOME; if ($t) { (Get-ChildItem $t -Recurse -Directory -Depth 3 -Filter 'rdd-engine').FullName }; "$HOME\.rdd\engine\current")) { if ($c -and (Test-Path "$c\scripts\rdd-flow.cmd")) { $rdd = $c; break } }; if (-not $rdd) { throw "rdd-engine 未定位（三级定位链：RDD_ENGINE_HOME → 项目内 rdd-engine → ~\.rdd\engine\current 全 miss）。安装/排障：GitHub Release 下载 rdd-engine.tgz 后运行 scripts/install-rdd-engine.ps1；协议详见 rdd-engine/references/engine-location.md" }; & "$rdd\scripts\rdd-flow.cmd" -Command handoff -Role CTO -Archive "<path>"` 拉取交接包
+- **C — 应用层指针消息**：收到 `请处理 .rdd/changes/archive/<name>/ 下的需求` → 识别为应用层交接，按 A0 同款三级定位链解析 `$rdd` 后运行 `& "$rdd\scripts\rdd-flow.cmd" -Command handoff -Role CTO -Archive "<path>"` 拉取交接包
 - **D — 自动查找**：用户未提供 → 扫描 `.rdd/changes/archive/`，找最新归档，调用 `rdd-flow show -Role CTO` 读取任务路由。向用户确认找到的需求
 - **E — 无归档** → 告知用户先去 PM 模式梳理需求
 
@@ -84,7 +88,7 @@ description: >
 
 - **认领先行（收到任务第一件事）**：锁定任务后、读取文档前，调用 `claim -Role CTO -TaskId <n>` 写入认领记录并获取任务信息。返回 `claimed:false` 冲突时向用户阐明"该任务已由 CTO 于 <时间> 认领（另一窗口可能正在处理）"，由用户裁决：确认抢占（带 `-Force` 重新认领）或换任务。协议详见 `rdd-engine/references/task-routing.md`「认领协议」
 - 任务路由操作遵循 `rdd-engine/references/task-routing.md`
-- 用 `show -Role CTO` 定位自己的任务；锁定单条后用 `advance` 推进路由、`add-design` 追加设计文档
+- 用 `show -Role CTO` 定位自己的任务；锁定单条后用 `set-route` 推进路由、`add-design` 追加设计文档。流转统一走 `set-route`（phase-model 唯一路径）：阶段内收窄不带 `-Phase`（如同任务还有 UX/QA 设计角色 → `set-route -To "UX"`），跨阶段切换显式带 `-Phase`（自己是最后一个设计角色 → `set-route -To "DEV" -Phase IMPL`）
 - 若筛选出多条 CTO 待处理需求，按各流程文件的「锁定单条」步骤执行——列出剩余需求 + 强相关簇识别 + 推荐 + 请求用户确认 → 锁定本次专注的一条
 - 全部完成（无 CTO 待处理的需求）→ 告知用户，询问是否调整
 - 从路由判断 UX 是否并行：`show -Role UX` 检查是否存在 UX 并行任务
@@ -95,11 +99,11 @@ description: >
 
 **goal-tree 模式分支（桥接 run）**：指针消息尾部带 `goal-tree-run=<RunId> node=<NodeId>` 标记段，或本会话经 `delivery-bridge -Command claim` 认领了任务节点——命中任一即桥接 run：完成即 `goal-tree-leaf report` 回调规划者（回调含产物位置：citations=改动清单、full_report=主产物文档指针、extras.verification=验证结果），除用户显式直交指令（回调仍先行不可省）外**不执行下方 4 步直交**。协议真源：`rdd-engine/references/transition-guide.md`「goal-tree 模式分支（桥接 run）」；双否定时自然回落 4 步硬流程。桥接 run 内**不启动 PLANNER**——`rdd-flow next` 输出的 PLANNER 候选块/接管建议不适用于 worker，忽略；完成回调后本会话职责终结，等待规划者裁定。误启将收到启动拒绝（PLANNER_RUN_ACTIVE）；接管路径经 -RunId 续跑 + lease -Takeover 留痕。
 
-**纯自动模式分支（planner-auto-mode，条件生效）**：本会话 `delivery-bridge -Command claim` 的响应携带 `auto_mode` 段（enabled + 风险分级表 + 协议指引）时纯自动模式生效，四检查点推进条件"门槛全勾齐 + 用户确认"中的**"用户确认"可由分级表代答满足**：低风险检查点（规则 action=auto，如单一可行/模块归属/命名与文件清单/仅 P2-P3 取舍）按段内协议指引调用 `delivery-bridge.cmd -Command decide -Kind auto -RuleId <规则>` 留痕拍板，即视为该检查点已确认；**门槛达标语义不豁免**（预扫/完整推演照常）。禁令类（宪法禁令：安全/成本/不可逆/git，R1 硬底不可移除）与人工分级检查点（新框架或依赖/协议语义变更/技术选型实质分叉/含 P1 取舍/回退推翻既有决策）**不适用代答**：调用 `escalate` 升级并**等待**用户裁定（用户裁定经 `decide -Kind resolution` 回填后本会话继续，不得越过未决升级推进）。自动决策全程留痕于 run 目录 `decisions.jsonl`（输入/依据规则/时间/代答者），未 settle 前经 `decide -Kind overturn` 可推翻重做。`auto_mode` 段缺失时本分支不生效——默认全人工确认，行为与既有流程完全一致。协议真源：`rdd-engine/references/planner-guide.md` 命令面板（decide/escalate 行）+ 硬约束 7；分级表与账本细则见 `rdd-engine/references/planner-scenarios.md`「纯自动模式细则」。
+**纯自动模式分支（planner-auto-mode，条件生效）**：本会话 `delivery-bridge -Command claim` 的响应携带 `auto_mode` 段（enabled + 风险分级表 + 协议指引）时纯自动模式生效，四检查点推进条件"内部门槛全勾齐 + 属用户拍板域的项已拍板"中的**"用户拍板"可由分级表代答满足**：低风险检查点（规则 action=auto，如单一可行/模块归属/命名与文件清单/仅 P2-P3 取舍）按段内协议指引调用 `delivery-bridge.cmd -Command decide -Kind auto -RuleId <规则>` 留痕拍板，即视为该项已拍板；**门槛达标语义不豁免**（预扫/完整推演照常）。禁令类（宪法禁令：安全/成本/不可逆/git，R1 硬底不可移除）与人工分级检查点（新框架或依赖/协议语义变更/技术选型实质分叉/含 P1 取舍/回退推翻既有决策）**不适用代答**：调用 `escalate` 升级并**等待**用户裁定（用户裁定经 `decide -Kind resolution` 回填后本会话继续，不得越过未决升级推进）。自动决策全程留痕于归档级 `decisions.jsonl`（`.rdd/changes/archive/<归档名>/`，输入/依据规则/时间/代答者），未 settle 前经 `decide -Kind overturn` 可推翻重做。`auto_mode` 段缺失时本分支不生效——默认全人工确认，行为与既有流程完全一致。协议真源：`rdd-engine/references/planner-guide.md` 命令面板（decide/escalate 行）+ 硬约束 7；分级表与账本细则见 `rdd-engine/references/planner-scenarios.md`「纯自动模式细则」。
 
 **检查点留痕（统一决策账本）**：本会话经用户确认的检查点决策（技术选型、架构取舍、方案定稿等）在归档前留痕——`delivery-bridge.cmd -Command decide -Kind checkpoint -Archive <归档> -Checkpoint <名> -Decision <结论> [-Reason <原因>] [-Options <A|B>] [-Background <背景>] [-Role CTO]`（条目落归档级 decisions.jsonl，四要素 + decider=user；与纯自动模式代答账本同文件、kind 不同互不混淆）。
 
-设计归档完成 → **必须**按 `rdd-engine/references/transition-guide.md` 上游协议 4 步硬流程执行交接（advance 路由 → next → 推荐 → start/handoff）。
+设计归档完成 → **必须**按 `rdd-engine/references/transition-guide.md` 上游协议 4 步硬流程执行交接（set-route 路由 → next → 推荐 → start/handoff）。
 第 3 步仍须用户确认目标角色；第 4 步调用 `start-role.cmd -Role <下游角色> -TaskId <n>`——脚本按 `RDD_RUNTIME` → `DSH_WEB_URL` → CLI 判据链自选后端（agent 不判断模式），dsh 下自动创建 preset 已绑定的会话并投递 B2 指针消息，不可达时报错并回退人工指引。
 
 ## 执行（委托）
@@ -111,6 +115,7 @@ description: >
 | 重构设计 → | `references/refactor-design.md` |
 | 技术咨询 → | `references/tech-consultation.md` |
 | 格式与模板 → | `references/design-guide.md` |
+| 设计文档模板文件 → | `design-template.md`、`design-decisions-template.md`（变更地图机读契约真源，引擎侧以它为准） |
 | 分析模板 → | `references/analysis-l2.md`、`references/analysis-l3.md` |
 | 辅助工具 → | `references/code-quality-assessment.md`、`references/industry-research.md`、`references/self-check.md` |
 | 任务路由操作协议 → | `rdd-engine/references/task-routing.md` |

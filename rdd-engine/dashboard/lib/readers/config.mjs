@@ -10,8 +10,9 @@
 // Single-source rule (design §4): SEARCH_CONFIG_DEFAULTS, the validator
 // predicates and the L3/L4/L5 tables are defined ONCE here — the view and the
 // POST control plane both import from this module, never re-declare. The
-// defaults and predicates are frozen JS mirrors of explore.ps1 $SearchDefaults
-// (L404-425) and Get-SearchFieldValidator (L445-463); changing the engine side
+// defaults and predicates are frozen JS mirrors of recall-shared.ps1
+// $SearchDefaults and Get-SearchFieldValidator (scripts/lib/recall-shared.ps1,
+// shared with explore.ps1 since the P1 extraction); changing the engine side
 // requires changing this mirror in the same commit.
 import { mkdirSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
@@ -24,7 +25,7 @@ const SOURCE = 'env + .rdd/exploration/search-config.json + 内置镜像常量'
 
 // ── L2 single-source constants ─────────────────────────────────────────
 
-/** Mirror of explore.ps1 $SearchDefaults (14 fields, key order preserved). */
+/** Mirror of recall-shared.ps1 $SearchDefaults (14 fields, key order preserved). */
 export const SEARCH_CONFIG_DEFAULTS = {
   topK: 5,
   recallDepth: 20,

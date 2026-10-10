@@ -666,8 +666,9 @@ export interface SearchConfig {
 }
 
 /**
- * Frozen default values — literal mirror of explore.ps1 `$SearchDefaults` and
- * explore-store.ps1 `$EmbedDefaults`. PS and TS read the SAME search-config.json,
+ * Frozen default values — literal mirror of recall-shared.ps1 `$SearchDefaults`
+ * (scripts/lib, shared with explore.ps1) and explore-store.ps1 `$EmbedDefaults`.
+ * PS and TS read the SAME search-config.json,
  * so these defaults are the behavior-parity anchor of last resort.
  */
 export const SEARCH_CONFIG_DEFAULTS: Readonly<SearchConfig> = Object.freeze({

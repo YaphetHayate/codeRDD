@@ -34,7 +34,7 @@ RDD 有三种运行环境，交接行为不同。**判据链由 `start-role.ps1`
 
 将已完成产物的需求行路由推进到下一处理角色，调用 `rdd-flow set-route` 一步完成：阶段内收窄不传 `-Phase`（如 `set-route -To "UX"`），跨阶段切换显式 `-Phase`（如 `set-route -To "DEV" -Phase IMPL`，owners 与 phase 原子更新）。**不修改任何文档侧的流转字段**——文档是内容工件，路由状态只活在 task.json；存量归档中已存在的「当前责任人」字段已废弃，以 task.json 为准。完整命令参考见 `rdd-engine/references/task-routing.md`。
 
-> phase-model：阶段白名单（REQ→DESIGN→IMPL→VERIFY）硬约束 `currentOwners ⊆ PhaseRoles[phase]`；`advance` 已退场为兼容路径（其单角色替换会铸造跨阶段中间态），新流转统一 `set-route`。
+> phase-model：阶段白名单（REQ→DESIGN→IMPL→VERIFY）硬约束 `currentOwners ⊆ PhaseRoles[phase]`；`advance` 已移除，流转统一 `set-route`。
 
 ### Step 2 — 运行 next，展示可流转角色
 
@@ -87,7 +87,7 @@ $rdd = $null; $t = $null; try { $t = git rev-parse --show-toplevel } catch { }; 
 
 #### dsh 后端（`DSH_WEB_URL` 非空）
 
-脚本 **不开外部窗口，也不需要 `-EmployeeId`**，而是复用 dsh 现有 `/api` 载波四连发：`agentPreset.list` 预检 preset 存在性 → `workspace.create {path}` resolve-or-create 项目 workspace（realpath 规范化，幂等）→ `session.create {workspaceId, agentPreset: rdd-<角色>}` 创建会话并入账 workspace → `session.prompt` 发送指针消息（B2 语义）。preset 按命名约定 `rdd-<角色小写>` 绑定，miss 时报错并列出可用 preset。新会话直接出现在 Web GUI 侧栏的项目 workspace 文件夹内（cwd-only 创建不进任何 workspace 账，只会落入侧栏底部的 Ungrouped 区）；指针消息被接受即自动驱动目标角色跑完整个 turn——全程无手动建会话/选 preset 操作。
+脚本 **不开外部窗口，也不需要 `-EmployeeId`**，而是复用 dsh 现有 `/api` 载波四连发：`agentPreset.list` 预检 preset 存在性 → `workspace.create {path}` resolve-or-create 项目 workspace（realpath 规范化，幂等）→ `session.create {workspaceId, agentPreset: rdd-<角色>, parentSessionId?}` 创建会话并入账 workspace（session-list-lineage：planner 会话内派发时携带 `DSH_SESSION_ID` 作血统父，GUI 侧栏把新会话折叠进发起会话的打包组；无该环境变量则省略键）→ `session.prompt` 发送指针消息（B2 语义）。preset 按命名约定 `rdd-<角色小写>` 绑定，miss 时报错并列出可用 preset。新会话直接出现在 Web GUI 侧栏的项目 workspace 文件夹内（cwd-only 创建不进任何 workspace 账，只会落入侧栏底部的 Ungrouped 区）；指针消息被接受即自动驱动目标角色跑完整个 turn——全程无手动建会话/选 preset 操作。
 
 失败回退：业务错误 → 报错退出（含服务端错误码）；dsh 不可达（服务未启动/超时/403）→ 报错 + 打印人工指引（侧栏手动建会话选 preset + 指针消息全文）；create 成功但 prompt 失败 → 报错 + 打印指针消息，可点开侧栏已有会话手动粘贴。**不降级 CLI 开窗**（Web GUI 用户面前开本地终端窗无意义）。
 
@@ -136,7 +136,7 @@ $rdd = $null; $t = $null; try { $t = git rev-parse --show-toplevel } catch { }; 
 脚本行为按后端分支：
 - **CLI 后端**（判据链均未命中）：开新 Windows Terminal 窗口（检测不到 `wt.exe` 时降级为 PowerShell 窗口），`opencode --prompt` 预填 `/rdd-<角色> ...` 入口消息，用户在新窗口按回车发送即进入角色
 - **Plus 后端**（`RDD_RUNTIME=app`）：不开窗口，POST 到 Plus `/api/rdd/handoff`，Plus 创建对话并自动发送指针消息驱动目标角色（见入口 B2）；目标员工忙碌时服务端排队
-- **dsh 后端**（`DSH_WEB_URL` 非空）：不开窗口，经 dsh `/api` 载波 `workspace.create` + `session.create {workspaceId}`（绑定 `rdd-<角色>` preset 并入账）+ `session.prompt`（指针消息，见入口 B2）自动创建会话并开工；新会话直接出现在 Web GUI 侧栏的项目 workspace 文件夹内
+- **dsh 后端**（`DSH_WEB_URL` 非空）：不开窗口，经 dsh `/api` 载波 `workspace.create` + `session.create {workspaceId, parentSessionId?}`（绑定 `rdd-<角色>` preset 并入账；planner 会话内派发时带血统父并入侧栏打包组）+ `session.prompt`（指针消息，见入口 B2）自动创建会话并开工；新会话直接出现在 Web GUI 侧栏的项目 workspace 文件夹内
 
 脚本参数模式（各后端共用）：
 - **TaskId 模式**（推荐）：`-TaskId <n>`，CLI 后端预填 `/rdd-<角色> TaskId=<n> task=<task.json绝对路径>`；Plus/dsh 后端据此定位归档生成指针消息
@@ -193,7 +193,7 @@ $rdd = $null; $t = $null; try { $t = git rev-parse --show-toplevel } catch { }; 
 
 用 packet 作为上下文边界开工。**不要将指针消息当作"用户直接下达的开发指令"（优先级 E）处理**——它是一个交接信号，背后有完整的 task.json 路由和交接包。
 
-> **定向 tips 段（2026-10-06 role-tips-mechanism；2026-10-08 序号摘要形态）**：B2 消息在主体句（含交接包括注）之后、任务目标段之前可携带可选定向 tips 段——首行 `【定向 tips（<角色>）——开工前先通读：以下 N 条为历史执行中沉淀的踩坑教训（新→旧），详情按序号查末行指针】`，其后每条一行 `<序号>. <标题>`（新→旧，cap=10；序号即 LLM 引用键，长条目 id 不进入阅读流），末行 `详情指针：1=.rdd/tips/entries/<id>.json；2=…` 把序号→文件映射冻结在消息内（会话中途新增条目不会静默改变本段序号），超限时附全量查询指引行。由 `start-role` 构造 B2 时经 `tips.cmd -Command list -Role <角色>` 自动注入（Plus/dsh 双后端共用构造器同构生效；A0 CLI 预填与 PLANNER 自举消息不注入；tips 查询失败或条目损坏 → 控制台警告 + 零注入，绝不阻断交接）。A0/B2 的指针模式识别按前缀语义匹配，对该段零感知；无定向 tips 时消息与旧形态逐字节一致（回归锚）。目标角色按所在角色卡的「项目 tips 双向规则」先按序号读详情后开工。
+> **定向 tips 段（2026-10-06 role-tips-mechanism；2026-10-08 序号摘要形态；tips v2 碰撞驱动席位制）**：B2 消息在主体句（含交接包括注）之后、任务目标段之前可携带可选定向 tips 段——首行 `【定向 tips（<角色>）——开工前先通读：以下 N 条为踩坑教训（E 条碰撞验证/置顶的常青教训 + T 条待碰撞验证的最新教训），详情按序号查末行指针】`，其后每条一行 `<序号>. <标题>`：先 E 条**常青席位**（status active|pinned，即 count≥2 独立碰撞或显式 pin；次序 = list 序：碰撞次数降序→新旧），后 T 条**试销席位**（最新 latent，行首带 `[新] ` 前缀，给新教训被认出重复的见面机会）；常青 cap=8、试销 cap=2（零配置内嵌常量）；序号即 LLM 引用键，长条目 id 不进入阅读流。末行 `详情指针：1=.rdd/tips/entries/<id>.json；2=…` 把序号→文件映射冻结在消息内（会话中途新增条目不会静默改变本段序号；该行同时冻结"本会话见过哪些条目"——后续 `collide -SawTip` 盖章以此为准，未注入期碰撞=价值证明、注入后碰撞=注入无效信号两分），超限时附全量查询指引行。**注入资格由 tips v2 生命周期决定，记录≠注入**：新条目出生 latent（仅试销席位可见），独立碰撞（`collide`，count≥2）或显式置顶（`pin`，稀有高价教训逃生阀）才入常青池；`superseded`（已固化进工具，terminal）不入段不入 list 默认视图。由 `start-role` 构造 B2 时经 `tips.cmd -Command list -Role <角色>` 自动注入（Plus/dsh 双后端共用构造器同构生效；A0 CLI 预填与 PLANNER 自举消息不注入；tips 查询失败或条目损坏 → 控制台警告 + 零注入，绝不阻断交接；条目缺 status 字段的旧 CLI 兼容读=常青池）。A0/B2 的指针模式识别按前缀语义匹配，对该段零感知；无定向 tips 时消息与旧形态逐字节一致（回归锚）。目标角色按所在角色卡的「项目 tips 双向规则」先按序号读详情后开工。
 
 ---
 

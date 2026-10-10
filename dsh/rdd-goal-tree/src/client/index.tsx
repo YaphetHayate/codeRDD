@@ -156,15 +156,20 @@ interface GoalTreeNodeView {
   id: string
   parent: string | null
   title: string
-  task: string | null
+  /**
+   * Heavy fields (task/docs/verdict/confidence) are ABSENT on slim runs
+   * (plugin-perf L3): the default /runs payload omits them for runs without
+   * a live claim session — optional here, every render site null-tolerates.
+   */
+  task?: string | null
   /** Structured goal/doc slots when the task carries the bridge template. */
-  docs: NodeDocsView | null
+  docs?: NodeDocsView | null
   /** Engine node type: 'goal' = original-requirement root (rendered with the ◎ glyph). */
   type: string | null
   status: string
   claimedBy: string | null
-  verdict: string | null
-  confidence: number | null
+  verdict?: string | null
+  confidence?: number | null
   claimSessionId: string | null
   blockedBy: string[]
   depth: number
@@ -184,6 +189,11 @@ interface GoalTreeRunView {
   counts: { pending: number; claimed: number; reported: number; done: number; pruned: number }
   nodes: GoalTreeNodeView[]
   plannerSessionId: string | null
+  /**
+   * false = this run's nodes are slim (plugin-perf L3); absent on old-host
+   * payloads (treated as slim, and the detail backfill degrades safely).
+   */
+  detail?: boolean
 }
 
 // ── polling hook ──────────────────────────────────────────────────────────────
@@ -222,6 +232,60 @@ function useGoalTreeRuns(cwd: string | undefined): GoalTreeRunView[] | undefined
   }, [cwd])
 
   return runs
+}
+
+/**
+ * Backfill the picked run's full detail when the poll payload shipped it
+ * slim (plugin-perf L3): the default /runs response omits task texts and
+ * doc rows for runs without a live claim session; the planner/plain bar expands
+ * the tree from the detail form (`&run=<runId>`). One fetch per (cwd,
+ * runId) — the worker view's run always ships full (its claim binding
+ * forces detail), so this stays a planner/plain-only path. An old host
+ * (no ?run support) answers with its full list; the runId guard discards
+ * the mismatch and the slim rendering (titles) stays — never a wrong tree.
+ */
+function useRunDetail(cwd: string | undefined, run: GoalTreeRunView | undefined): GoalTreeRunView | undefined {
+  const [detail, setDetail] = useState<GoalTreeRunView | undefined>(undefined)
+  const runId = run?.runId
+  const wantDetail = run !== undefined && run.detail !== true
+
+  useEffect(() => {
+    if (!wantDetail || cwd === undefined || cwd === '' || runId === undefined) {
+      setDetail(undefined)
+      return
+    }
+    let alive = true
+    fetch(`/rdd-goal-tree/runs?cwd=${encodeURIComponent(cwd)}&run=${encodeURIComponent(runId)}`)
+      .then(res => (res.ok ? res.json() : undefined))
+      .then((json: { runs?: GoalTreeRunView[] } | undefined) => {
+        if (alive && json !== undefined && Array.isArray(json.runs) && json.runs[0]?.runId === runId) {
+          setDetail(json.runs[0])
+        }
+      })
+      .catch(() => {
+        // transient transport failure: keep the slim rendering
+      })
+    return () => { alive = false }
+  }, [cwd, runId, wantDetail])
+
+  return detail
+}
+
+/**
+ * Merge a detail backfill into the freshest slim snapshot (plugin-perf L3):
+ * run-level scalars and per-node census fields (status!) stay from the
+ * poll; only the heavy fields (task text, doc rows) come from the detail
+ * fetch, matched by node id — a node that appeared after the detail fetch
+ * keeps its slim rendering.
+ */
+function enrichWithDetail(slim: GoalTreeRunView, full: GoalTreeRunView): GoalTreeRunView {
+  return {
+    ...slim,
+    nodes: slim.nodes.map(node => {
+      const detailed = full.nodes.find(candidate => candidate.id === node.id)
+      return detailed === undefined ? node : { ...node, task: detailed.task, docs: detailed.docs }
+    }),
+  }
 }
 
 // ── strip ─────────────────────────────────────────────────────────────────────
@@ -377,7 +441,9 @@ export function WorkerNodeBar({ run, node, t, openDoc = () => {} }: {
           ? { text: t('mine.pruned'), data: '0' }
           : { text: t('mine.claimed'), data: '1' }
   const reportNext = t('task.reportNext').replace('{run}', run.runId).replace('{worker}', node.claimedBy ?? '?')
-  const docs = node.docs
+  // slim-safe: an absent docs slot (slim run payload) reads as null → the
+  // plain single-line rendering stays the fallback
+  const docs = node.docs ?? null
 
   return (
     <div className="rdgt-dock" data-rdd-goal-tree="" data-view="worker">
@@ -500,19 +566,26 @@ export type GoalTreeDockProps = PropsRuntime<'conversation.input.dock'> & PropsL
  * Dock adapter: reads the current session's cwd and id, polls the repository's
  * runs, and picks the view through the gating table in view-picker.ts —
  * worker (this session claims a node) > planner (this session created a run)
- * > plain degradation (lead run without a planner sidecar) > nothing.
+ * > plain degradation (lead run without a planner sidecar) > nothing. A
+ * planner/plain pick on a slim run backfills its full detail once
+ * (useRunDetail, plugin-perf L3) so the expandable tree carries the task
+ * texts the summary payload omits.
  */
 export function GoalTreeDock({ useSessions, t, openDoc }: GoalTreeDockProps) {
   const cwd = useSessions(list =>
     list.current === undefined ? undefined : list.byId[list.current]?.cwd)
   const sessionId = useSessions(list => list.current)
   const runs = useGoalTreeRuns(cwd)
-  if (runs === undefined || runs.length === 0) return null
-
-  const picked = pickGoalTreeView(runs, sessionId)
-  if (picked === null) return null
+  const picked = runs === undefined || runs.length === 0
+    ? undefined
+    : (pickGoalTreeView(runs, sessionId) ?? undefined)
+  const detail = useRunDetail(cwd, picked?.run)
+  if (picked === undefined) return null
   if (picked.view === 'worker') return <WorkerNodeBar run={picked.run} node={picked.node} t={t} openDoc={openDoc} />
-  return <GoalTreeBar run={picked.run} t={t} isPlanner={picked.view === 'planner'} />
+  const run = detail !== undefined && detail.runId === picked.run.runId
+    ? enrichWithDetail(picked.run, detail)
+    : picked.run
+  return <GoalTreeBar run={run} t={t} isPlanner={picked.view === 'planner'} />
 }
 
 // ── plugin body ───────────────────────────────────────────────────────────────

@@ -34,9 +34,8 @@
 
 1. 在目标文档的 `## 驳回记录` 表格中新增一行
 2. 填写：发起方、日期、理由，状态 = `待回应`
-3. 将目标文档的 `## 流转控制 > 当前责任人` 改为被驳回方
-4. 更新 task.json 路由（调用 `rdd-flow.cmd -Command reject`，见 `rdd-engine/references/task-routing.md`）
-5. 告知用户：
+3. 更新 task.json 路由（调用 `rdd-flow.cmd -Command reject`，见 `rdd-engine/references/task-routing.md`）——路由单一真源在 task.json，**不改文档侧路由字段**（存量「当前责任人」已废弃，以 task.json 为准）
+4. 告知用户：
 
 ```
 ⚠️ [文档 X] 已驳回给 [角色 Y]
@@ -47,7 +46,7 @@
 
 ### 第二步：被驳回方响应
 
-被驳回方发现某文档的当前责任人和驳回记录指向自己时：
+被驳回方发现 task.json 路由（`reject` 后 `currentOwners` 指向自己）和文档 `## 驳回记录` 指向自己时：
 
 **选项 A：接受驳回**
 ```
@@ -62,7 +61,7 @@
 ```
 1. 在驳回记录中填写回应 = "不同意，理由：..."
 2. 状态改为 待裁决
-3. 将文档「当前责任人」设回原驳回方
+3. 将 task.json 路由设回原驳回方（rdd-flow reject -From <自己> -To <原驳回方> -Reason "辩解待裁决"）——不改文档侧路由字段
 ```
 
 ### 第三步：人工裁决
@@ -137,7 +136,7 @@ active ──驳回生效──→ deprecated
 
 - **active**：正常流转中的文档
 - **deprecated**：已被废弃的文档，保留在原始路径供审计追溯
-- 新文档创建时可在 `## 流转控制 > 前置设计文档` 填写废弃文档路径
+- 新文档创建时可标注「前置设计文档：<废弃文档路径>」（正文开头或 frontmatter，无固定章节要求——文档不承载流转字段）
 
 ---
 
@@ -145,4 +144,4 @@ active ──驳回生效──→ deprecated
 
 - 发起驳回时：调用 `rdd-flow reject` 更新 `currentOwners`（见 `rdd-engine/references/task-routing.md`）
 - 废弃文档：调用 `rdd-flow deprecate` 标记 `lifecycle=deprecated`；新增替代文档的行用 `add-task`
-- 路由总览与文档自身字段不一致时：以文档自身的流转控制字段为准，角色通过 CLI 修正 task.json
+- task.json 是路由唯一真源；存量文档侧流转字段与 task.json 不一致时以 task.json 为准，无需回改文档（`check` 仅提示性报告）

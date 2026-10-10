@@ -1,7 +1,7 @@
 ---
 name: rdd-engine
 description: >
-  RDD 通用能力总线。所有 RDD 角色按需调用 scripts/explore.ps1（读面：search/explore 检索）与
+  RDD 通用能力总线。所有 RDD 角色按需调用 scripts/explore.ps1（读面：search 检索）与
   scripts/explore-store.ps1（写面：register 入热区/persist 转正）CLI 脚本，启动子 agent 完成委托并返回结果。
 ---
 
@@ -9,7 +9,7 @@ description: >
 
 engine 通过 CLI 脚本提供服务：
 
-- `explore.ps1`（读面）：代码探索检索能力。`-Type search` 合并读双 zone（热区 `hot.json` 优先 + 持久层 `index.json`），SHA-256 时效校验剔除 stale，跑**精度排序管线**（词法 BM25 + 向量余弦多路召回 → RRF 融合 → Top-K 截断，冻结公式 F1–F8），返回排序后的数据**所在位置**（key/tags/brief/summaryPath/fullPath/origin/score/recalledBy + rankMeta），miss 时附 dispatch prompt（**两分支协议**：results 非空即命中，空则派遣）；`-Type explore` 为兼容面（candidates + 恒附 dispatchPrompt）；`-Type register` 为废弃转发（薄转发到 explore-store）。
+- `explore.ps1`（读面）：代码探索检索能力，唯一能力 `-Type search`。合并读双 zone（热区 `hot.json` 优先 + 持久层 `index.json`），SHA-256 时效校验剔除 stale，跑**精度排序管线**（词法 BM25 + 向量余弦多路召回 → RRF 融合 → Top-K 截断，冻结公式 F1–F8），返回排序后的数据**所在位置**（key/tags/brief/summaryPath/fullPath/origin/score/recalledBy + rankMeta），miss 时附 dispatch prompt（**两分支协议**：results 非空即命中，空则派遣）。其他 `-Type` 值报 `INVALID_TYPE`（旧 `explore`/`register` 面已删除；注册走 explore-store）。
 - `explore-store.ps1`（写面）：缓存写入与生命周期。`-Type register` 注册产物入热区（注册即对下一次检索可见，向量配置齐备时同步 embedding）；`-Type persist` 按 key 转正进持久层；`-Type embed-backfill` 为存量条目补齐/重建向量 sidecar；sweep 保底（超 7 天 / 容量 50 条未转正 → 按原样自动落入持久层，任何已探索结果不丢）。
 - `rdd-flow.ps1`：阶段流转与上下文交接，生成最小 handoff packet
 
@@ -38,7 +38,7 @@ $rdd = $null; $t = $null; try { $t = git rev-parse --show-toplevel } catch { }; 
 $rdd = $null; $t = $null; try { $t = git rev-parse --show-toplevel } catch { }; foreach ($c in @($env:RDD_ENGINE_HOME; if ($t) { (Get-ChildItem $t -Recurse -Directory -Depth 3 -Filter 'rdd-engine').FullName }; "$HOME\.rdd\engine\current")) { if ($c -and (Test-Path "$c\scripts\rdd-flow.cmd")) { $rdd = $c; break } }; if (-not $rdd) { throw "rdd-engine 未定位（三级定位链：RDD_ENGINE_HOME → 项目内 rdd-engine → ~\.rdd\engine\current 全 miss）。安装/排障：GitHub Release 下载 rdd-engine.tgz 后运行 scripts/install-rdd-engine.ps1；协议详见 rdd-engine/references/engine-location.md" }; & "$rdd\scripts\explore-store.cmd" -Type register -Key "<semantic key>" -Tags "<module/feature/synonym keywords, comma-separated>" -Path "<artifact path>" -Brief "<summary>" -Files "<comma-separated files>"
 ```
 
-> 旧路径 `explore.cmd -Type register` 仍可用（薄转发，输出附 deprecation 提示）；新代码一律直调 `explore-store.cmd`。
+> 旧路径 `explore.cmd -Type register`（薄转发）与 `-Type explore`（候选兼容面）已删除，残留调用报 `INVALID_TYPE`；注册一律直调 `explore-store.cmd`。
 
 ### 持久化转正
 
@@ -69,8 +69,8 @@ explore.cmd（读面）：
 
 | 参数 | 必需 | 默认值 | 说明 |
 |------|------|--------|------|
-| `-Type` | 是 | — | 能力类型：`search`（检索，返回位置）/ `explore`（兼容面，candidates + 恒附 dispatchPrompt）/ `register`（废弃转发到 explore-store） |
-| `-Query` | `search`/`explore` 必需 | — | 需求描述，传递给 dispatchPrompt |
+| `-Type` | 是 | — | 能力类型：`search`（检索，返回位置；唯一取值，其他值报 `INVALID_TYPE`） |
+| `-Query` | `search` 必需 | — | 需求描述，传递给 dispatchPrompt |
 
 explore-store.cmd（写面）：
 
@@ -89,8 +89,7 @@ explore-store.cmd（写面）：
 
 | `-Type` | 入口 | 说明 | Reference 文件 |
 |-------|------|------|---------------|
-| `search` | `explore.cmd` | 检索接口：双 zone 合并（SHA-256 剔除 stale）→ 精度排序管线（多路召回 + RRF 融合 + Top-K，冻结公式 F1–F8）→ 返回排序位置；miss 附 dispatchPrompt（两分支协议：非空即命中） | `references/exploration-guide.md` |
-| `explore` | `explore.cmd` | 兼容面：candidates + 恒附 dispatchPrompt（旧调用方零改动，条目新增 origin 为超集增量） | `references/exploration-guide.md` |
+| `search` | `explore.cmd` | 检索接口：双 zone 合并（SHA-256 剔除 stale）→ 精度排序管线（多路召回 + RRF 融合 + Top-K，冻结公式 F1–F8）→ 返回排序位置；miss 附 dispatchPrompt（两分支协议：非空即命中）；唯一读面，其他 `-Type` 报 `INVALID_TYPE` | `references/exploration-guide.md` |
 | `register` | `explore-store.cmd` | 注册入热区：校验摘要配对、写入 tags、计算文件哈希，热区内去重后追加（盖 registeredAt），注册即可见（向量配置齐备时同步 embedding） | `references/exploration-guide.md` |
 | `persist` | `explore-store.cmd` | 转正：热区条目按 key 转正进 index.json（去重替换） | `references/exploration-guide.md` |
 | `embed-backfill` | `explore-store.cmd` | 向量补齐：为存量条目重建 `.rdd/exploration/vectors.json`（textHash 一致复用；配置不齐报 EMBED_CONFIG_INCOMPLETE） | `references/exploration-guide.md` |
@@ -99,7 +98,7 @@ explore-store.cmd（写面）：
 
 | 参数 | 必需 | 默认值 | 说明 |
 |------|------|--------|------|
-| `-Command` | 是 | `handoff` | `next` / `start` / `handoff` / `validate` |
+| `-Command` | 否 | `handoff` | 17 个命令，逐命令说明见下方 Command 表：`next`/`start`/`handoff`/`validate`/`show`/`claim`/`init`/`add-task`/`set-route`/`add-design`/`reject`/`complete`/`reopen`/`deprecate`/`check`/`migrate`/`version` |
 | `-Role` | 否 | `DEV` | 目标角色：`PM` / `CTO` / `UX` / `DEV` / `QA` |
 | `-Archive` | 否 | 自动发现 | 归档路径，不传则自动取最新归档 |
 | `-TaskIndex` | 否 | `-1` | 0-based 任务索引，>=0 时只筛选该条任务（"一需求一会话"） |
@@ -113,17 +112,17 @@ explore-store.cmd（写面）：
 | `start` | 为指定角色生成启动 prompt 和 handoff packet |
 | `handoff` | 为指定角色生成最小交接包 |
 | `validate` | 校验指定角色是否有可执行任务 |
+| `claim` | 认领任务锁定（写 currentWorker，认领即获取任务信息）：空闲 → `claimed:true`；同角色已认领 → `claimed:false` + conflict（角色/时间），由用户裁决 `-Force` 抢占或换任务；非 active 生命周期报 `TASK_NOT_CLAIMABLE` |
 | `show` | 读取 task.json 任务路由（支持 `-Role` 过滤、`-TaskId` 精确查找） |
 | `init` | PM 归档时创建 task.json（`-TasksFile` 指定 JSON 文件） |
 | `add-task` | 向已有 task.json 追加单条任务 |
-| `set-route` | 覆盖指定任务的 `currentOwners` |
-| `advance` | 推进路由（替换语义：移除 `-From` 角色，加入 `-To` 角色） |
+| `set-route` | 覆盖指定任务的 `currentOwners`（阶段白名单语义，唯一流转路径——`advance` 已移除） |
 | `add-design` | 追加设计文档到指定任务 |
 | `reject` | 发起驳回（`currentOwners` 改为被驳回方 + 写备注） |
 | `complete` | 标记任务已闭环（`lifecycle=completed`） |
 | `reopen` | 重新激活已闭环任务 |
 | `deprecate` | 标记任务废弃（`lifecycle=deprecated`） |
-| `check` | 校验 task.json schema + 与文档流转控制一致性 |
+| `check` | 校验 task.json schema、阶段白名单与认领记录；对存量文档侧废弃流转字段（`当前责任人`）漂移仅提示性报告 |
 | `migrate` | 将旧 task.md 转为 task.json |
 | `version` | 输出引擎版本与安装根（`version` + `engineRoot`，来自 `package.json`；无需 git 仓库，安装自检/诊断用） |
 

@@ -1,9 +1,9 @@
 {
     "verifier":  "goal-tree-verify.ps1",
     "suite":  "all",
-    "ranAt":  "2026-09-20T07:05:12Z",
-    "total":  42,
-    "passed":  42,
+    "ranAt":  "2026-10-09T07:29:12Z",
+    "total":  45,
+    "passed":  45,
     "failed":  0,
     "warned":  0,
     "p0Failures":  [
@@ -419,6 +419,36 @@
                         "title":  "根语义终局:子节点未终态拒 ANCHOR_NOT_DONE;全终态后 conclude 通过且 final-report 含根目标达成状态",
                         "priority":  "P0",
                         "acceptance":  "GR-AC-2",
+                        "status":  "PASS",
+                        "fails":  [
+
+                                  ]
+                    },
+                    {
+                        "id":  "TC-088",
+                        "title":  "dispatch 校验矩阵:缺角色/缺节点/非法角色/目标根/非 pending/依赖阻塞/无开放轮 全部机械拒绝",
+                        "priority":  "P0",
+                        "acceptance":  "DSP-AC-1",
+                        "status":  "PASS",
+                        "fails":  [
+
+                                  ]
+                    },
+                    {
+                        "id":  "TC-089",
+                        "title":  "dispatch DryRun 三绑定:角色+任务+节点进 worker 指针;dry 零副作用(无审计行/节点不动)",
+                        "priority":  "P0",
+                        "acceptance":  "DSP-AC-2",
+                        "status":  "PASS",
+                        "fails":  [
+
+                                  ]
+                    },
+                    {
+                        "id":  "TC-090",
+                        "title":  "dispatch 真实失败审计:start-role 失败报 DISPATCH_FAILED;dispatch-log 落行(exit=1);status 透出 failed 派发与告警;节点不受损",
+                        "priority":  "P0",
+                        "acceptance":  "DSP-AC-3",
                         "status":  "PASS",
                         "fails":  [
 

@@ -1,4 +1,4 @@
-[CmdletBinding()]
+﻿[CmdletBinding()]
 param(
     [string]$Type,
     [string]$Key,
@@ -61,7 +61,7 @@ $HotRetentionDays = 7
 $HotCapacity = 50
 
 # === Embedding constants (frozen mirrors) ===
-# Same values as explore.ps1 $SearchDefaults and dsh cache.ts
+# Same values as recall-shared.ps1 $SearchDefaults (scripts/lib) and dsh cache.ts
 # SEARCH_CONFIG_DEFAULTS — change all copies together (frozen contract).
 $EmbedDefaults = @{
     endpoint        = ""

@@ -81,11 +81,11 @@
 在探索过程中，**始终关注需求与项目已有工具/平台/框架的关系**。
 
 1. **识别关联工具**：用户想法是否涉及某个已有工具的能力？
-2. **委托 engine 探索**：需要理解现有代码时，第一步检索缓存（详见 PM SKILL「rdd-engine 能力：代码探索」硬规则）：
+2. **委托 engine 探索**：需要理解现有代码时，第一步检索缓存（详见 PM SKILL「rdd-engine 能力（工作前必读）」）：
    ```powershell
    $rdd = $null; $t = $null; try { $t = git rev-parse --show-toplevel } catch { }; foreach ($c in @($env:RDD_ENGINE_HOME; if ($t) { (Get-ChildItem $t -Recurse -Directory -Depth 3 -Filter 'rdd-engine').FullName }; "$HOME\.rdd\engine\current")) { if ($c -and (Test-Path "$c\scripts\rdd-flow.cmd")) { $rdd = $c; break } }; if (-not $rdd) { throw "rdd-engine 未定位（三级定位链：RDD_ENGINE_HOME → 项目内 rdd-engine → ~\.rdd\engine\current 全 miss）。安装/排障：GitHub Release 下载 rdd-engine.tgz 后运行 scripts/install-rdd-engine.ps1；协议详见 rdd-engine/references/engine-location.md" }; & "$rdd\scripts\explore.cmd" -Type search -Query "分析 [需求简述] 涉及的代码模块和现有能力"
    ```
-   - 扫 results 的 tags，**命中** → Read summaryPath；**无匹配** → 用 dispatchPrompt 派遣 `rdd-explore` 子代理（可写 worker，注册入热区）。
+   - **两分支消费**（冻结协议，不再自行扫 tags 判断）：`results` 非空 = 命中（相关性已由精度管线判定）→ Read 首条 `summaryPath`；为空 = 用返回体附带的 `dispatchPrompt` 派遣 `rdd-explore` 子代理（可写 worker，注册入热区）。
    结果通过全局缓存复用（热区优先），PM 和下游角色无需重复探索。
 3. **引导复用**：如果探索结果揭示已有能力可以覆盖需求，主动提出：
    > 我注意到项目中已经在用 [工具名]，它本身提供了 [能力描述]。你的需求可能不需要从零实现，直接复用 [工具名] 的 [具体功能] 就能达到目的。你觉得这个方向怎么样？
@@ -97,4 +97,4 @@
 - 发散阶段不要急着收敛，给用户足够空间探索
 - 但发散不是无边界的——当用户开始重复或偏离目标时，主动引导收敛
 - 最终产出必须是结构化的需求文档，不能只有讨论记录
-- 对话收敛后 → **返回标准流程第三步（收敛总结）**，由标准流程统一执行需求评估和归档
+- 对话收敛后 → **返回标准流程第三步（收敛全貌）**，由标准流程统一执行全貌确认、拆解和归档

@@ -57,8 +57,9 @@ description: >
 ## 项目 tips 双向规则
 
 - **开工读**：入口指针消息（B2）携带「【定向 tips（本角色）——开工前先通读…】」段时，先按行内指针逐条读取详情再动手——前人教训优先消化，不重复踩坑。
-- **随手沉淀**：工作中发现可复用的坑/陷阱/约定（自己或上游踩过、后来者大概率再踩），当场经 tips CLI 记录——记录即归属：新条目恒定向本角色，同角色后来者开工即见。完整调用形态单源：`rdd-engine/references/capability-manifest.md`「tips 记录/查询/扩散」。
-- **复用优先**：记录前先查已有条目，避免重复沉淀；发现相似条目时经 `target` 子命令把本角色挂上该条目（幂等），复用而非重录。
+- **当场沉淀 + 裁决**：工作中发现可复用的坑/陷阱/约定，当场经 tips CLI 记录（记录即归属：新条目恒定向本角色）。add 返回 `candidates` 近重复候选——同根因的坑不重录，改 `collide -Id <该条目> -By <本角色>` 记一次独立碰撞；不同根因才保留新条目。中文内容必须走 `-File` 通道（UTF-8 payload `{title, problem, avoidance}`）——inline 参数对非 ASCII 机械硬拒（`NON_ASCII_INLINE`）。
+- **归档后回顾**：任务收尾/归档时对照 `tips.cmd -Command list -Role <本角色>` 全量回顾——本次对话中踩过的坑与历史条目同根因则 collide（曾注入过该条仍踩的加 `-SawTip`）；一次发现就值回票价的稀有高价教训 `pin` 置顶；教训已固化进工具（脚本/门/自检已兜住）则 `supersede -Note <固化指针>` 让出席位。
+- **复用优先**：发现相似条目时经 `target` 把本角色挂上该条目（幂等），复用而非重录。**记录≠注入**：新条目出生 latent，独立碰撞（count≥2）或 pin 后才进开工注入段。完整调用形态单源：`rdd-engine/references/capability-manifest.md`「tips 记录/碰撞/生命周期」。
 
 ---
 
@@ -120,7 +121,7 @@ QA 在工作流中有两个触发时机，职责范围不同：
 
 **检查点留痕（统一决策账本）**：本会话经用户确认的检查点决策（验收口径改定、放行取舍等）在闭环前留痕——`delivery-bridge.cmd -Command decide -Kind checkpoint -Archive <归档> -Checkpoint <名> -Decision <结论> [-Reason <原因>] [-Options <A|B>] [-Background <背景>] [-Role QA]`（条目落归档级 decisions.jsonl，四要素 + decider=user）。
 
-验证决策完成（complete 闭环 / reopen 回 DEV）→ **必须**按 `rdd-engine/references/transition-guide.md` 上游协议引导下一步（advance 路由 → next → 推荐 → start/handoff）。
+验证决策完成（complete 闭环 / reopen 回 DEV）→ **必须**按 `rdd-engine/references/transition-guide.md` 上游协议引导下一步（set-route 路由 → next → 推荐 → start/handoff）。
 第 3 步仍须用户确认目标角色；第 4 步调用 `start-role.cmd -Role <下游角色> -TaskId <n>`——脚本按 `RDD_RUNTIME` → `DSH_WEB_URL` → CLI 判据链自选后端（agent 不判断模式），dsh 下自动创建 preset 已绑定的会话并投递 B2 指针消息，不可达时报错并回退人工指引。
 
 ## 执行（委托）

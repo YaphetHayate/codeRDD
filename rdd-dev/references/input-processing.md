@@ -85,8 +85,7 @@ $rdd = $null; $t = $null; try { $t = git rev-parse --show-toplevel } catch { }; 
 
 1. 扫描 `.rdd/changes/archive/` 目录，按日期排序找到最新的归档
 2. 调用 rdd-flow show -Role DEV 读取任务路由
-3. 任务路由操作遵循 `rdd-engine/references/task-routing.md`。用 `show -Role DEV` 定位待开发任务
-   - 逐条检查需求文件自身 `## 流转控制 > 当前责任人`；若与 `task.json` 不一致，以需求文件为准并通过 CLI 修正
+3. 任务路由操作遵循 `rdd-engine/references/task-routing.md`。用 `show -Role DEV` 定位待开发任务——路由以 task.json 为唯一真源（`show` 输出即权威；存量文档侧「当前责任人」已废弃，无需核对回改）
 4. 根据关联设计文档判定工作模式：
    - `design/` 下存在 CTO 或 UX 设计文档 → **设计引导模式**（严格按设计实现）
    - 仅有需求文件、无设计文档 → **需求引导模式**（基于需求灵活开发）
@@ -101,12 +100,12 @@ $rdd = $null; $t = $null; try { $t = git rev-parse --show-toplevel } catch { }; 
 
 ## 优先级 D — 无 task.json，自动查找文档
 
-task.json 不存在时（旧归档自动回退 task.md），回退到手动查找：
+task.json 不存在时（读侧 CLI 已 fail-loud 不再回退 task.md；存量旧归档先经 `migrate` 一次性迁移，见 task-routing.md「历史兼容」），回退到手动查找：
 
 1. 检查 `design/` 子目录下是否有设计文档
-   - 有 → 读取设计文档，检查 frontmatter 的 `status: active` 和流转控制的 `当前责任人`
-   - 如果 `当前责任人 = DEV` → 进入**设计引导模式**
-   - 如果 `当前责任人` 不是 DEV → 告知用户该文档当前不归 DEV 处理
+   - 有 → 读取设计文档，检查 frontmatter 的 `status: active` 与 `## 驳回记录` 是否有待处理项
+   - 该归档路由（task.json，迁移后）含 DEV → 进入**设计引导模式**
+   - 路由不含 DEV → 告知用户该文档当前不归 DEV 处理
 2. 检查 `requirement.md` 或 `overview.md`
    - 有 → 向用户确认后进入**需求引导模式**
 3. 只有需求、无设计文档 → 确认：
@@ -134,15 +133,15 @@ task.json 不存在时（旧归档自动回退 task.md），回退到手动查�
 
 ## 路由系统下的设计文档扫描
 
-当通过路由总览或扫描发现设计文档时，必须逐文档检查 `## 流转控制 > 当前责任人`：
+当通过路由总览或扫描发现设计文档时，归属判定以 task.json 为准（`show -Role DEV` / handoff 输出），不读文档侧流转字段：
 
-- 本角色（DEV）只处理 `当前责任人 = DEV` 的设计文档
-- 如果设计文档的 `当前责任人` 不是 DEV → 跳过，不在本次任务范围内
+- 本角色（DEV）只处理 `currentOwners` 含 DEV 的任务对应的设计文档
+- 路由不含 DEV → 跳过，不在本次任务范围内
 - 如果设计文档 `status = deprecated` → 跳过，不应基于废弃文档开发
 - 如果设计文档 `## 驳回记录` 中有待处理项（状态 = 待回应 / 待裁决）→ 优先处理驳回流程，暂不开始开发
 
-仅有需求文档、没有设计文档时，也必须检查需求文档的 `## 流转控制`：
+仅有需求文档、没有设计文档时：
 
-- `当前责任人 = DEV` 且 `文档状态 = active` → 可进入需求引导模式
-- `当前责任人` 不是 DEV → 跳过并通过 CLI 修正 `task.json`
+- 任务 `currentOwners` 含 DEV 且 `lifecycle = active` → 可进入需求引导模式
+- 路由不含 DEV → 跳过（路由真源在 task.json，无需改文档）
 - 存在待处理驳回记录 → 优先处理驳回流程，暂不开始开发

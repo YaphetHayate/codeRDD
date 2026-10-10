@@ -6,7 +6,7 @@
 
 ## 路由判定规则
 
-归档时，为每个需求文档设置 `## 流转控制 > 当前责任人`，按以下优先级判定：
+归档时，按以下优先级判定每个需求的路由目标，写入 task.json 的 `currentOwners`（经 `init` 命令落盘；**不写文档侧流转字段**——路由单一真源在 task.json，见 `rdd-engine/references/transition-guide.md`「路由单一真源」）：
 
 ### 1. 简单需求 → DEV
 
@@ -31,11 +31,11 @@
 - 交互体验优化
 - 视觉风格变更
 
-### 4. 复合需求 → 串行路由
+### 4. 复合需求（技术+视觉）
 
-需求同时涉及技术和视觉时：
-- 前后端耦合 → 先 CTO 后 UX（CTO 设计完成后将当前责任人改为 UX）
-- 前后端独立 → CTO 和 UX 可并行处理（PM 归档时两个需求文档分别路由到 CTO 和 UX，或在 task.json 中标注建议并行）
+- **前后端耦合**（UX 设计依赖 CTO 技术方案）→ 串行：`currentOwners` 起步设 `["CTO"]`，CTO 完成后经 `set-route -To "UX"` 阶段内交接 UX（两者同属 DESIGN 白名单，不带 `-Phase`）。串行由数据层保证——UX 不在 owner 集时无法 `claim`，不会抢跑
+- **前后端独立**（可同时开工）→ 并行：单任务 `currentOwners` 设 `["CTO","UX"]`（并行语义，双方各自认领、各自完成收窄，互不阻塞），或拆成两个需求文档分别路由 CTO 与 UX
+- ⚠️ `["CTO","UX"]` 表达的是**并行**（双方均可立即认领）——不要用它表达"先 CTO 后 UX"的先后顺序，串行意图用 `["CTO"]` 起步表达
 
 ---
 
@@ -45,7 +45,7 @@
 
 ### 1. 发现被打回
 
-- 扫描 task.json 路由（`rdd-flow show -Role PM`），找到 `currentOwners` 含 PM 的任务
+- 扫描 task.json 路由（`rdd-flow show -Archive <归档> -Role PM`），找到 `currentOwners` 含 PM 的任务。多归档并存时必须显式 `-Archive` 锚定——缺省按"最新归档"自动发现，可能绑到别的归档
 - 读取对应需求文档的 `## 驳回记录` 章节，了解驳回原因
 
 ### 2. 修订需求
@@ -58,4 +58,7 @@
 ### 3. 重新路由
 
 - 修订完成后，重新按路由判定规则设置 `currentOwners`（调用 `rdd-flow set-route`）
+- **重路由到下游必须带 `-Phase`**：`reject` 已把任务的 phase 重推导为被驳回方阶段（回到 PM 即 `REQ`），从 `REQ` 路由到任何下游角色都是跨阶段切换，必须显式携带 `-Phase`，否则报 `SET_PHASE_REQUIRED`：
+  - 修订后回开发 → `set-route -Archive <归档> -TaskId <n> -To "DEV" -Phase IMPL`
+  - 修订后需重新设计 → `set-route -Archive <归档> -TaskId <n> -To "CTO" -Phase DESIGN`（UX/QA 同理，均 `-Phase DESIGN`）
 - 告知用户修订内容和新的路由去向

@@ -7,7 +7,7 @@
 #   S5 rollback -To "CTO+UX" -Phase DESIGN: prune IMPL -> rebuild both heads -> set-route back
 #   S6 promulgate gates: cross-phase owners (no phase) -> GROUP_DIVERGENT_NEXT; stored junk -> PHASE_OWNER_MISMATCH
 #   S7 standalone ["QA"] = VERIFY: settle completes the task
-#   S8 legacy null-phase archive: promulgate + settle degrade to the old advance path (byte-identical)
+#   S8 legacy null-phase archive: promulgate + settle degrade to the legacy set-route path (byte-identical semantics)
 #   S9 multi-anchor deps: dependent's heads depend on BOTH upstream heads; unlocks only when both terminal
 # Runs the production interpreters (Windows PowerShell 5.1) against a throwaway git repo.
 # Exit code 0 = all green.
@@ -358,9 +358,9 @@ try {
     $cto8 = [string]$b.tasks.'1'.stages.CTO
     Do-Deliver 'deliver-pm-s8' $cto8 'CTO' "$($arch8.Replace('\','/'))/requirements/t1.md"
     $r = Do-Settle 'deliver-pm-s8' $cto8
-    Assert-True ($r.json.success -eq $true -and $r.json.data.flow_operation -eq 'advance CTO->DEV') 'S8 legacy settle walks old advance path' ($r.raw)
+    Assert-True ($r.json.success -eq $true -and $r.json.data.flow_operation -eq 'set-route CTO->DEV') 'S8 legacy settle walks the set-route legacy path' ($r.raw)
     $t = Find-Task (Read-Tasks '.rdd/changes/archive/pm-s8') 1
-    Assert-True (@($t.currentOwners) -join '+' -eq 'DEV' -and $null -eq $t.phase) 'S8 advance semantics unchanged (owners=[DEV], phase null)'
+    Assert-True (@($t.currentOwners) -join '+' -eq 'DEV' -and $null -eq $t.phase) 'S8 legacy semantics unchanged (owners=[DEV], phase null)'
 
     # ================= S9: multi-anchor deps =================
     $arch9 = New-Archive 'pm-s9' '[{"title":"S9 上游","requirement":"requirements/t1.md","currentOwners":["CTO","UX"],"designDocs":[]},{"title":"S9 下游","requirement":"requirements/t2.md","currentOwners":["CTO"],"designDocs":[],"dep":1}]'
@@ -481,6 +481,55 @@ try {
     $blockedIds = @(@($nx.json.data.blocked) | ForEach-Object { [string]$_.id })
     Assert-True ($pendingIds -contains $h2) 'S14 single-dep dependent UNLOCKED after upstream terminal' ("pending=$($pendingIds -join '+')")
     Assert-True ($blockedIds -contains $h3) 'S14 multi-dep dependent still blocked (also needs #2)' ("blocked=$($blockedIds -join '+')")
+
+    # ================= S15: settle narrowing with CLAIMED/REPORTED peers (settle-route-narrow-duplicate-graft) =================
+    # incident 2026-10-09 ops-dashboard-project-switcher: Get-LiveStageNode read .status
+    # off the RAW status-view shapes — claimed/reported buckets carry rich objects
+    # WITHOUT a status field (bucket membership IS the status), so every claimed or
+    # reported peer looked dead and Invoke-EnsureStageNodes re-grafted live owners at
+    # each settle narrowing (duplicate nodes + duplicate dispatches, pruned as
+    # "重复 graft" three times in that run, bridge.tasks.stages poisoned by the
+    # whitelist overwrite). S2/S4 keep peers PENDING at settle time (string buckets
+    # synthesize status fine) — S15 pins the claimed AND reported peer shapes.
+    $arch15 = New-Archive 'pm-s15' '[{"title":"S15 并行三头","requirement":"requirements/t1.md","currentOwners":["CTO","UX","QA"],"designDocs":[]}]'
+    $ref15 = "$arch15/requirements/t1.md"
+    $pf15 = Write-TestPlan (Join-Path $Work 'pm-s15-plan.json') @(@{ id = 'S1'; tasks = @(1) }) @{}
+    $null = Invoke-Bridge @('-Command', 'promulgate', '-TaskJson', ($arch15 + '/task.json'), '-PlanFile', $pf15, '-NoPush')
+    $b = Read-BridgeJson 'deliver-pm-s15'
+    $cto15 = [string]$b.tasks.'1'.stages.CTO
+    $ux15  = [string]$b.tasks.'1'.stages.UX
+    $qa15  = [string]$b.tasks.'1'.stages.QA
+    Assert-True ($cto15 -and $ux15 -and $qa15 -and ((@($cto15, $ux15, $qa15) | Sort-Object -Unique).Count -eq 3)) 'S15 THREE heads built (CTO+UX+QA)' ("cto=$cto15 ux=$ux15 qa=$qa15")
+    # peers in flight, exactly the shapes the old guard misread: UX claimed (worker
+    # active), QA claimed-then-reported (awaiting settle)
+    $r = Invoke-Bridge @('-Command', 'claim', '-RunId', 'deliver-pm-s15', '-NodeId', $ux15, '-Role', 'UX')
+    Assert-True ($r.json.success -eq $true) 'S15 UX peer claimed (in-flight shape)' ($r.raw)
+    $r = Invoke-Bridge @('-Command', 'claim', '-RunId', 'deliver-pm-s15', '-NodeId', $qa15, '-Role', 'QA')
+    Assert-True ($r.json.success -eq $true) 'S15 QA peer claimed' ($r.raw)
+    $r = Invoke-Leaf @('-Command', 'report', '-RunId', 'deliver-pm-s15', '-Worker', 'QA', '-CallbackFile', (New-Cb $qa15 $ref15 $true))
+    Assert-True ($r.json.success -eq $true) 'S15 QA peer reported (awaiting-settle shape)' ($r.raw)
+    # first narrowing: CTO settles while UX claimed & QA reported -> ZERO grafts
+    Do-Deliver 'deliver-pm-s15' $cto15 'CTO' $ref15
+    $r = Do-Settle 'deliver-pm-s15' $cto15
+    Assert-True ($r.json.success -eq $true -and @($r.json.data.next_stage_nodes).Count -eq 0) 'S15 CTO settle grafts NOTHING while UX claimed & QA reported' ($r.raw)
+    $b = Read-BridgeJson 'deliver-pm-s15'
+    Assert-True ([string]$b.tasks.'1'.stages.UX -eq $ux15) 'S15 UX mapping UNCHANGED (no duplicate graft / no whitelist poisoning)' ("ux=$($b.tasks.'1'.stages.UX) expected=$ux15")
+    Assert-True ([string]$b.tasks.'1'.stages.QA -eq $qa15) 'S15 QA mapping UNCHANGED' ("qa=$($b.tasks.'1'.stages.QA) expected=$qa15")
+    $extra15 = @((Read-TreeNodes 'deliver-pm-s15') | ForEach-Object { [string]$_.id } | Where-Object { $_ -notin @('n1', $cto15, $ux15, $qa15) })
+    Assert-True ($extra15.Count -eq 0) 'S15 tree grew ZERO extra nodes' ("extra=$($extra15 -join '+')")
+    # second narrowing (incident shape n5-settle): QA settles while UX still claimed
+    $r = Do-Settle 'deliver-pm-s15' $qa15
+    Assert-True ($r.json.success -eq $true -and @($r.json.data.next_stage_nodes).Count -eq 0) 'S15 QA settle grafts NOTHING while UX claimed' ($r.raw)
+    $b = Read-BridgeJson 'deliver-pm-s15'
+    Assert-True ([string]$b.tasks.'1'.stages.UX -eq $ux15) 'S15 UX mapping still UNCHANGED after second narrowing' ("ux=$($b.tasks.'1'.stages.UX) expected=$ux15")
+    # convergence intact: last DESIGN owner settles -> phase switch grafts exactly ONE DEV
+    # (UX is ALREADY claimed by the setup above — report directly, no re-claim)
+    $r = Invoke-Leaf @('-Command', 'report', '-RunId', 'deliver-pm-s15', '-Worker', 'UX', '-CallbackFile', (New-Cb $ux15 $ref15 $true))
+    Assert-True ($r.json.success -eq $true) 'S15 UX reports (already claimed by setup)' ($r.raw)
+    $r = Do-Settle 'deliver-pm-s15' $ux15
+    Assert-True ($r.json.success -eq $true -and @($r.json.data.next_stage_nodes).Count -eq 1) 'S15 UX settle grafts exactly ONE DEV (convergence intact)' ($r.raw)
+    $t = Find-Task (Read-Tasks $arch15) 1
+    Assert-True (@($t.currentOwners) -join '+' -eq 'DEV' -and [string]$t.phase -eq 'IMPL') 'S15 owners=[DEV] phase=IMPL' ("owners=$($t.currentOwners -join '+') phase=$($t.phase)")
 }
 finally {
     Pop-Location

@@ -1,6 +1,6 @@
 # @coderrdd/dsh-rdd-explore
 
-独立的 **DSH Profile Bundle**：把 rdd-engine 的探索缓存做成**缓存优先的模型工具** `rdd_explore`。查询项目 `.rdd/exploration` 索引，命中返回按相关性精排的 candidates；未命中（或 `force_dispatch: true`）经 `ctx.subagents` service 派遣 worker 子代理探索代码并注册产物。装一次（一个 profile），该 profile 打开的**任何项目**都能用——不要求项目里有 rdd-engine。
+独立的 **DSH Profile Bundle**：两件模型工具。`rdd_explore` 把 rdd-engine 的探索缓存做成**缓存优先的模型工具**：查询项目 `.rdd/exploration` 索引，命中返回按相关性精排的 candidates；未命中（或 `force_dispatch: true`）经 `ctx.subagents` service 派遣 worker 子代理探索代码并注册产物。`rdd_models` 是**活模型目录**：从宿主 `ctx.llm` 读当前注册的 provider 路由与各自可服务的模型（含 `inputModalities` 能力标注），供派遣时按需选模型——RDD-UX 的 fork-join 模型策略（`ux_subagent.json` 状态机）在 dsh 下的发现通道就是它。装一次（一个 profile），该 profile 打开的**任何项目**都能用——不要求项目里有 rdd-engine。
 
 在标准/官方 DSH 上即可安装，无需定制构建、无需克隆 codeRDD。与裸 `subagent` 工具的关系：本插件是 subagent 能力的**另一个 Consumer**（service 层直调）；装配它之后可以让探索委派全部走缓存，而不是 prompt 约定。
 
@@ -82,6 +82,7 @@ rdd 项目零行为变化（②③④ 仍胜出）；标准环境靠 ⑤ 兜底�
 | `src/index.ts` | 插件主体：`name`/`inject`/`Config`/`apply` + `defineTool`（两分支调用协议）+ `resolveEngineRoot` 六级候选链 + 会话权限守卫 + 周期维护装配（`setInterval` + `ctx.effect` + `unref`，repoRoot 首次调用 pin 冻结） |
 | `cordis.patch.yml` | bundle patch 层：insert `rdd-explore` 插件行（含 toolFilter.allow 最小权限基线） |
 | `assets/rdd-engine/references/exploration-guide.md` | vendored 协议文本（构建时从 rdd-engine 同步，git 追踪可审计；候选 ⑤ 数据源） |
+| `assets/troubleshooting.md` | vendored 失败恢复 playbook（二级 reference）：调用前不进上下文，错误消息在失败时携带单行下一步 + 本文件指针；改错误分类时同步更新 |
 | `tests/cache-cli.mjs` | 无 key 调试 CLI（select 合并读 / search 精度检索 / register 入热区 / persist 转正），兼跨客户端互操作检查工具 |
 | `tests/maintenance.mjs` | 周期维护回归：先清后转 / stale 不转正 / 7 天/50 条阈值 / 幂等 / 空区无副作用 / 并发互斥（注册在维护期间排队不丢）；`RDD_ENGINE_ROOT` 可发现时做 PS/TS 阈值常量对照 |
 | `tests/search-ranking.mjs` | 检索精度回归：冻结公式 F1–F8 逐项断言 + PS/TS 双侧一致性（发现 `rdd-engine` 经 `RDD_ENGINE_ROOT` 时自动启用） |
@@ -127,6 +128,7 @@ rdd 项目零行为变化（②③④ 仍胜出）；标准环境靠 ⑤ 兜底�
 | `writePrefixes` | — | 写白名单：`write`/`edit` 的 `file_path` 须命中其一前缀，否则硬拒绝 |
 | `sessionReadOnly` | — | 首次工具调用前种 `sandbox/mode: read-only` 事件；注意 base 的 permission-presets 在会话创建时即钉住模式的组合中不生效 |
 | `maintenanceIntervalMinutes` | `60` | 周期维护间隔（分钟，`0` 禁用定时器）：每 tick 自动跑双区新鲜度清理 + 热区 sweep 转正 |
+| `modelsToolName` | `rdd_models` | 活模型目录工具名（空字符串禁用）：列出宿主当前注册路由的可服务模型，条目 `{ provider, id }` 与派遣覆盖对一一对应 |
 
 ## 开发（codeRDD 仓）
 
@@ -139,7 +141,7 @@ node tests\engine-root.mjs                  # （先 build）候选链回归
 ```
 
 - DSH checkout 的 `packages/local/rdd-explore` 是指向本目录的 junction（构建/联调镜像；dogfood 通道——`apps/cli` 的 `workspace:*` 依赖行不动）。junction 被 pnpm 拒收时构建脚本自动退化为目录同步。
-- 测试在 build 后运行：`node tests/maintenance.mjs`、`node tests/search-ranking.mjs`、`node tests/policy-smoke.mjs`、`node tests/engine-root.mjs`。
+- 测试在 build 后运行：`node tests/maintenance.mjs`、`node tests/search-ranking.mjs`、`node tests/policy-smoke.mjs`、`node tests/engine-root.mjs`、`node tests/models.mjs`。
 
 ## 已知限制
 

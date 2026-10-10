@@ -8,8 +8,8 @@
 
 ## 核心原则
 
-1. **CLI 收敛**：路由字段的读写一律通过 `rdd-flow.cmd` 子命令完成。角色**禁止直接编辑 task.json**——手写 JSON 易 schema 漂移，且无法保证与文档自身流转控制的一致性。
-2. **双源一致性**：task.json 的 `currentOwners` 与各需求/设计文档自身 `## 流转控制 > 当前责任人` 语义对齐。两者不一致时，**以文档自身为准**，CLI 的 `check` 命令负责检测并报告，角色通过 CLI 命令修正 task.json。
+1. **CLI 收敛**：路由字段的读写一律通过 `rdd-flow.cmd` 子命令完成。角色**禁止直接编辑 task.json**——手写 JSON 易 schema 漂移，且绕过写入门（认领联动、阶段白名单校验、角色交接门）。
+2. **路由单一真源**：流转状态（`currentOwners` / `phase` / `lifecycle`）只存在于 task.json，一律经 CLI 读写。需求/设计文档是内容工件，**不承载流转字段**——存量归档中已有的 `## 流转控制 > 当前责任人` 是纯历史文本，引擎读面与 `check` 均已停读，无需回改（见 `transition-guide.md`「路由单一真源」）。
 3. **结构化集合**：并行责任人、多设计文档用 JSON 数组表达，消灭旧的 `+` 分隔字符串约定和 `(待产出)` 文本占位。
 4. **阶段白名单**：任务路由带 `phase` 字段（`REQ`/`DESIGN`/`IMPL`/`VERIFY` 全序阶段），硬不变量 `currentOwners ⊆ PhaseRoles[phase]`——阶段内角色并行，阶段间只能整组切换。完整模型见 `rdd-engine/references/phase-model.md`（唯一权威）。
 
@@ -22,7 +22,7 @@
 | `IMPL` | DEV | 编码实现 |
 | `VERIFY` | QA | 验收执行 |
 
-- 流转命令：`set-route`（`advance` 已退场为兼容路径）。阶段内收窄不传 `-Phase`；跨阶段切换/回退必须显式 `-Phase`。
+- 流转命令：`set-route`（唯一路径，`advance` 已移除）。阶段内收窄不传 `-Phase`；跨阶段切换/回退必须显式 `-Phase`。
 - `phase` 是**显式存储值**：`lifecycle=active` 时必有值；`completed`/`deprecated` 时为 `null`。旧归档无 `phase` 视为 `null`（保守降级，`migrate` 可一次性补齐）。
 
 ---
@@ -209,7 +209,7 @@
 
 整组替换指定 task 的 `currentOwners`（显式传 `-Phase` 时同时原子更新 `phase`）。PM 归档时设置初始路由、被打回后重新路由、阶段间推进均用此命令。`-To` 多角色用 `+` 连接。
 
-**统一交接门（dev-quality-prescan-gate）**：写入门——退出角色集（`currentOwners` − `-To` 集）经角色注册表分派校验，未注册角色（QA/CTO/UX…）空转放行；**DEV 退场必带 `-QualityScanFile <凭据JSON>`**（完整形 tool/base/files/thresholds/threshold_source/violation_count/exit_code 或 skip+reason，schema 与校验规则同桥接 settle 第四查单源；组装指引见 `rdd-dev/references/execution-rules.md`）。链式场景无 citations 对账源：skip 声明被信任，QA 复扫双保险兜底。凭据缺失/违规/文件不存在或非法 JSON → `HANDOFF_GATE_REJECTED`（exit 1，task.json 零残留）。`advance` 不挂门（已退场兼容命令，行为冻结）。
+**统一交接门（dev-quality-prescan-gate）**：写入门——退出角色集（`currentOwners` − `-To` 集）经角色注册表分派校验，未注册角色（QA/CTO/UX…）空转放行；**DEV 退场必带 `-QualityScanFile <凭据JSON>`**（完整形 tool/base/files/thresholds/threshold_source/violation_count/exit_code 或 skip+reason，schema 与校验规则同桥接 settle 第四查单源；组装指引见 `rdd-dev/references/execution-rules.md`）。链式场景无 citations 对账源：skip 声明被信任，QA 复扫双保险兜底。凭据缺失/违规/文件不存在或非法 JSON → `HANDOFF_GATE_REJECTED`（exit 1，task.json 零残留）。
 
 **白名单校验与错误码**：
 
@@ -224,23 +224,7 @@
 
 ### 流转类（CTO/UX/DEV/QA 完成产物后）
 
-> **流转命令收敛（phase-model）**：新流转统一走 `set-route`（阶段内收窄不传 `-Phase`，阶段切换传 `-Phase`）。`advance` 保留仅为向后兼容。
-
-#### `advance` — 推进路由（已退场，兼容保留）
-
-```powershell
-& "$rdd\scripts\rdd-flow.cmd" -Command advance -Archive ".rdd/changes/archive/<name>" -TaskId 1 -From CTO -To UX
-```
-
-**替换语义**：从 `currentOwners` 中移除 `-From` 角色，加入 `-To` 角色。
-
-- 单角色场景：`["CTO"]` → advance -From CTO -To UX → `["UX"]`（phase 由 CLI 按结果集重初始化为 DESIGN）
-- 并行场景：`["CTO","UX"]` → advance -From CTO -To DEV → `["UX","DEV"]`（**跨阶段中间态**——白名单外的历史行为，phase 自动降级为 null；`check` 不报错但桥接建树会拒绝。应改用 `set-route`）
-- 同角色去重：若 `-To` 已在数组中，不重复追加
-
-`-From` 必须是当前 `currentOwners` 中的角色，否则报错（防止误操作）。
-
-**为什么退场**：advance 的单角色替换会铸造跨阶段中间态（`["UX","DEV"]`），与阶段白名单硬约束冲突——这正是 `set-route` 成为唯一主路径的原因（决策记录见 `phase-model.md` §3）。命令保留、行为不变（结果集阶段纯净时同步维护 phase），存量脚本零迁移成本。
+> **流转命令收敛（phase-model）**：流转统一走 `set-route`（阶段内收窄不传 `-Phase`，阶段切换传 `-Phase`）。`advance` 命令已移除（见「历史兼容」）。
 
 #### `add-design` — 追加设计文档
 
@@ -253,7 +237,7 @@
 - 否则追加新条目 `{path, status: "ready"}`
 - 自动去重，不覆盖他人已登记的路径
 
-CTO/UX 完成设计归档后，先 `add-design` 再 `advance`。
+CTO/UX 完成设计归档后，先 `add-design` 再 `set-route`（收窄或汇聚切换，见下方速查表）。
 
 ### 终态类
 
@@ -308,7 +292,7 @@ CTO/UX 完成设计归档后，先 `add-design` 再 `advance`。
 
 执行三项校验：
 1. **schema 校验**：字段完整、类型正确、取值合法
-2. **一致性校验**：每个 task 的 `currentOwners` 与对应需求/设计文档 `## 流转控制 > 当前责任人` 是否一致；`designDocs` 中 `status=ready` 的文件是否存在
+2. **designDocs 校验**：`status=ready` 的文件是否存在（文档侧流转字段已停读——不解析、不报告）
 3. **阶段白名单校验（phase-model）**：`phase` 存在时校验枚举（`[PHASE_INVALID]`）、`currentOwners ⊆ PhaseRoles[phase]`（`[PHASE_OWNER_MISMATCH]`）、终态任务 `phase=null`（`[PHASE_LIFECYCLE_CONFLICT]`）。`phase=null` 的 active 任务为旧归档保守降级——不报错不崩溃（`migrate` 是补齐通道）
 
 返回所有不一致项。PM 归档后、每次流转后建议运行。
@@ -348,8 +332,8 @@ task.json 此前只有 `lifecycle`（生命周期）与 `currentOwners`（路由
 
 认领解除无需记忆任何显式释放命令：**角色不再拥有该任务即解除其认领**。
 
-- `advance` / `reject` / `complete` / `reopen` / `deprecate` / `set-route` 六个写命令落盘前统一调用 `Sync-TaskClaims`，纯过滤不变式：`currentWorker ⊆ currentOwners ∩ lifecycle=active`
-- 任务完成（`complete`）、废弃（`deprecate`）、推进（`advance -From <自己>`）后，认领记录自动剔除
+- `reject` / `complete` / `reopen` / `deprecate` / `set-route` 五个写命令落盘前统一调用 `Sync-TaskClaims`，纯过滤不变式：`currentWorker ⊆ currentOwners ∩ lifecycle=active`
+- 任务完成（`complete`）、废弃（`deprecate`）、流转（`set-route` 将本角色移出 owners 集）后，认领记录自动剔除
 - 未来新增写命令自动继承该联动（共享函数收口）
 - `init` / `migrate` 产生的新数据恒为空（空闲）
 
@@ -369,12 +353,12 @@ task.json 此前只有 `lifecycle`（生命周期）与 `currentOwners`（路由
 | **PM** | 被打回后修订完成 | `set-route`（重新路由） |
 | **任意角色** | 收到任务第一件事 | `claim -Role <自己> -TaskId <n>`（冲突 → 用户裁决 `-Force` 抢占或换任务） |
 | **CTO** | 定位自己的任务 | `show -Role CTO` |
-| **CTO** | 设计归档后推进 | `add-design` → `advance -From CTO -To DEV`（或 `-To UX`） |
-| **CTO** | L1 快速结论直接发开发 | `advance -From CTO -To DEV`（无设计文档则跳过 add-design） |
+| **CTO** | 设计归档后推进 | `add-design` → `set-route`：同任务还有设计角色 → `-To "UX"` 阶段内收窄（不带 `-Phase`）；自己是最后一个 → `-To "DEV" -Phase IMPL` 汇聚切换 |
+| **CTO** | L1 快速结论直接发开发 | `set-route -To DEV -Phase IMPL`（无设计文档则跳过 add-design） |
 | **UX** | 定位自己的任务 | `show -Role UX` |
-| **UX** | 设计归档后推进 | `add-design` → `advance -From UX -To DEV` |
+| **UX** | 设计归档后推进 | `add-design` → `set-route`：同任务还有设计角色 → 阶段内收窄；自己是最后一个 → `-To "DEV" -Phase IMPL` |
 | **DEV** | 定位自己的任务 | `show -Role DEV` |
-| **DEV** | 实现完成推进 QA | `advance -From DEV -To QA` |
+| **DEV** | 实现完成推进 QA | `set-route -To QA -Phase VERIFY`（DEV 退场须带 `-QualityScanFile` 质量扫描凭据，见 set-route 统一交接门） |
 | **QA** | 定位自己的任务 | `show -Role QA` |
 | **QA** | 验证通过闭环 | `complete` |
 | **QA** | 发现问题回退 | `reopen -To DEV`（桥接 run 进行中改走 `delivery-bridge -Command rollback`，见 reopen 条目注记） |
@@ -399,19 +383,19 @@ UX 完成  → set-route -To "DEV" -Phase IMPL → ["DEV"] @ IMPL      （最后
 
 - **阶段内收窄**：完成者从 owner 集合移除自己，`phase` 不变
 - **汇聚切换**：最后一个完成者用 `-Phase` 把 owners 原子替换为下一阶段白名单
-- **跨阶段中间态被禁止**：`["UX","DEV"]` 这类状态无法经 `set-route` 达成（`PHASE_OWNER_MISMATCH`）；旧 `advance` 仍可能铸造（兼容保留），`check` 会以 `PHASE_OWNER_MISMATCH` 报告
+- **跨阶段中间态被禁止**：`["UX","DEV"]` 这类状态无法经任何流转命令达成（`set-route` 白名单校验 `PHASE_OWNER_MISMATCH`）
 - 串行交接（CTO→UX 顺序流转）同样在阶段内：`set-route -To "CTO+UX"` 扩组 → CTO 完成收窄为 `["UX"]`，无需跨阶段
 
 只有当 `currentOwners` 收敛为单一角色且该阶段完成时，任务才进入下一阶段单线流转。
 
-### 双源一致性
+### 路由单一真源
 
-task.json 与文档自身 `## 流转控制` 的关系：
+task.json 与文档的关系（与 `transition-guide.md`「路由单一真源」同口径）：
 
-- **文档自身是语义真源**：文档的 `当前责任人` 字段反映该文档实际归属
-- **task.json 是路由缓存**：聚合所有任务的路由状态，供 CLI 快速查询和 handoff 生成
-- **推进时双写**：角色推进路由时，先更新文档自身 `## 流转控制 > 当前责任人`，再调 CLI 命令同步 task.json
-- **不一致时以文档为准**：`check` 命令报告不一致，角色用 `set-route` 修正 task.json
+- **task.json 是路由唯一真源**：`currentOwners` / `phase` / `lifecycle` 只活在 task.json，一律经 CLI 读写
+- **文档是内容工件**：需求/设计文档不承载流转字段；`## 驳回记录` 等内容章节照常维护（见 `rejection-protocol.md`），「当前责任人」类路由字段已废弃
+- **存量兼容**：旧归档中已存在的 `## 流转控制 > 当前责任人` 是纯历史文本，引擎读面与 `check` 均已停读，无需回改
+- **不双写**：角色推进路由只调 CLI 命令，不改任何文档侧路由字段
 
 ### 集合语义
 
@@ -430,13 +414,14 @@ currentOwners = ["CTO", "UX"]，CTO 已认领：
   CTO 第二窗口 claim → claimed:false + conflict{role:CTO, claimedAt:T1}
 ```
 
-- `advance -From CTO -To DEV` 后：CTO 的认领自动剔除，`currentWorker ⊆ currentOwners` 恒成立
+- `set-route -To "DEV" -Phase IMPL` 后：被移出 owners 集的角色（如 CTO）认领自动剔除，`currentWorker ⊆ currentOwners` 恒成立
 - 会话中断后任务卡 running：新窗口 claim 触发冲突 → 用户凭 `claimedAt` 判断旧窗口已死 → `-Force` 抢占
 
 ---
 
 ## 历史兼容
 
+- **`advance` 命令已移除**（原为兼容保留，2026-10 删除）：全部流转统一 `set-route`。桥接 legacy settle 尾部与 pending_sync 重放已改道 `set-route`（歧义目标 QA 显式 `-Phase VERIFY`，其余目标保持 null-phase 语义不变）。存量脚本中的 `advance` 调用会得到命令枚举拒绝，改写为 `set-route -To <目标> [-Phase <阶段>]` 即可。
 - **旧归档（有 task.md 无 task.json）**：读侧（`next`/`start`/`handoff`/`validate`/`claim`）只读 task.json，缺失即 fail-loud（`TASK_JSON_NOT_FOUND`），**不再回退解析 task.md**。存量旧归档先 `migrate` 一次性迁移后再读
 - **迁移工具**：`migrate -Archive <path>` 可将旧 task.md 转为 task.json（处理存量归档，一次性，**唯一存量迁移通道**）
 - 旧 task.md 的「角色参与计划」章节、✅⬜ 状态表一律忽略，路由信息统一从 `currentOwners` 派生

@@ -75,29 +75,45 @@
 
 三个方向相互独立，**并行生成**而非串行。
 
-#### model 与方向解耦
+#### 模型策略与方向解耦
 
-**核心设计：方向是需求层概念，model 是基础设施层概念，两者解耦。**
+**核心设计不变：方向是需求层概念，模型是基础设施层概念，两者解耦。**
 
-- **方向定义**（设计哲学、主变量、prompt 骨架、差异化关键句）全部在本文件的「默认方向定义库」中，是 UX 方法论的一部分
-- **model 清单**在 `rdd-ux/ux_subagent.json`，是用户配置的基础设施——声明了哪些 subagent 执行器可用、各自绑定哪个 model
-- **agent 定义**（`.opencode/agent/ux-mockup-{a,b,c}.md`）是纯执行器：只绑 model + 通用生成指令，**不含任何方向定义**。dispatch 时由 UX 把方向简报（含完整生成指令）注入
+- **方向定义**（设计哲学、主变量、prompt 骨架、差异化关键句）全部在本文件的「默认方向定义库」中，是 UX 方法论的一部分——方向画像（严谨/均衡/创意）永远活在这里，不随模型配置变化
+- **模型策略**在 `rdd-ux/ux_subagent.json`（状态机：`uninitialized → inherit | random | pinned`），决定派遣时执行器用什么模型——**初始为空，不预绑任何模型**
+- 执行器是纯执行体：只含通用生成指令，**不含任何方向定义**；dispatch 时由 UX 把方向简报（含完整生成指令）注入，模型按策略在派遣时解析
 
-UX 派遣时做一次"方向 → 执行器"的匹配：按方向的 capability 画像（结构严谨/均衡/创意）从 `ux_subagent.json` 的执行器池里挑最匹配的。默认匹配见下表，UX 可按需求调整。
+**方向画像（random 模式的分配依据）：**
 
-| 方向（默认） | capability 画像 | 默认绑定的执行器（见 ux_subagent.json） |
-|--------------|----------------|----------------------------------------|
-| A · 信息优先 | 结构严谨 | `ux-mockup-a` |
-| B · 任务优先 | 均衡表达 | `ux-mockup-b` |
-| C · 体验优先 | 创意表现 | `ux-mockup-c` |
+| 方向（默认） | capability 画像 |
+|--------------|----------------|
+| A · 信息优先 | 结构严谨 |
+| B · 任务优先 | 均衡表达 |
+| C · 体验优先 | 创意表现 |
 
-> **为何绑定不同 model**：同一个 LLM 即便靠 prompt 区分方向，也容易在审美惯性下趋同。不同 model 的训练分布差异天然产生风格分化。叠加独立 context + 调高 temperature，从模型层而非仅 prompt 层保障差异化。具体 model 名在 `ux_subagent.json` 配置，换 provider 时改 json + 同步 agent 定义即可，方向定义不动。
+**首次触发征询（mode=uninitialized）：** fork-join 触发前读到空策略，UX 必须先征询用户（dsh 经 `ask_user_question` 工具；其他 runtime 对话询问），选项：
+
+- **允许 · 随机分配**：UX 每次派遣时从当前可用模型里按方向画像自主分配，跨 provider 优先
+- **允许 · 我来指定**：用户点名模型清单（pinned）
+- **不允许**：全部执行器跟随当前对话模型（inherit）
+
+用户选择后 UX 把决策写入 `ux_subagent.json`（mode + 可选 pinned + history 留痕），此后按落定的 mode 执行、不再重复询问。用户（运营端）可随时直接编辑该文件改策略——UX 每次派遣前现读，不缓存、免重启；文件损坏或缺字段时安全回落为 uninitialized 重新征询。
+
+**各 mode 的派遣语义：**
+
+| mode | 派遣时行为 | 差异化来源 |
+|------|-----------|-----------|
+| `inherit` | 全部执行器跟随当前对话模型 | 仅方向简报 |
+| `random` | 每次派遣前发现当前可用模型（dsh：`rdd_models` 工具），按方向画像就近匹配 + 跨 provider 优先分配 | 模型分布差异 + 方向简报 |
+| `pinned` | 只用用户点名清单；派遣前校验仍可解析，失效路由报错并提示改配置，不静默降级 | 用户选定的模型组合 |
+
+> **为何 random 跨 provider 优先**：同一个 LLM 即便靠 prompt 区分方向，也容易在审美惯性下趋同；不同模型的训练分布差异天然产生风格分化，从模型层而非仅 prompt 层保障差异化。可用模型不足 3 个时允许同模型复用，但须向用户明示差异化退化。
 
 #### fork-join 流程
 
-1. **读 `ux_subagent.json`** 确认可用执行器。若条目 <3，向用户提示"可用 model 不足 3 个，部分方向将复用同一 model，差异化退化"并请求确认
+1. **解析模型策略**：读 `rdd-ux/ux_subagent.json`。`mode=uninitialized` → 先走上面的首次触发征询；其余 mode 按其派遣语义解析出本次的「方向 → 模型」分配（random：`rdd_models` 发现可用模型后分配；pinned：校验清单；inherit：全部跟随会话模型）
 2. **构造方向简报**：UX 基于「默认方向定义库」（或本次定制的方向）为每个方向生成一份完整简报——设计目标 + 主变量 + 驱动要素 + 来自 Phase 2 的共享参数 + **本次主素材类型（image / html）** + 输出路径 + **完整生成指令**（image 的 prompt 骨架 / html 的生成约束 / 差异化关键句，从方向定义库直接取）
-3. **并行分发**：一次性派发 3 个子代理（Task 工具），`subagent_type` 指定匹配到的执行器名（默认 ux-mockup-a/b/c），`prompt` 传入对应方向简报。每个子代理独立完成"构造产出 → 调用工具或生成 HTML → 存储到指定路径 → 返回一句话视觉特征"
+3. **并行分发**：一次性派发 3 个子代理，按 runtime 派遣通道分发（见「模型策略与运行时适配」）——dsh 经 workflow 编排脚本把每方向的 `{ provider, model }` 与简报一起传入；opencode 经 Task 工具 `subagent_type` 指定执行器（默认 ux-mockup-a/b/c），`prompt` 传入对应方向简报。每个子代理独立完成"构造产出 → 调用工具或生成 HTML → 存储到指定路径 → 返回一句话视觉特征"
 4. **汇聚**：3 个子代理全部返回后，UX 汇总，生成 `manifest.json` 并复制对比框架模板为 `index.html`
 
 **UX 派遣单（每个子代理收到的 dispatch 输入）：**
@@ -205,24 +221,42 @@ Designed for [响应式目标]. High fidelity UI mockup, screen design.
 
 默认三方向覆盖大多数场景。若 Phase 2 的设计分析浮现了更贴合本需求的设计张力（如"列表 vs 卡片"、"桌面效率 vs 移动优先"、"数据展示 vs 操作引导"），UX 可替换默认侧重，改为三个**针对该需求的设计假设**。须满足：① 三个侧重互为不同维度；② 每个侧重能一句话说清"它优化的是什么"；③ 为每个定制方向补齐上面的完整定义（哲学/目标/主变量/prompt 骨架/差异化关键句）。
 
-### 子代理配置维护
+### 模型策略与运行时适配
 
-> 本节定义 agent 配置的同步机制。真相源是 `rdd-ux/ux_subagent.json`，同步由脚本 `rdd-engine/scripts/sync-ux-subagents.cmd` 自动完成，UX 不手改 agent 定义文件。
+模型策略是**运行时无关契约**（`ux_subagent.json` 状态机）；各 runtime 用自己的机制实现「发现可用模型 / 按模型派遣 / 征询交互」三个契约操作：
+
+| 契约操作 | dsh | opencode | 无目录源 runtime |
+|---|---|---|---|
+| 发现可用模型 | `rdd_models` 工具（宿主活目录，含 `inputModalities` 能力标注） | 已配置模型 / 物化执行器清单 | 不支持——仅 inherit 可用 |
+| 按模型派遣 | workflow 编排脚本 `agent(简报, { provider, model })` | Task 工具 `subagent_type`（执行器由 sync 脚本物化） | 跟随会话模型 |
+| inherit 语义 | `agent(简报)` 不传覆盖对，子代理原生继承父会话路由 | 执行器定义去 model 绑定 | 默认行为 |
+| 首次征询 | `ask_user_question` 工具 | 对话询问 | 对话询问 |
+| 策略生效 | 实时（每次派遣前现读 json + 现查目录） | sync 物化 + 重启 opencode | 实时 |
+
+**dsh 派遣通道细节：** 三方向的简报与「方向 → 模型」分配由 UX 在会话内先解析（策略 + `rdd_models` 目录），经 workflow 工具的 `args` 参数传入编排脚本；脚本内 `agent(简报, { provider, model })` 逐方向派遣——**provider 与 model 必须成对传**，只传 model 会沿用父会话的路由。目录条目的 `inputModalities` 含 `image` 即视觉可用：某方向需要看图（如对比渲染截图）时优先分配视觉模型。
+
+**opencode 降级说明：** Task 工具无法逐次改模型，`random` 在 opencode 下降级为"执行器无绑定 + 方向简报差异化"（等效 inherit）；需要精确控制时用户改用 `pinned`。
+
+### 子代理配置维护（opencode 运行时）
+
+> 本节定义 opencode 执行器的同步机制。策略真相源是 `rdd-ux/ux_subagent.json`，同步由脚本 `rdd-engine/scripts/sync-ux-subagents.cmd` 按 mode 自动完成，UX 不手改 agent 定义文件。dsh 运行时**不消费**本节——策略实时生效，无物化步骤。
+
+**执行器约定集：** `ux-mockup-a` / `ux-mockup-b` / `ux-mockup-c`（固定三名，对应 fork-join 三方向；方向知识永不进入执行器）。frontmatter 的 model 绑定按 mode 推导：`pinned` → 第 i 条 pinned 绑到第 i 个执行器（清单不足 3 时其余执行器无绑定，清单超出只用前 3）；`inherit` / `random` / `uninitialized` → 全部执行器无 model 绑定。
 
 **同步脚本管什么：**
 
 | 操作 | 触发条件 | 脚本动作 |
 |------|---------|---------|
-| **Create** | `agents` 有、磁盘无对应 .md | 从内嵌模板生成 agent 文件，正文统一，加入 `managed` 列表 |
-| **Update** | `agents` 有、磁盘有、但 model/temperature 不一致 | 只替换 frontmatter 的 model/temperature 行，正文不动 |
-| **Delete** | `managed` 有、`agents` 无 | 删 agent 文件，从 `managed` 移除 |
-| **Orphan 警告** | 磁盘有、`managed` 与 `agents` 均无 | 警告，不自动删（防误删用户手建 agent） |
+| **Create** | 约定集有、磁盘无对应 .md | 从内嵌模板生成 agent 文件（frontmatter 按 mode 推导），加入 `managed` 列表 |
+| **Update** | 磁盘有、但 frontmatter model 绑定与 mode 期望不一致 | 只替换 frontmatter 的 model 绑定行，正文不动 |
+| **Delete** | `managed` 有、约定集无 | 删 agent 文件，从 `managed` 移除 |
+| **Orphan 警告** | 磁盘有、`managed` 与约定集均无 | 警告，不自动删（防误删用户手建 agent） |
 
 > `managed` 列表是脚本的所有权记录：只有曾由脚本创建过（在 `managed` 里）的 agent 才允许被脚本删除。这是防止误删用户手建 agent 的安全机制。
 
 **何时运行脚本：**
 - 首次使用 mockup 生成前（确保配置就绪）
-- 用户明确告知换了 provider / model
+- 用户明确告知换了 provider / model，或直接编辑过 `ux_subagent.json` 的策略（mode / pinned）
 - `ux_subagent.json` 被修改后（UX Read 时发现不一致）
 
 **运行方式：**
@@ -242,7 +276,7 @@ UX 调用后读取脚本输出：
 & "$rdd\scripts\sync-ux-subagents.cmd" -WhatIf
 ```
 
-**UX 不手改 agent 文件：** agent 定义（`.opencode/agent/ux-mockup-*.md`）由脚本全权管理——正文是通用执行器模板（固化在脚本内），frontmatter 由脚本从 json 同步。UX 手改会被下次同步覆盖。唯一允许 UX 手改的是 `ux_subagent.json`（用户配置可用 model）。
+**UX 不手改 agent 文件：** agent 定义（`.opencode/agent/ux-mockup-*.md`）由脚本全权管理——正文是通用执行器模板（固化在脚本内），frontmatter 由脚本从 json 的策略状态推导。UX 手改会被下次同步覆盖。`ux_subagent.json` 由用户（运营端）随时直接编辑；UX 仅在首次征询落定后写入一次决策结果（mode + 可选 pinned + history）。
 
 ### 产物命名与存储
 
