@@ -109,27 +109,26 @@ export function registerModelsTool(ctx: Context, source: ModelCatalogSource, too
       schema: {
         type: 'object',
         additionalProperties: false,
-        required: ['providers', 'failures'],
         properties: {
           providers: {
             type: 'array',
+            required: true,
             items: {
               type: 'object',
               additionalProperties: false,
-              required: ['provider', 'name', 'models'],
               properties: {
-                provider: { type: 'string' },
-                name: { type: 'string' },
+                provider: { type: 'string', required: true },
+                name: { type: 'string', required: true },
                 models: {
                   type: 'array',
+                  required: true,
                   items: {
                     type: 'object',
                     additionalProperties: false,
-                    required: ['provider', 'id', 'name'],
                     properties: {
-                      provider: { type: 'string' },
-                      id: { type: 'string' },
-                      name: { type: 'string' },
+                      provider: { type: 'string', required: true },
+                      id: { type: 'string', required: true },
+                      name: { type: 'string', required: true },
                       description: { type: 'string' },
                       inputModalities: { type: 'array', items: { type: 'string', enum: ['text', 'image'] } },
                     },
@@ -140,13 +139,13 @@ export function registerModelsTool(ctx: Context, source: ModelCatalogSource, too
           },
           failures: {
             type: 'array',
+            required: true,
             items: {
               type: 'object',
               additionalProperties: false,
-              required: ['provider', 'message'],
               properties: {
-                provider: { type: 'string' },
-                message: { type: 'string' },
+                provider: { type: 'string', required: true },
+                message: { type: 'string', required: true },
               },
             },
           },
