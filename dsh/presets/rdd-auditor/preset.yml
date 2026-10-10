@@ -1,3 +1,0 @@
-name: RDD-AUDITOR
-description: 审视员方法论文档 + 强形态独立会话角色卡（auditor-subagent-review）。产出 ReviewFile / DesignReviewFile 契约产物，消费端零改动。
-order: 10
