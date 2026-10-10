@@ -87,7 +87,7 @@ search 的排序由以下**冻结公式**确定（`explore.ps1` + `explore-store
 
 ### 召回器插件协议
 
-召回器放在 `scripts/recallers/*.ps1`（按文件名排序 dot-source，即注册序 = F7 累计序）：调 `Register-Recaller -Name <name> -DefaultEnabled <true|false|"auto"> [-AutoReady <scriptblock>] -ScriptBlock <block>`。输入 `{ query, docs, config, paths }`，输出 `{ name, scores, qualified[按名次], warning? }`；抛异常被管线捕获 → 空贡献 + failed 状态。`"auto"` 启用判定由 AutoReady 只读评估（不调 API）。新增一路召回 = 加一个文件，既有路径零改动。
+召回器放在 `scripts/recallers/*.ps1`（按文件名排序 dot-source，即注册序 = F7 累计序；装载与 `Register-Recaller` 注册表自 P1 抽取起统一在 `scripts/lib/recall-shared.ps1`，explore.ps1 与 tips 候选召回同源共用）：调 `Register-Recaller -Name <name> -DefaultEnabled <true|false|"auto"> [-AutoReady <scriptblock>] -ScriptBlock <block>`。输入 `{ query, docs, config, paths }`，输出 `{ name, scores, qualified[按名次], warning? }`；抛异常被管线捕获 → 空贡献 + failed 状态。`"auto"` 启用判定由 AutoReady 只读评估（不调 API）。新增一路召回 = 加一个文件，既有路径零改动。
 
 ### 运行时文件（`.rdd/exploration/`）
 
