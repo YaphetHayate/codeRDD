@@ -89,7 +89,7 @@ register 的行为与约定：
 
 - **改源码即时生效**：全局命令始终执行本仓 `dist/`，`npm run build` 后所有目标项目即用新版
 - **更新后一键本地构建**：`git pull` 后跑 `npm run build:local`——依赖刷新 + coderdd CLI（tsc）+ 三组件发布产物（engine/插件/skills tarball，内含 preset 再生成）+ 跟踪态 preset 产物漂移检查一次完成（`--commit` 自动提交漂移产物，防「改卡忘重建」；`--with-goal-tree` 附带 goal-tree 插件 tarball）
-- **升级**：源仓 `git pull && npm run build:local` → 目标项目里 `coderdd update .`
+- **升级**：源仓 `git pull && npm run build:local` → 目标项目里 `coderdd update .`（多项目批量：源仓跑 `scripts\update-projects.ps1`，自动发现同级受管项目一键全更）
 - **移除全局命令**：仓根 `npm run unregister`
 - **源仓移动/重命名后链接失效**：回仓根重新 `npm run register`
 - 与 `npm i -g coderdd` 占用同一命令槽位，后装者覆盖；历史命令名 `coderrdd` 保留为 bin 别名（等价 `coderdd`）
@@ -148,6 +148,15 @@ Windows 下链接为 junction（无需管理员权限），macOS/Linux 为相对
 ```bash
 coderdd update .     # 按清单（.rdd/install.json）非交互更新受管理文件
 coderdd uninstall .  # 删链接/薄文件/角色目录，还原合并配置；保留 .rdd 运行时数据
+```
+
+多项目一键批量更新（在源仓执行；显式列表或自动发现同级受管项目，永远走本仓 `dist/` 构建——不吃陈旧的全局链接）：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\update-projects.ps1              # 自动发现：源仓父目录下 3 层内带 .rdd\install.json 的项目
+powershell -ExecutionPolicy Bypass -File scripts\update-projects.ps1 -Projects D:\projA,D:\projB
+powershell -ExecutionPolicy Bypass -File scripts\update-projects.ps1 -Depth 5     # 更深的嵌套布局
+powershell -ExecutionPolicy Bypass -File scripts\update-projects.ps1 -ListOnly    # 只列发现结果，不更新
 ```
 
 ### init 参数
