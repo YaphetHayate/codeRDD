@@ -1,4 +1,4 @@
-{
+﻿{
     "feature":  "delivery-bridge",
     "status":  "active",
     "relatedCode":  [
@@ -363,6 +363,26 @@
                                     "liveness=dead 时 reclaim(未达时间阈值)"
                                 ],
                       "expected":  "alive → RECLAIM_TARGET_ALIVE(长任务误杀物理不可能);dead → 无需时间阈值即回收成功——注册表证实优先于时间规则;unknown 时间兜底由 TC-B09 覆盖"
+                  },
+                  {
+                      "id":  "TC-B17b",
+                      "title":  "回收第二证据面:边车绑定不可证实(unknown)而花名册同节点会话可证存活 -> 仍拒;已证实 dead 的认领不被存活兄弟否决",
+                      "type":  "negative",
+                      "priority":  "P0",
+                      "acceptance":  "GR-AC-4",
+                      "codeRef":  ".rdd/tests/delivery-bridge/delivery-bridge-verify.ps1:1098",
+                      "sourceChange":  "2026-10-13-planner-claim-guard",
+                      "status":  "active",
+                      "crossFeature":  [
+                                           "reclaim 存活门(goal-tree-goal-root decision 6)",
+                                           "inplace-redo 会话复用(存活兄弟=重推复用目标)"
+                                       ],
+                      "precondition":  "推送已为 n2 建花名册行(绑 node=n2);认领改用另一个 worker 会话使边车绑定与花名册行分离;mock liveness 支持 node 键/session 键分别应答",
+                      "steps":  [
+                                    "node 键答 unknown + session 键答 alive → reclaim",
+                                    "node 键答 dead + session 键仍答 alive → reclaim"
+                                ],
+                      "expected":  "unknown+花名册存活 → RECLAIM_TARGET_ALIVE(理由须指出花名册会话 id);dead 证实 → 照常 dead-claim 回收成功(第二证据面**不参与**正向死亡判定,存活兄弟是重推复用目标而非否决证据)"
                   },
                   {
                       "id":  "TC-B18",
@@ -3070,14 +3090,91 @@
                        "crossFeature":  [
                                             "goal-tree"
                                         ],
-                       "precondition":  "qa-reclaim fixture：propose+confirm 后 PM 节点 graft 完成；节点先被 claim（无 dsh session 绑定 → liveness=unknown，-DeadClaimMinutes 0 使其可证死）",
+                       "precondition":  "qa-reclaim fixture：propose+confirm 后 PM 节点 graft 完成；节点先被 CLI claim（无 dsh session 绑定 → liveness=unknown）；L3 起 -DeadClaimMinutes 0 不再等价「可证死」，须附 -UserVerdict 用户裁决原文才放行",
                        "steps":  [
-                                     "claim 派生 PM 节点后调 reclaim -DeadClaimMinutes 0",
+                                     "claim 派生 PM 节点后调 reclaim -DeadClaimMinutes 0 -UserVerdict <裁决原文>",
                                      "断言回收模式/steal_count/节点 park 归属",
                                      "以当前持有者身份重报不合格证据（verdict=done 但无 extras.verification）",
                                      "再次 reclaim 并断言旧节点 prune、新节点 graft、bridge derivations 重锚"
                                  ],
                        "expected":  "①dead-claim：mode='dead-claim (tree-level derivation PM node)'、steal_count=1、节点 id 不变且 park 在 planner-reclaim；②rejected-delivery：mode='rejected-delivery (tree-level derivation PM node)'、pruned_node=原节点、新节点为 goal 根 pm 子节点（pending 待认领）、bridge derivations[DRV1].node 指向新节点且 status 保持 confirmed、task_id 仍空（未误入册）——派生链中断后回收复用既有同族通道，单 run 收敛路径不破"
-                   }
+                   },
+                  {
+                    "id": "TC-B169",
+                    "title": "design_maps 刷新死锁三联修：submit/status 门内刷新 + designDocs 全路径归一 + cross_design 组合洞随 fail 波广播",
+                    "type": "positive",
+                    "priority": "P0",
+                    "acceptance": "AC-2",
+                    "codeRef": "rdd-engine/tests/test-bridge-design-review.ps1",
+                    "sourceChange": "2026-10-10-design-maps-refresh-deadlock",
+                    "status": "active",
+                    "crossFeature": [],
+                    "precondition": "实录缺陷报告（deliver-2026-10-10-equipment-framework，run 暂挂）：新链 fail 波后四个 Get-DesignMaps 触发点全部不可达 → 文档已修但缓存滞后 → 重审必现 blocking 死循环；连带 6.A 全路径 designDocs Test-Path 失明漏审、6.B cross_design findings 不随重做指针传递",
+                    "steps": [
+                      "DR8：新链 fail 波形态——文档重产（指纹变化）+ 迟入册第二文档（task.json 补 designDocs）→ design-review status 首跑断言指纹追平当前文件且新文档入册 → settle ready → submit 断言迟入册文档进审查对象面且 pass",
+                      "DR9：task.json designDocs 登记为绝对路径（历史形态）→ promulgate 初扫断言 design_maps 以归档相对键入册 → settle 断言审查触发 ready（修复前 Join-Path 失明 → exempt 漏审）→ submit pass",
+                      "DR10：双 CTO 任务全文档 pass + summary.cross_design blocking（involved_docs 两文档）→ submit 断言 fail 且 fail 波 rolled 同时含 task 1/2、重做指针 problems 携带 cross_design 词条、design_review 重置 planned"
+                    ],
+                    "expected": "缓存滞后自愈链闭环：status/submit 任一入口首跑即重解析（fingerprint 幂等）；全路径登记不再漏审漏采；组合洞随波传递不再依赖会话自发回读 ReviewFile——design-review 套件 122 断言全绿（原 103 + 新 19）"
+                  },
+                  {
+                    "id": "TC-B170",
+                    "title": "resolve -Serialize 双依赖源合一：串行化边同步镜像任务级 dep_task_ids，冻结窗口不再同构重登记",
+                    "type": "positive",
+                    "priority": "P0",
+                    "acceptance": "AC-2",
+                    "codeRef": "rdd-engine/tests/test-bridge-conflicts.ps1",
+                    "sourceChange": "2026-10-10-serialize-deps-split",
+                    "status": "active",
+                    "crossFeature": [],
+                    "precondition": "实录缺陷报告（deliver-2026-10-10-equipment-framework/engine-defect-serialize-deps-split.md）：resolve -Serialize 只写节点级 depends_on，推送门并发排除读任务级 dep_task_ids（Test-TaskDependent 单源）→ resolve 后推送门重扫把对手同构重登记（C2，同 nodes 同 files）→ 早者唯一可推节点被自家冲突冻结（n11/n13/n17 全冻；-Serialize/纯 -Ruling 对 file 类冲突全部失效）",
+                    "steps": [
+                      "T5 扩展：pc-t4 双 DEV 变更地图重叠自动登记 C1 → resolve -Serialize 早者 → 断言 bridge.tasks['2'].dep_task_ids 含 1（任务级镜像，且不写反向边）",
+                      "冻结窗口判别（resolve 后、早者 settle 前）：dispatch -DryRun 晚者节点断言放行（修复前：对手未按 dep_task_ids 排除 → NODE_HELD_BY_CONFLICT 同构重登记）",
+      "T5b 幂等续行（实录续跑路径）：同构 C2 再登记后再 resolve -Serialize —— 节点边已存（DEP_EXISTS）不得把 C2 卡死 OPEN，任务级镜像照写且无重复边",
+                      "登记簿断言 conflicts 恒为 1 条（已决抑制，无 C2/C3 循环）；随后早者 settle → 晚者自动解锁推送（原有 T5 语义保持）"
+                    ],
+                    "expected": "串行化语义贯穿两级：节点级 goal-tree deps（DAG/审计）+ 任务级 dep_task_ids（推送门单源）——resolve 即终局，任意推送门重扫不再重登记同构冲突；冲突套件 57 断言全绿（原 51 + 新 6）"
+                  },
+                  {
+                    "id": "TC-B171",
+                    "title": "R1 验收链静默停摆可见性四联修：chain_error 透出 + last_error 持久落账 + 终态判定明细 + next_step/续跑步骤感知验收链",
+                    "type": "positive",
+                    "priority": "P0",
+                    "acceptance": "AC-2",
+                    "codeRef": "rdd-engine/tests/test-bridge-acceptance.ps1",
+                    "sourceChange": "2026-10-10-r1-chain-silent-stall",
+                    "status": "active",
+                    "crossFeature": [],
+                    "precondition": "实录缺陷报告（deliver-2026-10-10-equipment-framework/engine-defect-r1-chain-silent-stall.md）：全 terminal 后 R1 [集成/联调]→[整体验收] 零 graft 零事件零错误；链 graft 失败的 error 在 Invoke-AutoDispatch 就地丢弃（:1688 不检查）；status 数据无 acceptance 块、next_step 诱导直接 conclude（撞 ACCEPTANCE_PENDING + 阶段验收双硬门死循环）；Test-AllMappedNodesTerminal 裸布尔静默吞 missing",
+                    "steps": [
+                      "R1S 注入式失败闭环：goal_root 改指不存在节点 → 末节点 settle（链 graft 必败）→ 断言 settle 仍成功（失败是数据不是异常）且 acceptance.last_error 持久落账（修复前就地丢弃）",
+                      "status 可见性：断言 data.acceptance 块存在（status/criteria_ref/integrate_node/accept_node/conclusion/last_error）、last_error 上浮、warnings 含 acceptance chain 行、next_step 命中「验收链未收口」且不再诱导直接 conclude",
+                      "自愈闭环：修复 goal_root → 下一 status touch 重试 graft 成功 → acceptance.status=grafted 且 last_error 清空（触发点自愈语义保持）",
+                      "Invoke-AutoDispatch 两个返回点均携带 chain_error（含 Update-StageAcceptancePoints 的阶段验收 graft 失败通道）；Test-AllMappedNodesTerminal 返回 waiting/missing 明细（在途零告警、视图缺影才落错）；resume 步骤同款验收链感知"
+                    ],
+                    "expected": "链路停摆不再无声：任何 graft 失败/终态判定异常在 status（acceptance 块+warnings+next_step）与触发点结果（chain_error）双通道可见；修复原因后下一触发点自愈即清——bridge-acceptance 套件 57 断言全绿（原 48 + 新 9）"
+                  },
+                  {
+                    "id": "TC-B172",
+                    "title": "宽度预算 done 释放：宽度检查只计在途（pending/claimed/reported）子节点，运行期增员不再吃死验收链预留位",
+                    "type": "positive",
+                    "priority": "P0",
+                    "acceptance": "AC-2",
+                    "codeRef": "rdd-engine/tests/test-bridge-acceptance.ps1",
+                    "sourceChange": "2026-10-10-width-done-release",
+                    "status": "active",
+                    "crossFeature": [
+                      "goal-tree"
+                    ],
+                    "precondition": "实录缺陷报告（deliver-2026-10-10-equipment-framework，宽度缺陷④）：goal-tree graft 宽度检查原口径 = 非 pruned 全计（done 占位）——运行期增员（派生 PM + fail 波重做链头）吃掉颁布时给验收链的 +2 预留，全 run 收口时 7 个子全 done（在途并发面 0）却 [集成/联调] graft 恒 WIDTH_EXCEEDED，收口冻结；派生预检（DERIVE_BUDGET_EXCEEDED）同款陈旧口径",
+                    "steps": [
+                      "goal-tree graft 宽度检查改为只计在途（pending/claimed/reported；done 与 pruned 同释位）——回归「并发分支上限」语义，不弱化对真实并发的约束（在途超限仍 WIDTH_EXCEEDED）",
+                      "delivery-bridge 派生宽度预检同口径对齐（rootActive 只数在途，报错文案注明 done/pruned 释放）",
+                      "W4 结构复刻：2 任务 criteria run（width=链头+2[+K]）→ planner 下探 (width-2) 个修复节点挂 goal root 恰占满宽度位 → 逐个 settle done → 两链头 settle done → 断言 [集成/联调] 立即 graft 且无 last_error（修复前恒 WIDTH_EXCEEDED）",
+                      "满位压力全程收口：integrate settle → [整体验收] graft（经释放位）→ §3 总结论：通过 → conclude achieved"
+                    ],
+                    "expected": "宽度 = 并发上限而非总量上限：全部 done 后结构收口节点（挂点 goal root 的 R1 链/验收点）立即可挂；fail 波/派生增员在收口期不再挤死预留位——bridge-acceptance 70 断言全绿（48 基线 + R1S 9 + W4 13）；goal-tree-gates 80/80、long-task-planning 95/95 交叉零回归"
+                  }
                 ]
 }

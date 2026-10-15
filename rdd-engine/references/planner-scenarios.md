@@ -1,4 +1,4 @@
-﻿# 规划者场景细则（planner-scenarios）
+# 规划者场景细则（planner-scenarios）
 
 > `planner-guide.md` 的场景下沉层：交付编排生命周期 / 交付角色分工 / 长程规划 / 交付回调四查 / 运行产物 / 需求审查门 / 收尾验收 / 并行冲突 / 设计审查 / 纯自动模式 / DEV 质量凭据 / 范围缺口派生。核心命令与硬约束见 planner-guide.md；本文各节仅在对应场景触发时阅读。
 
@@ -38,6 +38,8 @@ PM 归档（longTask 信号触发）→ start-role -Role PLANNER -TaskJson ...�
 ```
 
 **职责分工**：推送全自动（解锁即推、同 task×role 存活会话复用、session-create 类失败自动重试），规划者的工作收敛为**裁定**（settle / reclaim / rollback / replan）与**异常处置**（pointer 类推送失败人工 `dispatch` 重推、依赖调整、驳回移交、冲突调和）。长任务纪律：等 > 询问用户 > 回收。
+
+**等待期对账纪律（干等是反模式）**：回调通知与自动推送都是**尽力而为的运输层**——watcher 停摆、租约漂移、pointer 类失败都会让通知缺席，但引擎状态不会说谎。「等」的动作定义包含对账：每次被唤醒（用户消息/升级投递/任意触达）先 `status -RunId` 对账，重点看四类信号——`reported` 节点（**回调可能未达但账本已记**，直接四查 settle）、`pushes`/`dispatches.failed`（session-create 类触碰即重试、pointer 类人工 `dispatch` 重推）、`held_by_conflict`/`held_by_file_overlap`（待消解）、`warnings`（悬挂轮 / pending_sync）。**「没收到通知」≠「没发生」——以 status/ledger 为准，不以 inbox 为准。**
 
 **阶段链模型**：任务路由带 `phase`，全序 `REQ → DESIGN → IMPL → VERIFY → 完成`；阶段内角色白名单并行（DESIGN = CTO∥UX∥QA，QA 测试先行——尽量与 CTO 同期而非堆到 VERIFY，见速查 6）。多 owner 任务颁布时每角色各建一个链头节点；settle 阶段感知：阶段内收窄不流转，最后一个 owner settle 才整组切换阶段并收敛 graft 下一阶段链头。rollback 显式 `-To <角色集> -Phase <阶段>` 指定回退目标（回退 REQ 可达：`-To "PM" -Phase REQ`）；展示面用 `∥`（阶段内并行）/`→`（阶段间）渲染。旧归档（phase=null）保守降级为原线性链行为。阶段白名单真源 `references/phase-model.md`。
 
@@ -119,7 +121,7 @@ PM 归档（longTask 信号触发）→ start-role -Role PLANNER -TaskJson ...�
 
 ## 交付回调与四查门禁
 
-worker 完成即经 `goal-tree-leaf.cmd -Command report` 回调**你**（回调自动送达当前有效规划者会话——新鲜租约优先，投递机制无需关心）。各角色的产物落点与凭据特征见 §交付角色分工与裁定触点；下表是字段语义：
+worker 完成即经 `goal-tree-leaf.cmd -Command report` 回调**你**（回调自动送达当前有效规划者会话——新鲜租约优先）。投递是**通知层**（dsh 下经插件 watcher），**可能缺席**——账本 `ledger.jsonl` 与节点 `reported` 态才是权威信号：回调未达时 `status -RunId` 一样能看到，勿据「未收到通知」判定 worker 未完成、更勿据此干等（等待期对账纪律见 §交付编排生命周期）。各角色的产物落点与凭据特征见 §交付角色分工与裁定触点；下表是字段语义：
 
 | 回调字段 | 交付语义 |
 |----------|----------|
@@ -146,7 +148,7 @@ worker 完成即经 `goal-tree-leaf.cmd -Command report` 回调**你**（回调�
 | `state/dispatch-log.jsonl` | 通用派发审计（`goal-tree dispatch` 真实派发逐行：node/role/worker/round/exit/at；status `dispatches` 段透出） |
 | tree.json / ledger.jsonl / round-*.md / final-report.md | goal-tree 既有：树状态 / 回调账本 / 轮快照 / 结案报告 |
 
-> **统一决策账本 `decisions.jsonl` 位于归档根**（`.rdd/changes/archive/<归档名>/`，gitignore 由归档策略管理）——非 run 目录：账本是长期分析资产，归档是长期载体。条目四要素（background/options[]/decision/reason）+ decider（user / planner / auto\<规则\>@\<stage\>）；kinds：auto/escalation/resolution/overturn（AutoMode 既有）+ derive_proposal / checkpoint / ruling（rollback/reclaim/replan/conclude/conflict-resolve 命令尾 advisory 追加）。append-only 单调 `D<n>`，坏行隔离续写，旧形态缺字段容忍读。
+> **统一决策账本 `decisions.jsonl` 位于归档根**（`.rdd/changes/archive/<归档名>/`，gitignore 由归档策略管理）——非 run 目录：账本是长期分析资产，归档是长期载体。条目四要素（background/options[]/decision/reason）+ decider（user / planner / auto\<规则\>@\<stage\>）；kinds：auto/escalation/resolution/overturn（AutoMode 既有）+ derive_proposal / checkpoint / ruling（rollback/reclaim/replan/conclude/conflict-resolve 命令尾 advisory 追加 + planner-routing-refusal 拒/覆写 advisory 追加，见 §统一决策账本）。append-only 单调 `D<n>`，坏行隔离续写，旧形态缺字段容忍读。
 
 
 ## 需求审查门（建树前，接管归档时）
@@ -164,7 +166,7 @@ worker 完成即经 `goal-tree-leaf.cmd -Command report` 回调**你**（回调�
 **语义审查归属（评审内生于规划者会话，auditor-subagent-review）**：
 
 - **新链单入口**：规划者派**需求审视子代理**（独立上下文，输入 = `rdd-engine/references/review-input-template.md` 机械清单——禁转述、禁裁定倾向注入、禁代审，见模板禁令段）生产 ReviewFile（`reviewer: "auditor-delegated"`），结论呈用户（最终裁决权在用户）后机械消费——保持「机械转发审视产物」分工，且审视上下文与规划者会话完全隔离。原「AUDITOR 缺席 → 规划者自产（reviewer: "planner"）」降级分支**整体消失**。
-- **强形态分支（用户显式要求独立会话评审）**：`start-role -Role AUDITOR` 独立会话按同一模板产同一契约产物（`reviewer: "auditor"`）；dsh 后端需 preset `rdd-auditor`（`scripts/build-dsh-presets.mjs --with-auditor` 可重建，产品面默认 8 组不含 AUDITOR——设计 #8：删除引擎机制（节点/AutoDispatch 推送/一批一会话），保留方法论）。
+- **强形态分支（用户显式要求独立会话评审）**：`start-role -Role AUDITOR` 独立会话按同一模板产同一契约产物（`reviewer: "auditor"`）；dsh 后端需 preset `rdd-auditor`（产品面默认 8 组不含 AUDITOR——设计 #8：删除引擎机制（节点/AutoDispatch 推送/一批一会话），保留方法论。重建脚本 `build-dsh-presets.mjs --with-auditor` **属源码仓 `scripts/`，不随引擎包分发**——引擎安装（`.rdd/skills/rdd-engine/` 布局）内该通道缺席时**不要手工装配/安装 preset**（DSH_HOME 是用户域部署面，规划者不得代装配）；强形态本就是可选项，缺 preset 时回落子代理形态即可）。
 - **reviewer 枚举（单源见模板常量表）**：`auditor-delegated`（子代理形态，新产出）/ `auditor`（强形态会话，新产出）/ `planner`（存量只读——历史值合法，不再产出）。产出必带 `production` 留痕（`{ mode: "subagent"|"session", template: "rdd-engine/references/review-input-template.md" }`，消费端容忍、审计可检）。
 
 **ReviewFile 契约**（精确模板）：
@@ -246,6 +248,8 @@ worker 完成即经 `goal-tree-leaf.cmd -Command report` 回调**你**（回调�
 
 **双链总纲**（`bridge.json review_mode` 为分界，决策 #4/#7）：**新链**（promulgate 带 `-ReviewMode subagent|session`，落 `review_mode` 键）审查无节点——纯契约：触发后状态置 `ready`，规划者派评审子代理产 DesignReviewFile，经 `design-review -Action submit -Stage <S<k>>` 入库裁定；**缺键 legacy 照旧**（graft `[设计审查·S<k>]` 节点、AUDITOR 一批一会话 settle 结算，行为逐字节不变，不回溯存量 run）。
 
+> **新颁布一律带 `-ReviewMode subagent`（dsh 下硬性）**。legacy 链的 graft 判据 `Test-AuditorDeployed` 是双探（引擎旁 `rdd-auditor/SKILL.md` 角色卡目录 or repo `dsh/presets/rdd-auditor` 任一在场即 true）——**角色卡在场 ≠ dsh preset 在场**：按 `.rdd/skills/` 布局安装角色的项目恒使探测为真，legacy 链随之落审查节点；节点需真实 AUDITOR 会话 claim+report 才能 settle，而 dsh 产品面默认 8 组 preset 不含 `rdd-auditor` → 节点不可派发、审查卡死（规划者派子代理产的 DesignReviewFile 也进不了链——submit 对缺键 run 报 `DESIGN_REVIEW_LEGACY_RUN`）。卡死处置：删除 run 目录 → task.json 复位 → 带 `-ReviewMode subagent` 重建（评审产物可直接复用 submit）；**禁止手工装配 rdd-auditor preset 进 DSH_HOME 自救**——用户域部署面规划者不得代装配，且 preset 缺席非根因（legacy 节点形态才是）。
+
 **状态机**（`plan.stages[k].design_review`，无段 = 无门零成本）：
 
 | 状态 | 新链语义（review_mode） | legacy 语义（缺键） | 进入 |
@@ -324,7 +328,7 @@ worker 完成即经 `goal-tree-leaf.cmd -Command report` 回调**你**（回调�
 
 1. **propose**（`derive -Action propose -Title <标题> -Rationale <缺口理由> [-DependsOn <任务id,…>] [-Owners <CTO+UX+QA 子集>]`）：账本登记 derive_proposal 条目（四要素）+ bridge `derivations[]` 落 `proposed`，返回**标准呈报文案**（present_to_user）——dsh 经 tool-ask-user 呈现，CLI/Plus 会话内呈现并留痕。**零副作用**（不 graft、不派遣）。`-DependsOn` 限本 run 已交付任务 id（`DERIVE_DEP_INVALID`）；`-Owners` 只能缩窄缺省全链 CTO+UX+QA（`DERIVE_OWNERS_INVALID`；PM 自任派生 REQ 节点，不在 owner 集）。
 2. **用户确认硬门**：confirm 必带 `-UserVerdict <用户裁决原文>`——裁决原文即确认记录（账本 ruling 条目，decider=user，ref_entry→提议条目）；缺失 → `DERIVE_CONFIRMATION_MISSING`，**不执行**。CLI/Plus 降级路径：规划者会话内呈现提议原文并记录用户裁决（decide checkpoint 同族纪律），再回填 confirm。
-3. **confirm 落地**（顺序契约：**事实永远记录先行**）：账本 ruling 入账 → 状态落 confirmed → 预算预检（保守增量：节点 = owner数+4，goal 根宽度 +2；不足 → `DERIVE_BUDGET_EXCEEDED` **不盲目 graft**，派生卡 confirmed **不可自动重试**——预算 mid-run 不可增长，出路 withdraw 或另起新 run）→ graft PM 节点（goal 根子节点，node.task 注入判据增补义务与派生上下文）→ plan-log 记 `deviation/scope_derived` → 自动推送 PM 会话起草需求文档。
+3. **confirm 落地**（顺序契约：**事实永远记录先行**）：账本 ruling 入账 → 状态落 confirmed → 预算预检（保守增量：节点 = owner数+4，goal 根宽度 +2；不足 → `DERIVE_BUDGET_EXCEEDED` **不盲目 graft**，派生卡 confirmed **不可自动重试**——出路 withdraw（获批 `budget` 扩展后可重新 propose→confirm）或另起新 run）→ graft PM 节点（goal 根子节点，node.task 注入判据增补义务与派生上下文）→ plan-log 记 `deviation/scope_derived` → 自动推送 PM 会话起草需求文档。
 4. **PM 产出义务**：新需求文档（requirements/ 下，含验收标准与依赖关系如实标注）+ overview.md 增补需求索引行与「## 整体验收判据」条目——判据经锚点 live 读，验收门自然覆盖派生需求。
 5. **受控入册**（PM 节点 settle）：确认记录防御性复核（无记录拒绝执行）→ 新需求文档定位（citations 中 requirements/*.md，overview 除外；缺失 → `DERIVE_REQUIREMENT_DOC_MISSING`，reclaim 重做 PM 节点）→ **桥代写** `rdd-flow add-task -BridgeRun <runId>`（task.json 单一写入方不破；remark 带 `derivation=DRV<n>` 幂等锚点；任务落 DESIGN 相位）→ bridge.tasks 映射登记 → DESIGN 链头预挂 PM 节点下（depends_on 多锚缝合到各依赖任务活跃节点）→ acceptance 段 live 刷新（single_exempt/declared 且判据已落 → 升级 planned/basis=derived_upgrade）→ plan-log 记 `progress/derivation_registered`。settle 与入册之间中断 → status 巡检幂等自愈（remark 锚点去重，不重复建任务）。
 6. **replan 吸收**：registered 未吸收期间派生链头被阶段闸门 hold（`NODE_BLOCKED_BY_GATE`，消息引导 replan——**推送/认领闸门不豁免**，与 replan 覆盖校验白名单方向相反是有意设计）；replan 将派生任务纳入阶段 → absorbed 标记 + 闸门放行。之后与原生任务同轨（DESIGN 收敛 → IMPL → VERIFY）。
@@ -340,6 +344,7 @@ worker 完成即经 `goal-tree-leaf.cmd -Command report` 回调**你**（回调�
 
 - **五角色检查点留痕**（`decide -Kind checkpoint -Archive <归档> -Checkpoint <名> -Decision <结论> [-Reason] [-Options A|B] [-Background] [-Role] [-RunId]`）：五交付角色经用户确认的检查点决策入账（纪律性义务，SKILL 协议层引导角色执行；无 run/节点绑定要求）。四要素 + decider=user + checkpoint/role 上下文字段。
 - **编排裁定自动入账**（机械零负担，advisory）：rollback / reclaim / replan / conclude / conflict-resolve 命令尾自动追加 kind=ruling 条目（decider=planner，背景=命令与裁定内容）——规划者裁定也是决策，统一账本可分析。追加失败降级为命令 warnings，不回滚主命令语义。
+- **路由拒绝与覆写**（planner-routing-refusal，规划者输出时建议性入账）：`planner-guide.md` §一 路由拒绝触发的拒与「并入」opt-in 覆写均走 `ruling` kind——拒时 decider=`planner`（背景=旧 runId + 判据三选一结果 + 新需求摘要，options=[拒、新会话、PM 路径]，decision=disposition，reason=命中判据条目）；覆写时 decider=`user`（ref_entry→对应拒条目，背景=触发词原文 + 旧树近尾声确认）。与命令尾自动入账同源，路径同归档根 `decisions.jsonl`，零 schema 改动。
 - 账本文件契约见 §纯自动模式细则「决策账本」段（归档级路径、append-only、坏行隔离、旧形态缺字段容忍读）。
 
 ## 异常处置速查
@@ -356,9 +361,11 @@ worker 完成即经 `goal-tree-leaf.cmd -Command report` 回调**你**（回调�
 | claim/dispatch 报 `NODE_BLOCKED_BY_GATE`（消息含 replan 吸收指引） | 派生任务已入册未吸收——`replan` 将其纳入阶段（见 §范围缺口派生）；**无 Force 旁路** |
 | settle 报 `SETTLE_EVIDENCE_REJECTED` | `reclaim -NodeId`（同阶段：原会话存活 in-place 重做 / 否则剪枝重建）或 `rollback`（跨阶段，见命令面板「回退」） |
 | 树已 settle、flow 未流转 | `pending_sync` 自动记录；每次 status 自动重试修复 |
-| 会话死在 claimed | `reclaim -NodeId`（dead-claim：存活预检 → 自动重推，新会话第一动作 claim 接管） |
-| reclaim 报 `RECLAIM_TARGET_ALIVE` | 认领会话仍存活——不是回收对象；等它 report |
-| reclaim 报 `RECLAIM_UNPROVEN_DEAD` | 存活不可证实且未达 60min 阈值——宁等多收；达阈值后重试 |
+| 会话死在 claimed | `reclaim -NodeId`（dead-claim：存活预检 → 自动重推，新会话第一动作 claim 接管）——**先确认它真死了**：跑得久 ≠ 死 |
+| reclaim 报 `RECLAIM_TARGET_ALIVE` | 目标上仍有存活会话在干——不是回收对象，等它 report。两个证据面：①边车绑定的会话探针可证存活；②边车绑定不可用（缺失/损坏/被代跑清空）时，花名册里绑到**本节点**的存活会话即证据（仅此分支生效：认领已被证实 dead 的，其回收 + 重推恰好要复用那个存活兄弟会话，不否决——见 test-inplace-redo T5） |
+| reclaim 报 `RECLAIM_UNPROVEN_DEAD` | 存活不可证实且未达 60min 阈值——宁等多收；**达阈值后仍不自动放行**，见下条 |
+| reclaim 报 `RECLAIM_DEATH_UNPROVEN_NEEDS_VERDICT` | 已过 60min 但存活仍不可证实（非 dsh shell / 探针端点不可达）——时间阈值不是死亡证明：**把情况呈给用户，拿到裁决原文再 `-UserVerdict "<原文>"` 重试**（裁决入归档决策账本）；别自己判死 |
+| 规划者会话跑 claim 报 `PLANNER_CANNOT_CLAIM` | 认领是 worker 的第一动作，规划者代跑会劫持 worker 视图绑定（硬约束 16）——改 `dispatch -NodeId` 把节点交给 worker；真需代跑则显式 `-OnBehalfOf <label>`（代跑不写会话绑定） |
 | reclaim 报 `REDO_FAILURE_REF_MISSING` | 失败清单（四查 problems + 回调 full_report/extras 自动检索）组装为空——带 `-FailureRef "<失败清单引用>"` 重试，或 `-NoReuse` 走重建 |
 | reclaim 报 `RECLAIM_INPLACE_PROMPT_FAILED` | 重做指针投递原会话失败（节点零残留）——`dispatch -NodeId` 重投原会话，或 `reclaim -NoReuse` 重建 |
 | rollback 报 `ROLLBACK_REQUIRES_UNQUALIFIED` | 该节点证据合格——不该回退，settle 即可 |
@@ -366,6 +373,10 @@ worker 完成即经 `goal-tree-leaf.cmd -Command report` 回调**你**（回调�
 | rollback 报 `TASK_NOT_ACTIVE` | 任务已 completed——rollback 不覆盖事后返工：`rdd-flow reopen`（如 `-To DEV`）拉回活跃后按 rdd-flow 流转重做，再入桥接编排呈报用户（见 §交付角色分工与裁定触点 速查 7） |
 | rollback 报 `ROLLBACK_GRAFT_FAILED` | prune 已完成、graft 未成——**重跑同一条 rollback 命令**（幂等续跑，不二次剪枝） |
 | 推送失败（status pushes 账可见） | `session-create` 类：status 触碰自动重试；`pointer` 类：人工 `dispatch -NodeId` 重推（防会话堆积） |
+| worker 已 report 但你没收到回调通知 | 通知层尽力而为（watcher 停摆/租约漂移可缺席）——`status -RunId` 看 `reported` 节点与 ledger 条目为权威，照常四查 settle；勿干等、勿据 inbox 有无判定 |
+| 下游会话迟迟未起（如 DEV 没被派出、你在干等） | 先 `status` 对账 `pushes`/`dispatches` 账：session-create 类失败→status 触碰自动重试；pointer 类失败→人工 `dispatch -NodeId` 重推；节点 pending 且无推送记录→查依赖/冲突门（`NODE_BLOCKED_BY_DEPS` / `held_by_conflict`）。**通用树（非桥接）没有自动推送——`dispatch` 是你的主动动作**，建了树不派发就是永久等待 |
+| graft/round-start 报 `ROUNDS_EXCEEDED`/`NODES_EXCEEDED`/`WIDTH_EXCEEDED` | 预算触顶：**先呈报用户，获批后同 run 只增扩展**——`budget -SetMaxRounds/-SetNodeWidth/-SetMaxNodes <n> -UserVerdict <用户裁决原文>`（硬门：缺裁决报 `BUDGET_VERDICT_MISSING`；只增不减报 `BUDGET_RAISE_ONLY`；桥接形态另支持 `-SetMaxDerivations`，裁决入归档决策账本）。扩展即生效（graft/round-start 解锁、budget_exhausted 诚实门按新上限重挂）。用户不批 → `conclude budget_exhausted` 诚实收口，续作开**新 RunId**（开工前读旧 run final-report/ledger 摘要继承上下文），**勿自行删目录重建** |
+| 新 run 开出后要找回旧 run 记录 | 旧 run 目录 `.rdd/goal-trees/<run-id>/` 永不迁移、随时可查（`status -RunId <旧>` / `report/final-report.md` / `state/ledger.jsonl`）；全部 run 清单 = `.rdd/goal-trees/` 目录名。**禁止删除旧 run 目录腾 RunId**——桥接 RunId 冻结 `deliver-<归档>`，删目录重建 = 销毁全部审计记录（「删 run 重建」仅适用于颁布形态错误的死锁处置且须用户确认） |
 | 双规划者误起 | 启动即被 `PLANNER_RUN_ACTIVE` 拒绝；确认原会话已死后 `lease -Takeover` 留痕接管 |
 | promulgate 报 `RUN_EXISTS` | 已颁布过——`status/resume -RunId deliver-<归档名>` 续跑 |
 | promulgate 报 `REVIEW_FILE_INVALID`/`REVIEW_TASK_NOT_FOUND`/`REVIEW_EXCLUDED_DEP` | ReviewFile 契约/指向/依赖悬空——按错误消息修正后重试（建树前零残留）；见 §需求审查门 |
@@ -377,6 +388,7 @@ worker 完成即经 `goal-tree-leaf.cmd -Command report` 回调**你**（回调�
 | 设计审查证据被拒 `SETTLE_EVIDENCE_REJECTED`（DesignReviewFile 契约） | 新链：按问题清单修复 DesignReviewFile 后重新 `design-review -Action submit`（状态仍 `ready`）；legacy：AUDITOR 会话按 `rdd-auditor/references/design-review.md` 修复重报，会话死走 `reclaim` |
 | 新链 submit 报 `DESIGN_REVIEW_NOT_READY` | 状态非 `ready`（提前/重复提交，或 fail 波进行中）——查 `design-review -Action status`，待 `ready` 再审 |
 | 新链 submit 报 `DESIGN_REVIEW_LEGACY_RUN` | 该 run 缺 `review_mode` 键（存量链）——照旧 settle `[设计审查·S<k>]` 节点 |
+| legacy run 审查节点派不出 AUDITOR 会话（dsh 无 `rdd-auditor` preset / dispatch 报 `NODE_NOT_MAPPED`） | 死锁形态，preset 缺席非根因（legacy 节点形态才是）——**不要手工装配 preset 进 DSH_HOME**。正解：删除 run 目录 → task.json 复位路由 → 带 `-ReviewMode subagent` 重新颁布（子代理评审产物可复用直接 submit）；见 §设计汇聚审查 双链总纲注 |
 | conclude 报 `ACCEPTANCE_PENDING`/`ACCEPTANCE_NOT_PASSED` | 验收链未收口/结论不通过——处置见 §整体验收闭环（仅 §3 缺总结论时补写后重跑 conclude） |
 | conclude 报 `STAGE_ACCEPTANCE_PENDING` | 仍有阶段验收点未 `passed`——settle 对应 `[集成验收·S<k>]` 节点后重跑 |
 | conclude 报 `DERIVATION_PENDING` | 有未完结派生（proposed/confirmed 挂起或 registered 任务未终态）——推进到终态或 `-Action withdraw` 撤销挂起提议；withdrawn 永不阻塞（见 §范围缺口派生） |

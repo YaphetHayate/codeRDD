@@ -147,6 +147,13 @@
 - `max_nodes`：全树节点数上限，超出时 graft 报 `NODES_EXCEEDED`
 - "达标即停"类智能判定**留给 规划者**——引擎只管机械终局前置
 
+**运行期预算扩展（planner-budget-extend）**：预算耗尽且工作未完时，可经 `budget` 命令**只增**扩展——`goal-tree.cmd -Command budget -RunId <id> -SetMaxRounds <n> [-SetNodeWidth <n>] [-SetMaxNodes <n>] -UserVerdict <用户裁决原文>`。硬门与纪律：
+
+- **人工审批硬门**：`-UserVerdict`（用户裁决原文逐字）就是批准记录本体——无记录不执行（缺省报 `BUDGET_VERDICT_MISSING`；与桥接派生 confirm 同形）。裁决逐字落 `state/budget-log.jsonl`（append-only 审计）。
+- **只增不减**：每个目标值必须**严格大于**现天花板（`BUDGET_RAISE_ONLY`）——mid-run 下调会让在途状态压线、闸门失效。
+- 扩展即生效：graft / round-start 自动解锁；`conclude -Outcome budget_exhausted` 的诚实门按**新**上限重挂（`BUDGET_NOT_EXHAUSTED`）。
+- 结案后的 run 拒绝扩展（`RUN_CONCLUDED`）——先规划后花钱，结案不追认。
+
 **终局**（三种均为正常终结，均产出 final-report.md）：
 
 | 终局 | 机械前置 | 语义 |
@@ -156,6 +163,8 @@
 | `space_exhausted` | 树无 pending 且无 claimed 节点 | 任务空间耗尽 |
 
 预算未耗尽时调用 `budget_exhausted` 会被引擎拒绝（`BUDGET_NOT_EXHAUSTED`）——诚实性由引擎背书。
+
+**预算耗尽后的续作（跨 run 承接）**：优先评估 `budget` 命令**同 run 获批扩展**（见上节——上下文/节点连续性最好）；确需换 run 时开**新 run**（新 RunId、重新声明预算）承接未完成工作——开工前先读旧 run 的 `report/final-report.md` 与 `state/ledger.jsonl` 摘要**继承上下文**，未完成的工作按新树重新 graft（节点/状态不迁移，reported 永不可重复消费）。旧 run 目录**永不迁移、永不删除**（审计资产），随时 `status -RunId <旧>` 回查；全部 run 清单 = `.rdd/goal-trees/` 目录名。「新 run 看不见旧记录」不是引擎行为——是没去读旧目录。
 
 ---
 
@@ -321,10 +330,12 @@ await pipeline(pendingNodes, [
 
 ```powershell
 & "$rdd\scripts\goal-tree-leaf.cmd" -Command next   -RunId <id> [-Limit 5]
-& "$rdd\scripts\goal-tree-leaf.cmd" -Command claim  -RunId <id> -NodeId <nodeId> -Worker <label> [-Steal]
+& "$rdd\scripts\goal-tree-leaf.cmd" -Command claim  -RunId <id> -NodeId <nodeId> -Worker <label> [-Steal] [-OnBehalfOf <label>]
 & "$rdd\scripts\goal-tree-leaf.cmd" -Command report -RunId <id> -Worker <label> -CallbackFile <path>   # -Callback 仅建议纯 ASCII 短串
 & "$rdd\scripts\goal-tree-leaf.cmd" -Command status -RunId <id> [-NodeId <nodeId>]
 ```
+
+**身份门（planner-claim-guard）**：claim 的会话绑定（边车 `dsh_session_id`）语义是「执行这条命令的会话」，而插件条带的 worker 视图与 dispatch/repush 的会话复用都以它作真源。因此**执行者是本 run 规划者会话**时（`state/planner.json` 的 `dsh_session_id`），claim/steal 必须显式 `-OnBehalfOf <label>` 声明代跑，否则硬拒 `PLANNER_CANNOT_CLAIM`——认领是 worker 自己的第一动作，规划者要动节点走 dispatch/reclaim。**代跑声明不占用 worker 身份**：边车 `dsh_session_id` 落 null、执行者另记 `actor_session_id` + `on_behalf_of`（留痕但不劫持 worker 视图，也不成为重推的复用目标）。规划者会话不存在或非 dsh shell（`planner.json.dsh_session_id` 为 null）时本门不生效（纯 CLI / legacy run 逐字节不变）。
 
 ### 错误码约定
 

@@ -153,9 +153,11 @@ powershell -ExecutionPolicy Bypass -File scripts\update-projects.ps1 -ListOnly  
 - **Node.js 18+**（仅安装器需要）
 - **git**（可选——rdd-engine 用它精确定位项目根；缺失或目标非 git 仓时按五级定位链降级：`RDD_PROJECT_ROOT` → `git rev-parse` → `.git` 祖先 → `.rdd/install.json` 祖先 → cwd，非 git 项目全量可用。协议见 [`rdd-engine/references/engine-location.md`](../rdd-engine/references/engine-location.md)）
 
-## 旧版安装脚本（deprecated）
+## 旧版安装脚本（已移除）
 
-`install.ps1` / `install.cmd` / `install.sh` 为旧版安装方式，安装布局与当前 CLI 不一致（角色目录平铺在项目根、仅适配 OpenCode），**不再维护**，请改用 `coderdd init`。旧脚本安装过的项目可用 `install.ps1 -Target . -Uninstall` 清理后重新 init。
+`install.ps1` / `install.cmd` / `install.sh` 为旧版安装方式，安装布局与当前 CLI 不一致（角色目录平铺在项目根、仅适配 OpenCode），**不再维护，已从仓库删除**（追溯见 `git show a49105d:install.ps1`）。请改用 `coderdd init`。
+
+旧脚本装过的项目没有自动卸载入口了，手工清理后重新 init：删项目根的 `rdd-*` 角色目录（含 `rdd-engine`）、`.opencode/` 下的旧脚本残留（`.rdd-install.json` 清单、`.rdd-install-backup/` 备份目录）及其写入的薄文件，再从 `opencode.json` / `.opencode/package.json` 里摘掉合并进去的条目。
 
 ## 引擎 CLI 独立安装（rdd-engine.tgz，免克隆 codeRDD）
 

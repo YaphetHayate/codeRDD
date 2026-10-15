@@ -33,6 +33,12 @@
 $ErrorActionPreference = 'Stop'
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 
+# planner-claim-guard: 夹具里的 claim/report 是 worker 侧动作 —— 套件若在 dsh 会话里运行，
+# 环境里的 DSH_SESSION_ID 会被 start/promulgate 写进 run 的 state/planner.json，随后每次
+# fixture claim 都会被身份门判成「规划者代跑」而拒（PLANNER_CANNOT_CLAIM）。显式清空以保
+# 确定性（与 test-long-task-planning / test-handoff-gate 同惯例）。
+Remove-Item Env:\DSH_SESSION_ID -ErrorAction SilentlyContinue
+
 $EngineDir = Split-Path -Parent $PSScriptRoot | Join-Path -ChildPath 'scripts'
 $BridgePs1 = Join-Path $EngineDir 'delivery-bridge.ps1'
 $FlowPs1   = Join-Path $EngineDir 'rdd-flow.ps1'

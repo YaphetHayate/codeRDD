@@ -16,6 +16,12 @@
 $ErrorActionPreference = 'Stop'
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 
+# planner-claim-guard: 夹具里的 claim/report 是 worker 侧动作 —— 套件若在 dsh 会话里运行，
+# 环境里的 DSH_SESSION_ID 会被 start/promulgate 写进 run 的 state/planner.json，随后每次
+# fixture claim 都会被身份门判成「规划者代跑」而拒（PLANNER_CANNOT_CLAIM）。显式清空以保
+# 确定性（与 test-long-task-planning / test-handoff-gate 同惯例）。
+Remove-Item Env:\DSH_SESSION_ID -ErrorAction SilentlyContinue
+
 $EngineDir = Split-Path -Parent $PSScriptRoot | Join-Path -ChildPath 'scripts'
 $BridgePs1 = Join-Path $EngineDir 'delivery-bridge.ps1'
 $FlowPs1   = Join-Path $EngineDir 'rdd-flow.ps1'
@@ -344,6 +350,94 @@ try {
     Assert-True ($r.json.success -eq $true -and [string]$r.json.data.flow_operation -like 'tree-level*') 'T8 repair node settle is tree-level' ($r.raw)
     $tasksAfterT8 = (Get-Content -LiteralPath (Join-Path $Work "$arch4/task.json") -Raw -Encoding UTF8)
     Assert-True ($tasksBeforeT8 -eq $tasksAfterT8) 'T8 repair settle never touches task.json (边界留痕)'
+
+    # ================= R1S: 验收链静默停摆可见性（r1-chain-silent-stall ①②④） =================
+    # 修复前：链 graft 失败的 error 在 Invoke-AutoDispatch 就地丢弃；status 数据无
+    # acceptance 块；next_step 在全 terminal 时诱导直接 conclude（撞 ACCEPTANCE_PENDING
+    # 硬门）——链零 graft 零事件零错误。修复后：失败持久落 acceptance.last_error +
+    # status 块 + next_step/警示感知 + 下一触发点自愈即清。
+    $archR = New-Archive 'ba-r1s' '[{"title":"R1Sa","requirement":"requirements/t1.md","currentOwners":["QA"],"designDocs":[]},{"title":"R1Sb","requirement":"requirements/t2.md","currentOwners":["QA"],"designDocs":[]}]' $Script:CriteriaBlock
+    $pfR = Write-TestPlan (Join-Path $Work 'ba-r1s-plan.json') @(@{ id = 'S1'; tasks = @(1, 2) }) @{} -CriteriaRef 'requirements/overview.md#整体验收判据'
+    $r = Invoke-Bridge @('-Command', 'promulgate', '-TaskJson', ($archR + '/task.json'), '-PlanFile', $pfR, '-NoPush')
+    Assert-True ($r.json.success -eq $true) 'R1S promulgate ok' ($r.raw)
+    $b = Read-BridgeJson 'deliver-ba-r1s'
+    Assert-True ([string]$b.acceptance.status -eq 'planned') 'R1S acceptance planned at promulgate' ($b | ConvertTo-Json -Depth 4)
+    $ha = [string]$b.tasks.'1'.stages.QA; $hb = [string]$b.tasks.'2'.stages.QA
+    Do-Deliver 'deliver-ba-r1s' $ha 'QA' "$archR/requirements/t1.md"
+    $null = Do-Settle 'deliver-ba-r1s' $ha
+    # 失败注入：goal_root 指向不存在的节点 → 链 graft 必败（修复前：完全静默）
+    $bpR = Join-Path $Work '.rdd/goal-trees/deliver-ba-r1s/bridge.json'
+    $bjR = Get-Content -LiteralPath $bpR -Raw -Encoding UTF8 | ConvertFrom-Json
+    $realRoot = [string]$bjR.goal_root
+    $bjR.goal_root = 'n999'
+    Write-Utf8NoBom $bpR ($bjR | ConvertTo-Json -Depth 12)
+    Do-Deliver 'deliver-ba-r1s' $hb 'QA' "$archR/requirements/t2.md"
+    $r = Do-Settle 'deliver-ba-r1s' $hb
+    Assert-True ($r.json.success -eq $true) 'R1S last settle ok (chain graft failure is data, never a settle failure)' ($r.raw)
+    $b = Read-BridgeJson 'deliver-ba-r1s'
+    Assert-True ([string]$b.acceptance.status -eq 'planned' -and ((Get-Content -LiteralPath $bpR -Raw -Encoding UTF8) -match 'graft failed')) 'R1S graft failure persisted to acceptance.last_error (was: dropped on the floor)' ($b | ConvertTo-Json -Depth 6)
+    $r = Invoke-Bridge @('-Command', 'status', '-RunId', 'deliver-ba-r1s')
+    Assert-True ($r.json.success -eq $true -and $null -ne $r.json.data.acceptance -and [string]$r.json.data.acceptance.status -eq 'planned') 'R1S status carries the acceptance view' ($r.raw)
+    Assert-True ([string]$r.json.data.acceptance.last_error -match 'graft failed') 'R1S status surfaces acceptance.last_error' ($r.raw)
+    Assert-True (([string]$r.json.data.next_step -match '验收链未收口') -and ([string]$r.json.data.next_step -notmatch 'conclude: ')) 'R1S next_step gates conclude behind the open chain (was: 诱导直接 conclude)' ($r.raw)
+    Assert-True (@($r.json.data.warnings | Where-Object { [string]$_ -match 'acceptance chain' }).Count -ge 1) 'R1S warnings row for the chain error' ($r.raw)
+    # 自愈闭环：修复 goal_root → 下一 status touch 重试 graft 成功 → last_error 清空
+    $bjR = Get-Content -LiteralPath $bpR -Raw -Encoding UTF8 | ConvertFrom-Json
+    $bjR.goal_root = $realRoot
+    Write-Utf8NoBom $bpR ($bjR | ConvertTo-Json -Depth 12)
+    $r = Invoke-Bridge @('-Command', 'status', '-RunId', 'deliver-ba-r1s')
+    Assert-True ([string]$r.json.data.acceptance.status -eq 'grafted' -and -not ([string]$r.json.data.acceptance.last_error)) 'R1S self-heal on the next touch: graft lands + last_error cleared' ($r.raw)
+
+    # ================= W4: 宽度 done 释放（宽度缺陷④：运行期增员吃掉验收链预留位） =================
+    # 结构复刻实录：预算 width=链头+2（验收链预留）；运行期 planner 下探修复节点挂
+    # goal root 占满全部宽度位；全部 done 后在途并发面 = 0——修复前 done 不释放宽度位，
+    # [集成/联调] graft 恒 WIDTH_EXCEEDED（收口冻结）；修复后 done 即释放，链立挂且全程收口。
+    $archW = New-Archive 'ba-w4' '[{"title":"W4a","requirement":"requirements/t1.md","currentOwners":["QA"],"designDocs":[]},{"title":"W4b","requirement":"requirements/t2.md","currentOwners":["QA"],"designDocs":[]}]' $Script:CriteriaBlock
+    $pfW = Write-TestPlan (Join-Path $Work 'ba-w4-plan.json') @(@{ id = 'S1'; tasks = @(1, 2) }) @{} -CriteriaRef 'requirements/overview.md#整体验收判据'
+    $r = Invoke-Bridge @('-Command', 'promulgate', '-TaskJson', ($archW + '/task.json'), '-PlanFile', $pfW, '-NoPush')
+    Assert-True ($r.json.success -eq $true) 'W4 promulgate ok' ($r.raw)
+    $depW = if ($r.json.success) { @($r.json.data.plan.stages | Where-Object { $null -ne $_.design_review }).Count -gt 0 } else { $false }
+    $expWW = if ($depW) { 5 } else { 4 }
+    Assert-True ([int]$r.json.data.budget.node_width -eq $expWW) "W4 width formula heads+2[+K] -> $expWW" ($r.raw)
+    $b = Read-BridgeJson 'deliver-ba-w4'
+    $haW = [string]$b.tasks.'1'.stages.QA; $hbW = [string]$b.tasks.'2'.stages.QA
+    $rootW = [string]$b.goal_root
+    # 运行期增员：planner 下探 (width-2) 个修复节点挂 goal root——恰占满宽度位（heads 在途 2 + 增员 R = width）
+    $repCount = $expWW - 2
+    $repItems = @()
+    for ($ri = 1; $ri -le $repCount; $ri++) { $repItems += @{ title = "[修复] W4 运行期增员 $ri"; task = "修复目标：占宽 $ri（宽度缺陷④夹具）。"; role = 'dev'; ref = 'ba-w4/requirements/overview.md' } }
+    $repFile = Join-Path $Work 'w4-repair.json'
+    Write-Utf8NoBom $repFile ($repItems | ConvertTo-Json -Depth 4)
+    $r = Invoke-Tree @('-Command', 'graft', '-RunId', 'deliver-ba-w4', '-Parent', $rootW, '-TasksFile', $repFile)
+    Assert-True ($r.json.success -eq $true) "W4 runtime additions graft ok ($repCount repairs fill the width while heads in-flight)" ($r.raw)
+    foreach ($rn in @($r.json.data.grafted | ForEach-Object { [string]$_.id })) {
+        $r = Invoke-Bridge @('-Command', 'claim', '-RunId', 'deliver-ba-w4', '-NodeId', $rn, '-Role', 'DEV')
+        Assert-True ($r.json.success -eq $true) "W4 repair $rn claim ok" ($r.raw)
+        $cbW = New-Cb $rn "$archW/requirements/overview.md"
+        $null = Invoke-Leaf @('-Command', 'report', '-RunId', 'deliver-ba-w4', '-Worker', 'DEV', '-CallbackFile', $cbW)
+        $r = Do-Settle 'deliver-ba-w4' $rn
+        Assert-True ($r.json.success -eq $true) "W4 repair $rn settles done (its width slot releases)" ($r.raw)
+    }
+    Do-Deliver 'deliver-ba-w4' $haW 'QA' "$archW/requirements/t1.md"
+    $null = Do-Settle 'deliver-ba-w4' $haW
+    Do-Deliver 'deliver-ba-w4' $hbW 'QA' "$archW/requirements/t2.md"
+    $null = Do-Settle 'deliver-ba-w4' $hbW
+    $b = Read-BridgeJson 'deliver-ba-w4'
+    Assert-True ([string]$b.acceptance.status -eq 'grafted' -and [string]$b.acceptance.integrate_node -ne '' -and -not ([string]$b.acceptance.last_error)) 'W4 [集成/联调] grafts once all done (done releases width; 修复前恒 WIDTH_EXCEEDED 收口冻结)' ($b | ConvertTo-Json -Depth 6)
+    # 满位压力下走完整收口链：integrate → accept → §3 通过 → conclude achieved
+    Write-AcceptanceReport $archW '通过'
+    $iW = [string]$b.acceptance.integrate_node
+    Do-Deliver 'deliver-ba-w4' $iW 'DEV' "$archW/tests/integration-acceptance.md"
+    $null = Do-Settle 'deliver-ba-w4' $iW
+    $b = Read-BridgeJson 'deliver-ba-w4'
+    Assert-True ([string]$b.acceptance.accept_node -ne '') 'W4 [整体验收] grafts (extra root child via released slots)' ($b | ConvertTo-Json -Depth 6)
+    $aW = [string]$b.acceptance.accept_node
+    Do-Deliver 'deliver-ba-w4' $aW 'QA' "$archW/tests/integration-acceptance.md"
+    $null = Do-Settle 'deliver-ba-w4' $aW
+    $b = Read-BridgeJson 'deliver-ba-w4'
+    Assert-True ([string]$b.acceptance.conclusion -eq '通过') 'W4 conclusion recorded (通过)' ($b | ConvertTo-Json -Depth 6)
+    $r = Invoke-Bridge @('-Command', 'conclude', '-RunId', 'deliver-ba-w4', '-Summary', 'W4 done')
+    Assert-True ($r.json.success -eq $true -and [string]$r.json.data.outcome -eq 'achieved') 'W4 conclude achieved (full close-out under full-slot width pressure)' ($r.raw)
 }
 finally {
     Pop-Location

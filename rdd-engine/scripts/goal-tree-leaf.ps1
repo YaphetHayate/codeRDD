@@ -28,6 +28,10 @@ param(
     [string]$Callback,
     [string]$CallbackFile,
     [switch]$Steal,
+    # planner-claim-guard: 代跑声明。执行者是本 run 的规划者会话时，claim/steal 必须
+    # 显式声明代跑（否则 PLANNER_CANNOT_CLAIM 硬拒）；声明后代跑**不占用 worker 身份**
+    # ——边车 dsh_session_id 落 null，执行者另记 actor_session_id（留痕不劫持视图）。
+    [string]$OnBehalfOf,
     [int]$Limit = 0
 )
 
@@ -136,6 +140,40 @@ function Get-TreePath     { param([string]$RunDir); Join-Path (Get-StateDir $Run
 function Get-LedgerPath   { param([string]$RunDir); Join-Path (Get-StateDir $RunDir) "ledger.jsonl" }
 function Get-RoundLogPath { param([string]$RunDir); Join-Path (Get-StateDir $RunDir) "round-log.jsonl" }
 function Get-LockPath     { param([string]$RunDir); Join-Path $RunDir ".lock" }
+
+# === Claim actor guard (planner-claim-guard) ===
+
+function Get-PlannerSessionId {
+    # 本 run 的规划者会话绑定（state/planner.json，goal-tree start / bridge promulgate
+    # 写入；dsh 外写 null）。缺失/损坏/无绑定 → $null = 无法判定代跑，身份门退化为
+    # 放行（legacy run 与纯 CLI 用法零回归——与 view-picker 的 planner 行同源）。
+    param([string]$RunDir)
+    $p = Join-Path (Get-StateDir $RunDir) "planner.json"
+    if (-not (Test-Path -LiteralPath $p -PathType Leaf)) { return $null }
+    try {
+        $rec = [System.IO.File]::ReadAllText($p, [System.Text.Encoding]::UTF8) | ConvertFrom-Json
+        if ($rec.dsh_session_id) { return [string]$rec.dsh_session_id }
+    }
+    catch { }
+    return $null
+}
+
+function Assert-ClaimActorGuard {
+    # planner-claim-guard（身份门）：claims 边车绑定的语义是「执行了本命令的会话」，
+    # 而 DSH GoalTreeBar 的视图判定（view-picker 行① worker）与 dispatch/repush 的
+    # 会话复用（Resolve-DispatchReuse sidecar 优先）都拿它当真源 —— 且 worker 视图
+    # 优先于规划者视图。规划者会话一旦代跑 claim/steal：自身视图翻成「我的节点（含
+    # report 模板）」、真 worker 会话失绑（条带空白）、该 bind 还会把 worker 的活指针
+    # 引回规划者。故：执行者 == 本 run 规划者会话 → 必须显式 -OnBehalfOf 声明代跑。
+    # 返回 $true = 代跑（调用方**不得写会话绑定**）。
+    param([string]$RunDir, [string]$OnBehalfOf)
+    $plannerSession = Get-PlannerSessionId $RunDir
+    if ([string]::IsNullOrWhiteSpace($plannerSession)) { return $false }
+    $actor = [string]$env:DSH_SESSION_ID
+    if ([string]::IsNullOrWhiteSpace($actor) -or $actor -ne $plannerSession) { return $false }
+    if (-not [string]::IsNullOrWhiteSpace($OnBehalfOf)) { return $true }
+    Write-ErrorResult "PLANNER_CANNOT_CLAIM" "This shell belongs to run $RunId's PLANNER session ($actor): claim/steal is the worker's own first action (免租约), never the planner's. A planner-side claim writes the planner session into state/claims/$NodeId.json — the planner's own dock strip then flips to the WORKER view (『我的节点』 + report template), the real worker session loses its binding (blank strip), and re-push session reuse would target the planner itself. Hand the node to a worker instead: delivery-bridge.cmd -Command dispatch -RunId $RunId -NodeId $NodeId. A genuine on-behalf operation (reclaim parking / recovery) must declare itself: -OnBehalfOf <label> — the sidecar then carries NO session binding." 1
+}
 
 # === Coverage manifest sidecars (task-dispatch-guide R1'; mirrors goal-tree.ps1 helpers) ===
 
@@ -935,6 +973,9 @@ function Invoke-Claim {
         $openRound = Get-OpenRound $RunDir
         if ($openRound -eq 0) { Write-ErrorResult "NO_OPEN_ROUND" "No open round; claims are only valid inside an open round." 1 }
 
+        # planner-claim-guard: 规划者会话不得代跑认领（-OnBehalfOf 显式声明的回收族例外）
+        $onBehalf = Assert-ClaimActorGuard -RunDir $RunDir -OnBehalfOf $OnBehalfOf
+
         $readBack = Read-TreeEditable $RunDir
         $tree = $readBack.tree
         $node = Find-Node $tree $NodeId
@@ -978,6 +1019,8 @@ function Invoke-Claim {
         # --- dsh session binding (additive sidecar; the DSH GoalTreeBar joins it
         #     to show a worker session its own node instead of the whole tree).
         #     Absent outside dsh shells (plain CLI usage writes dsh_session_id=null).
+        #     planner-claim-guard: 代跑（$onBehalf）不占用 worker 身份——绑定落 null，
+        #     执行者仅记 actor_session_id/on_behalf_of 留痕（视图与复用面零劫持）。
         $claimsDir = Join-Path (Get-StateDir $RunDir) "claims"
         New-Item -ItemType Directory -Path $claimsDir -Force | Out-Null
         $claimRecord = [ordered]@{
@@ -985,9 +1028,13 @@ function Invoke-Claim {
             run_id         = $RunId
             node_id        = [string]$node.id
             worker         = [string]$Worker
-            dsh_session_id = if ([string]::IsNullOrWhiteSpace($env:DSH_SESSION_ID)) { $null } else { [string]$env:DSH_SESSION_ID }
+            dsh_session_id = if ($onBehalf -or [string]::IsNullOrWhiteSpace($env:DSH_SESSION_ID)) { $null } else { [string]$env:DSH_SESSION_ID }
             claimed_at     = [string]$node.claimed_at
             stolen         = [bool]$stole
+        }
+        if ($onBehalf) {
+            $claimRecord['actor_session_id'] = if ([string]::IsNullOrWhiteSpace($env:DSH_SESSION_ID)) { $null } else { [string]$env:DSH_SESSION_ID }
+            $claimRecord['on_behalf_of'] = [string]$OnBehalfOf
         }
         [System.IO.File]::WriteAllText((Join-Path $claimsDir "$([string]$node.id).json"), (ConvertTo-Json $claimRecord -Depth 4), $script:Utf8NoBom)
 

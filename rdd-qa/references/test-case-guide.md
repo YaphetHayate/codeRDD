@@ -325,6 +325,7 @@ cases 数组同时承担追溯矩阵的职责（需求↔用例双向闭环）�
 - **新增用例**：续编 TC 编号（步长见上方「用例编号规则」），`status: "active"`，填 `sourceChange`
 - **修改用例**：原地改，`sourceChange` 不变、archive 增量记录本次修改。不保留旧版内容（旧版在历史 archive 里可查）
 - **废弃用例**：**不删除**。`status` 改 `deprecated`，填 `deprecatedReason`。`codeRef` 置 `null` 或保留历史值
+- **先行基线的验证期修正（只增不弱）**：测试先行留下的用例，验证模式复跑后允许增量补充与修正；但弱化预期或废弃先行用例必须附**需求依据**（哪条验收标准/边界变了），防止「按实现对齐」悄悄降基线；修正同样在 archive 增量留痕（`op: "modified"` + note 注明依据）
 - **功能整体移除**：顶层 `status` 改 `deprecated`，不删文件
 
 ### 跨功能用例（cross-feature）

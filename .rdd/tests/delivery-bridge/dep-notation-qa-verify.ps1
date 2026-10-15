@@ -13,6 +13,10 @@
 $ErrorActionPreference = 'Stop'
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 
+# planner-claim-guard: 夹具 claim 属 worker 侧动作，套件在 dsh 会话里运行时环境
+# DSH_SESSION_ID 会被写进 run 的 planner.json，fixture claim 会被身份门拒。清空保确定性。
+Remove-Item Env:\DSH_SESSION_ID -ErrorAction SilentlyContinue
+
 # engine root: 从脚本位置逐级上溯找 rdd-engine/scripts/rdd-flow.ps1 (三级定位链的项目内分支)
 $EngineDir = $null
 $cur = $PSScriptRoot

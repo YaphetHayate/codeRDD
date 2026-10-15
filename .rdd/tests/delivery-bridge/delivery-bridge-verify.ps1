@@ -92,11 +92,28 @@ function Invoke-EngineCli {
     param([string]$Script, [string[]]$ArgList)
     $prevEap = $ErrorActionPreference
     $ErrorActionPreference = "Continue"
+    # planner-claim-guard 建模：claim/report 是 worker 侧动作，真实 dsh 下由**另一个**
+    # 会话执行。本套件单进程驱动全部角色，若沿用套件的规划者会话 id（qa-bridge-mock，
+    # 也是 fixture run 的 state/planner.json 绑定），每次 claim 都会命中 L1 身份门
+    # （PLANNER_CANNOT_CLAIM）——那正是真规划者代跑被拒的场景。逐命令切换执行者会话
+    # 即忠实建模两个会话；其余命令（promulgate/settle/reclaim/status/dispatch…）仍以
+    # 规划者会话执行。需要指定 worker 身份的用例改 $script:WorkerSessionId 即可。
+    $isWorkerCmd = $false
+    $ci = [array]::IndexOf($ArgList, "-Command")
+    if ($ci -ge 0 -and ($ci + 1) -lt $ArgList.Count) {
+        $cmdName = [string]$ArgList[$ci + 1]
+        if ($cmdName -eq "claim" -or $cmdName -eq "report") { $isWorkerCmd = $true }
+    }
+    $prevSid = $env:DSH_SESSION_ID
+    if ($isWorkerCmd) { $env:DSH_SESSION_ID = $script:WorkerSessionId }
     try {
         $output = & $Script @ArgList 2>$null
         $exitCode = $LASTEXITCODE
     }
-    finally { $ErrorActionPreference = $prevEap }
+    finally {
+        if ($isWorkerCmd) { $env:DSH_SESSION_ID = $prevSid }
+        $ErrorActionPreference = $prevEap
+    }
     $text = ($output | Out-String).Trim()
     $json = $null
     if ($text) { try { $json = $text | ConvertFrom-Json } catch { $json = $null } }
@@ -347,16 +364,22 @@ function Set-ClaimAge {
 # 规则文件按连接重读(场景切换免重启,Set-DshMockRule);请求逐条追加日志文件供断言/排查。
 $script:DshMock = $null
 function Set-DshMockRule {
-    param([hashtable]$Methods, [string]$Liveness)
+    param([hashtable]$Methods, [string]$Liveness, [string]$LivenessSession)
     $rulesPath = if ($script:DshMock) { $script:DshMock.rulesPath } else { Join-Path $script:WorkDir "dshmock-rules.json" }
     $livenessText = if ([string]::IsNullOrEmpty($Liveness)) { '{"run":"x","node":"n","session_id":"qa-bridge-mock","liveness":"unknown","reason":"mock default"}' } else { $Liveness }
+    # livenessSession: 可选的**会话键**应答（reclaim 的第二证据面测试用）。mock 按查询
+    # 形态区分：node 键的查证（Get-ClaimLiveness 带 run/node）走 liveness；session 键的
+    # 查证（Get-SessionLiveness 带 session_id）走 livenessSession。缺省留空 = 会话键
+    # 查证回落到 liveness（向后兼容：既有调用方行为逐字不变）。
+    $livenessSessionText = if ([string]::IsNullOrEmpty($LivenessSession)) { $null } else { $LivenessSession }
     # default rule: agentPreset.list answers the full role preset set (start-role's
     # preset pre-check fails on an empty list); scenario -Methods MERGE over the
     # defaults so injected failures never accidentally clobber unrelated methods.
     $presets = @("rdd-pm", "rdd-cto", "rdd-ux", "rdd-dev", "rdd-qa", "default") | ForEach-Object { @{ id = $_ } }
     $rules = @{
-        methods  = @{ "agentPreset.list" = @{ kind = "ok"; value = @{ presets = $presets } } }
-        liveness = $livenessText
+        methods        = @{ "agentPreset.list" = @{ kind = "ok"; value = @{ presets = $presets } } }
+        liveness       = $livenessText
+        livenessSession = $livenessSessionText
     }
     if ($null -ne $Methods) { foreach ($k in @($Methods.Keys)) { $rules.methods[$k] = $Methods[$k] } }
     [System.IO.File]::WriteAllText($rulesPath, ($rules | ConvertTo-Json -Depth 8), $Utf8NoBom)
@@ -419,6 +442,12 @@ try {
             if ($path -like "/rdd-goal-tree/liveness*") {
                 $rules = [System.IO.File]::ReadAllText($cfg.rulesPath, [System.Text.Encoding]::UTF8) | ConvertFrom-Json
                 $respText = [string]$rules.liveness
+                # 会话键查证（带 session_id 参数）可用独立规则应答 —— reclaim 第二证据面
+                # 需要 node 键答 unknown 而 session 键答 alive；缺省留空 = 回落 liveness，
+                # 既有用例行为逐字不变。
+                if (($path -match 'session_id=') -and ($null -ne $rules.PSObject.Properties['livenessSession']) -and (-not [string]::IsNullOrEmpty([string]$rules.livenessSession))) {
+                    $respText = [string]$rules.livenessSession
+                }
             }
             elseif ($path -like "/api/*") {
                 $bodyText = [System.Text.Encoding]::UTF8.GetString($ms.ToArray(), $headerLen, $ms.Length - $headerLen)
@@ -743,9 +772,13 @@ function Suite-Recover {
         $null = TB @("-Command", "claim", "-RunId", $fx.run_id, "-NodeId", "n2", "-Role", "DEV")
         $rc0 = TB @("-Command", "reclaim", "-RunId", $fx.run_id, "-NodeId", "n2")
         Assert $c ($rc0.exit -eq 1 -and $rc0.json.error.code -eq "RECLAIM_UNPROVEN_DEAD") "新认领未被存活门禁拦: $($rc0.text)"
-        # 认领超过时间阈值(60min)后 → dead-claim 回收 → 泊位
+        # 认领超过时间阈值(60min)后:存活仍不可证实(套件探针 unknown)——时间阈值不是
+        # 死亡证明,不自动放行,需用户裁决原文(reclaim-unproven-dead-gate)
         Set-ClaimAge $fx.run_id "n2"
-        $rc = TB @("-Command", "reclaim", "-RunId", $fx.run_id, "-NodeId", "n2")
+        $rcV = TB @("-Command", "reclaim", "-RunId", $fx.run_id, "-NodeId", "n2")
+        Assert $c ($rcV.exit -eq 1 -and $rcV.json.error.code -eq "RECLAIM_DEATH_UNPROVEN_NEEDS_VERDICT") "超阈值未证实未被裁决门拦: $($rcV.text)"
+        # 用户裁决落地 → dead-claim 回收 → 泊位
+        $rc = TB @("-Command", "reclaim", "-RunId", $fx.run_id, "-NodeId", "n2", "-UserVerdict", "确认该会话已死,同意回收重做")
         Assert $c ($rc.exit -eq 0 -and $rc.json.data.mode -eq "dead-claim") "dead-claim 回收失败: $($rc.text)"
         # 泊位后新会话 claim 接管(steal + force)
         $re = TB @("-Command", "claim", "-RunId", $fx.run_id, "-NodeId", "n2", "-Role", "DEV")
@@ -958,9 +991,10 @@ function Suite-Compat {
         Assert $c ($cl.exit -ne 0 -and $cl.text -match "NODE_NOT_CLAIMABLE") "manager-reclaim 停泊节点被当成新版泊位认领(零兼容裁定:旧值不识别,应报 NODE_NOT_CLAIMABLE): $($cl.text)"
         # 迁移路径(决策 #7 风险表:存量泊位需人工重新 reclaim):对新停泊节点跑新版
         # reclaim(dead-claim 模式),回收为 planner-reclaim 泊位后即可再认领
-        # (泊位无 claims sidecar → 存活 unknown;时效化认领以通过 60min 兜底阈值)
+        # (泊位无 claims sidecar → 存活 unknown;时效化认领以通过 60min 兜底阈值;
+        #  存活不可证实仍须用户裁决原文 —— reclaim-unproven-dead-gate)
         Set-ClaimAge $fx.run_id "n2"
-        $rc = TB @("-Command", "reclaim", "-RunId", $fx.run_id, "-NodeId", "n2")
+        $rc = TB @("-Command", "reclaim", "-RunId", $fx.run_id, "-NodeId", "n2", "-UserVerdict", "存量泊位迁移:确认原会话已死,同意回收")
         Assert $c ($rc.exit -eq 0 -and $rc.json.success) "新版 reclaim 回收旧停泊节点失败: $($rc.text)"
         $cl2 = TB @("-Command", "claim", "-RunId", $fx.run_id, "-NodeId", "n2", "-Role", "DEV")
         Assert $c ($cl2.exit -eq 0 -and $cl2.json.success) "reclaim 回收为 planner-reclaim 泊位后仍不可认领: $($cl2.text)"
@@ -1027,7 +1061,7 @@ function Suite-AutoPush {
         $null = TB @("-Command", "promulgate", "-TaskJson", (Join-Path $fx.dir "task.json"))
         $null = TB @("-Command", "claim", "-RunId", $fx.run_id, "-NodeId", "n2", "-Role", "DEV")
         Set-ClaimAge $fx.run_id "n2"
-        $rc = TB @("-Command", "reclaim", "-RunId", $fx.run_id, "-NodeId", "n2")
+        $rc = TB @("-Command", "reclaim", "-RunId", $fx.run_id, "-NodeId", "n2", "-UserVerdict", "确认该会话已死,同意回收重做")
         Assert $c ($rc.exit -eq 0 -and $rc.json.data.mode -eq "dead-claim") "dead-claim 回收失败: $($rc.text)"
         $ap = $rc.json.data.auto_push
         Assert $c (@($ap.pushed) -contains "n2") "泊位节点未被重推: $($ap.pushed -join ',')"
@@ -1042,10 +1076,13 @@ function Suite-AutoPush {
         param($c)
         $fx = New-FixtureArchive "ap17"
         $null = TB @("-Command", "promulgate", "-TaskJson", (Join-Path $fx.dir "task.json"))
-        # sidecar 绑定 dsh 会话 id → 存活查证走 liveness 端点(套件 mock 载波)
-        $env:DSH_SESSION_ID = "qa-liveness-probe"
+        # sidecar 绑定 worker 会话 id → 存活查证走 liveness 端点(套件 mock 载波)。
+        # planner-claim-guard: claim 由 worker 会话执行(包装层切换执行者),本用例把
+        # worker 身份借为 qa-liveness-probe,使 mock 规则可按该会话 id 命中。
+        $prevWorkerSid = $script:WorkerSessionId
+        $script:WorkerSessionId = "qa-liveness-probe"
         $null = TB @("-Command", "claim", "-RunId", $fx.run_id, "-NodeId", "n2", "-Role", "DEV")
-        $env:DSH_SESSION_ID = "qa-bridge-mock"
+        $script:WorkerSessionId = $prevWorkerSid
         # alive:长任务误杀物理不可能(新认领也拒)
         Set-DshMockRule -Liveness '{"run":"x","node":"n2","session_id":"qa-liveness-probe","liveness":"alive","reason":"mock alive"}'
         $rcA = TB @("-Command", "reclaim", "-RunId", $fx.run_id, "-NodeId", "n2")
@@ -1055,6 +1092,44 @@ function Suite-AutoPush {
         $rcD = TB @("-Command", "reclaim", "-RunId", $fx.run_id, "-NodeId", "n2")
         Assert $c ($rcD.exit -eq 0 -and $rcD.json.data.mode -eq "dead-claim") "证实死亡回收失败: $($rcD.text)"
         # 复位默认规则(unknown;时间兜底分支由 TC-B09 覆盖)
+        Set-DshMockRule
+    }
+
+    Run-Tc "TC-B17b" "回收第二证据面:边车绑定不可证实(unknown)而花名册同节点会话可证存活 -> 仍拒;已证实 dead 的认领不被存活兄弟否决" "P0" "GR-AC-4" {
+        param($c)
+        $fx = New-FixtureArchive "ap17b"
+        # 花名册的 node 绑定行由**推送回写**落盘:桥接从 start-role 输出里解析
+        # "sessionId: <id>"(Register-PushedSession)。mock 缺省的 session.create 回包不带
+        # sessionId -> 回写静默跳过(advisory 设计),本用例此前因此只拿到 planner 本体行 ——
+        # 不是推送路径坏了。这里显式给出回包(手法同 TC-B39)。
+        # 只推 n2 一个节点(-NoPush + 显式 dispatch):回写按 session_id 幂等 upsert
+        # (Add-RosterEntry),若 n2/n4 共用同一个 mock sessionId,后写者会把前者的 node
+        # 绑定覆盖掉(TC-B38 踩过同款),故保持单一 session.create 调用使 id 确定。
+        Set-DshMockRule -Methods @{ "session.create" = @{ kind = "seq"; values = @( @{ sessionId = "sess-cg17b-n2" } ) } }
+        $null = TB @("-Command", "promulgate", "-TaskJson", (Join-Path $fx.dir "task.json"), "-NoPush")
+        $dp = TB @("-Command", "dispatch", "-RunId", $fx.run_id, "-NodeId", "n2")
+        Assert $c ($dp.exit -eq 0 -and $dp.json.success) "ap17b 前置派发失败: $($dp.text)"
+        # 推送为 n2 建好花名册行(绑 node=n2,source=bridge-dispatch)。认领改用**另一个**
+        # worker 会话 -> 边车绑定与花名册行分离,两面证据可分别摆布。
+        $rosterPath = Join-Path (Get-RunDirPath $fx.run_id) "sessions.json"
+        $roster = [System.IO.File]::ReadAllText($rosterPath, [System.Text.Encoding]::UTF8) | ConvertFrom-Json
+        $n2row = @($roster.sessions | Where-Object { [string]$_.node -eq "n2" })
+        Assert $c ($n2row.Count -ge 1) ("ap17b 花名册缺少 n2 的派发会话行 [roster dump: " + ((@($roster.sessions | ForEach-Object { "$([string]$_.session_id)<node=$([string]$_.node),src=$([string]$_.source)>" })) -join '; ') + "]")
+        $n2sid = [string]$n2row[0].session_id
+        $prevWorkerSid = $script:WorkerSessionId
+        $script:WorkerSessionId = "qa-roster-probe"
+        $null = TB @("-Command", "claim", "-RunId", $fx.run_id, "-NodeId", "n2", "-Role", "DEV")
+        $script:WorkerSessionId = $prevWorkerSid
+        $sidRule = '{"run":"x","node":"n2","session_id":"' + $n2sid + '","liveness":"alive","reason":"mock roster alive"}'
+        # node 键探针答 unknown(边车绑定不可证实) + session 键答 alive(花名册行仍存活)
+        Set-DshMockRule -Liveness '{"run":"x","node":"n2","session_id":"qa-roster-probe","liveness":"unknown","reason":"mock unknown"}' -LivenessSession $sidRule
+        $rcR = TB @("-Command", "reclaim", "-RunId", $fx.run_id, "-NodeId", "n2")
+        Assert $c ($rcR.exit -eq 1 -and $rcR.json.error.code -eq "RECLAIM_TARGET_ALIVE") "花名册存活会话未否决回收: $($rcR.text)"
+        Assert $c ($rcR.json.error.message -match [regex]::Escape($n2sid)) "否决理由未指出花名册会话: $($rcR.text)"
+        # 边车面为**正向死亡判定**时第二面不参与:已证实 dead 的认领照常回收(其重推恰要复用存活兄弟)
+        Set-DshMockRule -Liveness '{"run":"x","node":"n2","session_id":"qa-roster-probe","liveness":"dead","reason":"mock dead"}' -LivenessSession $sidRule
+        $rcD = TB @("-Command", "reclaim", "-RunId", $fx.run_id, "-NodeId", "n2")
+        Assert $c ($rcD.exit -eq 0 -and $rcD.json.data.mode -eq "dead-claim") "已证实 dead 的认领被存活兄弟错误否决: $($rcD.text)"
         Set-DshMockRule
     }
 
@@ -2448,6 +2523,9 @@ $script:DshMockUrl = Start-DshMock
 $env:DSH_WEB_URL = $script:DshMockUrl
 $env:RDD_RUNTIME = $null
 $env:DSH_SESSION_ID = "qa-bridge-mock"
+# planner-claim-guard 建模：worker 侧命令（claim/report）由独立的 worker 会话执行
+# ——见 Invoke-EngineCli 顶部注释。逐用例需要别的 worker 身份时临时改本变量。
+$script:WorkerSessionId = "qa-bridge-worker"
 Write-Host "dsh-mock carrier: $script:DshMockUrl"
 
 $selected = if ($Suite -eq "all") { @("promulgate", "claim", "settle", "recover", "conclude", "regression", "compat", "autopush", "callback", "review", "uniqueness", "payload", "roster", "rollback", "automode") } else { @($Suite) }

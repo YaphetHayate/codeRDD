@@ -31,6 +31,10 @@
 $ErrorActionPreference = 'Stop'
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 
+# planner-claim-guard: 夹具 claim 属 worker 侧动作，套件在 dsh 会话里运行时环境
+# DSH_SESSION_ID 会被写进 run 的 planner.json，fixture claim 会被身份门拒。清空保确定性。
+Remove-Item Env:\DSH_SESSION_ID -ErrorAction SilentlyContinue
+
 $EngineDir = Split-Path -Parent $PSScriptRoot | Split-Path -Parent | Join-Path -ChildPath 'engine' | Join-Path -ChildPath 'scripts'
 if (-not (Test-Path (Join-Path $EngineDir 'delivery-bridge.ps1'))) {
     # .rdd/tests/delivery-bridge/ -> <repo>/rdd-engine/scripts
@@ -499,9 +503,13 @@ try {
 
     # ================= QA13: 派生 PM 节点回收（需求边界「中断幂等」，上轮在册覆盖缺口） =================
     # 上一轮验收在册备忘：derive 后 PM 节点回收复用 reclaim dead-claim / rejected-delivery 同族
-    # 通道「已实现未测」。本锚补齐两条：①dead-claim → steal 重推（-DeadClaimMinutes 0 令新 claim
-    # 可证死）；②rejected-delivery（无 extras.verification 的不合格重报）→ prune + 同源重建 PM
-    # 节点 + derivations[].node 重锚，且派生状态保持 confirmed（未入册）。
+    # 通道「已实现未测」。本锚补齐两条：①dead-claim → steal 重推；②rejected-delivery（无
+    # extras.verification 的不合格重报）→ prune + 同源重建 PM 节点 + derivations[].node 重锚，
+    # 且派生状态保持 confirmed（未入册）。
+    # L3（reclaim-unproven-dead-gate）：夹具 claim 是 CLI 认领 → 边车无 dsh 会话绑定 →
+    # liveness 恒 unknown，「-DeadClaimMinutes 0」这种「阈值当死亡证明」的旧夹具手法不再放行
+    # （RECLAIM_DEATH_UNPROVEN_NEEDS_VERDICT）。按新契约补用户裁决原文（同一硬门与
+    # derive confirm / budget 同形；裁决原文入归档决策账本）。
     $archR = New-QaArchive 'qa-reclaim' '[{"title":"回收夹具","requirement":"requirements/t1.md","currentOwners":["DEV"],"designDocs":[]}]'
     $pfR = Write-QaPlan (Join-Path $Work 'qa-reclaim-plan.json') @(@{ id = 'S1'; tasks = @(1) })
     $null = Invoke-Bridge @('-Command', 'promulgate', '-TaskJson', ($archR + '/task.json'), '-PlanFile', $pfR, '-NoPush')
@@ -512,7 +520,7 @@ try {
     $goalRootR = [string]$bR.goal_root
     $r = Invoke-Leaf @('-Command', 'claim', '-RunId', 'deliver-qa-reclaim', '-NodeId', $pmR, '-Worker', 'PM')
     Assert-True ($r.json.success -eq $true) 'QA13 fixture: derivation PM node claimed by a worker' ($r.raw)
-    $r = Invoke-Bridge @('-Command', 'reclaim', '-RunId', 'deliver-qa-reclaim', '-NodeId', $pmR, '-DeadClaimMinutes', '0')
+    $r = Invoke-Bridge @('-Command', 'reclaim', '-RunId', 'deliver-qa-reclaim', '-NodeId', $pmR, '-DeadClaimMinutes', '0', '-UserVerdict', '确认该会话已死，同意回收派生 PM 节点')
     Assert-True ($r.json.success -eq $true -and [string]$r.json.data.mode -eq 'dead-claim (tree-level derivation PM node)' -and [int]$r.json.data.steal_count -eq 1) 'QA13 derivation node routes into the tree-level dead-claim channel (steal + repush)' ($r.raw)
     $nodeR = @(Read-TreeNodes 'deliver-qa-reclaim' | Where-Object { [string]$_.id -eq $pmR })[0]
     Assert-True ($null -ne $nodeR -and [string]$nodeR.status -eq 'claimed' -and [string]$nodeR.claimed_by -eq 'planner-reclaim') 'QA13 stolen node parks under planner-reclaim (derivation node id unchanged)' ("status=$([string]$nodeR.status) by=$([string]$nodeR.claimed_by)")

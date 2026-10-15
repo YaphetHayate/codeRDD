@@ -124,6 +124,8 @@
 
       归档完成 → **必须**按 `rdd-engine/references/transition-guide.md` 上游协议 4 步硬流程执行交接（set-route 路由 → next → 推荐 → start/handoff）。未完成交接不得响应模式切换。
 
+      > **立项回调优先（最高优先级，先于下方接管分支与 4 步流程）**：若本会话的入口消息携带**【立项回调协议】**段（本次立项由规划者会话发起，段内含原会话 ID 与回投命令），归档完成后**不得新开规划者会话**——按协议执行 `start-role.cmd -Role PLANNER -ExistingSessionId <原会话ID> -TaskJson <新归档task.json>` 把接管指针投回原规划者会话（可先 `-DryRun` 验指针），由原规划者接续 promulgate；`rdd-flow next` 输出的 PLANNER 建议块在此场景不适用。协议缺失时（用户直接发起的立项）才走下方可选分支/4 步流程。
+
       > **可选分支（planner-takeover，单入口）**：`rdd-flow next` 输出 `longTask.triggered=true`（归档含 ≥2 条非 deprecated 子需求且 ≥1 条进行中——原始需求被拆分为多条子需求的长程任务显式信号，机械可判）时，完成 Step 1 路由推进后建议改走**单入口接管**（需求审查门内生于规划者会话：规划者派评审子代理产 ReviewFile → 呈用户 → 机械消费）。推荐话术（N/M 取 next 输出 `longTask.totalTaskCount`/`activeTaskCount`）：「该原始需求被拆分为 N 条子需求（M 条进行中），属长程任务，建议交规划者接管整批交付：执行 `start-role.cmd -Role PLANNER -TaskJson <task.json>`——规划者按 `rdd-engine/references/review-input-template.md` 机械模板派需求审视子代理（独立上下文，禁转述）产出 ReviewFile（reviewer: "auditor-delegated"），结论呈你确认后机械消费建树。**强形态（可选，需显式要求）**：仍可用独立会话评审——先执行 `start-role.cmd -Role AUDITOR -TaskJson <task.json>` 产出 ReviewFile（reviewer: "auditor"，需 preset `rdd-auditor`），确认后再启动规划者；不采纳接管分支则按 4 步硬流程逐条交接，行为不变。」适用前提：该归档尚无活跃桥接 run——若启动报 `PLANNER_RUN_ACTIVE`（说明 run 已存续），不重复启动规划者，改指引 `delivery-bridge.cmd -Command status/resume -RunId deliver-<归档名>` 查看或续跑既有 run。详见 `rdd-engine/references/transition-guide.md`「planner-takeover」。
 
       ## 执行（委托）

@@ -237,7 +237,7 @@ function l4GroupPanel(l4, scripts, title) {
   return panel({
     title,
     html: dataTable({ columns: [{ label: '脚本' }, { label: '参数' }, { label: '默认' }, { label: '范围/说明' }], rows }),
-    foot: '预算类参数在 start/promulgate 时固化进 manifest.json / bridge.json，运行期不可增长。',
+    foot: '预算类参数在 start/promulgate 时固化进 manifest.json / bridge.json；运行期可经 budget 命令只增扩展（-UserVerdict 人工审批硬门）。',
   })
 }
 

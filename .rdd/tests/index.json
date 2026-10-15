@@ -70,10 +70,10 @@
                                           "rdd-engine/tests/test-bridge-derive.ps1",
                                           "rdd-engine/tests/test-decision-ledger.ps1"
                                       ],
-                         "activeCount":  168,
+                         "activeCount":  172,
                          "deprecatedCount":  0,
-                         "lastUpdated":  "2026-10-08",
-                         "lastChange":  "2026-10-07-planner-midrun-derive"
+                         "lastUpdated":  "2026-10-10",
+                         "lastChange":  "2026-10-10-width-done-release"
                      },
                      {
                          "feature":  "auditor-role",
@@ -148,10 +148,10 @@
                                           "rdd-engine/tests/test-multi-owner-routing.ps1",
                                           "rdd-engine/tests/test-multi-owner-routing-qa.ps1"
                                       ],
-                         "activeCount":  49,
+                         "activeCount":  53,
                          "deprecatedCount":  0,
-                         "lastUpdated":  "2026-09-26",
-                         "lastChange":  "2026-09-26-preset-generator-crlf"
+                         "lastUpdated":  "2026-10-10",
+                         "lastChange":  "2026-10-10-planner-intake-callback"
                      },
                      {
                          "feature":  "session-badges",
@@ -281,17 +281,21 @@
                          "relatedCode":  [
                                              "rdd-engine/dashboard/",
                                              "rdd-engine/scripts/dashboard.cmd",
-                                             "ops-dashboard.cmd"
+                                             "ops-dashboard.cmd",
+                                             "start-dashboard.cmd (design-decided; pending DEV)",
+                                             "rdd-engine/dashboard/server.mjs"
                                          ],
                          "testCode":  [
                                           ".rdd/tests/ops-dashboard/ops-dashboard-qa-verify.ps1",
                                           ".rdd/tests/ops-dashboard/ops-dashboard-acceptance.ps1",
-                                          ".rdd/tests/ops-dashboard/js-quality-metrics.mjs"
+                                          ".rdd/tests/ops-dashboard/js-quality-metrics.mjs",
+                                          ".rdd/tests/ops-dashboard/ops-dashboard-launcher-qa-verify.ps1",
+                                          ".rdd/tests/ops-dashboard/desktop-shortcut-qa-verify.ps1"
                                       ],
-                         "activeCount":  16,
+                         "activeCount":  35,
                          "deprecatedCount":  2,
-                         "lastUpdated":  "2026-10-08",
-                         "lastChange":  "2026-10-08-rdd-ops-dashboard"
+                         "lastUpdated":  "2026-10-13",
+                         "lastChange":  "2026-10-09-ops-dashboard-launcher"
                      },
                      {
                          "feature":  "ops-dashboard-project-switcher",

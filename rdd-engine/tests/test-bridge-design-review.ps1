@@ -168,7 +168,7 @@ function Do-Settle { param([string]$RunId, [string]$NodeId)
 # Reviewer/WithProduction/ProductionMode (auditor-subagent-review 双形态): new-chain
 # files sign the reviewer enum (auditor-delegated / auditor) + carry the production
 # audit section; the legacy defaults stay reviewer='auditor' with no section.
-function Write-ReviewFile { param([string]$ArchiveRel, [string]$StageId, [string[]]$DocRels, [string]$Verdict, [string]$BlockingDim = 'change_map', [bool]$SkipCoverage = $false, [string]$Reviewer = 'auditor', [bool]$WithProduction = $false, [string]$ProductionMode = 'subagent')
+function Write-ReviewFile { param([string]$ArchiveRel, [string]$StageId, [string[]]$DocRels, [string]$Verdict, [string]$BlockingDim = 'change_map', [bool]$SkipCoverage = $false, [string]$Reviewer = 'auditor', [bool]$WithProduction = $false, [string]$ProductionMode = 'subagent', [string[]]$CrossDocs = @())
     $archAbs = Join-Path $Work $ArchiveRel
     $docs = @()
     foreach ($rel in @($DocRels)) {
@@ -179,10 +179,14 @@ function Write-ReviewFile { param([string]$ArchiveRel, [string]$StageId, [string
         $findings += @{ severity = 'advisory'; dimension = 'completeness'; item = "advisory finding on $rel"; suggestion = '补强说明' }
         $docs += @{ doc = $rel; verdict = $Verdict; findings = $findings }
     }
+    $crossFindings = @()
+    if (@($CrossDocs).Count -gt 0) {
+        $crossFindings += @{ severity = 'blocking'; dimension = 'cross_design'; item = 'cross-doc combo hole (test)'; suggestion = '两文档对齐后重产'; involved_docs = @($CrossDocs) }
+    }
     $file = [ordered]@{
         reviewed_at = '2026-10-06T09:00:00Z'; reviewer = $Reviewer; stage = $StageId
         docs = $docs
-        summary = @{ cross_design = @() }
+        summary = @{ cross_design = $crossFindings }
     }
     if ($WithProduction) { $file['production'] = @{ mode = $ProductionMode; template = 'rdd-engine/references/review-input-template.md' } }
     if ($SkipCoverage -and @($docs).Count -gt 1) { $file['docs'] = @($docs | Select-Object -First 1) }
@@ -579,6 +583,91 @@ try {
     $b9l = Read-BridgeJson 'deliver-nr-l9l'
     $s2l = @($b9l.plan.stages | Where-Object { [string]$_.id -eq 'S2' })[0]
     Assert-True ($null -ne $s2l -and $null -eq $s2l.design_review) 'NR9 [legacy 不回溯] a new stage in a 缺键 run lands NO slot (byte-identical)' ($s2l | ConvertTo-Json -Depth 6)
+    # ================= DR8: design_maps 刷新语义（design-maps-refresh-deadlock 主修） =================
+    # 新链 fail 波后文档重产 / 迟入册：status 与 submit 门都须重解析缓存（fingerprint
+    # 追平当前文件 + 新文档入册），杜绝「文档已修、缓存滞后、重审必现 blocking」死循环。
+    $arch8 = New-Archive 'dr-l8' '[{"title":"DR8","requirement":"requirements/t1.md","currentOwners":["CTO"],"designDocs":[{"path":"design/d8.md","status":"ready"}]}]'
+    $pf8 = Write-TestPlan (Join-Path $Work 'dr-l8-plan.json') @(@{ id = 'S1'; tasks = @(1) })
+    $r = Invoke-Bridge @('-Command', 'promulgate', '-TaskJson', ($arch8 + '/task.json'), '-PlanFile', $pf8, '-NoPush', '-ReviewMode', 'subagent')
+    Assert-True ($r.json.success -eq $true) 'DR8 promulgate ok (new chain)' ($r.raw)
+    $b8 = Read-BridgeJson 'deliver-dr-l8'
+    $fpBefore = [string]$b8.design_maps.'design/d8.md'.fingerprint
+    Assert-True (-not [string]::IsNullOrWhiteSpace($fpBefore)) 'DR8 initial scan populates design_maps (fingerprint present)' ($b8 | ConvertTo-Json -Depth 6)
+    # 文档重产（指纹变化）+ 迟入册第二文档（手改 task.json 模拟 fail 波后的 add-design 形态）
+    $d8Abs = Join-Path $Work '.rdd/changes/archive/dr-l8/design/d8.md'
+    Write-Utf8NoBom $d8Abs "# 设计文档 8（重产）`n`n变更地图：`n`n- ``src/mod-b.py``  [修改] 模块 B`n`n[新增] 0 | [修改] 1 | [删除] 0`n"
+    $d8bAbs = Join-Path $Work '.rdd/changes/archive/dr-l8/design/d8b.md'
+    Write-Utf8NoBom $d8bAbs "# 设计文档 8b（迟入册）`n`n变更地图：`n`n- ``src/mod-c.py``  [新增] 模块 C`n`n[新增] 1 | [修改] 0 | [删除] 0`n"
+    $tj8p = Join-Path $Work '.rdd/changes/archive/dr-l8/task.json'
+    $tj8 = Get-Content -LiteralPath $tj8p -Raw -Encoding UTF8 | ConvertFrom-Json
+    $tj8.tasks[0].designDocs += @{ path = 'design/d8b.md'; status = 'ready' }
+    Write-Utf8NoBom $tj8p ($tj8 | ConvertTo-Json -Depth 8)
+    # status 首跑即自愈：指纹追平 + 新文档入册
+    $r = Invoke-Bridge @('-Command', 'design-review', '-Action', 'status', '-RunId', 'deliver-dr-l8')
+    Assert-True ($r.json.success -eq $true) 'DR8 status ok' ($r.raw)
+    $fi8 = Get-Item -LiteralPath $d8Abs
+    $fpNow = "$($fi8.Length):$($fi8.LastWriteTimeUtc.Ticks)"
+    $b8 = Read-BridgeJson 'deliver-dr-l8'
+    Assert-True (([string]$b8.design_maps.'design/d8.md'.fingerprint) -eq $fpNow -and $fpBefore -ne $fpNow) 'DR8 status refreshes the stale fingerprint (frozen cache self-heals on first run)' ($b8 | ConvertTo-Json -Depth 6)
+    Assert-True ($null -ne $b8.design_maps.'design/d8b.md') 'DR8 late-registered doc enters design_maps' ($b8 | ConvertTo-Json -Depth 6)
+    # 越过 DESIGN → ready → submit 门同样刷新（幂等）+ 迟入册文档进审查对象面
+    $cto8 = [string]$b8.tasks.'1'.stages.CTO
+    Do-Deliver 'deliver-dr-l8' $cto8 'CTO' @('.rdd/changes/archive/dr-l8/design/d8.md') | Out-Null
+    $r = Do-Settle 'deliver-dr-l8' $cto8
+    Assert-True ($r.json.success -eq $true) 'DR8 CTO settle ok' ($r.raw)
+    $b8 = Read-BridgeJson 'deliver-dr-l8'
+    Assert-True ([string]$b8.plan.stages[0].design_review.status -eq 'ready') 'DR8 trigger -> ready' ($b8 | ConvertTo-Json -Depth 6)
+    Write-ReviewFile '.rdd/changes/archive/dr-l8' 'S1' @('design/d8.md', 'design/d8b.md') 'pass' -Reviewer 'auditor-delegated' -WithProduction $true | Out-Null
+    $r = Invoke-Bridge @('-Command', 'design-review', '-Action', 'submit', '-RunId', 'deliver-dr-l8', '-Stage', 'S1')
+    Assert-True ($r.json.success -eq $true -and [string]$r.json.data.verdict -eq 'pass' -and @($r.json.data.blocking).Count -eq 0) 'DR8 submit pass over the refreshed face (late doc accepted)' ($r.raw)
+
+    # ================= DR9: designDocs 全路径归一（design-docs-path-normalization，defect 6.A） =================
+    # 历史登记形态含绝对路径：归一后按归档相对键入册（修复前 Join-Path 失明 → 无产物
+    # → exempt，审查面整体缺失——实录 S2 漏审 #5）。
+    $arch9 = New-Archive 'dr-l9' '[{"title":"DR9","requirement":"requirements/t1.md","currentOwners":["CTO"],"designDocs":[{"path":"design/d9.md","status":"ready"}]}]'
+    $tj9p = Join-Path $Work '.rdd/changes/archive/dr-l9/task.json'
+    $tj9 = Get-Content -LiteralPath $tj9p -Raw -Encoding UTF8 | ConvertFrom-Json
+    $tj9.tasks[0].designDocs[0].path = ((Join-Path $Work '.rdd/changes/archive/dr-l9/design/d9.md') -replace '\\', '/')
+    Write-Utf8NoBom $tj9p ($tj9 | ConvertTo-Json -Depth 8)
+    $pf9 = Write-TestPlan (Join-Path $Work 'dr-l9-plan.json') @(@{ id = 'S1'; tasks = @(1) })
+    $r = Invoke-Bridge @('-Command', 'promulgate', '-TaskJson', ($arch9 + '/task.json'), '-PlanFile', $pf9, '-NoPush', '-ReviewMode', 'subagent')
+    Assert-True ($r.json.success -eq $true) 'DR9 promulgate ok' ($r.raw)
+    $b9f = Read-BridgeJson 'deliver-dr-l9'
+    Assert-True ($null -ne $b9f.design_maps.'design/d9.md') 'DR9 full-path designDoc lands in design_maps under the REL key' ($b9f | ConvertTo-Json -Depth 6)
+    $cto9 = [string]$b9f.tasks.'1'.stages.CTO
+    Do-Deliver 'deliver-dr-l9' $cto9 'CTO' @('.rdd/changes/archive/dr-l9/design/d9.md') | Out-Null
+    $r = Do-Settle 'deliver-dr-l9' $cto9
+    Assert-True ($r.json.success -eq $true) 'DR9 CTO settle ok' ($r.raw)
+    $b9f = Read-BridgeJson 'deliver-dr-l9'
+    Assert-True ([string]$b9f.plan.stages[0].design_review.status -eq 'ready') 'DR9 normalized doc reaches the review trigger (exempt = the doc was missed)' ($b9f | ConvertTo-Json -Depth 6)
+    Write-ReviewFile '.rdd/changes/archive/dr-l9' 'S1' @('design/d9.md') 'pass' -Reviewer 'auditor-delegated' -WithProduction $true | Out-Null
+    $r = Invoke-Bridge @('-Command', 'design-review', '-Action', 'submit', '-RunId', 'deliver-dr-l9', '-Stage', 'S1')
+    Assert-True ($r.json.success -eq $true -and [string]$r.json.data.verdict -eq 'pass') 'DR9 submit pass (rel-keyed coverage accepted)' ($r.raw)
+
+    # ================= DR10: cross_design 组合洞随 fail 波传递（defect 6.B） =================
+    # 全文档 pass 但 cross_design blocking：involved_docs 展开映射 + 无属主文档广播兜底
+    # ——两任务全部回 DESIGN，重做指针携带组合洞 problems（修复前不随波传递）。
+    $archX = New-Archive 'dr-lx' '[{"title":"DR10a","requirement":"requirements/t1.md","currentOwners":["CTO"],"designDocs":[{"path":"design/d10a.md","status":"ready"}]},{"title":"DR10b","requirement":"requirements/t2.md","currentOwners":["CTO"],"designDocs":[{"path":"design/d10b.md","status":"ready"}]}]' $Script:DeclaredBlock
+    $pfX = Write-TestPlan (Join-Path $Work 'dr-lx-plan.json') @(@{ id = 'S1'; tasks = @(1, 2) })
+    $convX = Join-Path $Work 'dr-lx-conventions.md'
+    Write-Utf8NoBom $convX "# 架构约定（DR10 测试）`n`n- 分层一致；命名沿用现有风格。`n"
+    $r = Invoke-Bridge @('-Command', 'promulgate', '-TaskJson', ($archX + '/task.json'), '-PlanFile', $pfX, '-ConventionsFile', $convX, '-NoPush', '-ReviewMode', 'subagent')
+    Assert-True ($r.json.success -eq $true) 'DR10 promulgate ok' ($r.raw)
+    $bX = Read-BridgeJson 'deliver-dr-lx'
+    Do-Deliver 'deliver-dr-lx' ([string]$bX.tasks.'1'.stages.CTO) 'CTO' @('.rdd/changes/archive/dr-lx/design/d10a.md') | Out-Null
+    Do-Settle 'deliver-dr-lx' ([string]$bX.tasks.'1'.stages.CTO) | Out-Null
+    Do-Deliver 'deliver-dr-lx' ([string]$bX.tasks.'2'.stages.CTO) 'CTO' @('.rdd/changes/archive/dr-lx/design/d10b.md') | Out-Null
+    $r = Do-Settle 'deliver-dr-lx' ([string]$bX.tasks.'2'.stages.CTO)
+    Assert-True ($r.json.success -eq $true -and [string](Read-BridgeJson 'deliver-dr-lx').plan.stages[0].design_review.status -eq 'ready') 'DR10 both CTO settled -> ready' ($r.raw)
+    Write-ReviewFile '.rdd/changes/archive/dr-lx' 'S1' @('design/d10a.md', 'design/d10b.md') 'pass' -Reviewer 'auditor-delegated' -WithProduction $true -CrossDocs @('design/d10a.md', 'design/d10b.md') | Out-Null
+    $r = Invoke-Bridge @('-Command', 'design-review', '-Action', 'submit', '-RunId', 'deliver-dr-lx', '-Stage', 'S1')
+    Assert-True ($r.json.success -eq $true -and [string]$r.json.data.verdict -eq 'fail') 'DR10 cross_design blocking -> engine-derived fail' ($r.raw)
+    $rolledIds = @($r.json.data.wave.rolled | ForEach-Object { [int]$_.task_id })
+    Assert-True (($rolledIds -contains 1) -and ($rolledIds -contains 2) -and $rolledIds.Count -eq 2) 'DR10 combo hole rolls BOTH tasks' ($r.raw)
+    $p1 = @(@($r.json.data.wave.rolled) | Where-Object { [int]$_.task_id -eq 1 })[0]
+    Assert-True (@(@($p1.problems) -match 'cross_design').Count -gt 0) 'DR10 redo pointer carries the cross_design problem' ($r.raw)
+    $bX = Read-BridgeJson 'deliver-dr-lx'
+    Assert-True ([string]$bX.plan.stages[0].design_review.status -eq 'planned') 'DR10 fail wave resets planned (re-review on next convergence)' ($bX | ConvertTo-Json -Depth 6)
 }
 finally {
     Pop-Location

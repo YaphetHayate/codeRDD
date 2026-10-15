@@ -89,7 +89,7 @@ function Invoke-StartRole {
     # $EnvOverrides: @{ DSH_WEB_URL = "http://..." } 覆盖；值 $null 表示删除该变量。
     param([string[]]$RoleArgs, [hashtable]$EnvOverrides = @{}, [string]$Tag = "run")
 
-    $names = @("DSH_WEB_URL", "RDD_RUNTIME")
+    $names = @("DSH_WEB_URL", "RDD_RUNTIME", "DSH_SESSION_ID")
     $saved = @{}
     foreach ($n in $names) { $saved[$n] = [System.Environment]::GetEnvironmentVariable($n) }
     try {
@@ -1278,6 +1278,82 @@ function Test-RenameBackendBoundary {
     Assert-All "TC-122" "仅 dsh 后端改名：Plus/CLI 传 -SessionLabel 零 rename 且不报错；dsh DryRun 无标记逐字节锚/直交预览 rename" $checks
 }
 
+# --- TC-138 用法面（start-role-usage）：-Usage/-Help 与无 -Role 三入口 -------------------------
+function Test-UsageFace {
+    $checks = @()
+    $u = Invoke-StartRole -Tag "t138a" -RoleArgs @("-Usage") -EnvOverrides @{ DSH_WEB_URL = $null; RDD_RUNTIME = $null }
+    $h = Invoke-StartRole -Tag "t138b" -RoleArgs @("-Help") -EnvOverrides @{ DSH_WEB_URL = $null; RDD_RUNTIME = $null }
+    $checks += @{ name = "-Usage / -Help 均打印用法面且退出 0（含 -NoArchive 与 -TaskBriefFile 速览）"; ok = ($u.exit -eq 0 -and $h.exit -eq 0 -and $u.stdout.Contains("用法:") -and $u.stdout.Contains("-NoArchive") -and $u.stdout.Contains("-TaskBriefFile") -and $h.stdout.Contains("用法:")); actual = "usage exit=$($u.exit), help exit=$($h.exit)" }
+    $bare = Invoke-StartRole -Tag "t138c" -RoleArgs @() -EnvOverrides @{ DSH_WEB_URL = $null; RDD_RUNTIME = $null }
+    $checks += @{ name = "无 -Role：先打印用法面再 [x] 缺少 -Role，退出 1（替代 PS 绑定错误，agent 免猜）"; ok = ($bare.exit -eq 1 -and $bare.stdout.Contains("用法:") -and $bare.stdout.Contains("缺少 -Role")); actual = "exit=$($bare.exit)" }
+    Assert-All "TC-138" "用法面：三个入口（-Usage / -Help / 裸调用）免读源码即可拿到参数签名与常用形态" $checks
+}
+
+# --- TC-139 NoArchive 新需求形态（planner-pm-raw-intent 显式形）：brief 是唯一锚 ----------------
+function Test-NoArchiveIntake {
+    # 夹具根已有归档（$TaskJson）——正是实录踩坑场景：不传 -NoArchive 时「最新归档」
+    # 兜底会把 PM 指向这条与本次需求无关的归档。
+    $briefPath = Join-Path $WorkDir "noarchive-brief.md"
+    [System.IO.File]::WriteAllText($briefPath, "新需求：设备框架管理——台账/点位/状态。", (New-Object System.Text.UTF8Encoding($false)))
+    $checks = @()
+    # dsh 后端 DryRun：新需求框架 + brief 原文透传；夹具归档在场也绝不泄漏
+    $dsh = Invoke-StartRole -Tag "t139a" -RoleArgs @("-Role", "PM", "-NoArchive", "-TaskBriefFile", $briefPath, "-Project", $FixtureRoot, "-DryRun") -EnvOverrides @{ DSH_WEB_URL = "http://127.0.0.1:3080"; RDD_RUNTIME = $null }
+    $checks += @{ name = "dsh DryRun：新需求框架 + brief 原文 + 零归档泄漏（夹具归档在场也不指）"; ok = ($dsh.exit -eq 0 -and $dsh.stdout.Contains("尚无归档——归档由你创建，勿处理既有归档") -and $dsh.stdout.Contains("设备框架管理") -and -not $dsh.stdout.Contains($ArchivePointer) -and -not $dsh.stdout.Contains("role-handoff-fixture")); actual = "exit=$($dsh.exit)" }
+    # 对照组：同参数去掉 -NoArchive → 兜底指向夹具归档（行为锚：原「最新归档」路径字节不变）
+    $ctl = Invoke-StartRole -Tag "t139b" -RoleArgs @("-Role", "PM", "-TaskBriefFile", $briefPath, "-Project", $FixtureRoot, "-DryRun") -EnvOverrides @{ DSH_WEB_URL = "http://127.0.0.1:3080"; RDD_RUNTIME = $null }
+    $checks += @{ name = "对照组（无 -NoArchive）：最新归档兜底行为不变（归档指针 + brief 并存——显式形正是为消此矛盾）"; ok = ($ctl.exit -eq 0 -and $ctl.stdout.Contains($ArchivePointer) -and $ctl.stdout.Contains("设备框架管理")); actual = "exit=$($ctl.exit)" }
+    # CLI 后端预填（依赖宿主 opencode，缺失记 SKIP，同 TC-020/122 口径）
+    $opencode = Get-Command opencode.cmd, opencode.exe, opencode.bat -ErrorAction SilentlyContinue | Select-Object -First 1
+    if (-not $opencode) {
+        $oc = Get-Command opencode -ErrorAction SilentlyContinue | Where-Object { $_.Extension -ne ".ps1" } | Select-Object -First 1
+        $opencode = $oc
+    }
+    if (-not $opencode) {
+        $checks += @{ name = "CLI DryRun 预填（/rdd-pm + 新需求框架 + brief）"; ok = $true; actual = "SKIP：环境缺 opencode（与 TC-020 同口径）" }
+    }
+    else {
+        $cli = Invoke-StartRole -Tag "t139c" -RoleArgs @("-Role", "PM", "-NoArchive", "-TaskBriefFile", $briefPath, "-Project", $FixtureRoot, "-DryRun") -EnvOverrides @{ DSH_WEB_URL = $null; RDD_RUNTIME = $null }
+        $checks += @{ name = "CLI DryRun 预填：/rdd-pm + 新需求框架 + brief，零归档泄漏"; ok = ($cli.exit -eq 0 -and $cli.stdout.Contains("/rdd-pm") -and $cli.stdout.Contains("尚无归档——归档由你创建") -and -not $cli.stdout.Contains($ArchivePointer)); actual = "exit=$($cli.exit)" }
+    }
+    Assert-All "TC-139" "NoArchive 新需求形态：brief 为唯一锚（三后端一致），最新归档兜底永不误指旧需求" $checks
+}
+
+# --- TC-140 NoArchive 互斥矩阵：五路非法组合逐一口径 -------------------------------------------
+function Test-NoArchiveGuards {
+    $briefPath = Join-Path $WorkDir "noarchive-brief2.md"
+    [System.IO.File]::WriteAllText($briefPath, "新需求简报", (New-Object System.Text.UTF8Encoding($false)))
+    $cases = @(
+        @{ tag = "t140a"; args = @("-Role", "PM", "-NoArchive"); expect = "-NoArchive 需要 -TaskBrief" },
+        @{ tag = "t140b"; args = @("-Role", "PM", "-NoArchive", "-TaskJson", "x.json", "-TaskBriefFile", $briefPath); expect = "-NoArchive 与 -TaskJson 互斥" },
+        @{ tag = "t140c"; args = @("-Role", "PM", "-NoArchive", "-TaskId", "1", "-TaskBriefFile", $briefPath); expect = "-NoArchive 与 -TaskId 互斥" },
+        @{ tag = "t140d"; args = @("-Role", "DEV", "-NoArchive", "-GoalTreeWorker", "-GoalTreeRun", "r1", "-GoalTreeNode", "n2", "-TaskBriefFile", $briefPath); expect = "-NoArchive 与 -GoalTreeWorker 互斥" },
+        @{ tag = "t140e"; args = @("-Role", "PLANNER", "-NoArchive", "-TaskBriefFile", $briefPath); expect = "-NoArchive 不适用于 PLANNER" }
+    )
+    $checks = @()
+    foreach ($c in $cases) {
+        $r = Invoke-StartRole -Tag $c.tag -RoleArgs $c.args -EnvOverrides @{ DSH_WEB_URL = $null; RDD_RUNTIME = $null }
+        $checks += @{ name = "$($c.tag)：$($c.expect)"; ok = ($r.exit -eq 1 -and $r.stdout.Contains($c.expect)); actual = "exit=$($r.exit)" }
+    }
+    Assert-All "TC-140" "NoArchive 守卫：缺 brief / -TaskJson / -TaskId / -GoalTreeWorker / PLANNER 五路互斥全部 fail-loud" $checks
+}
+
+# --- TC-141 立项回调链（planner-intake-callback）：协议段注入 + 回投载波 -----------------------
+function Test-IntakeCallbackChain {
+    $briefPath = Join-Path $WorkDir "cb-brief.md"
+    [System.IO.File]::WriteAllText($briefPath, "新需求：回调链验证。", (New-Object System.Text.UTF8Encoding($false)))
+    $checks = @()
+    # (a) dsh 后端 + DSH_SESSION_ID 在场：NoArchive 指针携带【立项回调协议】+ 原会话 ID + 回投命令
+    $with = Invoke-StartRole -Tag "t141a" -RoleArgs @("-Role", "PM", "-NoArchive", "-TaskBriefFile", $briefPath, "-Project", $FixtureRoot, "-DryRun") -EnvOverrides @{ DSH_WEB_URL = "http://127.0.0.1:3080"; RDD_RUNTIME = $null; DSH_SESSION_ID = "session-cb-origin-1" }
+    $checks += @{ name = "dsh+DSH_SESSION_ID：指针含【立项回调协议】+ 原会话 ID + ExistingSessionId 回投命令 + 禁止新开规划者"; ok = ($with.exit -eq 0 -and $with.stdout.Contains("【立项回调协议】") -and $with.stdout.Contains("-ExistingSessionId session-cb-origin-1") -and $with.stdout.Contains("不得新开规划者会话")); actual = "exit=$($with.exit)" }
+    # (b) DSH_SESSION_ID 缺席：协议段零注入（回归锚，消息形态不变）
+    $without = Invoke-StartRole -Tag "t141b" -RoleArgs @("-Role", "PM", "-NoArchive", "-TaskBriefFile", $briefPath, "-Project", $FixtureRoot, "-DryRun") -EnvOverrides @{ DSH_WEB_URL = "http://127.0.0.1:3080"; RDD_RUNTIME = $null; DSH_SESSION_ID = $null }
+    $checks += @{ name = "DSH_SESSION_ID 缺席：协议段零注入（回归锚）"; ok = ($without.exit -eq 0 -and -not $without.stdout.Contains("【立项回调协议】")); actual = "exit=$($without.exit)" }
+    # (c) 回投载波：PLANNER + ExistingSessionId + TaskJson 复用 DryRun——接管指针直达原会话
+    $back = Invoke-StartRole -Tag "t141c" -RoleArgs @("-Role", "PLANNER", "-ExistingSessionId", "session-cb-origin-1", "-TaskJson", $TaskJson, "-Project", $FixtureRoot, "-DryRun") -EnvOverrides @{ DSH_WEB_URL = "http://127.0.0.1:3080"; RDD_RUNTIME = $null }
+    $checks += @{ name = "回投载波：复用分支跳过 create 四步 + payload 直投接管指针（含 promulgate）到原会话"; ok = ($back.exit -eq 0 -and $back.stdout.Contains("复用会话: session-cb-origin-1") -and $back.stdout.Contains("text=请以规划者（PLANNER）身份接管") -and $back.stdout.Contains("promulgate")); actual = "exit=$($back.exit)" }
+    Assert-All "TC-141" "立项回调链：协议段随 DSH_SESSION_ID 注入 PM 指针，PM 归档后经复用载波把接管指针投回原规划者会话" $checks
+}
+
 
 # --- 执行 ---------------------------------------------------------------------
 
@@ -1316,6 +1392,10 @@ try {
     Test-PlannerSessionTitle
     Test-RenameFailureDegrades
     Test-RenameBackendBoundary
+    Test-UsageFace
+    Test-NoArchiveIntake
+    Test-NoArchiveGuards
+    Test-IntakeCallbackChain
 }
 finally {
     Remove-Item -LiteralPath $WorkDir -Recurse -Force -ErrorAction SilentlyContinue

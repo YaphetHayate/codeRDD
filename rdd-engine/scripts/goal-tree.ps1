@@ -24,7 +24,7 @@
 
 [CmdletBinding()]
 param(
-    [ValidateSet("start", "graft", "prune", "redo", "settle", "conclude", "round-start", "round-end", "status", "resume", "deps", "dispatch")]
+    [ValidateSet("start", "graft", "prune", "redo", "settle", "conclude", "round-start", "round-end", "status", "resume", "deps", "dispatch", "budget")]
     [string]$Command = "status",
 
     [string]$RunId,
@@ -93,6 +93,18 @@ param(
     [string]$AnchorNodeId,
     [string]$Decision,
 
+    # budget (planner-budget-extend): raise-only mid-run budget extension behind
+    # a hard user-approval gate. -Set* names (0 = not provided) keep start's
+    # defaulted -MaxRounds/-NodeWidth/-MaxNodes byte-untouched (regression
+    # anchor); -UserVerdict is the approval record itself (derive-confirm shape).
+    [ValidateRange(0, 1000)]
+    [int]$SetMaxRounds = 0,
+    [ValidateRange(0, 100)]
+    [int]$SetNodeWidth = 0,
+    [ValidateRange(0, 10000)]
+    [int]$SetMaxNodes = 0,
+    [string]$UserVerdict,
+
     # start (coverage gates, task-dispatch-guide R1/R4)
     [string]$DomainJson,
     [string]$DomainJsonFile,
@@ -100,12 +112,42 @@ param(
     [string]$GateMode,
 
     # settle / conclude one-shot gate override (warn|enforce)
-    [string]$Override
+    [string]$Override,
+
+    # 用法面（start-role-usage 同款契约）：打印命令速览后退出 0。不改变无参默认
+    # （-Command 缺省仍为 status，现行行为字节不变——回归锚）。
+    [switch]$Usage,
+    [switch]$Help
 )
 
 $ErrorActionPreference = "Stop"
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 $OutputEncoding = [System.Text.Encoding]::UTF8
+
+# --- 用法面（start-role-usage）--------------------------------------------------
+function Show-UsageFace {
+    Write-Host @"
+goal-tree.cmd — 树管理面 CLI（仅规划者会话；worker 消费面是 goal-tree-leaf.cmd）
+用法: goal-tree.cmd -Command <命令> -RunId <id> [选项]     （-Usage / -Help 打印本说明）
+
+命令速览（完整签名、参数字典与前置门见 references/planner-guide.md §二 命令面板）:
+  start        -Goal <目标> [-Title <标题>] -RefRoots <引用根,…> [-GoalRoot -GoalFile <f>] [-MaxRounds/-NodeWidth/-MaxNodes -CreatedBy]
+  graft        -Parent <n> (-TasksFile <f> | -Task <文本> -Title <t>) [-DependsOn n,n]
+  dispatch     -NodeId <pending节点> -Role <PM|CTO|UX|DEV|QA|EVAL|PSE|AUDITOR> [-SessionLabel -EmployeeId -DryRun]
+  settle       -NodeId <n> -Verdict <useful|useless> [-Evidence]
+  redo         -NodeId <n> -Worker <角色小写> -FailureRef <失败清单文件>   （打回原持有者原地重做）
+  prune        -NodeId <n> [-Reason]                                        （级联剪枝）
+  deps         -Node <n> -DependsOn <n,n> | -List
+  round-start  （开轮；status 触碰会兜底补推）
+  round-end    [-Summary <本轮结论> -Decision <下轮方向>]
+  status       [-View summary|dispatches]                                  （对齐态势）
+  resume       （断点续跑）· conclude -Outcome <achieved|budget_exhausted|space_exhausted> [-Summary]
+  budget       -SetMaxRounds/-SetNodeWidth/-SetMaxNodes <n> -UserVerdict <用户裁决原文>   （只增不减；人工审批硬门）
+worker 侧: goal-tree-leaf.cmd -Command next|claim|report ...
+"@ 
+}
+
+if ($Usage -or $Help) { Show-UsageFace; exit 0 }
 # Resolve-RepoRoot - project-root location chain (git-optional; protocol source:
 # rdd-engine/references/engine-location.md, "Project-root location chain"). Fixed order:
 #   1. $env:RDD_PROJECT_ROOT          explicit override; invalid path -> fail-loud
@@ -848,6 +890,26 @@ function Add-DepsLogLine {
     if ($all.Count -eq 0) { Write-ErrorResult "DEPSLOG_READBACK_FAILED" "deps-log.jsonl empty after append" 3 }
     try { $null = $all[-1] | ConvertFrom-Json }
     catch { Write-ErrorResult "DEPSLOG_READBACK_FAILED" "deps-log.jsonl last line failed to parse after append" 3 }
+}
+
+# === state/budget-log.jsonl (append-only budget-extension audit) ===============
+# One line per approved extension: {event: budget-extend, fields, old, new,
+# verdict, round, at} — the verdict rides VERBATIM (it IS the approval record;
+# bridge runs also land a ruling entry in the archive decision ledger with
+# decider=user).
+
+function Get-BudgetLogPath { param([string]$RunDir); Join-Path (Get-StateDir $RunDir) "budget-log.jsonl" }
+
+function Add-BudgetLogLine {
+    param([string]$RunDir, $LineHashtable)
+    $p = Get-BudgetLogPath $RunDir
+    $json = ConvertTo-Json $LineHashtable -Depth 6 -Compress
+    [System.IO.File]::AppendAllText($p, $json + "`n", $script:Utf8NoBom)
+    # read-back finish: last non-empty line must parse (same contract as deps-log)
+    $all = @([System.IO.File]::ReadAllLines($p) | Where-Object { $_.Trim() -ne "" })
+    if ($all.Count -eq 0) { Write-ErrorResult "BUDGETLOG_READBACK_FAILED" "budget-log.jsonl empty after append" 3 }
+    try { $null = $all[-1] | ConvertFrom-Json }
+    catch { Write-ErrorResult "BUDGETLOG_READBACK_FAILED" "budget-log.jsonl last line failed to parse after append" 3 }
 }
 
 # === state/dispatch-log.jsonl (append-only dispatch audit) =====================
@@ -1612,15 +1674,20 @@ function Invoke-Graft {
         if ($parentNode.status -eq "pruned") { Write-ErrorResult "PARENT_PRUNED" "Parent $Parent is pruned; grafting onto a pruned subtree is not allowed" 1 }
 
         $incoming = @($inputTasks).Count
-        # 宽度预算只计活跃子节点:prune 的语义就是作废该分支并释放宽度,
-        # 否则 rejected-delivery 反复回收(prune+重graft)会被已剪枝节点永久挤占预算
+        # 宽度预算只计在途（并发面）子节点:prune 的语义就是作废该分支并释放宽度,
+        # 否则 rejected-delivery 反复回收(prune+重graft)会被已剪枝节点永久挤占预算;
+        # done 同样释放(width-done-release,宽度缺陷④):宽度 = 并发分支上限,done =
+        # 并发已结束——运行期增员(派生 PM/fail 波重做链头)会吃掉颁布时给验收链
+        # ([集成/联调]→[整体验收],挂点 goal root)的 +2 预留,但 run 收口时全部
+        # done、在途并发面 = 0,结构收口节点应立即可挂(挡 done 是把并发上限错用
+        # 成总量上限)。
         $activeChildren = 0
         foreach ($cid in @($parentNode.children)) {
             $cnode = Find-Node $tree ([string]$cid)
-            if ($null -ne $cnode -and [string]$cnode.status -ne "pruned") { $activeChildren++ }
+            if ($null -ne $cnode -and @('pending', 'claimed', 'reported') -contains [string]$cnode.status) { $activeChildren++ }
         }
         if (($activeChildren + $incoming) -gt [int]$manifest.budget.node_width) {
-            Write-ErrorResult "WIDTH_EXCEEDED" "Graft would exceed node_width $($manifest.budget.node_width): parent $Parent has $activeChildren active children (pruned excluded), incoming $incoming" 1
+            Write-ErrorResult "WIDTH_EXCEEDED" "Graft would exceed node_width $($manifest.budget.node_width): parent $Parent has $activeChildren in-flight children (pending/claimed/reported; done/pruned release their slots), incoming $incoming" 1
         }
         if ((@($tree.nodes).Count + $incoming) -gt [int]$manifest.budget.max_nodes) {
             Write-ErrorResult "NODES_EXCEEDED" "Graft would exceed max_nodes $($manifest.budget.max_nodes): tree already has $(@($tree.nodes).Count) nodes, incoming $incoming. Consider concluding with budget_exhausted." 1
@@ -2150,6 +2217,75 @@ function Invoke-Conclude {
                 r4            = $r4Warn
                 final_report  = ".rdd/goal-trees/$RunId/report/final-report.md"
                 lock          = $lockInfo
+            }
+        }
+    }
+    finally {
+        Exit-RunLock
+    }
+}
+
+# === Command: budget (planner-budget-extend) ===
+
+function Invoke-Budget {
+    # Raise-only mid-run budget extension behind a hard user-approval gate:
+    # -UserVerdict (the user's ruling VERBATIM) IS the approval record — no
+    # record, no extension (final adjudication stays with the user; the same
+    # hard-gate shape as the bridge derive-confirm gate). Raise-only on
+    # purpose: lowering ceilings that in-flight state may already exceed
+    # would invalidate the graft/round-start gates mid-flight — "too much
+    # budget" is conclude's problem, not a lowering problem.
+    param([string]$RunDir)
+    if ([string]::IsNullOrWhiteSpace($UserVerdict)) {
+        Write-ErrorResult "BUDGET_VERDICT_MISSING" "the user-approval gate is a HARD gate: -UserVerdict (the user's ruling verbatim) is the approval record itself — no record, no extension (final adjudication stays with the user)" 1
+    }
+    $provided = @()
+    if ($SetMaxRounds -gt 0) { $provided += 'max_rounds' }
+    if ($SetNodeWidth -gt 0) { $provided += 'node_width' }
+    if ($SetMaxNodes -gt 0) { $provided += 'max_nodes' }
+    if ($provided.Count -eq 0) {
+        Write-ErrorResult "BUDGET_TARGET_MISSING" "nothing to extend: pass at least one of -SetMaxRounds / -SetNodeWidth / -SetMaxNodes (raise-only: each value must EXCEED the current ceiling)" 1
+    }
+
+    $lockInfo = Enter-RunLock $RunDir
+    try {
+        $manifest = Read-ManifestEditable $RunDir
+        Assert-Running $manifest
+        $old = @{
+            max_rounds = [int]$manifest.budget.max_rounds
+            node_width = [int]$manifest.budget.node_width
+            max_nodes  = [int]$manifest.budget.max_nodes
+        }
+        foreach ($pair in @(@('max_rounds', $SetMaxRounds), @('node_width', $SetNodeWidth), @('max_nodes', $SetMaxNodes))) {
+            $field = [string]$pair[0]
+            $val = [int]$pair[1]
+            if ($val -le 0) { continue }
+            if ($val -le $old[$field]) {
+                Write-ErrorResult "BUDGET_RAISE_ONLY" "$field extension must EXCEED the current ceiling (current $($old[$field]), given $val): lowering mid-run would invalidate in-flight graft/round gates — conclude honestly instead" 1
+            }
+            $manifest.budget[$field] = $val
+        }
+        Write-ManifestFile $RunDir $manifest
+        $roundState = Get-RoundState $RunDir
+        Add-BudgetLogLine $RunDir @{
+            event   = "budget-extend"
+            round   = [int]$roundState.last_round
+            fields  = $provided
+            old     = $old
+            new     = @{ max_rounds = [int]$manifest.budget.max_rounds; node_width = [int]$manifest.budget.node_width; max_nodes = [int]$manifest.budget.max_nodes }
+            verdict = $UserVerdict
+            at      = Get-UtcNowIso
+        }
+        return @{
+            success = $true
+            data    = @{
+                run_id    = $RunId
+                extended  = $provided
+                old       = $old
+                new       = @{ max_rounds = [int]$manifest.budget.max_rounds; node_width = [int]$manifest.budget.node_width; max_nodes = [int]$manifest.budget.max_nodes }
+                approval  = "user verdict recorded verbatim in state/budget-log.jsonl"
+                next_step = "ceilings lifted: graft / round-start unlock automatically; conclude -Outcome budget_exhausted re-arms its honesty check against the new ceilings"
+                lock      = $lockInfo
             }
         }
     }
@@ -2719,6 +2855,7 @@ switch ($Command) {
     "resume"      { $runDir = Resolve-RunDir $RunId; $result = Invoke-Resume $runDir }
     "deps"        { $runDir = Resolve-RunDir $RunId; $result = Invoke-Deps $runDir }
     "dispatch"    { $runDir = Resolve-RunDir $RunId; $result = Invoke-Dispatch $runDir }
+    "budget"      { $runDir = Resolve-RunDir $RunId; $result = Invoke-Budget $runDir }
 }
 
 ConvertTo-PortableJson $result -Depth 14

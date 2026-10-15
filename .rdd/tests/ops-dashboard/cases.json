@@ -4,13 +4,17 @@
     "relatedCode":  [
                         "rdd-engine/dashboard/",
                         "rdd-engine/scripts/dashboard.cmd",
-                        "ops-dashboard.cmd"
+                        "ops-dashboard.cmd",
+                        "start-dashboard.cmd (design-decided; pending DEV)",
+                        "rdd-engine/dashboard/server.mjs"
                     ],
     "testCode":  [
                      ".rdd/tests/ops-dashboard/ops-dashboard-qa-verify.ps1",
-                     ".rdd/tests/ops-dashboard/js-quality-metrics.mjs"
+                     ".rdd/tests/ops-dashboard/js-quality-metrics.mjs",
+                     ".rdd/tests/ops-dashboard/ops-dashboard-launcher-qa-verify.ps1",
+                     ".rdd/tests/ops-dashboard/desktop-shortcut-qa-verify.ps1"
                  ],
-    "lastChange":  "2026-10-08-rdd-ops-dashboard",
+    "lastChange":  "2026-10-09-ops-dashboard-launcher",
     "cases":  [
                   {
                       "id":  "TC-105",
@@ -373,6 +377,376 @@
                                     "（n13 补）API 面按 UTC 日的 trend 桶与磁盘独立复算逐项对账（B9）；API total/hit/miss/forced 四字段与冻结契约一致、forced 不入分母（B10）"
                                 ],
                       "expected":  "判据 #2 的 11 条断言全过（B0..B10）：命中率随真实流水重算并两次变化、趋势桶与磁盘一致、forced 半开语义正确、明细逐字可查、服务零重启"
+                  },
+                  {
+                      "id":  "TC-205",
+                      "title":  "仓脚本一键：调 .cmd 后 stdout 宣告可打开的 URL；默认浏览器自动打开通道在 -AutoOpen 路径可取证（Start-Process/dispatcher trace）",
+                      "type":  "positive",
+                      "priority":  "P0",
+                      "acceptance":  "AC-1",
+                      "codeRef":  ".rdd/tests/ops-dashboard/ops-dashboard-launcher-qa-verify.ps1:127",
+                      "sourceChange":  "2026-10-09-ops-dashboard-launcher",
+                      "status":  "active",
+                      "crossFeature":  [
+
+                                       ],
+                      "precondition":  "DEV 已交付仓级 launcher 入口（start-dashboard.cmd 或同名族）；-StartCommand 显式传入激活；-AutoOpen 激活浏览器自动打开通道取证（沙箱无桌面会话时 dispatcher 命中+失败降级路径覆盖）",
+                      "steps":  [
+                                    "Start-Process -WindowStyle Hidden 调起 launcher，stdout 重定向文件",
+                                    "40s 等待窗内从共享读法 stdout 中抽取 URL（兼容 pretty/紧凑双形态正则 http(s)://127.0.0.1|localhost|::1:PORT）",
+                                    "断言进程未退出 + URL 可定位（与既有 TC-105 同源）",
+                                    "在 -AutoOpen 下断言 dispatcher trace 关键词（Start-Process|browser-open|open-default-browser|opener|dispatcher）至少其一出现"
+                                ],
+                      "expected":  "URL 抽取成功且进程存活；-AutoOpen 下浏览器自动打开通道确实被 dispatcher 命中"
+                  },
+                  {
+                      "id":  "TC-210",
+                      "title":  "仓脚本双击形态不闪 cmd 黑窗：进程 MainWindowHandle 不可见 / MainWindowTitle 为空",
+                      "type":  "positive",
+                      "priority":  "P0",
+                      "acceptance":  "AC-2",
+                      "codeRef":  ".rdd/tests/ops-dashboard/ops-dashboard-launcher-qa-verify.ps1:145",
+                      "sourceChange":  "2026-10-09-ops-dashboard-launcher",
+                      "status":  "active",
+                      "crossFeature":  [
+
+                                       ],
+                      "precondition":  "启动入口走 Start-Process -WindowStyle Hidden（DEV 端点落形既定）",
+                      "steps":  [
+                                    "拉起 launcher 后探 MainWindowHandle",
+                                    "若非 0 则进一步取 MainWindowTitle，非空判为可视",
+                                    "断言不可视"
+                                ],
+                      "expected":  "进程无可视主窗口（双击体验：图标任务栏被点一下，不闪 cmd 黑窗）"
+                  },
+                  {
+                      "id":  "TC-215",
+                      "title":  "不变量保持：启动后 /api/overview 仍 200 且信封四字段 {domain,available,meta,data} 齐备",
+                      "type":  "positive",
+                      "priority":  "P0",
+                      "acceptance":  "AC-3",
+                      "codeRef":  ".rdd/tests/ops-dashboard/ops-dashboard-launcher-qa-verify.ps1:170",
+                      "sourceChange":  "2026-10-09-ops-dashboard-launcher",
+                      "status":  "active",
+                      "crossFeature":  [
+                                           "ops-dashboard-project-switcher"
+                                       ],
+                      "precondition":  "服务运行中；既有 TC-060 同源（信封契约由 10-09 已背书）；本 TC 钉死 launcher 入路径不绕过 RDD_PROJECT_ROOT 解析、不引入新 .rdd 顶层路径别名",
+                      "steps":  [
+                                    "调起 launcher 后 GET /api/overview",
+                                    "ConvertFrom-Json 后断言 PSObject.Properties.Name 同时含 domain/available/meta/data"
+                                ],
+                      "expected":  "入口路径变更不击穿既有信封（四字段同在）"
+                  },
+                  {
+                      "id":  "TC-220",
+                      "title":  "Node 缺失/异常路径友好：启动日志不含 PATH/ENOENT/CommandNotFound 缺失噪声，与既有 dashboard.cmd §Node 校验同风格",
+                      "type":  "negative",
+                      "priority":  "P0",
+                      "acceptance":  "AC-4",
+                      "codeRef":  ".rdd/tests/ops-dashboard/ops-dashboard-launcher-qa-verify.ps1:222",
+                      "sourceChange":  "2026-10-09-ops-dashboard-launcher",
+                      "status":  "active",
+                      "crossFeature":  [
+
+                                       ],
+                      "precondition":  "默认 PATH 下启动（节点缺失取证需要环境 PATH 突变，沙箱内不在本 TC 强测；本 TC 钉最弱信号——首轮输出不含 node-not-found 类回退）",
+                      "steps":  [
+                                    "拉起 launcher 后累计 stdout+stderr",
+                                    "正则断言不含 (?i)node(_\\w+)?\\s*:\\s*command not found|enoent.*node\\.exe|not recognized as an internal or external command"
+                                ],
+                      "expected":  "零 PATH/ENOENT 噪声；Node 缺失原文提示由 dashboard.cmd §Node 校验已含（既有未变）"
+                  },
+                  {
+                      "id":  "TC-225",
+                      "title":  "可手动 Ctrl-C 终止：launcher 进程树对父进程可发现且无需强杀即可干净终止",
+                      "type":  "boundary",
+                      "priority":  "P0",
+                      "acceptance":  "AC-5",
+                      "codeRef":  ".rdd/tests/ops-dashboard/ops-dashboard-launcher-qa-verify.ps1:194",
+                      "sourceChange":  "2026-10-09-ops-dashboard-launcher",
+                      "status":  "active",
+                      "crossFeature":  [
+
+                                       ],
+                      "precondition":  "受限沙箱下无法真正发 SIGINT；改以「进程非 detached 服务化、Stop-Process 无 -Force 即可退出」为最小信号——后台化不能封死手动终止通道",
+                      "steps":  [
+                                    "Get-CimInstance 取 ParentProcessId 验证非脱管",
+                                    "Stop-Process（无 -Force）后 HasExited 立即为真"
+                                ],
+                      "expected":  "进程树正常受父进程管控，可干净退出（Ctrl-C 通道成立）"
+                  },
+                  {
+                      "id":  "TC-230",
+                      "title":  "-Port <n> 透传：launcher -Port <n> 起服务后 http://127.0.0.1:<n>/ 返回 200",
+                      "type":  "positive",
+                      "priority":  "P0",
+                      "acceptance":  "AC-6",
+                      "codeRef":  ".rdd/tests/ops-dashboard/ops-dashboard-launcher-qa-verify.ps1:158",
+                      "sourceChange":  "2026-10-09-ops-dashboard-launcher",
+                      "status":  "active",
+                      "crossFeature":  [
+
+                                       ],
+                      "precondition":  "命令行 -Port <n> 传入激活；与既有 dashboard.cmd -Port <n> 同源",
+                      "steps":  [
+                                    "拉起 launcher -Port <n>",
+                                    "循环 GET http://127.0.0.1:<n>/ 至 200"
+                                ],
+                      "expected":  "透传到服务（与既有 -Port 行为完全一致）"
+                  },
+                  {
+                      "id":  "TC-235",
+                      "title":  "浏览器自动打开失败降级：失败时不阻塞服务，stdout/stderr 含「服务/启动/打开 http」类降级信号",
+                      "type":  "exception",
+                      "priority":  "P1",
+                      "acceptance":  "AC-4",
+                      "codeRef":  ".rdd/tests/ops-dashboard/ops-dashboard-launcher-qa-verify.ps1:180",
+                      "sourceChange":  "2026-10-09-ops-dashboard-launcher",
+                      "status":  "active",
+                      "crossFeature":  [
+
+                                       ],
+                      "precondition":  "-AutoOpen 激活；在无桌面会话的沙箱中浏览器进程不可达，使 dispatcher 必然失败",
+                      "steps":  [
+                                    "拉起 launcher + -AutoOpen",
+                                    "15s 后累计 stdout+stderr",
+                                    "断言含降级信号且服务仍 200"
+                                ],
+                      "expected":  "降级信号出现（不静默失败）+ 服务不被杀死（仅降级不崩溃）"
+                  },
+                  {
+                      "id":  "TC-240",
+                      "title":  "同端口被占用报错同源：第二实例输出含 port/端口/占用/失败/切换类明确语义，不另立第二通道",
+                      "type":  "negative",
+                      "priority":  "P1",
+                      "acceptance":  "AC-4",
+                      "codeRef":  ".rdd/tests/ops-dashboard/ops-dashboard-launcher-qa-verify.ps1:212",
+                      "sourceChange":  "2026-10-09-ops-dashboard-launcher",
+                      "status":  "active",
+                      "crossFeature":  [
+
+                                       ],
+                      "precondition":  "第一实例 8787 健康运行；与既有 TC-135 同源",
+                      "steps":  [
+                                    "拉起第二 launcher，20s 内等到 HasExited 或完成 stdout",
+                                    "累计 stdout+stderr，正则断言含 (?i)port|端口 AND (?i)占用|in use|occupied|busy|EADDRINUSE|listen|failed|失败|切换|switch|already"
+                                ],
+                      "expected":  "显式报错不静默，与既有同源（不另立第二通道）"
+                  },
+                  {
+                      "id":  "TC-245",
+                      "title":  "命名不冲突：仓库根 cmd 数 + rdd-engine\\scripts\\dashboard.cmd ≤ 2（R3「不另造第三个 cmd 入口」现状基线）",
+                      "type":  "boundary",
+                      "priority":  "P2",
+                      "acceptance":  "R3",
+                      "codeRef":  ".rdd/tests/ops-dashboard/ops-dashboard-launcher-qa-verify.ps1:104",
+                      "sourceChange":  "2026-10-09-ops-dashboard-launcher",
+                      "status":  "active",
+                      "crossFeature":  [
+
+                                       ],
+                      "precondition":  "测试先行形态下亦可独立断言（不依赖启动路径）",
+                      "steps":  [
+                                    "扫描仓库根 *.cmd + rdd-engine\\scripts\\dashboard.cmd",
+                                    "去重计数"
+                                ],
+                      "expected":  "cmd 入口数 ≤ 2（不含本轮新增 launcher 的合规断言，即新增后仍 ≤ 3 须另立期间断言覆盖）"
+                  },
+                  {
+                      "id":  "TC-250",
+                      "title":  "install-desktop-shortcut.ps1 自身 PowerShell 解析无语法错误（[Parser]::ParseFile 全绿）",
+                      "type":  "positive",
+                      "priority":  "P0",
+                      "acceptance":  "AC-4",
+                      "codeRef":  ".rdd/tests/ops-dashboard/desktop-shortcut-qa-verify.ps1:144",
+                      "sourceChange":  "2026-10-09-ops-dashboard-launcher",
+                      "status":  "active",
+                      "crossFeature":  [
+
+                                       ],
+                      "precondition":  "DEV 已交付 install-desktop-shortcut.ps1；脚本路径由 -InstallScript 或仓内约定发现传入",
+                      "steps":  [
+                                    "经 [System.Management.Automation.Language.Parser]::ParseFile($script, [ref]$tokens, [ref]$parseErrors) 取 AST",
+                                    "断言 parseErrors.Count = 0"
+                                ],
+                      "expected":  "零解析错误（脚本可由 PowerShell 解释器加载执行）"
+                  },
+                  {
+                      "id":  "TC-255",
+                      "title":  "幂等正向：首次调 install bridge 后桌面（或隔离 -ShortcutBasePath）出现「Rdd Dashboard」.lnk 文件",
+                      "type":  "positive",
+                      "priority":  "P0",
+                      "acceptance":  "AC-1",
+                      "codeRef":  ".rdd/tests/ops-dashboard/desktop-shortcut-qa-verify.ps1:154",
+                      "sourceChange":  "2026-10-09-ops-dashboard-launcher",
+                      "status":  "active",
+                      "crossFeature":  [
+
+                                       ],
+                      "precondition":  "install bridge 已交付；沙箱下用 -ShortcutBasePath 注入隔离根避免污染真实桌面",
+                      "steps":  [
+                                    "Start-Process powershell.exe -File <install bridge -ShortcutBasePath <隔离根>>",
+                                    "20s 等待 exit",
+                                    "断言 .lnk 文件出现在隔离根（含「Rdd Dashboard」名匹配）"
+                                ],
+                      "expected":  ".lnk 文件成功落盘；安装桥入口成功执行"
+                  },
+                  {
+                      "id":  "TC-260",
+                      "title":  "幂等逆向：第二次运行不报错、桌面 .lnk 数量不增加（或保持 +1 容差以兼容 update-existing 形态）",
+                      "type":  "negative",
+                      "priority":  "P0",
+                      "acceptance":  "AC-1",
+                      "codeRef":  ".rdd/tests/ops-dashboard/desktop-shortcut-qa-verify.ps1:175",
+                      "sourceChange":  "2026-10-09-ops-dashboard-launcher",
+                      "status":  "active",
+                      "crossFeature":  [
+
+                                       ],
+                      "precondition":  "TC-255 已跑通，桌面已有 .lnk",
+                      "steps":  [
+                                    "记录首次安装后 .lnk 数量 N",
+                                    "第二次跑 install bridge",
+                                    "断言 exit=0 + 新数量 ≤ N+1 + 不报「重复添加失败」类语义"
+                                ],
+                      "expected":  "幂等通过（不重复添加、不报错、不污染已存 .lnk）"
+                  },
+                  {
+                      "id":  "TC-265",
+                      "title":  ".lnk TargetPath 解析指向权威源（start-dashboard.ps1 / dashboard.cmd / ops-dashboard.cmd）",
+                      "type":  "positive",
+                      "priority":  "P0",
+                      "acceptance":  "AC-3",
+                      "codeRef":  ".rdd/tests/ops-dashboard/desktop-shortcut-qa-verify.ps1:193",
+                      "sourceChange":  "2026-10-09-ops-dashboard-launcher",
+                      "status":  "active",
+                      "crossFeature":  [
+                                           "ops-dashboard"
+                                       ],
+                      "precondition":  "TC-255 已落盘；COM WScript.Shell 可在 STA 模式下创建（CI/non-WSH 环境 SKIP 兜底）",
+                      "steps":  [
+                                    "WshShell.CreateShortcut($lnk) → s.TargetPath",
+                                    "断言 TargetPath 落在仓根或仓子目录，且文件名含 dashboard.cmd / start-dashboard / ops-dashboard 之一"
+                                ],
+                      "expected":  "TargetPath 指向权威启动脚本（设计裁定未定者三种候选全接受）"
+                  },
+                  {
+                      "id":  "TC-270",
+                      "title":  ".lnk 不闪 cmd 黑窗：Arguments 含 Hidden/WindowStyle/Noprofile 类形参",
+                      "type":  "positive",
+                      "priority":  "P0",
+                      "acceptance":  "AC-3",
+                      "codeRef":  ".rdd/tests/ops-dashboard/desktop-shortcut-qa-verify.ps1:222",
+                      "sourceChange":  "2026-10-09-ops-dashboard-launcher",
+                      "status":  "active",
+                      "crossFeature":  [
+
+                                       ],
+                      "precondition":  "TC-265 已 PASS（COM 可用）",
+                      "steps":  [
+                                    "WshShell.CreateShortcut($lnk) → s.Arguments",
+                                    "断言含 hidden / windowstyle hidden / noprofile 之一且 TargetPath 是 powershell.exe 家族"
+                                ],
+                      "expected":  ".lnk 双击不闪 cmd 黑窗（直接走 hidden powershell 子进程）"
+                  },
+                  {
+                      "id":  "TC-275",
+                      "title":  "双击 .lnk 端到端：起服务 + 默认浏览器自动打开 127.0.0.1:8787（CI 沙箱仅取「子进程存活」一段，完整端到端为桌面会话手动协议）",
+                      "type":  "positive",
+                      "priority":  "P0",
+                      "acceptance":  "AC-3",
+                      "codeRef":  ".rdd/tests/ops-dashboard/desktop-shortcut-qa-verify.ps1:258",
+                      "sourceChange":  "2026-10-09-ops-dashboard-launcher",
+                      "status":  "active",
+                      "crossFeature":  [
+                                           "ops-dashboard"
+                                       ],
+                      "precondition":  "TC-255 已落盘；显式 -DriveDoubleClick 激活（默认 SKIP 以避免无桌面会话的 CI 误调用）",
+                      "steps":  [
+                                    "Start-Process <.lnk>",
+                                    "5s 后断言子进程未退出"
+                                ],
+                      "expected":  ".lnk 双击 = 起 powershell 子进程（沙箱取证段）；完整端到端含服务可访问 + 浏览器自动打开由桌面会话手动验证"
+                  },
+                  {
+                      "id":  "TC-280",
+                      "title":  "安装位置可发现：桌面 .lnk 文件名含「Rdd Dashboard」（开始菜单为设计可选，不强断言）",
+                      "type":  "positive",
+                      "priority":  "P0",
+                      "acceptance":  "AC-2",
+                      "codeRef":  ".rdd/tests/ops-dashboard/desktop-shortcut-qa-verify.ps1:288",
+                      "sourceChange":  "2026-10-09-ops-dashboard-launcher",
+                      "status":  "active",
+                      "crossFeature":  [
+
+                                       ],
+                      "precondition":  "TC-255 已跑通；桌面 .lnk 已知落盘",
+                      "steps":  [
+                                    "Get-ChildItem -Filter *.lnk 取桌面 .lnk",
+                                    "断言 Name 命中 /Rdd Dashboard/i 模式"
+                                ],
+                      "expected":  "桌面出现可发现入口「Rdd Dashboard」（图标采用 Node.js / PowerShell 默认或 docs/ 自带资产由设计裁定）"
+                  },
+                  {
+                      "id":  "TC-285",
+                      "title":  "权限不足/路径不存在失败清晰：exit ≠ 0 + 错误语义（permission/denied/not exist/path）+ 无裸 stack trace",
+                      "type":  "negative",
+                      "priority":  "P1",
+                      "acceptance":  "EC-2",
+                      "codeRef":  ".rdd/tests/ops-dashboard/desktop-shortcut-qa-verify.ps1:303",
+                      "sourceChange":  "2026-10-09-ops-dashboard-launcher",
+                      "status":  "active",
+                      "crossFeature":  [
+
+                                       ],
+                      "precondition":  "隔离根 -ShortcutBasePath 可被脚本消费",
+                      "steps":  [
+                                    "以不存在的 -ShortcutBasePath 调 install bridge",
+                                    "15s 等 exit",
+                                    "断言 exit ≠ 0 + 输出含 permission/denied/not exist/path 类语义 + 无 unhandled exception / stack trace"
+                                ],
+                      "expected":  "失败路径显式报错，不静默成功也不抛裸 stack"
+                  },
+                  {
+                      "id":  "TC-290",
+                      "title":  "Restricted 执行策略下友好提示：脚本不污染 user/machine ExecutionPolicy",
+                      "type":  "negative",
+                      "priority":  "P1",
+                      "acceptance":  "EC-1",
+                      "codeRef":  ".rdd/tests/ops-dashboard/desktop-shortcut-qa-verify.ps1:323",
+                      "sourceChange":  "2026-10-09-ops-dashboard-launcher",
+                      "status":  "active",
+                      "crossFeature":  [
+
+                                       ],
+                      "precondition":  "脚本全文可读（TC-250 已 PASS）",
+                      "steps":  [
+                                    "读取 install bridge 全文",
+                                    "正则断言不含 Set-ExecutionPolicy -Scope (LocalMachine|Machine|UserPolicy|UserPolicy|User Policy) — 此调用会污染用户/机器策略",
+                                    "次级信号：bogus 路径输出含 policy / 策略 / restricted / bypass / denied 之一"
+                                ],
+                      "expected":  "不污染 ExecutionPolicy；用户可在不修改机器策略的情况下绕过 Restricted"
+                  },
+                  {
+                      "id":  "TC-295",
+                      "title":  "-Uninstall（或同等形态）清理已安装 .lnk：count down + exit 0",
+                      "type":  "positive",
+                      "priority":  "P1",
+                      "acceptance":  "EC-4",
+                      "codeRef":  ".rdd/tests/ops-dashboard/desktop-shortcut-qa-verify.ps1:336",
+                      "sourceChange":  "2026-10-09-ops-dashboard-launcher",
+                      "status":  "active",
+                      "crossFeature":  [
+
+                                       ],
+                      "precondition":  "TC-255/260 已 PASS；桌面已有 .lnk",
+                      "steps":  [
+                                    "调 install bridge -Uninstall [-ShortcutBasePath <隔离根>]",
+                                    "15s 等 exit",
+                                    "断言桌面 .lnk 数量下降 + exit = 0（或含 removed/deleted/cleaned/uninstall/卸载/删除 类语义）"
+                                ],
+                      "expected":  "卸载通道成立：用户删除桌面 .lnk 即可；脚本主动卸载为增值（PM 推断：以一次性正向安装为基线，清理为增值）"
                   }
               ]
 }

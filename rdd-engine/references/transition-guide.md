@@ -141,7 +141,7 @@ $rdd = $null; $t = $null; try { $t = git rev-parse --show-toplevel } catch { }; 
 脚本参数模式（各后端共用）：
 - **TaskId 模式**（推荐）：`-TaskId <n>`，CLI 后端预填 `/rdd-<角色> TaskId=<n> task=<task.json绝对路径>`；Plus/dsh 后端据此定位归档生成指针消息
 - **Handoff 模式**（上游预生成交接包时）：`-Handoff <文件路径>`
-- **纯角色模式**：不传 `-TaskId` / `-Handoff`，由目标角色自行拉 handoff（仅 CLI 后端支持；Plus/dsh 后端必须能定位归档）
+- **纯角色模式**：不传 `-TaskId` / `-Handoff`，由目标角色自行拉 handoff（仅 CLI 后端支持；Plus/dsh 后端必须能定位归档，或以 `-TaskBrief` 携带自足任务文本——**PM 立项通道**：立项时归档尚不存在（由 PM 创建），规划者把用户原始意图**原文透传**给 PM 会话，无归档可锚也合法）
 
 **TaskId 由执行者校验**：脚本不校验 TaskId 有效性。目标角色拉 handoff 时若发现 TaskId 不存在（已被他人完成 / 被废弃），自行判断并告知用户。
 
@@ -155,14 +155,14 @@ PM 归档完成后 `rdd-flow next` 输出 `longTask.triggered=true`（归档含 
 
 > 该原始需求被拆分为 N 条子需求（M 条进行中），属长程任务，建议交规划者接管整批交付：执行 `start-role.cmd -Role PLANNER -TaskJson <task.json>`——规划者按 `review-input-template.md` 机械模板派需求审视子代理（独立上下文，禁转述），结论呈你确认后机械消费 ReviewFile（reviewer: "auditor-delegated"）接管建树。
 >
-> 强形态（可选，需显式要求）：仍可用独立会话评审——先执行 `start-role.cmd -Role AUDITOR -TaskJson <task.json>` 产出 ReviewFile（reviewer: "auditor"，dsh 后端需 preset `rdd-auditor`，`build-dsh-presets.mjs --with-auditor` 可重建），确认后再启动规划者（`promulgate -ReviewFile` 契约不变）；不采纳接管分支则按 4 步硬流程逐条交接，行为不变。
+> 强形态（可选，需显式要求）：仍可用独立会话评审——先执行 `start-role.cmd -Role AUDITOR -TaskJson <task.json>` 产出 ReviewFile（reviewer: "auditor"，dsh 后端需 preset `rdd-auditor`；重建脚本 `build-dsh-presets.mjs --with-auditor` 属源码仓 `scripts/`，**不随引擎包分发**——引擎安装内无此脚本时回落单入口子代理形态即可，勿手工装配 preset），确认后再启动规划者（`promulgate -ReviewFile` 契约不变）；不采纳接管分支则按 4 步硬流程逐条交接，行为不变。
 
 ```powershell
 # 单入口：PLANNER 接管（会话内派评审子代理，无需独立 AUDITOR 会话）
 $rdd = $null; $t = $null; try { $t = git rev-parse --show-toplevel } catch { }; foreach ($c in @($env:RDD_ENGINE_HOME; if ($t) { (Get-ChildItem $t -Recurse -Directory -Depth 3 -Filter 'rdd-engine').FullName }; "$HOME\.rdd\engine\current")) { if ($c -and (Test-Path "$c\scripts\rdd-flow.cmd")) { $rdd = $c; break } }; if (-not $rdd) { throw "rdd-engine 未定位" }; & "$rdd\scripts\start-role.cmd" -Role PLANNER -TaskJson <归档 task.json>
 ```
 
-- **单入口启动 PLANNER**：脚本投递的是**自举式指针消息**（"请以规划者（PLANNER）身份接管 … 先读 planner-guide.md，按 review-input-template.md 机械模板派需求审视子代理 … 随后执行 delivery-bridge promulgate …"）——规划者无角色卡，身份由消息 + `rdd-engine/references/planner-guide.md` 装载；三后端（CLI/Plus/dsh）一致。dsh 后端需 preset `rdd-planner`（部署前提见 planner-guide）。规划者经 `promulgate -ReviewFile <归档>/review/requirement-review.json` 机械消费（消费端契约零改动）。
+- **单入口启动 PLANNER**：脚本投递的是**自举式指针消息**（"请以规划者（PLANNER）身份接管 … 先读 planner-guide.md，按 review-input-template.md 机械模板派需求审视子代理 … 随后执行 delivery-bridge promulgate **-ReviewMode subagent** …"——`-ReviewMode` 已内置在指针里，不可省：省略即 legacy 链，审查节点需 AUDITOR 会话结算，dsh 默认 preset 面不可派发）——规划者无角色卡，身份由消息 + `rdd-engine/references/planner-guide.md` 装载；三后端（CLI/Plus/dsh）一致。dsh 后端需 preset `rdd-planner`（部署前提见 planner-guide）。规划者经 `promulgate -ReviewFile <归档>/review/requirement-review.json` 机械消费（消费端契约零改动）。
 - **需求审查门内生**：审视由规划者会话内的独立上下文子代理生产（reviewer: `auditor-delegated`），输入只含模板机械清单（路径/常量），禁止规划者转述与裁定倾向注入（协议纪律见模板禁令段）。原「AUDITOR 未部署 → 规划者自产审查（reviewer: "planner"）」降级分支**整体消失**——`planner` 署名仅存量只读，不再产出。
 - **强形态分支保留**（用户显式配置 `review_mode=session` 或显式要求独立会话评审时）：`start-role.cmd -Role AUDITOR -TaskJson <task.json>` 仍可开会话按同一模板生产同一契约产物（reviewer: `auditor`），确认后由规划者 `promulgate -ReviewFile` 入链——这是一条**手动**动作（AUDITOR 会话不再被引擎自动推送/管理）。
 - 中断续跑：`start-role.cmd -Role PLANNER -RunId <run-id>`。

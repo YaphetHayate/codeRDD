@@ -27,6 +27,12 @@
 $ErrorActionPreference = 'Stop'
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 
+# planner-claim-guard: 夹具里的 claim/report 是 worker 侧动作 —— 套件若在 dsh 会话里运行，
+# 环境里的 DSH_SESSION_ID 会被 start/promulgate 写进 run 的 state/planner.json，随后每次
+# fixture claim 都会被身份门判成「规划者代跑」而拒（PLANNER_CANNOT_CLAIM）。显式清空以保
+# 确定性（与 test-long-task-planning / test-handoff-gate 同惯例）。
+Remove-Item Env:\DSH_SESSION_ID -ErrorAction SilentlyContinue
+
 $EngineDir = Split-Path -Parent $PSScriptRoot | Join-Path -ChildPath 'scripts'
 $BridgePs1 = Join-Path $EngineDir 'delivery-bridge.ps1'
 $FlowPs1   = Join-Path $EngineDir 'rdd-flow.ps1'
@@ -235,6 +241,25 @@ try {
     Assert-True ($r.json.success -eq $true) 'T5 resolve -Serialize ok' ($r.raw)
     $nb = Find-TreeNode 'deliver-pc-t4' $h4b
     Assert-True (@($nb.depends_on) -contains $h4a) 'T5 later node depends_on earlier (serialization edge)'
+    # serialize-deps-split 回归（resolve 后、早者 settle 前 = 冻结窗口）：任务级边镜像 +
+    # 推送门不再同构重登记。修复前：dispatch 重扫 overlap → 对手未按 dep_task_ids 排除
+    # → C2 同构重登记 → 早者唯一可推节点被自家冲突冻死（实录 deliver-2026-10-10）。
+    $b5t = Read-BridgeJson 'deliver-pc-t4'
+    Assert-True ((@($b5t.tasks.'2'.dep_task_ids) -contains 1) -and (-not (@($b5t.tasks.'1'.dep_task_ids) -contains 2))) 'T5 serialize mirrors the TASK-level edge (push-gate dep_task_ids single source)' ($b5t | ConvertTo-Json -Depth 6)
+    $r = Invoke-Bridge @('-Command', 'dispatch', '-RunId', 'deliver-pc-t4', '-NodeId', $h4b, '-DryRun')
+    Assert-True ($r.json.success -eq $true) 'T5 push gate releases the serialized pair in the freeze window (no isomorphic re-registration)' ($r.raw)
+    $b5c = Read-BridgeJson 'deliver-pc-t4'
+    Assert-True (@($b5c.conflicts).Count -eq 1) 'T5 registry stays one entry (decided suppression, no C2/C3 loop)' ($b5c | ConvertTo-Json -Depth 6)
+    # T5b：同构条目再登记后再 resolve（实录续跑路径）——节点边已存时 DEP_EXISTS 须幂等
+    # 续行（否则 C2 永卡 OPEN：C1 已写边 → C2 同构 → resolve 撞 DEP_EXISTS）。
+    $r = Invoke-Bridge @('-Command', 'conflict', '-RunId', 'deliver-pc-t4', '-Action', 'open', '-ConflictKind', 'file', '-Nodes', "$h4a,$h4b", '-Files', 'app/core.py', '-Note', '同构重登记（回归注入）')
+    Assert-True ($r.json.success -eq $true) 'T5b isomorphic re-entry registered (C2)' ($r.raw)
+    $c2id = [string]$r.json.data.conflict.id
+    $r = Invoke-Bridge @('-Command', 'conflict', '-RunId', 'deliver-pc-t4', '-Action', 'resolve', '-ConflictId', $c2id, '-Serialize', $h4a)
+    Assert-True ($r.json.success -eq $true -and [string]$r.json.data.conflict.status -eq 'resolved') 'T5b re-serialize over existing node edges resolves (DEP_EXISTS idempotent, task mirror still lands)' ($r.raw)
+    $b5d = Read-BridgeJson 'deliver-pc-t4'
+    $dep2 = @(@($b5d.tasks.'2'.dep_task_ids) | ForEach-Object { [int]$_ })
+    Assert-True (($dep2 -contains 1) -and (@($dep2 | Where-Object { $_ -eq 1 }).Count -eq 1)) 'T5b task-level mirror idempotent (no duplicate edges)' ($b5d | ConvertTo-Json -Depth 6)
     $null = Do-Deliver 'deliver-pc-t4' $h4a 'DEV' "$arch4/requirements/t1.md"
     $r = Do-Settle 'deliver-pc-t4' $h4a
     Assert-True ($r.json.success -eq $true) 'T5 earlier node settles after resolve' ($r.raw)

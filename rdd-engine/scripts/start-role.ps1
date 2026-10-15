@@ -1,11 +1,10 @@
 ﻿[CmdletBinding()]
 param(
-    [Parameter(Mandatory = $true)]
-    # AUDITOR = 强形态独立会话入口（auditor-subagent-review 后仅手动按需启动：
-    # 评审主链内生于规划者会话的评审子代理，不经本入口；缺键 legacy 链审查节点
-    # 推送仍带 -Role AUDITOR 开会话结算）。
+    # 非 Mandatory（start-role-usage）：无 -Role 时打印用法面并以退出码 1 结束
+    # （比 PS 绑定错误对 agent 友好）；-Usage / -Help 同样打印用法面但退出码 0。
+    # ValidateSet 照旧拦截非法角色名。
     [ValidateSet("PM", "CTO", "UX", "DEV", "QA", "EVAL", "PSE", "PLANNER", "AUDITOR")]
-    [string]$Role,
+    [string]$Role = "",
 
     [int]$TaskId = -1,
     [string]$TaskJson = "",
@@ -95,6 +94,17 @@ param(
     # an active delivery run rejects the startup with PLANNER_RUN_ACTIVE.
     [switch]$Force,
 
+    # 用法面（start-role-usage）：打印参数签名与常用形态后退出 0。两个拼写等价
+    # （-Usage / -Help——实录验证 agent 的第一本能是 -Help）。
+    [switch]$Usage,
+    [switch]$Help,
+
+    # 新需求形态（planner-pm-raw-intent 显式形）：目标任务**尚无归档**（PM 立项通道）。
+    # brief（-TaskBrief / -TaskBriefFile）成为唯一锚——彻底跳过归档解析，「最新归档」
+    # 兜底永远不会把会话指向前一条不相关需求。要求 brief 非空；与 -TaskJson /
+    # -TaskId / -GoalTreeWorker / -Role PLANNER 互斥。
+    [switch]$NoArchive,
+
     [switch]$DryRun
 )
 
@@ -105,6 +115,46 @@ $OutputEncoding = [System.Text.Encoding]::UTF8
 function Write-Step { param([string]$Message); Write-Host "[*] $Message" -ForegroundColor Cyan }
 function Write-Ok   { param([string]$Message); Write-Host "[+] $Message" -ForegroundColor Green }
 function Write-Err  { param([string]$Message); Write-Host "[x] $Message" -ForegroundColor Red; exit 1 }
+
+# --- 用法面（start-role-usage）--------------------------------------------------
+# 免读千行源码即可拿到参数签名；完整语义以各参数上方注释为准。
+function Show-Usage {
+    Write-Host @"
+用法: start-role.cmd -Role <PM|CTO|UX|DEV|QA|EVAL|PSE|PLANNER|AUDITOR> [选项]
+      -Usage / -Help 打印本说明（退出码 0）；无 -Role 同样打印本说明但退出码 1。
+
+常用形态:
+  PM 立项（新需求，尚无归档）:
+    start-role.cmd -Role PM -NoArchive -TaskBriefFile <brief文件> -DryRun     # 先验指针再实发
+  交付链节点交接（由 delivery-bridge 自动调用，一般不手敲）:
+    start-role.cmd -Role DEV -TaskId 3 -TaskJson <task.json> -GoalTreeRun <id> -GoalTreeNode n4
+  通用树 worker（由 goal-tree dispatch 自动调用）:
+    start-role.cmd -Role DEV -GoalTreeWorker -GoalTreeRun <id> -GoalTreeNode n4 -TaskBriefFile <file>
+  树外直交:  start-role.cmd -Role EVAL -Handoff <brief文件> [-SessionLabel <标签>]
+  PLANNER:   start-role.cmd -Role PLANNER -TaskJson <task.json>   或   -Role PLANNER -RunId <id>
+
+参数速览:
+  -Role            目标角色（必填）
+  -TaskId          归档任务号（>=1，配合归档锚定）
+  -TaskJson        显式归档路径（缺省=最新归档兜底；新需求请改用 -NoArchive 显式绕开）
+  -NoArchive       新需求形态：brief 为唯一锚，跳过归档解析（需 -TaskBrief/-TaskBriefFile）
+  -TaskBrief       任务简报（仅 ASCII 短语；CJK 富文本必走 -TaskBriefFile 文件通道）
+  -TaskBriefFile   简报文件（UTF-8，内容逐字替换 -TaskBrief——防 cmd 重解析静默损坏）
+  -Handoff         树外直交 brief 文件
+  -GoalTreeRun / -GoalTreeNode / -GoalTreeWorker   goal-tree 派发三件套（引擎代传）
+  -SessionLabel / -TaskSummary    dsh 会话标题 / 任务摘要（仅显示层）
+  -ExistingSessionId / -Appendix  既有会话复用 / 重做附录（引擎代传）
+  -EmployeeId      Plus 后端员工 UUID（必填）
+  -DshUrl / -PlusUrl   后端地址覆盖（缺省自动判后端：RDD_RUNTIME=app→Plus；DSH_WEB_URL→dsh；否则 CLI）
+  -Project         项目根覆盖（缺省=项目根定位链）
+  -RunId           PLANNER 续跑 run
+  -Force           PLANNER 绕过启动门（命令级租约门仍在）
+  -DryRun          只打印指针不实发（三种后端均支持）
+"@ 
+}
+
+if ($Usage -or $Help) { Show-Usage; exit 0 }
+if ([string]::IsNullOrWhiteSpace($Role)) { Show-Usage; Write-Err "缺少 -Role（必填）。" }
 
 # Resolve-RepoRoot - project-root location chain (git-optional; protocol source:
 # rdd-engine/references/engine-location.md, "Project-root location chain"). Fixed order:
@@ -305,6 +355,24 @@ function Get-AppendixSegment {
     # same contract as Get-TaskBriefSegment).
     if ([string]::IsNullOrWhiteSpace($Appendix)) { return "" }
     return " $Appendix"
+}
+
+function Get-IntakeCallbackSegment {
+    # Intake-callback segment (planner-pm-raw-intent 回投半): rides ONLY the
+    # dsh NoArchive pointer when the harness injected DSH_SESSION_ID — the
+    # PM 立项 intake was pulled by THAT planner session, so completion must be
+    # delivered back into it (start-role -Role PLANNER -ExistingSessionId …
+    # session.prompts the takeover pointer in-place) for the planner to run its
+    # routing disposition (planner-guide.md §一 路由拒绝 / PM 锚定前提).
+    # Triage context is preserved by returning to the same session across all
+    # dispositions (self-takeover / 结构化档 / 路由拒绝 / 显式代开). Absent
+    # (non-dsh / no env) → "" keeps every other message byte-for-byte unchanged
+    # (regression anchor, same contract as the segments above). Stays AHEAD of
+    # the marker (marker remains the trailing anchor).
+    if ($mode -ne "dsh") { return "" }
+    if ([string]::IsNullOrWhiteSpace($env:DSH_SESSION_ID)) { return "" }
+    $sid = $env:DSH_SESSION_ID
+    return " 【立项回调协议】本次立项由规划者会话 $sid 发起：归档完成后**把接管指针投回本会话由其做路由裁定**——裁定为自接管则执行 start-role.cmd -Role PLANNER -ExistingSessionId $sid -TaskJson <新归档task.json>（可先 -DryRun 验指针）接续 promulgate；裁定为结构化档（模块/运维）则按 planner-guide.md §一 PM 锚定前提以归档为锚 goal-tree start -GoalRoot -GoalFile <归档>/requirements/overview.md（桥接链不启动）；裁定为异关注点则按 §一 路由拒绝块处置；裁定为平级规划者代开则在显式许可下执行 -Role PLANNER -TaskJson <新归档> -NoLineage（**-NoLineage 开关属延后项**，本期未落地时仍建议在侧栏手动新建 rdd-planner 会话以避免侧栏嵌套）。"
 }
 
 function Build-GoalTreeWorkerMessage {
@@ -631,7 +699,7 @@ function Build-PromptMessage {
         if (-not $taskJsonAbs) {
             Write-Err "未找到 task.json。请用 -TaskJson 显式指定，或确保 .rdd/changes/archive/ 下有归档。"
         }
-        return "你是 RDD PLANNER（规划者）。先读 rdd-engine/references/planner-guide.md；接管后先按 rdd-engine/references/review-input-template.md 机械模板派需求审视子代理（独立上下文，禁转述），结论呈用户后用 delivery-bridge promulgate -TaskJson $taskJsonAbs 接管该归档的整批交付。"
+        return "你是 RDD PLANNER（规划者）。先读 rdd-engine/references/planner-guide.md；接管后先按 rdd-engine/references/review-input-template.md 机械模板派需求审视子代理（独立上下文，禁转述），结论呈用户后用 delivery-bridge promulgate -TaskJson $taskJsonAbs -ReviewMode subagent 接管该归档的整批交付。-ReviewMode 不可省：省略即 legacy 链，设计审查为会话节点、需真实 AUDITOR 会话结算，dsh 默认 preset 面不可派发。"
     }
 
     # goal-tree generic-run worker mode (planner-tree-dispatch): self-sufficient
@@ -661,7 +729,19 @@ function Build-PromptMessage {
         return "$base TaskId=$TaskId task=$taskJsonAbs$(Get-TaskBriefSegment)$(Get-GoalTreeMarker)"
     }
 
-    return "$base$(Get-GoalTreeMarker)"
+    # new-requirement intake (planner-pm-raw-intent 显式形): brief-only prefill —
+    # archive resolution is skipped entirely (an older, unrelated archive can
+    # never leak into the prefill); the framing prefix tells the role the
+    # archive does not exist yet and is ITS to create.
+    if ($NoArchive) {
+        return "$base 新需求（尚无归档——归档由你创建，勿处理既有归档）$(Get-TaskBriefSegment)$(Get-GoalTreeMarker)"
+    }
+
+    # pure-role activation (planner-pm-raw-intent): a raw-intent brief rides the
+    # prefill — the PM 立项 channel, where the planner passes the user's
+    # requirement verbatim and no archive exists yet. Empty brief keeps this
+    # return byte-for-byte with the legacy unbriefed shape.
+    return "$base$(Get-TaskBriefSegment)$(Get-GoalTreeMarker)"
 }
 
 function Test-WindowsTerminal { return [bool](Get-Command wt.exe -ErrorAction SilentlyContinue) }
@@ -740,7 +820,7 @@ function Build-PointerMessage {
         }
         $archiveRel = Resolve-ArchiveRelativePath -TaskJsonAbs $taskJsonAbs -RootPath $root
         if (-not $archiveRel) { Write-Err "无法从 task.json 路径推导归档相对路径: $taskJsonAbs" }
-        return "请以规划者（PLANNER）身份接管 ${archiveRel}的整批交付：先读 rdd-engine/references/planner-guide.md，按 rdd-engine/references/review-input-template.md 机械模板派需求审视子代理（独立上下文，禁转述）并把结论呈用户，随后执行 delivery-bridge -Command promulgate -TaskJson $taskJsonAbs 颁布交付节点并按需调动角色会话。"
+        return "请以规划者（PLANNER）身份接管 ${archiveRel}的整批交付：先读 rdd-engine/references/planner-guide.md，按 rdd-engine/references/review-input-template.md 机械模板派需求审视子代理（独立上下文，禁转述）并把结论呈用户，随后执行 delivery-bridge -Command promulgate -TaskJson $taskJsonAbs -ReviewMode subagent 颁布交付节点并按需调动角色会话。-ReviewMode 不可省：省略即 legacy 链，设计审查为会话节点、需真实 AUDITOR 会话结算，dsh 默认 preset 面不可派发。"
     }
 
     # goal-tree generic-run worker mode (planner-tree-dispatch): same
@@ -750,9 +830,39 @@ function Build-PointerMessage {
         return Build-GoalTreeWorkerMessage
     }
 
+    # new-requirement intake (planner-pm-raw-intent 显式形): the brief is the
+    # SOLE anchor — archive resolution is skipped EVEN WHEN an (older,
+    # unrelated) archive exists, so the pointer can never send the session off
+    # to process a PREVIOUS requirement. Same display-layer segments as the
+    # archive-less raw-intent form below (tips degrade soft; marker/appendix
+    # are empty in this mode, keeping the shape minimal).
+    if ($NoArchive) {
+        $msg = "请处理以下新需求（尚无归档——归档由你创建，勿处理既有归档）：$($TaskBrief.Trim())"
+        $msg += Get-TipsSegment -Entries (Get-RoleTips -TargetRole $Role) -TargetRole $Role
+        $msg += Get-IntakeCallbackSegment
+        $msg += Get-GoalTreeMarker
+        $msg += Get-AppendixSegment
+        return $msg
+    }
+
     $taskJsonAbs = Resolve-TaskJsonAbsolute
     if (-not $taskJsonAbs) {
-        Write-Err "应用层交接（Plus/dsh 后端）需要 task.json 来定位归档。请用 -TaskJson 指定，或确保 .rdd/changes/archive/ 下有归档。"
+        # planner-pm-raw-intent: the PM 立项 entry has NO archive to anchor —
+        # the archive is created BY PM. A self-sufficient -TaskBrief (the
+        # user's raw requirement, passed verbatim by the planner) is a legal
+        # pointer on its own (B2 semantics: role identity comes from the
+        # preset / agent_mode binding, the message carries the one task).
+        # Only a bare role call with neither anchor nor brief stays fail-loud.
+        if ([string]::IsNullOrWhiteSpace($TaskBrief)) {
+            Write-Err "应用层交接（Plus/dsh 后端）需要 task.json 来定位归档（或以 -TaskBrief 传递自足任务文本）。请用 -TaskJson 指定，或确保 .rdd/changes/archive/ 下有归档。"
+        }
+        $msg = "请处理以下任务：$($TaskBrief.Trim())"
+        # same display-layer segments as the archive form (tips degrade soft;
+        # marker/appendix are empty in this mode, keeping the shape minimal)
+        $msg += Get-TipsSegment -Entries (Get-RoleTips -TargetRole $Role) -TargetRole $Role
+        $msg += Get-GoalTreeMarker
+        $msg += Get-AppendixSegment
+        return $msg
     }
     $archiveRel = Resolve-ArchiveRelativePath -TaskJsonAbs $taskJsonAbs -RootPath $root
     if (-not $archiveRel) { Write-Err "无法从 task.json 路径推导归档相对路径: $taskJsonAbs" }
@@ -1079,6 +1189,17 @@ if (-not [string]::IsNullOrWhiteSpace($TaskBriefFile)) {
     if ([string]::IsNullOrWhiteSpace($TaskBrief)) {
         Write-Err "-TaskBriefFile resolved to an empty brief: $TaskBriefFile"
     }
+}
+
+# --- NoArchive 守卫（planner-pm-raw-intent 显式形）-----------------------------
+# 在任何后端派发前校验互斥与自足性（消息构建器保持纯函数）。brief 已在此前完成
+# 文件解析，故此处的 $TaskBrief 就是最终文本。
+if ($NoArchive) {
+    if ($Role -eq "PLANNER") { Write-Err "-NoArchive 不适用于 PLANNER（规划者接管/续跑用 -TaskJson / -RunId）。" }
+    if ($TaskId -ge 1) { Write-Err "-NoArchive 与 -TaskId 互斥（任务号属于既有归档）。" }
+    if (-not [string]::IsNullOrWhiteSpace($TaskJson)) { Write-Err "-NoArchive 与 -TaskJson 互斥（新需求尚无归档可锚）。" }
+    if ($GoalTreeWorker) { Write-Err "-NoArchive 与 -GoalTreeWorker 互斥（通用树 worker 自带节点锚）。" }
+    if ([string]::IsNullOrWhiteSpace($TaskBrief)) { Write-Err "-NoArchive 需要 -TaskBrief / -TaskBriefFile 提供自足任务文本（brief 是唯一锚）。" }
 }
 
 # --- PLANNER uniqueness guard (planner-uniqueness-callback) ------------------

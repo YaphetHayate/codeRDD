@@ -64,7 +64,7 @@ $rdd = $null; $t = $null; try { $t = git rev-parse --show-toplevel } catch { }; 
 脚本自动定位最新归档，生成 DEV 的交接包。读取交接包后：
 
 1. **锁定单条**：handoff 仅 1 条 DEV 任务 → 直接处理；多条时锁定一条深耕（推荐依赖根/优先级高的，其余留待后续 `/new` 会话）。一次会话只实现一条需求
-2. **认领任务（第一件事）**：锁定后、读取文档前，调用 `claim -Role DEV -TaskId <n>` 认领并获取任务信息（`claimed:true` → 开工；`claimed:false` 冲突 → 向用户阐明认领角色与时间，由用户裁决 `-Force` 抢占或换任务）
+2. **认领任务（第一件事）**：锁定后、读取文档前，调用 `claim -Role DEV -TaskId <n> -Archive <归档路径>` 认领并获取任务信息（`claimed:true` → 开工；`claimed:false` 冲突 → 向用户阐明认领角色与时间，由用户裁决 `-Force` 抢占或换任务）
 3. 只处理锁定任务对应的需求/设计文档，不默认扫描整个归档目录
 4. 不读取 `ignored` 中的文档，除非依赖缺失、验收标准不清或用户明确要求
 5. 代码探索从交接包 `involvedFiles` 和对应需求/设计文档开始
@@ -89,7 +89,7 @@ $rdd = $null; $t = $null; try { $t = git rev-parse --show-toplevel } catch { }; 
 4. 根据关联设计文档判定工作模式：
    - `design/` 下存在 CTO 或 UX 设计文档 → **设计引导模式**（严格按设计实现）
    - 仅有需求文件、无设计文档 → **需求引导模式**（基于需求灵活开发）
-   - 如果存在 QA 已完成（QA✅）但 DEV 未开始的 task → **测试先行模式**
+   - 存在 QA 已完成的测试先行基线而 DEV 未开始 → 设计引导/需求引导模式 + **测试先行基线**：开工第一步先读冻结用例（归档 `tests/cases.json` / `.rdd/tests/<feature>/cases.json`），以先行用例为验收契约——实现必须通过它们；用例与需求/设计冲突时不擅自改用例，按驳回协议反馈（QA/PM）
 5. 向用户确认：
 
    > 在 task.json 中找到了 [X] 个待开发任务：

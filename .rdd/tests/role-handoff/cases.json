@@ -1,4 +1,4 @@
-{
+﻿{
   "feature": "role-handoff",
   "status": "active",
   "relatedCode": [
@@ -707,6 +707,76 @@
       "precondition": "TC-132 的 CRLF 沙盒产物与工作树 dsh/presets 并存",
       "steps": ["逐组逐文件（agent.cordis.yml + preset.yml）utf8 全文比对"],
       "expected": "8 组 16 文件逐字节一致——构建可复现（--check 幂等的等价证据），修复后生成器重建的产物与库中基线零漂移"
+    },
+    {
+      "id": "TC-138",
+      "title": "用法面三入口：-Usage / -Help 打印签名退出 0；无 -Role 打印用法后退出 1",
+      "type": "positive",
+      "priority": "P1",
+      "acceptance": "AC-1",
+      "codeRef": ".rdd/tests/role-handoff/run-tests.ps1",
+      "sourceChange": "2026-10-10-start-role-usage",
+      "status": "active",
+      "crossFeature": [],
+      "precondition": "rdd-engine/scripts/start-role.ps1（-Role 由 Mandatory 改为空默认 + 用法面守卫；实录验证 agent 第一本能是 -Help）",
+      "steps": [
+        "start-role.ps1 -Usage 与 -Help 各跑一次，断言退出 0 且输出含用法头 / -NoArchive / -TaskBriefFile 速览",
+        "无参裸调用一次，断言先打印用法面再 [x] 缺少 -Role 且退出 1（替代 PS 绑定错误）"
+      ],
+      "expected": "agent 免读千行源码即可拿到参数签名与常用形态；无参不再产生难读的参数绑定错误"
+    },
+    {
+      "id": "TC-139",
+      "title": "NoArchive 新需求形态：brief 是唯一锚，最新归档兜底永不误指旧需求",
+      "type": "positive",
+      "priority": "P0",
+      "acceptance": "AC-2",
+      "codeRef": ".rdd/tests/role-handoff/run-tests.ps1",
+      "sourceChange": "2026-10-10-start-role-usage",
+      "status": "active",
+      "crossFeature": [],
+      "precondition": "夹具根已有归档 task.json（模拟实录踩坑：上一条已完结需求在场）；brief 文件含 CJK 原文；-NoArchive 开关（planner-pm-raw-intent 显式形）",
+      "steps": [
+        "dsh 后端 DryRun：-Role PM -NoArchive -TaskBriefFile，断言指针含「尚无归档——归档由你创建」框架 + brief 原文 + 零归档指针泄漏",
+        "对照组去掉 -NoArchive：断言最新归档兜底行为字节不变（归档指针与 brief 并存——显式形正是为消此矛盾）",
+        "CLI 后端 DryRun（宿主缺 opencode 记 SKIP）：断言 /rdd-pm + 新需求框架 + brief"
+      ],
+      "expected": "PM 立项通道指针不再指向与本次需求无关的旧归档；不带开关的现行路径完全不变（回归锚）"
+    },
+    {
+      "id": "TC-140",
+      "title": "NoArchive 互斥矩阵：缺 brief / -TaskJson / -TaskId / -GoalTreeWorker / PLANNER 五路 fail-loud",
+      "type": "negative",
+      "priority": "P1",
+      "acceptance": "AC-2",
+      "codeRef": ".rdd/tests/role-handoff/run-tests.ps1",
+      "sourceChange": "2026-10-10-start-role-usage",
+      "status": "active",
+      "crossFeature": [],
+      "precondition": "-NoArchive 守卫位于 TaskBriefFile 解析之后、任何后端派发之前（消息构建器保持纯函数）",
+      "steps": [
+        "五组非法组合逐一调用（缺 brief / 带 -TaskJson / 带 -TaskId / 带 -GoalTreeWorker / -Role PLANNER）",
+        "断言各组退出 1 且输出含对应的互斥口径文案"
+      ],
+      "expected": "五种语义冲突全部在派发前 fail-loud，绝不产生半锚定指针"
+    },
+    {
+      "id": "TC-141",
+      "title": "立项回调链：协议段随 DSH_SESSION_ID 注入 PM 指针，PM 归档后经复用载波把接管指针投回原规划者会话",
+      "type": "positive",
+      "priority": "P0",
+      "acceptance": "AC-2",
+      "codeRef": ".rdd/tests/role-handoff/run-tests.ps1",
+      "sourceChange": "2026-10-10-planner-intake-callback",
+      "status": "active",
+      "crossFeature": [],
+      "precondition": "实录缺陷：PM 立项完成后按 rdd-flow next 建议块新开规划者会话（原分诊上下文断链）。修复三件套：Get-IntakeCallbackSegment（dsh + DSH_SESSION_ID 在场才注入）、rdd-flow note 守卫扩展（【立项回调协议】与 goal-tree-run 标记同权）、rdd-pm SKILL 立项回调优先规则",
+      "steps": [
+        "dsh 后端 DryRun（DSH_SESSION_ID=session-cb-origin-1）：断言 NoArchive 指针含【立项回调协议】+ 原会话 ID + -ExistingSessionId 回投命令 + 不得新开规划者会话",
+        "同参去掉 DSH_SESSION_ID：断言协议段零注入（回归锚）",
+        "回投载波：start-role -Role PLANNER -ExistingSessionId <原会话> -TaskJson 复用 DryRun——断言跳过 create 四步且 payload 直投「请以规划者（PLANNER）身份接管…promulgate」接管指针"
+      ],
+      "expected": "PM 立项完成不再新开规划者：接管指针 in-place 投回发起分诊的原规划者会话（三断言全过）；无 DSH_SESSION_ID / 非 dsh 后端时消息形态字节不变"
     }
   ]
 }

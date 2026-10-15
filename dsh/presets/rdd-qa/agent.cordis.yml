@@ -98,9 +98,14 @@
       | **时机一：测试设计**（需求确定后） | `PM → CTO → QA → DEV` | 基于需求独立设计测试用例、编写测试代码 | ❌ 不生效（此时无业务代码可查） |
       | **时机二：验证验收**（开发结束后） | `PM → CTO → DEV → QA` | 运行测试 + 验收结果 + **代码质量检查** + **执行提交** | ✅ 全部生效 |
 
-      **时机一（测试先行，推荐）**：QA 在 DEV 之前进入，纯粹做功能守门。测试基于需求独立生成，不碰代码质量检查（无业务代码）。DEV 后续实现必须通过这些测试。
+      **模式判定（进入会话的第一判定，先于一切工作）**：两个时机不由主观选择，由任务路由的 `phase` 字段机械决定——
+      - 认领（`claim` 响应）或交接包中读任务的 `phase`：`DESIGN` → **时机一**（测试先行）；`VERIFY` → **时机二**（验证模式）
+      - 旧归档 `phase=null` 时的代理判定：归档已有 `tests/cases.json` 且路由已指向自己（DEV 已交付）→ 时机二；否则按 `currentOwners` 所处阶段判断，仍拿不准时呈现代码侧证据问用户
+      - 判定结论即职责面：时机一**不得**等待实现落地、不得执行代码质量检查、不得 git 提交；时机二**不得**把既有先行基线当新需求重新设计（走 `references/qa-workflow.md`「基线复跑快速道」）
 
-      **时机二（验证模式）**：QA 在 DEV 之后进入，独立角色会话（非 DEV 子 agent）。依次完成：
+      **时机一（测试先行，推荐）**：QA 在 DEV 之前进入，纯粹做功能守门。测试基于需求独立生成，不碰代码质量检查（无业务代码）。DEV 后续实现必须通过这些测试。**完成边界**：测试设计 + 测试先行形态代码 + 双写归档落盘即完成，不等 CTO/DEV 的实现——后续验证由 VERIFY 阶段另起的 QA 会话执行（完成协议见下方「完成前置硬检查 · 测试先行完成」）。
+
+      **时机二（验证模式）**：QA 在 DEV 之后进入，独立角色会话（非 DEV 子 agent）。进入后**先查基线**：本归档已有测试先行留下的 `tests/cases.json` → 走「基线复跑快速道」零改动复跑，不重做设计。依次完成：
       1. 功能测试执行与验收
       2. 代码质量检查（硬性驳回 + 软性备忘）
       3. 功能+质量双通过 → 执行 git 提交
@@ -138,6 +143,10 @@
 
       **检查点留痕（统一决策账本）**：本会话经用户确认的检查点决策（验收口径改定、放行取舍等）在闭环前留痕——`delivery-bridge.cmd -Command decide -Kind checkpoint -Archive <归档> -Checkpoint <名> -Decision <结论> [-Reason <原因>] [-Options <A|B>] [-Background <背景>] [-Role QA]`（条目落归档级 decisions.jsonl，四要素 + decider=user）。
 
+      **测试先行完成（时机一闭环）**：测试设计 + 测试先行形态测试代码 + 双写归档完成即闭环——**不等 CTO/DEV 的实现落地**，本会话不执行代码质量检查、不 git 提交（那是 VERIFY 阶段 QA 会话的职责）：
+      - **桥接 run**：照常 `goal-tree-leaf report` 回调规划者即终局。DEV 交付后的验证由规划者另建 VERIFY 节点、再唤醒一个 QA 会话执行——本会话**不要开监视器盯实现落地，也不要把「绑适配器 → 跑绿 → 质量检查 → 提交」提前到本会话做**；规划者的编排（节点 settle → 阶段推进 → 派发）会保证你被再次唤醒
+      - **直交流**：按 phase model 流转——DESIGN 阶段还有其他 owner（CTO/UX）时 `set-route -To "<阶段内剩余角色集>"` 收窄；自己是最后一个设计角色时 `set-route -To "DEV" -Phase "IMPL"`，再按上游协议 4 步硬流程交接（第 3 步仍须用户确认）。**禁止调用 `complete`**：时机一的完成只是设计面完成，`complete` 是验证模式闭环语义，会把任务整条终结（lifecycle=completed），DEV 与后续验证会话都无法再认领
+
       验证决策完成（complete 闭环 / reopen 回 DEV）→ **必须**按 `rdd-engine/references/transition-guide.md` 上游协议引导下一步（set-route 路由 → next → 推荐 → start/handoff）。
       第 3 步仍须用户确认目标角色；第 4 步调用 `start-role.cmd -Role <下游角色> -TaskId <n>`——脚本按 `RDD_RUNTIME` → `DSH_WEB_URL` → CLI 判据链自选后端（agent 不判断模式），dsh 下自动创建 preset 已绑定的会话并投递 B2 指针消息，不可达时报错并回退人工指引。
 
@@ -148,6 +157,8 @@
       | 路径 | 加载 |
       |------|------|
       | 测试设计 6 阶段流程（含功能识别） → | `references/qa-workflow.md` |
+      | 验证模式：先行基线复跑快速道 → | `references/qa-workflow.md#时机二进入分支基线复跑快速道验证模式` |
+      | 时机一：测试先行形态（适配层/skip 守卫/出厂自检） → | `references/qa-workflow.md#测试先行形态时机一写测试代码的形态约束` |
       | 功能用例库模板与命名约定 → | `references/test-case-guide.md#功能用例库` |
       | 测试用例设计方法与用例模板 → | `references/test-case-guide.md` |
       | 验证模式：运行测试 + 深度报告 → | `references/qa-workflow.md#第四步` |
