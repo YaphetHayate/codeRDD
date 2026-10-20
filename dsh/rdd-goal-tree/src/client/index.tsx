@@ -172,10 +172,16 @@ interface GoalTreeNodeView {
   confidence?: number | null
   claimSessionId: string | null
   blockedBy: string[]
-  /** Wake-model fields (goal-tree-wake-model): segment usage badge [k/K]. */
-  wakeCount: number
-  wakeMax: number | null
-  duty: string | null
+  /**
+   * Wake-model fields (goal-tree-wake-model): segment usage badge [k/K].
+   * Optional like the heavy fields above: a plugin tarball re-added while
+   * the dsh process is still running serves the NEW client bundle from disk
+   * against the OLD in-memory host half, whose wire predates these fields —
+   * absent must degrade to "no badge", never "[undefined/undefined]·undefined".
+   */
+  wakeCount?: number
+  wakeMax?: number | null
+  duty?: string | null
   depth: number
 }
 
@@ -425,11 +431,17 @@ function NodeList({ run, t }: { run: GoalTreeRunView; t: (key: GoalTreeKey) => s
         // (◎) and posture; plain nodes (type null) render exactly as before.
         // type=sub/accept containers (wake-model WBS layer) render as structure
         // rows (▤) excluded from claim posture; work slots carry the wake badge
-        // [k/K] from their duty-segment quota when stamped/known.
+        // [k/K] from their duty-segment quota when stamped/known. All three
+        // fields coalesce first — an old host half omits them (see the node
+        // view interface), and the raw !== null guards would let undefined
+        // through as literal "[undefined/undefined]·undefined" text.
         const isGoal = node.type === 'goal'
         const isContainer = node.type === 'sub' || node.type === 'accept'
-        const wakeBadge = !isGoal && !isContainer && (node.wakeCount > 0 || node.wakeMax !== null)
-          ? ` [${node.wakeCount}${node.wakeMax !== null ? `/${node.wakeMax}` : ''}]`
+        const wakeCount = node.wakeCount ?? 0
+        const wakeMax = node.wakeMax ?? null
+        const duty = node.duty ?? null
+        const wakeBadge = !isGoal && !isContainer && (wakeCount > 0 || wakeMax !== null)
+          ? ` [${wakeCount}${wakeMax !== null ? `/${wakeMax}` : ''}]`
           : ''
         return (
           <li
@@ -443,7 +455,7 @@ function NodeList({ run, t }: { run: GoalTreeRunView; t: (key: GoalTreeKey) => s
             <span className="rdgt-itemTitle" title={node.task ?? node.title}>
               {node.id}{isContainer ? ` {${node.type}}` : ''} · {node.title}
             </span>
-            {wakeBadge !== '' && <span className="rdgt-wake" data-duty={node.duty ?? undefined}>{wakeBadge}{node.duty !== null ? `·${node.duty}` : ''}</span>}
+            {wakeBadge !== '' && <span className="rdgt-wake" data-duty={duty ?? undefined}>{wakeBadge}{duty !== null ? `·${duty}` : ''}</span>}
             {node.claimedBy !== null && <span className="rdgt-itemWorker">@{node.claimedBy}</span>}
             {node.blockedBy.length > 0 && <span className="rdgt-blocked">{t('blocked')} ← {node.blockedBy.join('+')}</span>}
           </li>

@@ -88,6 +88,7 @@ dsh plugin --profile web remove @coderrdd/dsh-rdd-goal-tree   # 卸载
 
 ## 已知边界
 
+- **插件升级需重启 profile 才双半边齐换**：宿主半边（`/rdd-goal-tree/runs`）随 `dsh web` 进程启动时加载进内存，浏览器半边（client.js）每次页面刷新从磁盘现取——**进程运行中重跑 `plugin add`** 会造成「新 client + 旧 host」偏斜：0.8.0 起 client 渲染 wake 徽章 `[k/K]·duty`，旧 host 的 wire 不带这三个字段，0.8.1 及之前会显示成 `[undefined/undefined]·undefined`（守卫 `!== null` 放过 undefined）；0.8.2 起字段缺失一律退化为不显徽章。治本 = 重启 profile 让宿主半边同版。
 - 条带按 cwd 解析仓库：会话 cwd 不是 git 仓库时落到 cwd 本身（与 dsh-rdd-explore 同规则）。
 - 多 run 并存时显示排序最高者（running 优先、updatedAt 新者优先）；完整列表切换留二期。
 - 多 run 退化边界：`runs[0]` 为**有 sidecar** 的新 run 时，无关会话不向后续旧 run 回退（特定组合下旁观者看不到旧 run 全树——已裁定语义，随旧 run 清退归零）。
