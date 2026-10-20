@@ -8,7 +8,8 @@
     "rdd-engine/dashboard/static/style.css"
   ],
   "testCode": [
-    ".rdd/tests/ops-dashboard-exploration-expansion/exploration-kpi-expansion-qa-verify.mjs"
+    ".rdd/tests/ops-dashboard-exploration-expansion/exploration-kpi-expansion-qa-verify.mjs",
+    ".rdd/tests/ops-dashboard-exploration-expansion/stage-acceptance-s1-verify.mjs"
   ],
   "lastChange": "2026-10-20-exploration-cache-ux",
   "cases": [
@@ -254,6 +255,152 @@
         "断言面板开标签 400 字符内含 aria-labelledby=kpi-{zone} 回指"
       ],
       "expected": "三 zone 的 tile↔panel 双向关联（id 前向 + aria-labelledby 回指）全部成立——点击展开的 DOM 通路无断点"
+    },
+    {
+      "id": "TC-080",
+      "title": "[S1] 实数据集成：真实仓根读交互全电池 200 + 信封契约 + API 计数与 .rdd/exploration 运行时真值逐项一致 + 复读数据稳定",
+      "type": "positive",
+      "priority": "P0",
+      "acceptance": "整体判据-1,整体判据-2",
+      "codeRef": ".rdd/tests/ops-dashboard-exploration-expansion/stage-acceptance-s1-verify.mjs:172",
+      "sourceChange": "2026-10-20-exploration-cache-ux",
+      "status": "active",
+      "crossFeature": ["ops-dashboard-exploration-pair-observability"],
+      "precondition": "S1 集成验收（n18）：真实仓根（非夹具）运行时动态真值——记录=artifacts/ 非 summary 的 .md、配对=存在 <slug>.summary.md、条目↔记录按 entry.path、夹具排除规则镜像 dashboard/lib/paths.mjs；不硬编码计数（实数据漂移不致假红）；复读比对剔除 meta.generatedAt（tip 20261009T062058Z-QA-9f26）",
+      "steps": [
+        "真实仓根进程内起真实服务（临时端口）",
+        "读交互电池：SSR /exploration ×2 + /api/exploration ×2 + 静态资源",
+        "API hotCount/indexCount/totalCount/artifacts.count/pairedCount/totalFiles/zones 与运行时真值逐项比对",
+        "两次 API 数据面深比对（仅 generatedAt 可异）"
+      ],
+      "expected": "真实数据上信封契约与全部计数一致、复读稳定——判据 1「各层级信息与 .rdd/exploration 实数据一致」的数据面锚点"
+    },
+    {
+      "id": "TC-081",
+      "title": "[S1] SSR KPI 面计数与实数据一致：ops-main 锚定区域内四 tile（总数/热区/持久/产物记录）+ 配对 hint",
+      "type": "positive",
+      "priority": "P0",
+      "acceptance": "整体判据-1",
+      "codeRef": ".rdd/tests/ops-dashboard-exploration-expansion/stage-acceptance-s1-verify.mjs:198",
+      "sourceChange": "2026-10-20-exploration-cache-ux",
+      "status": "active",
+      "crossFeature": [],
+      "precondition": "区域模型钉死锚 id=\"ops-main\"（tip 20261020T124430Z-QA-2dda：顶栏切换器面板的 <section> 在 ops-main 之前，不得用页面至首个 <section> 口径）；数字按边界断言（±240 标签窗）",
+      "steps": [
+        "tilesRegion = html[ops-main → 首个 <section)",
+        "逐标签 ±240 窗断言边界化真值数字",
+        "断言「N 对已配对 summary」hint 与真值一致"
+      ],
+      "expected": "L1 计数层：页面所见即实数据所有（1/0/1 + 65/65 当轮真值，动态计算）"
+    },
+    {
+      "id": "TC-082",
+      "title": "[S1] zone 展开面板与实数据 zone 口径一致：exp-total=双 zone 并集、空区 0 条空态、exp-index=持久条目、跨区零泄漏",
+      "type": "positive",
+      "priority": "P0",
+      "acceptance": "整体判据-1",
+      "codeRef": ".rdd/tests/ops-dashboard-exploration-expansion/stage-acceptance-s1-verify.mjs:214",
+      "sourceChange": "2026-10-20-exploration-cache-ux",
+      "status": "active",
+      "crossFeature": [],
+      "precondition": "面板区=id 起 → 下一 <section；实数据 hot=0 提供真实空区面（EC-1 的实数据证据）；key 归属按运行时 zone 真值",
+      "steps": [
+        "提取 exp-total/exp-hot/exp-index 三面板区域",
+        "各区断言本 zone key 全在场 + 他区 key 零出现",
+        "各区 exp-note 断言「N 条」与真值一致（合并口径注记在场）"
+      ],
+      "expected": "L2 明细层：展开面板内容与真实 zone 口径一致，空区走空态不崩、不混装"
+    },
+    {
+      "id": "TC-083",
+      "title": "[S1] 条目二级展开（实数据条目）：brief/涉及文件数/记录路径 + vscode://file/ 跳转与 data-copy= 绝对路径复制双载体",
+      "type": "positive",
+      "priority": "P0",
+      "acceptance": "整体判据-1",
+      "codeRef": ".rdd/tests/ops-dashboard-exploration-expansion/stage-acceptance-s1-verify.mjs:235",
+      "sourceChange": "2026-10-20-exploration-cache-ux",
+      "status": "active",
+      "crossFeature": [],
+      "precondition": "载体值为绝对 POSIX 路径（D:/… 形态，交付实证）；以真实持久条目为对象（无 registeredAt 的条目不断言注册时间——实数据持久条目该字段为空）；±1100 窗任一命中即过（key 在行/详情多处出现）",
+      "steps": [
+        "取真实 index zone 首条目的 key 全部出现位",
+        "±1100 窗断言 brief/涉及文件数 N 个/记录路径",
+        "断言 vscode://file/<绝对路径> 与 data-copy=\"<绝对路径>\" 双载体指向记录文件"
+      ],
+      "expected": "L3 条目层：详情字段与跳转/复制载体在真实数据上齐备（「点击后在编辑器中打开并定位」的机读面；完整行为桌面会话点验，沿 TC-050 人工协议项）"
+    },
+    {
+      "id": "TC-084",
+      "title": "[S1] 产物对行（孤儿）：「无条目」标注 + 生成时间=artifact mtime(UTC 分钟)+「文件时间（近似）」 + artifact/summary 路径与复制载体",
+      "type": "positive",
+      "priority": "P0",
+      "acceptance": "整体判据-1",
+      "codeRef": ".rdd/tests/ops-dashboard-exploration-expansion/stage-acceptance-s1-verify.mjs:255",
+      "sourceChange": "2026-10-20-exploration-cache-ux",
+      "status": "active",
+      "crossFeature": ["ops-dashboard-exploration-pair-observability"],
+      "precondition": "孤儿=运行时无条目引用且有配对 summary 的记录（动态选取）；分钟级时间按 UTC 由文件 mtime 现算比对；「无条目」正则 (?<!暂) 防误命中",
+      "steps": [
+        "孤儿 slug 全出现位 ±1100 窗断言「无条目」",
+        "断言 mtime UTC 分钟串 + 文件时间（近似）同窗在场",
+        "断言 artifact/summary 相对路径 + data-copy 绝对路径载体"
+      ],
+      "expected": "L4 产物对层（孤儿面）：状态/时间/路径三层信息与实数据一致（R5 孤儿如实标注 + R6 D3 时间口径 + R7 相关产物路径）"
+    },
+    {
+      "id": "TC-085",
+      "title": "[S1] 产物对行（关联条目）：freshness 状态词汇与 reader 状态机一致（orphan→no-list→fresh/stale）+ 持久条目 mtime 近似口径（D3）",
+      "type": "positive",
+      "priority": "P0",
+      "acceptance": "整体判据-1",
+      "codeRef": ".rdd/tests/ops-dashboard-exploration-expansion/stage-acceptance-s1-verify.mjs:277",
+      "sourceChange": "2026-10-20-exploration-cache-ux",
+      "status": "active",
+      "crossFeature": ["ops-dashboard-exploration-pair-observability"],
+      "precondition": "期望状态由探针按 Test-EntryFresh 语义独立现算（files 逐项哈希+记录存在；空 files 清单=no-list「无法现算」而非 fresh）；实数据当轮命中的是 no-list 态（「无清单」判定文案为实锚，fresh/stale 文案已由夹具 TC-140/145 覆盖）",
+      "steps": [
+        "取关联条目记录 slug 的出现位",
+        "断言状态标记与独立现算的期望状态词汇一致",
+        "断言持久 zone badge + mtime UTC 分钟 + 文件时间（近似）",
+        "断言「判定：…」verdict 块使用同一状态词汇"
+      ],
+      "expected": "L4 产物对层（关联面）：页面状态判定与引擎新鲜度语义同源——实数据 files 为空的条目如实标注「无清单」而非伪新鲜"
+    },
+    {
+      "id": "TC-086",
+      "title": "[S1] 无 JS 降级基线（实数据）：剥离 script 后条目 key/brief（entries-flat）与孤儿 slug（pairs-flat）仍可见",
+      "type": "positive",
+      "priority": "P1",
+      "acceptance": "整体判据-2",
+      "codeRef": ".rdd/tests/ops-dashboard-exploration-expansion/stage-acceptance-s1-verify.mjs:311",
+      "sourceChange": "2026-10-20-exploration-cache-ux",
+      "status": "active",
+      "crossFeature": [],
+      "precondition": "AC-5 的实数据面；交付提供 entries-flat/pairs-flat 无 JS 平铺面板（JS 环境隐藏、无 JS 可见）",
+      "steps": [
+        "剥离全部 <script> 残余 HTML",
+        "断言真实条目 key + brief 在场",
+        "断言 entries-flat 面板与「无 JS 降级基线」注记在场 + 孤儿 slug（pairs-flat）在场"
+      ],
+      "expected": "无 JS 环境条目信息仍可见（判据 2 第 #2 段的实数据锚）"
+    },
+    {
+      "id": "TC-087",
+      "title": "[S1] 判据2 只读不变量（真实树）：读交互全电池前后 .rdd/exploration（hot.json/index.json/artifacts/**）size+mtime+SHA256 零回写",
+      "type": "negative",
+      "priority": "P0",
+      "acceptance": "整体判据-2",
+      "codeRef": ".rdd/tests/ops-dashboard-exploration-expansion/stage-acceptance-s1-verify.mjs:324",
+      "sourceChange": "2026-10-20-exploration-cache-ux",
+      "status": "active",
+      "crossFeature": ["ops-dashboard-exploration-pair-observability"],
+      "precondition": "电池前拍真实树全量快照（含 mtimeMs）；硬断言面=判据点名的 hot.json/index.json/artifacts/**；query-log.jsonl 属 dsh 插件写面、判据范围外，漂移仅 INFO（并发会话写入不致假红）；explore.ps1/explore-store.ps1 冻结契约沿 TC-020 先例在验证报告以 git 证据复核，不做运行时断言",
+      "steps": [
+        "快照真实 .rdd/exploration 全树（size+mtimeMs+SHA256）",
+        "执行完整读交互电池（SSR/API/静态 ×多轮）",
+        "重算快照逐文件严格比对（新增/丢失/改写/mtime 滚动均违规）"
+      ],
+      "expected": "全部读交互对真实缓存零变更——判据 2「仅删除动作产生变更」的读路径面实证"
     }
   ]
 }

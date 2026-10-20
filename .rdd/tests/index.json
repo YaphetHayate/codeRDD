@@ -1,342 +1,376 @@
 {
-    "features":  [
-                     {
-                         "feature":  "explore-search",
-                         "relatedCode":  [
-                                             "rdd-engine/scripts/explore.ps1",
-                                             "rdd-engine/scripts/explore-store.ps1",
-                                             "rdd-engine/scripts/recallers/lexical.ps1",
-                                             "rdd-engine/scripts/recallers/vector.ps1"
-                                         ],
-                         "testCode":  [
-                                          ".rdd/tests/explore-search/search-precision-ranking.mjs",
-                                          ".rdd/tests/explore-search/qa-ast-review.ps1"
-                                      ],
-                         "activeCount":  15,
-                         "deprecatedCount":  0,
-                         "lastUpdated":  "2026-08-30",
-                         "lastChange":  "2026-08-29-search-precision-ranking"
-                     },
-                     {
-                         "feature":  "goal-tree",
-                         "relatedCode":  [
-                                             "rdd-engine/scripts/goal-tree.ps1",
-                                             "rdd-engine/scripts/goal-tree.cmd",
-                                             "rdd-engine/scripts/goal-tree-leaf.ps1",
-                                             "rdd-engine/scripts/goal-tree-leaf.cmd",
-                                             "rdd-engine/references/goal-tree-guide.md",
-                                             "rdd-engine/references/task-dispatch-guide.md",
-                                             "dsh/rdd-goal-tree/src/client/view-picker.ts",
-                                             "dsh/rdd-goal-tree/src/client/index.tsx",
-                                             "scripts/build-dsh-goal-tree.mjs",
-                                             "rdd-engine/scripts/start-role.ps1"
-                                         ],
-                         "testCode":  [
-                                          ".rdd/tests/goal-tree/goal-tree-verify.ps1",
-                                          "rdd-engine/tests/test-goal-tree-gates.ps1",
-                                          "dsh/rdd-goal-tree/tests/smoke.mjs"
-                                      ],
-                         "activeCount":  57,
-                         "deprecatedCount":  0,
-                         "lastUpdated":  "2026-10-09",
-                         "lastChange":  "2026-10-09-planner-tree-dispatch"
-                     },
-                     {
-                         "feature":  "delivery-bridge",
-                         "relatedCode":  [
-                                             "rdd-engine/scripts/delivery-bridge.ps1",
-                                             "rdd-engine/scripts/delivery-bridge.cmd",
-                                             "rdd-engine/scripts/goal-tree.ps1",
-                                             "rdd-engine/scripts/goal-tree-leaf.ps1",
-                                             "rdd-engine/scripts/rdd-flow.ps1",
-                                             "rdd-engine/scripts/start-role.ps1",
-                                             "rdd-engine/references/planner-guide.md",
-                                             "rdd-engine/references/rejection-protocol.md",
-                                             "rdd-engine/references/task-routing.md",
-                                             "rdd-pm/references/requirement-item-template.md"
-                                         ],
-                         "testCode":  [
-                                          ".rdd/tests/delivery-bridge/delivery-bridge-verify.ps1",
-                                          ".rdd/tests/delivery-bridge/dep-notation-qa-verify.ps1",
-                                          "rdd-engine/tests/test-phase-model.ps1",
-                                          "rdd-engine/tests/test-bridge-acceptance.ps1",
-                                          "rdd-engine/tests/test-bridge-conflicts.ps1",
-                                          "rdd-engine/tests/test-long-task-planning.ps1",
-                                          ".rdd/tests/delivery-bridge/independent-review-chain-e2e.ps1",
-                                          ".rdd/tests/delivery-bridge/derive-review-integration.ps1",
-                                          ".rdd/tests/delivery-bridge/integration-plugin-view.mjs",
-                                          ".rdd/tests/delivery-bridge/midrun-derive-qa-verify.ps1",
-                                          ".rdd/tests/delivery-bridge/midrun-derive-watcher-qa-verify.mjs",
-                                          "rdd-engine/tests/test-bridge-derive.ps1",
-                                          "rdd-engine/tests/test-decision-ledger.ps1"
-                                      ],
-                         "activeCount":  172,
-                         "deprecatedCount":  0,
-                         "lastUpdated":  "2026-10-10",
-                         "lastChange":  "2026-10-10-width-done-release"
-                     },
-                     {
-                         "feature":  "auditor-role",
-                         "relatedCode":  [
-                                             "rdd-auditor/SKILL.md",
-                                             "rdd-auditor/references/requirement-review.md",
-                                             "dsh/presets/rdd-auditor/preset.yml",
-                                             "dsh/presets/rdd-auditor/agent.cordis.yml",
-                                             "rdd-engine/scripts/start-role.ps1",
-                                             "rdd-engine/references/planner-guide.md",
-                                             "rdd-engine/references/rejection-protocol.md",
-                                             "rdd-engine/references/transition-guide.md",
-                                             "rdd-engine/references/task-routing.md",
-                                             "rdd-pm/SKILL.md",
-                                             "rdd-pm/references/requirement-item-template.md",
-                                             "scripts/build-dsh-presets.mjs",
-                                             "scripts/build-skills-package.mjs",
-                                             "scripts/build-engine-package.mjs",
-                                             "scripts/dsh-preset-template.yml"
-                                         ],
-                         "testCode":  [
-                                          ".rdd/tests/auditor-role/auditor-role-qa-verify.ps1",
-                                          ".rdd/tests/auditor-role/stage-acceptance-s1-verify.ps1",
-                                          ".rdd/tests/auditor-role/auditor-subagent-qa-verify.ps1"
-                                      ],
-                         "activeCount":  105,
-                         "deprecatedCount":  0,
-                         "lastUpdated":  "2026-10-08",
-                         "lastChange":  "2026-10-07-planner-midrun-derive"
-                     },
-                     {
-                         "feature":  "investigation-role-cards",
-                         "relatedCode":  [
-                                             "rdd-engine/references/investigation-roles.md",
-                                             "rdd-engine/references/investigation-roles/"
-                                         ],
-                         "testCode":  [
-                                          ".rdd/tests/investigation-role-cards/investigation-cards-review.ps1"
-                                      ],
-                         "activeCount":  4,
-                         "deprecatedCount":  0,
-                         "lastUpdated":  "2026-09-10",
-                         "lastChange":  "2026-09-10-rca-role-landing"
-                     },
-                     {
-                         "feature":  "task-claim",
-                         "relatedCode":  [
-                                             "rdd-engine/scripts/rdd-flow.ps1",
-                                             "rdd-engine/references/task-routing.md"
-                                         ],
-                         "testCode":  [
-                                          "rdd-engine/tests/test-task-claim.ps1"
-                                      ],
-                         "activeCount":  21,
-                         "deprecatedCount":  0,
-                         "lastUpdated":  "2026-09-16",
-                         "lastChange":  "2026-09-15-goal-tree-delivery-orchestration"
-                     },
-                     {
-                         "feature":  "role-handoff",
-                         "relatedCode":  [
-                                             "rdd-engine/scripts/start-role.ps1",
-                                             "rdd-engine/scripts/rdd-flow.ps1",
-                                             "rdd-engine/references/transition-guide.md",
-                                             "rdd-engine/SKILL.md",
-                                             "scripts/build-dsh-presets.mjs",
-                                             "scripts/install-rdd-skills.ps1"
-                                         ],
-                         "testCode":  [
-                                          ".rdd/tests/role-handoff/run-tests.ps1",
-                                          ".rdd/tests/role-handoff/test-preset-crlf.mjs",
-                                          "rdd-engine/tests/test-multi-owner-routing.ps1",
-                                          "rdd-engine/tests/test-multi-owner-routing-qa.ps1",
-                                          "rdd-engine/tests/test-session-reuse.ps1"
-                                      ],
-                         "activeCount":  61,
-                         "deprecatedCount":  0,
-                         "lastUpdated":  "2026-10-20",
-                         "lastChange":  "2026-10-20-single-point-session-reuse"
-                     },
-                     {
-                         "feature":  "session-badges",
-                         "relatedCode":  [
-                                             "rdd-engine/scripts/start-role.ps1",
-                                             "rdd-engine/scripts/delivery-bridge.ps1"
-                                         ],
-                         "testCode":  [
-                                          ".rdd/tests/session-badges/session-badges-verify.ps1"
-                                      ],
-                         "activeCount":  11,
-                         "deprecatedCount":  0,
-                         "lastUpdated":  "2026-09-22",
-                         "lastChange":  "2026-09-20-planner-enhancements"
-                     },
-                     {
-                         "feature":  "code-metrics",
-                         "relatedCode":  [
-                                             "rdd-engine/scripts/code-metrics.ps1",
-                                             "rdd-engine/scripts/code-metrics.cmd"
-                                         ],
-                         "testCode":  [
-                                          "rdd-engine/tests/test-code-metrics.ps1",
-                                          ".rdd/tests/code-metrics/qa-metric-verify.ps1"
-                                      ],
-                         "activeCount":  12,
-                         "deprecatedCount":  0,
-                         "lastUpdated":  "2026-09-24",
-                         "lastChange":  "2026-09-24-qa-metric-tooling"
-                     },
-                     {
-                         "feature":  "session-list-recency",
-                         "relatedCode":  [
-                                             "../dsh/deepseek-harness/packages/host/apiproxy/src/api/session-activity.ts",
-                                             "../dsh/deepseek-harness/packages/host/apiproxy/src/api-proxy.ts",
-                                             "../dsh/deepseek-harness/packages/client/runtime/src/client/sessions/manager.ts",
-                                             "../dsh/deepseek-harness/packages/client/ui-workspace/src/client/WorkspaceBrowser.tsx"
-                                         ],
-                         "testCode":  [
-                                          "../dsh/deepseek-harness/packages/host/apiproxy/tests/session-activity.spec.ts",
-                                          "../dsh/deepseek-harness/packages/host/apiproxy/tests/api-proxy-projections.spec.ts",
-                                          "../dsh/deepseek-harness/packages/host/apiproxy/tests/api-proxy-cold.spec.ts",
-                                          "../dsh/deepseek-harness/packages/client/runtime/tests/sessions-service.client.spec.ts",
-                                          "../dsh/deepseek-harness/packages/client/ui-workspace/tests/workspace-browser.client.spec.tsx"
-                                      ],
-                         "activeCount":  8,
-                         "deprecatedCount":  0,
-                         "lastUpdated":  "2026-09-28",
-                         "lastChange":  "2026-09-27-session-list-recency-wakeful-callback"
-                     },
-                     {
-                         "feature":  "tips-store-cli",
-                         "relatedCode":  [
-                                             "rdd-engine/scripts/tips.ps1",
-                                             "rdd-engine/scripts/tips.cmd",
-                                             "rdd-engine/references/capability-manifest.md"
-                                         ],
-                         "testCode":  [
-                                          "rdd-engine/tests/test-tips.ps1",
-                                          ".rdd/tests/tips-store-cli/tips-store-cli-qa-verify.ps1"
-                                      ],
-                         "activeCount":  22,
-                         "deprecatedCount":  3,
-                         "lastUpdated":  "2026-10-06",
-                         "lastChange":  "2026-10-06-role-tips-mechanism"
-                     },
-                     {
-                         "feature":  "tips-startup-injection",
-                         "relatedCode":  [
-                                             "rdd-engine/scripts/start-role.ps1",
-                                             "rdd-pm/SKILL.md",
-                                             "rdd-cto/SKILL.md",
-                                             "rdd-ux/SKILL.md",
-                                             "rdd-dev/SKILL.md",
-                                             "rdd-qa/SKILL.md",
-                                             "rdd-eval/SKILL.md",
-                                             "rdd-pse/SKILL.md",
-                                             "scripts/build-dsh-presets.mjs",
-                                             "scripts/build-skills-package.mjs",
-                                             "rdd-engine/references/transition-guide.md"
-                                         ],
-                         "testCode":  [
-                                          ".rdd/tests/tips-startup-injection/tips-injection-qa-verify.ps1"
-                                      ],
-                         "activeCount":  11,
-                         "deprecatedCount":  0,
-                         "lastUpdated":  "2026-10-06",
-                         "lastChange":  "2026-10-06-role-tips-mechanism"
-                     },
-                     {
-                         "feature":  "tips-integration",
-                         "relatedCode":  [
-                                             "rdd-engine/scripts/tips.ps1",
-                                             "rdd-engine/scripts/tips.cmd",
-                                             "rdd-engine/scripts/start-role.ps1"
-                                         ],
-                         "testCode":  [
-                                          ".rdd/tests/tips-integration/tips-chain-e2e.ps1"
-                                      ],
-                         "activeCount":  5,
-                         "deprecatedCount":  0,
-                         "lastUpdated":  "2026-10-07",
-                         "lastChange":  "2026-10-06-role-tips-mechanism"
-                     },
-                     {
-                         "feature":  "explore-query-log",
-                         "relatedCode":  [
-                                             "rdd-engine/scripts/explore.ps1",
-                                             "rdd-engine/scripts/explore.cmd",
-                                             "dsh/dsh-rdd-explore/src/index.ts",
-                                             "dsh/dsh-rdd-explore/src/query-log.ts"
-                                         ],
-                         "testCode":  [
-                                          "rdd-engine/tests/test-query-log.ps1",
-                                          "dsh/dsh-rdd-explore/tests/query-log.mjs",
-                                          ".rdd/tests/explore-query-log/plugin-entry-e2e.mjs",
-                                          ".rdd/tests/explore-query-log/hit-rate-aggregation.mjs",
-                                          ".rdd/tests/explore-query-log/explore-query-log-qa-verify.ps1"
-                                      ],
-                         "activeCount":  15,
-                         "deprecatedCount":  0,
-                         "lastUpdated":  "2026-10-08",
-                         "lastChange":  "2026-10-08-rdd-ops-dashboard"
-                     },
-                     {
-                         "feature":  "ops-dashboard",
-                         "relatedCode":  [
-                                             "rdd-engine/dashboard/",
-                                             "rdd-engine/scripts/dashboard.cmd",
-                                             "ops-dashboard.cmd",
-                                             "start-dashboard.cmd (design-decided; pending DEV)",
-                                             "rdd-engine/dashboard/server.mjs"
-                                         ],
-                         "testCode":  [
-                                          ".rdd/tests/ops-dashboard/ops-dashboard-qa-verify.ps1",
-                                          ".rdd/tests/ops-dashboard/ops-dashboard-acceptance.ps1",
-                                          ".rdd/tests/ops-dashboard/js-quality-metrics.mjs",
-                                          ".rdd/tests/ops-dashboard/ops-dashboard-launcher-qa-verify.ps1",
-                                          ".rdd/tests/ops-dashboard/desktop-shortcut-qa-verify.ps1"
-                                      ],
-                         "activeCount":  35,
-                         "deprecatedCount":  2,
-                         "lastUpdated":  "2026-10-13",
-                         "lastChange":  "2026-10-09-ops-dashboard-launcher"
-                     },
-                     {
-                         "feature":  "ops-dashboard-project-switcher",
-                         "relatedCode":  [
-                                             "rdd-engine/dashboard/server.mjs",
-                                             "rdd-engine/dashboard/lib/paths.mjs",
-                                             "rdd-engine/dashboard/lib/layout.mjs",
-                                             "rdd-engine/dashboard/static/app.js",
-                                             "rdd-engine/dashboard/lib/readers/"
-                                         ],
-                         "testCode":  [
-                                          ".rdd/tests/ops-dashboard-project-switcher/project-switcher-qa-verify.ps1"
-                                      ],
-                         "activeCount":  18,
-                         "deprecatedCount":  0,
-                         "lastUpdated":  "2026-10-09",
-                         "lastChange":  "2026-10-09-ops-dashboard-project-switcher"
-                     },
-                     {
-                         "feature":  "session-list-lineage",
-                         "relatedCode":  [
-                                             "../dsh/deepseek-harness/packages/host/apiproxy/src/api/sessions.ts",
-                                             "../dsh/deepseek-harness/packages/host/apiproxy/src/api/sessions.schema.ts",
-                                             "../dsh/deepseek-harness/packages/host/apiproxy/src/api-proxy.ts",
-                                             "../dsh/deepseek-harness/packages/client/ui-workspace/src/client/tree.ts",
-                                             "../dsh/deepseek-harness/packages/client/ui-workspace/src/client/rows/Rows.tsx",
-                                             "../dsh/deepseek-harness/packages/client/ui-workspace/src/client/WorkspaceBrowser.tsx",
-                                             "../dsh/deepseek-harness/packages/client/ui-workspace/src/client/stores.ts",
-                                             "rdd-engine/scripts/start-role.ps1"
-                                         ],
-                         "testCode":  [
-                                          "../dsh/deepseek-harness/packages/host/apiproxy/tests/api-proxy-session-lineage.spec.ts",
-                                          "../dsh/deepseek-harness/packages/client/ui-workspace/tests/tree.client.spec.ts",
-                                          "../dsh/deepseek-harness/packages/client/ui-workspace/tests/rows.client.spec.tsx",
-                                          "../dsh/deepseek-harness/packages/client/ui-workspace/tests/workspace-browser.client.spec.tsx"
-                                      ],
-                         "activeCount":  11,
-                         "deprecatedCount":  0,
-                         "lastUpdated":  "2026-10-09",
-                         "lastChange":  "2026-10-09-session-list-lineage-bundling"
-                     }
-                 ]
+  "features": [
+    {
+      "feature": "explore-search",
+      "relatedCode": [
+        "rdd-engine/scripts/explore.ps1",
+        "rdd-engine/scripts/explore-store.ps1",
+        "rdd-engine/scripts/recallers/lexical.ps1",
+        "rdd-engine/scripts/recallers/vector.ps1"
+      ],
+      "testCode": [
+        ".rdd/tests/explore-search/search-precision-ranking.mjs",
+        ".rdd/tests/explore-search/qa-ast-review.ps1"
+      ],
+      "activeCount": 15,
+      "deprecatedCount": 0,
+      "lastUpdated": "2026-08-30",
+      "lastChange": "2026-08-29-search-precision-ranking"
+    },
+    {
+      "feature": "goal-tree",
+      "relatedCode": [
+        "rdd-engine/scripts/goal-tree.ps1",
+        "rdd-engine/scripts/goal-tree.cmd",
+        "rdd-engine/scripts/goal-tree-leaf.ps1",
+        "rdd-engine/scripts/goal-tree-leaf.cmd",
+        "rdd-engine/references/goal-tree-guide.md",
+        "rdd-engine/references/task-dispatch-guide.md",
+        "dsh/rdd-goal-tree/src/client/view-picker.ts",
+        "dsh/rdd-goal-tree/src/client/index.tsx",
+        "scripts/build-dsh-goal-tree.mjs",
+        "rdd-engine/scripts/start-role.ps1"
+      ],
+      "testCode": [
+        ".rdd/tests/goal-tree/goal-tree-verify.ps1",
+        "rdd-engine/tests/test-goal-tree-gates.ps1",
+        "dsh/rdd-goal-tree/tests/smoke.mjs"
+      ],
+      "activeCount": 57,
+      "deprecatedCount": 0,
+      "lastUpdated": "2026-10-09",
+      "lastChange": "2026-10-09-planner-tree-dispatch"
+    },
+    {
+      "feature": "delivery-bridge",
+      "relatedCode": [
+        "rdd-engine/scripts/delivery-bridge.ps1",
+        "rdd-engine/scripts/delivery-bridge.cmd",
+        "rdd-engine/scripts/goal-tree.ps1",
+        "rdd-engine/scripts/goal-tree-leaf.ps1",
+        "rdd-engine/scripts/rdd-flow.ps1",
+        "rdd-engine/scripts/start-role.ps1",
+        "rdd-engine/references/planner-guide.md",
+        "rdd-engine/references/rejection-protocol.md",
+        "rdd-engine/references/task-routing.md",
+        "rdd-pm/references/requirement-item-template.md"
+      ],
+      "testCode": [
+        ".rdd/tests/delivery-bridge/delivery-bridge-verify.ps1",
+        ".rdd/tests/delivery-bridge/dep-notation-qa-verify.ps1",
+        "rdd-engine/tests/test-phase-model.ps1",
+        "rdd-engine/tests/test-bridge-acceptance.ps1",
+        "rdd-engine/tests/test-bridge-conflicts.ps1",
+        "rdd-engine/tests/test-long-task-planning.ps1",
+        ".rdd/tests/delivery-bridge/independent-review-chain-e2e.ps1",
+        ".rdd/tests/delivery-bridge/derive-review-integration.ps1",
+        ".rdd/tests/delivery-bridge/integration-plugin-view.mjs",
+        ".rdd/tests/delivery-bridge/midrun-derive-qa-verify.ps1",
+        ".rdd/tests/delivery-bridge/midrun-derive-watcher-qa-verify.mjs",
+        "rdd-engine/tests/test-bridge-derive.ps1",
+        "rdd-engine/tests/test-decision-ledger.ps1"
+      ],
+      "activeCount": 172,
+      "deprecatedCount": 0,
+      "lastUpdated": "2026-10-10",
+      "lastChange": "2026-10-10-width-done-release"
+    },
+    {
+      "feature": "auditor-role",
+      "relatedCode": [
+        "rdd-auditor/SKILL.md",
+        "rdd-auditor/references/requirement-review.md",
+        "dsh/presets/rdd-auditor/preset.yml",
+        "dsh/presets/rdd-auditor/agent.cordis.yml",
+        "rdd-engine/scripts/start-role.ps1",
+        "rdd-engine/references/planner-guide.md",
+        "rdd-engine/references/rejection-protocol.md",
+        "rdd-engine/references/transition-guide.md",
+        "rdd-engine/references/task-routing.md",
+        "rdd-pm/SKILL.md",
+        "rdd-pm/references/requirement-item-template.md",
+        "scripts/build-dsh-presets.mjs",
+        "scripts/build-skills-package.mjs",
+        "scripts/build-engine-package.mjs",
+        "scripts/dsh-preset-template.yml"
+      ],
+      "testCode": [
+        ".rdd/tests/auditor-role/auditor-role-qa-verify.ps1",
+        ".rdd/tests/auditor-role/stage-acceptance-s1-verify.ps1",
+        ".rdd/tests/auditor-role/auditor-subagent-qa-verify.ps1"
+      ],
+      "activeCount": 105,
+      "deprecatedCount": 0,
+      "lastUpdated": "2026-10-08",
+      "lastChange": "2026-10-07-planner-midrun-derive"
+    },
+    {
+      "feature": "investigation-role-cards",
+      "relatedCode": [
+        "rdd-engine/references/investigation-roles.md",
+        "rdd-engine/references/investigation-roles/"
+      ],
+      "testCode": [
+        ".rdd/tests/investigation-role-cards/investigation-cards-review.ps1"
+      ],
+      "activeCount": 4,
+      "deprecatedCount": 0,
+      "lastUpdated": "2026-09-10",
+      "lastChange": "2026-09-10-rca-role-landing"
+    },
+    {
+      "feature": "task-claim",
+      "relatedCode": [
+        "rdd-engine/scripts/rdd-flow.ps1",
+        "rdd-engine/references/task-routing.md"
+      ],
+      "testCode": [
+        "rdd-engine/tests/test-task-claim.ps1"
+      ],
+      "activeCount": 21,
+      "deprecatedCount": 0,
+      "lastUpdated": "2026-09-16",
+      "lastChange": "2026-09-15-goal-tree-delivery-orchestration"
+    },
+    {
+      "feature": "role-handoff",
+      "relatedCode": [
+        "rdd-engine/scripts/start-role.ps1",
+        "rdd-engine/scripts/rdd-flow.ps1",
+        "rdd-engine/references/transition-guide.md",
+        "rdd-engine/SKILL.md",
+        "scripts/build-dsh-presets.mjs",
+        "scripts/install-rdd-skills.ps1"
+      ],
+      "testCode": [
+        ".rdd/tests/role-handoff/run-tests.ps1",
+        ".rdd/tests/role-handoff/test-preset-crlf.mjs",
+        "rdd-engine/tests/test-multi-owner-routing.ps1",
+        "rdd-engine/tests/test-multi-owner-routing-qa.ps1",
+        "rdd-engine/tests/test-session-reuse.ps1"
+      ],
+      "activeCount": 61,
+      "deprecatedCount": 0,
+      "lastUpdated": "2026-10-20",
+      "lastChange": "2026-10-20-single-point-session-reuse"
+    },
+    {
+      "feature": "session-badges",
+      "relatedCode": [
+        "rdd-engine/scripts/start-role.ps1",
+        "rdd-engine/scripts/delivery-bridge.ps1"
+      ],
+      "testCode": [
+        ".rdd/tests/session-badges/session-badges-verify.ps1"
+      ],
+      "activeCount": 11,
+      "deprecatedCount": 0,
+      "lastUpdated": "2026-09-22",
+      "lastChange": "2026-09-20-planner-enhancements"
+    },
+    {
+      "feature": "code-metrics",
+      "relatedCode": [
+        "rdd-engine/scripts/code-metrics.ps1",
+        "rdd-engine/scripts/code-metrics.cmd"
+      ],
+      "testCode": [
+        "rdd-engine/tests/test-code-metrics.ps1",
+        ".rdd/tests/code-metrics/qa-metric-verify.ps1"
+      ],
+      "activeCount": 12,
+      "deprecatedCount": 0,
+      "lastUpdated": "2026-09-24",
+      "lastChange": "2026-09-24-qa-metric-tooling"
+    },
+    {
+      "feature": "session-list-recency",
+      "relatedCode": [
+        "../dsh/deepseek-harness/packages/host/apiproxy/src/api/session-activity.ts",
+        "../dsh/deepseek-harness/packages/host/apiproxy/src/api-proxy.ts",
+        "../dsh/deepseek-harness/packages/client/runtime/src/client/sessions/manager.ts",
+        "../dsh/deepseek-harness/packages/client/ui-workspace/src/client/WorkspaceBrowser.tsx"
+      ],
+      "testCode": [
+        "../dsh/deepseek-harness/packages/host/apiproxy/tests/session-activity.spec.ts",
+        "../dsh/deepseek-harness/packages/host/apiproxy/tests/api-proxy-projections.spec.ts",
+        "../dsh/deepseek-harness/packages/host/apiproxy/tests/api-proxy-cold.spec.ts",
+        "../dsh/deepseek-harness/packages/client/runtime/tests/sessions-service.client.spec.ts",
+        "../dsh/deepseek-harness/packages/client/ui-workspace/tests/workspace-browser.client.spec.tsx"
+      ],
+      "activeCount": 8,
+      "deprecatedCount": 0,
+      "lastUpdated": "2026-09-28",
+      "lastChange": "2026-09-27-session-list-recency-wakeful-callback"
+    },
+    {
+      "feature": "tips-store-cli",
+      "relatedCode": [
+        "rdd-engine/scripts/tips.ps1",
+        "rdd-engine/scripts/tips.cmd",
+        "rdd-engine/references/capability-manifest.md"
+      ],
+      "testCode": [
+        "rdd-engine/tests/test-tips.ps1",
+        ".rdd/tests/tips-store-cli/tips-store-cli-qa-verify.ps1"
+      ],
+      "activeCount": 22,
+      "deprecatedCount": 3,
+      "lastUpdated": "2026-10-06",
+      "lastChange": "2026-10-06-role-tips-mechanism"
+    },
+    {
+      "feature": "tips-startup-injection",
+      "relatedCode": [
+        "rdd-engine/scripts/start-role.ps1",
+        "rdd-pm/SKILL.md",
+        "rdd-cto/SKILL.md",
+        "rdd-ux/SKILL.md",
+        "rdd-dev/SKILL.md",
+        "rdd-qa/SKILL.md",
+        "rdd-eval/SKILL.md",
+        "rdd-pse/SKILL.md",
+        "scripts/build-dsh-presets.mjs",
+        "scripts/build-skills-package.mjs",
+        "rdd-engine/references/transition-guide.md"
+      ],
+      "testCode": [
+        ".rdd/tests/tips-startup-injection/tips-injection-qa-verify.ps1"
+      ],
+      "activeCount": 11,
+      "deprecatedCount": 0,
+      "lastUpdated": "2026-10-06",
+      "lastChange": "2026-10-06-role-tips-mechanism"
+    },
+    {
+      "feature": "tips-integration",
+      "relatedCode": [
+        "rdd-engine/scripts/tips.ps1",
+        "rdd-engine/scripts/tips.cmd",
+        "rdd-engine/scripts/start-role.ps1"
+      ],
+      "testCode": [
+        ".rdd/tests/tips-integration/tips-chain-e2e.ps1"
+      ],
+      "activeCount": 5,
+      "deprecatedCount": 0,
+      "lastUpdated": "2026-10-07",
+      "lastChange": "2026-10-06-role-tips-mechanism"
+    },
+    {
+      "feature": "explore-query-log",
+      "relatedCode": [
+        "rdd-engine/scripts/explore.ps1",
+        "rdd-engine/scripts/explore.cmd",
+        "dsh/dsh-rdd-explore/src/index.ts",
+        "dsh/dsh-rdd-explore/src/query-log.ts"
+      ],
+      "testCode": [
+        "rdd-engine/tests/test-query-log.ps1",
+        "dsh/dsh-rdd-explore/tests/query-log.mjs",
+        ".rdd/tests/explore-query-log/plugin-entry-e2e.mjs",
+        ".rdd/tests/explore-query-log/hit-rate-aggregation.mjs",
+        ".rdd/tests/explore-query-log/explore-query-log-qa-verify.ps1"
+      ],
+      "activeCount": 15,
+      "deprecatedCount": 0,
+      "lastUpdated": "2026-10-08",
+      "lastChange": "2026-10-08-rdd-ops-dashboard"
+    },
+    {
+      "feature": "ops-dashboard",
+      "relatedCode": [
+        "rdd-engine/dashboard/",
+        "rdd-engine/scripts/dashboard.cmd",
+        "ops-dashboard.cmd",
+        "start-dashboard.cmd (design-decided; pending DEV)",
+        "rdd-engine/dashboard/server.mjs"
+      ],
+      "testCode": [
+        ".rdd/tests/ops-dashboard/ops-dashboard-qa-verify.ps1",
+        ".rdd/tests/ops-dashboard/ops-dashboard-acceptance.ps1",
+        ".rdd/tests/ops-dashboard/js-quality-metrics.mjs",
+        ".rdd/tests/ops-dashboard/ops-dashboard-launcher-qa-verify.ps1",
+        ".rdd/tests/ops-dashboard/desktop-shortcut-qa-verify.ps1"
+      ],
+      "activeCount": 35,
+      "deprecatedCount": 2,
+      "lastUpdated": "2026-10-13",
+      "lastChange": "2026-10-09-ops-dashboard-launcher"
+    },
+    {
+      "feature": "ops-dashboard-project-switcher",
+      "relatedCode": [
+        "rdd-engine/dashboard/server.mjs",
+        "rdd-engine/dashboard/lib/paths.mjs",
+        "rdd-engine/dashboard/lib/layout.mjs",
+        "rdd-engine/dashboard/static/app.js",
+        "rdd-engine/dashboard/lib/readers/"
+      ],
+      "testCode": [
+        ".rdd/tests/ops-dashboard-project-switcher/project-switcher-qa-verify.ps1"
+      ],
+      "activeCount": 18,
+      "deprecatedCount": 0,
+      "lastUpdated": "2026-10-09",
+      "lastChange": "2026-10-09-ops-dashboard-project-switcher"
+    },
+    {
+      "feature": "session-list-lineage",
+      "relatedCode": [
+        "../dsh/deepseek-harness/packages/host/apiproxy/src/api/sessions.ts",
+        "../dsh/deepseek-harness/packages/host/apiproxy/src/api/sessions.schema.ts",
+        "../dsh/deepseek-harness/packages/host/apiproxy/src/api-proxy.ts",
+        "../dsh/deepseek-harness/packages/client/ui-workspace/src/client/tree.ts",
+        "../dsh/deepseek-harness/packages/client/ui-workspace/src/client/rows/Rows.tsx",
+        "../dsh/deepseek-harness/packages/client/ui-workspace/src/client/WorkspaceBrowser.tsx",
+        "../dsh/deepseek-harness/packages/client/ui-workspace/src/client/stores.ts",
+        "rdd-engine/scripts/start-role.ps1"
+      ],
+      "testCode": [
+        "../dsh/deepseek-harness/packages/host/apiproxy/tests/api-proxy-session-lineage.spec.ts",
+        "../dsh/deepseek-harness/packages/client/ui-workspace/tests/tree.client.spec.ts",
+        "../dsh/deepseek-harness/packages/client/ui-workspace/tests/rows.client.spec.tsx",
+        "../dsh/deepseek-harness/packages/client/ui-workspace/tests/workspace-browser.client.spec.tsx"
+      ],
+      "activeCount": 11,
+      "deprecatedCount": 0,
+      "lastUpdated": "2026-10-09",
+      "lastChange": "2026-10-09-session-list-lineage-bundling"
+    },
+    {
+      "feature": "ops-dashboard-exploration-expansion",
+      "relatedCode": [
+        "rdd-engine/dashboard/lib/views/exploration.mjs",
+        "rdd-engine/dashboard/lib/components.mjs",
+        "rdd-engine/dashboard/static/app.js",
+        "rdd-engine/dashboard/static/style.css"
+      ],
+      "testCode": [
+        ".rdd/tests/ops-dashboard-exploration-expansion/exploration-kpi-expansion-qa-verify.mjs",
+        ".rdd/tests/ops-dashboard-exploration-expansion/stage-acceptance-s1-verify.mjs"
+      ],
+      "activeCount": 22,
+      "deprecatedCount": 0,
+      "lastUpdated": "2026-10-20",
+      "lastChange": "2026-10-20-stage-s1-integration-acceptance"
+    },
+    {
+      "feature": "ops-dashboard-exploration-pair-observability",
+      "relatedCode": [
+        "rdd-engine/dashboard/lib/readers/exploration.mjs",
+        "rdd-engine/dashboard/lib/views/exploration.mjs",
+        "rdd-engine/dashboard/lib/components.mjs",
+        "rdd-engine/dashboard/static/app.js",
+        "rdd-engine/dashboard/static/style.css"
+      ],
+      "testCode": [
+        ".rdd/tests/ops-dashboard-exploration-pair-observability/exploration-pair-observability-qa-verify.mjs"
+      ],
+      "activeCount": 15,
+      "deprecatedCount": 0,
+      "lastUpdated": "2026-10-20",
+      "lastChange": "2026-10-20-exploration-cache-ux"
+    }
+  ]
 }
