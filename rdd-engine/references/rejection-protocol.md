@@ -44,9 +44,11 @@
 被驳回方看到后可以：接受并修订 / 解释辩解
 ```
 
+> **dsh 后端勿重复交接（single-point-session-reuse）**：dsh 下 `reject` 在路由写落盘后已自动送信——返回 JSON 的 `data.delivery.state` 为 `reused`（重做指针已投回被驳回方原会话，含打回理由）或 `new-session`（原会话不可达，已自动回退开新会话）时，**不要再执行 start-role 交接**，把送信结果转述给用户即可。`capped`（重入触顶）时把输出的裁决点四出口呈给用户裁定；`pointer-failed` 时按输出的手动二选一处置；`no-anchor`（无锚点，含桥接 run）时才按现状手动交接。非 dsh 后端 reject 无自动送信，照常手动交接。
+
 ### 第二步：被驳回方响应
 
-被驳回方发现 task.json 路由（`reject` 后 `currentOwners` 指向自己）和文档 `## 驳回记录` 指向自己时：
+被驳回方发现 task.json 路由（`reject` 后 `currentOwners` 指向自己）和文档 `## 驳回记录` 指向自己时（dsh 下重做指针已自动投回原会话——按指针尾段「【打回重做】」的指引，第一动作重新 `claim` 恢复认领，随后在原上下文内直接续作）：
 
 **选项 A：接受驳回**
 ```

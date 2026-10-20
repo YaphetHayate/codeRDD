@@ -91,6 +91,8 @@ $rdd = $null; $t = $null; try { $t = git rev-parse --show-toplevel } catch { }; 
 
 失败回退：业务错误 → 报错退出（含服务端错误码）；dsh 不可达（服务未启动/超时/403）→ 报错 + 打印人工指引（侧栏手动建会话选 preset + 指针消息全文）；create 成功但 prompt 失败 → 报错 + 打印指针消息，可点开侧栏已有会话手动粘贴。**不降级 CLI 开窗**（Web GUI 用户面前开本地终端窗无意义）。
 
+> **会话复用（single-point-session-reuse）**：dsh 下 `start-role` 对**同任务×同角色**的存活原会话自动复用——判定门全条件：dsh 后端 ∧ 任务作用域（`-TaskId` + 可解析 task.json）∧ 未显式传 `-ExistingSessionId` ∧ 无 `-GoalTreeRun` 桥接标记 ∧ 未给 `-NoReuse` ∧ 锚点探活为活 ∧ 未触重入上限。命中即把指针投回原会话（保留其完整上下文，第 4 步照常调用即可，无需任何新参数）；未命中照常新建。会话锚点存于归档边车 `session-anchors.json`（新建会话即写锚、复用投递成功计数 +1、回退新建重锚清零）。**重入上限**默认 3、任务级可覆盖：触顶时 start-role 输出裁决点四出口（升级用户 / `-NoReuse` 换新会话 / 豁免 / 提额）并退出——提额/豁免经 `rdd-flow reentry` 子命令（`-RaiseTo`/`-Exempt` + `-UserVerdict`，裁决入 decisions.jsonl）。完整打回循环（QA reject 打回 → 原会话重做 → 再交 QA）中 dev/qa 各只占一个会话；`-NoReuse` 为强制新建的逃生开关（新会话仍会重新锚定）。CLI/Plus 后端无此行为（保持现状）。
+
 > **DryRun**：`-DryRun` 在 dsh 分支打印模式/基地址/preset 与三个 RPC payload，不发送。
 >
 > **重要**：app-driven 模式下，agent 的职责到"调用脚本"为止。不越权直接加载目标 SKILL、不宣布上下文边界——这些由脚本 + Plus 接管。dsh-driven 同理，由脚本 + 目标角色 preset 接管。

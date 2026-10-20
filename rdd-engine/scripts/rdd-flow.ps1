@@ -1,6 +1,6 @@
 ﻿[CmdletBinding()]
 param(
-    [ValidateSet("handoff", "validate", "next", "start", "show", "claim", "init", "add-task", "set-route", "add-design", "reject", "complete", "reopen", "deprecate", "check", "migrate", "version")]
+    [ValidateSet("handoff", "validate", "next", "start", "show", "claim", "init", "add-task", "set-route", "add-design", "reject", "complete", "reopen", "deprecate", "check", "migrate", "reentry", "version")]
     [string]$Command = "handoff",
 
     [ValidateSet("PM", "CTO", "UX", "DEV", "QA")]
@@ -30,6 +30,19 @@ param(
     [Alias("Path")]
     [string]$DesignPath,
     [string]$Reason,
+
+    [int]$RaiseTo = -1,             # reentry cap management (single-point-session-reuse):
+                                    # task-level reentryMax raise target. Raise-only (must be
+                                    # strictly greater than the current effective max) and
+                                    # requires -UserVerdict; the adjudication lands in the
+                                    # archive's decisions.jsonl
+    [string]$UserVerdict = "",      # reentry adjudication verdict text (REQUIRED for any
+                                    # reentry mutation -- raise/exempt; decider=user in the
+                                    # ledger, R8: 裁决入决策账本)
+    [switch]$Exempt,                # reentry one-shot exemption (single-point-session-reuse):
+                                    # grants exactly one more reentry (reentryMax := max role
+                                    # reentries + 1); same -UserVerdict + ledger contract as
+                                    # -RaiseTo; mutually exclusive with it
 
     [switch]$Force,
 
@@ -85,6 +98,19 @@ function Resolve-RepoRoot {
     return $start
 }
 $repoRoot = Resolve-RepoRoot
+
+# --- single-point session-reuse shared library (single-point-session-reuse) ---
+# lib/session-reuse.ps1: anchor sidecar CRUD / liveness probe mirror / reentry
+# quota gate (default 3 + four exits + raise-only) / decision-ledger append.
+# Fail-soft load: a missing library disables ONLY the reuse features (reject
+# dsh delivery skips with a notice; the reentry command fails loud with
+# REUSE_LIB_MISSING); every existing path, byte for byte, is untouched.
+$script:SessionReuseLibLoaded = $false
+$sessionReuseLibPath = Join-Path $PSScriptRoot "lib\session-reuse.ps1"
+if (Test-Path -LiteralPath $sessionReuseLibPath -PathType Leaf) {
+    . $sessionReuseLibPath
+    $script:SessionReuseLibLoaded = $true
+}
 
 # === Phase routing model (references/phase-model.md — single authority) ===
 # A task's route advances through ordered phases; roles inside a phase are a
@@ -2141,6 +2167,169 @@ function Invoke-AddDesign {
 
 # --- reject ---
 
+# Session roles addressable by the start-role carrier (its ValidateSet) -- a
+# -To outside this set cannot receive a session delivery and keeps the
+# current behavior (manual handoff).
+$script:RejectSessionRoles = @("PM", "CTO", "UX", "DEV", "QA", "EVAL", "PSE", "PLANNER", "AUDITOR")
+
+function Invoke-StartRoleCarrier {
+    # Spawn start-role.cmd as the reject delivery carrier (design decision #2:
+    # the投递载波 is the SAME public CLI the bridge's Invoke-StartRolePush uses
+    # (delivery-bridge.ps1 L1641-1694) -- -ExistingSessionId reuse branch,
+    # -Appendix tail and prompt-failed semantics all come single-sourced; this
+    # file never re-implements the RPC). EAP-relaxed spawn mirroring bridge
+    # Invoke-EngineCli (L537-557): PS 5.1 turns native stderr lines into
+    # NativeCommandError records under ErrorActionPreference=Stop.
+    param([string[]]$ArgList)
+    $prevEap = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    $output = $null
+    $exitCode = 0
+    try {
+        $output = & (Join-Path $PSScriptRoot "start-role.cmd") @ArgList 2>$null
+        $exitCode = $LASTEXITCODE
+    }
+    finally {
+        $ErrorActionPreference = $prevEap
+    }
+    return @{ exit = $exitCode; text = (($output | Out-String).Trim()) }
+}
+
+function Write-DeliveryNotice {
+    # Delivery narration goes to STDERR: rdd-flow's stdout is the
+    # machine-parseable JSON result (this CLI's whole output model), and a
+    # child powershell's Write-Host lands on the captured stdout pipe —
+    # mixing narration there breaks every `| ConvertFrom-Json` caller. The
+    # actionable long texts (cap refusal / pointer-failure guidance) ALSO
+    # ride the JSON (delivery.notice) so programmatic callers lose nothing;
+    # stderr keeps them visible for interactive in-session agents.
+    param([string]$Message)
+    [Console]::Error.WriteLine($Message)
+}
+
+function Invoke-RejectFallbackCreate {
+    # Dead/unknown-anchor branch of Invoke-RejectDelivery: safe auto-fallback
+    # to a fresh session via the -NoReuse carrier (the replacement re-anchors
+    # with a reset reentry count -- 设计 落盘时机: 新建会话回退时重锚并清零).
+    # A dead anchor BYPASSES the cap: the budget guards a LIVE session's
+    # context, and the replacement session resets the count anyway.
+    param([string]$ArchivePath, [int]$TaskIdNum, [string]$TargetRole, [string]$TaskJsonPath, $Live)
+    Write-DeliveryNotice "[!] 原会话不可达（liveness=$($Live.liveness)：$($Live.reason)）——自动回退开新会话（新会话重新锚定并清零重入计数）。"
+    $spawn = Invoke-StartRoleCarrier -ArgList @("-Role", $TargetRole, "-TaskId", "$TaskIdNum", "-TaskJson", $TaskJsonPath, "-NoReuse")
+    if ($spawn.exit -ne 0) {
+        Write-DeliveryNotice "[x] 回退新建失败（start-role 退出码 $($spawn.exit)）——路由已写好，送信按现状人工回退。"
+        Write-DeliveryNotice "[!] 人工回退命令：start-role.cmd -Role $TargetRole -TaskId $TaskIdNum -TaskJson $TaskJsonPath -NoReuse"
+        return @{ state = "spawn-failed"; reason = "fallback create exited $($spawn.exit)"; error = $spawn.text }
+    }
+    $reRead = Read-SessionAnchors -ArchivePath $ArchivePath
+    $newEntry = Get-SessionAnchorEntry -Anchors $reRead.data -TaskIdNum $TaskIdNum -RoleName $TargetRole
+    $newSid = if ($null -ne $newEntry) { $newEntry.sessionId } else { "" }
+    Write-DeliveryNotice "[+] 已回退为 $TargetRole 开新会话（sessionId: $newSid）并重新锚定——指针已送达，新会话照常开工。"
+    return @{ state = "new-session"; reason = "original session not alive (liveness=$($Live.liveness): $($Live.reason))"; sessionId = $newSid; reentries = 0 }
+}
+
+function Invoke-RejectReusePush {
+    # Alive-and-under-cap branch of Invoke-RejectDelivery: ONE reuse delivery
+    # through the -ExistingSessionId/-Appendix carrier. Pointer-class failure
+    # discipline (design 硬约束 ②): a failed prompt onto the alive original
+    # session NEVER auto-creates a replacement (the original may consume the
+    # first delivery late -- the redo task would run twice); manual
+    # two-choice only. The carrier's reuse branch ticks the count on success
+    # (投递失败不计数); this side re-reads for the authoritative number.
+    param([string]$ArchivePath, [int]$TaskIdNum, [string]$TargetRole, [string]$FromRole, [string]$ReasonText, [string]$TaskJsonPath, [string]$ArchiveRel, $Entry, [int]$ReentryMax)
+    $appendix = "【打回重做】$FromRole 打回本任务。理由：$ReasonText。本会话已保有本任务全部上下文——第一动作重新认领：rdd-flow.cmd -Command claim -Role $TargetRole -TaskId $TaskIdNum -Archive $ArchiveRel（打回时认领已自动释放）；随后在原上下文内直接续修（无需重读已读文档/代码），完成后照常自测并按 4 步硬流程推进路由。"
+    $spawn = Invoke-StartRoleCarrier -ArgList @("-Role", $TargetRole, "-TaskId", "$TaskIdNum", "-TaskJson", $TaskJsonPath, "-ExistingSessionId", $Entry.sessionId, "-Appendix", $appendix)
+    if ($spawn.exit -ne 0) {
+        $guidance = Get-ReusePointerFailureGuidance -Context @{
+            role = $TargetRole; task_id = $TaskIdNum; task_json = $TaskJsonPath
+            session_id = $Entry.sessionId; appendix_hint = " -Appendix `"$appendix`"" }
+        Write-DeliveryNotice "[x] 复用投递失败（原会话探活为活但指针投递失败）——按 pointer 类失败纪律不自动新建，防原会话晚到消费+新会话重复处理。"
+        Write-DeliveryNotice $guidance
+        return @{ state = "pointer-failed"; sessionId = $Entry.sessionId; reentries = [int]$Entry.reentries; reentryMax = $ReentryMax; error = $spawn.text; notice = $guidance }
+    }
+    $reRead = Read-SessionAnchors -ArchivePath $ArchivePath
+    $reEntry = Get-SessionAnchorEntry -Anchors $reRead.data -TaskIdNum $TaskIdNum -RoleName $TargetRole
+    $newCount = if ($null -ne $reEntry) { [int]$reEntry.reentries } else { ([int]$Entry.reentries) + 1 }
+    Write-DeliveryNotice "[+] 重做指针已投回 $TargetRole 的原会话（sessionId: $($Entry.sessionId)，重入计数 $newCount/$ReentryMax）——原会话在原上下文内直接续修，无需重读文档。"
+    return @{ state = "reused"; sessionId = $Entry.sessionId; reentries = $newCount; reentryMax = $ReentryMax }
+}
+
+function Invoke-RejectDelivery {
+    # dsh reject delivery (single-point-session-reuse) -- THREE states (design
+    # 变更地图): reused (redo pointer back into the alive original session) /
+    # new-session (original dead-or-unknown -> auto fallback create + reason;
+    # no anchor -> CURRENT behavior, manual handoff) / capped (four-exit
+    # adjudication point, no delivery). HARD ORDER (design 发现的问题 ①): the
+    # route write has ALREADY succeeded in Invoke-Reject -- this branch is
+    # best-effort, never rolls back, never blocks. Verdict order (决策 #5 B):
+    # liveness FIRST (pre-delivery verdict), cap only on a LIVE anchor.
+    param([string]$ArchivePath, [int]$TaskIdNum, [string]$TargetRole, [string]$FromRole, [string]$ReasonText, [string]$RejectTrail, [string]$RequirementRel)
+
+    $taskJsonPath = Get-TaskJsonPath -ArchivePath $ArchivePath
+    $archiveRel = Get-RelativePath $ArchivePath
+
+    # (0) target must be a session role -- anything else keeps current behavior.
+    if ($script:RejectSessionRoles -notcontains $TargetRole) {
+        Write-DeliveryNotice "[i] 打回目标 '$TargetRole' 不在会话角色面（start-role 角色枚举），跳过自动送信——按现状手动交接。"
+        return @{ state = "skipped"; reason = "target role not a session role: $TargetRole" }
+    }
+
+    # (1) anchor resolution: NO anchor = current behavior (bridged runs anchor
+    # nothing on this sidecar -- reuse gate writes anchors only on non-bridge
+    # calls; R7 zero-impact relies on this identity).
+    $anchorRead = Read-SessionAnchors -ArchivePath $ArchivePath
+    $entry = Get-SessionAnchorEntry -Anchors $anchorRead.data -TaskIdNum $TaskIdNum -RoleName $TargetRole
+    if ($null -eq $entry) {
+        Write-DeliveryNotice "[i] 无会话锚点（task $TaskIdNum × $TargetRole）：原会话未经单点复用流程建立（或属桥接 run），按现状手动交接——start-role.cmd -Role $TargetRole -TaskId $TaskIdNum -TaskJson $taskJsonPath（dsh 下新会话将自动锚定，此后打回可自动投回）。"
+        return @{ state = "no-anchor"; reason = "no session anchor for task x role" }
+    }
+    $reentryMax = Get-EffectiveReentryMax -Anchors $anchorRead.data -TaskIdNum $TaskIdNum
+
+    # (2) liveness verdict -> dead/unknown safely degrades to a fresh session.
+    $live = Get-SessionLivenessProbe -SessionId $entry.sessionId -RepoRoot $repoRoot
+    if ($live.liveness -ne "alive") {
+        return (Invoke-RejectFallbackCreate -ArchivePath $ArchivePath -TaskIdNum $TaskIdNum -TargetRole $TargetRole -TaskJsonPath $taskJsonPath -Live $live)
+    }
+
+    # (3) alive but capped -> adjudication point (four exits, copyable
+    # commands; no delivery, no auto-new -- R8: 触顶=裁决点非硬停).
+    if (([int]$entry.reentries + 1) -gt $reentryMax) {
+        $refusal = Get-ReentryCapRefusal -Context @{
+            task_id = $TaskIdNum; role = $TargetRole; reentries = [int]$entry.reentries; reentry_max = $reentryMax
+            archive_rel = $archiveRel; task_json = $taskJsonPath; requirement_rel = $RequirementRel; reject_trail = $RejectTrail }
+        Write-DeliveryNotice ""
+        Write-DeliveryNotice $refusal
+        return @{ state = "capped"; sessionId = $entry.sessionId; reentries = [int]$entry.reentries; reentryMax = $reentryMax; notice = $refusal }
+    }
+
+    # (4) alive + under cap -> reuse delivery (appendix rides the carrier).
+    return (Invoke-RejectReusePush -ArchivePath $ArchivePath -TaskIdNum $TaskIdNum -TargetRole $TargetRole -FromRole $FromRole -ReasonText $ReasonText -TaskJsonPath $taskJsonPath -ArchiveRel $archiveRel -Entry $entry -ReentryMax $reentryMax)
+}
+
+function Invoke-RejectDeliveryTail {
+    # Reject's best-effort delivery tail (single-point-session-reuse). Returns
+    # the delivery result hashtable, or $null on non-dsh backends -- the JSON
+    # then stays byte-for-byte identical to the pre-feature shape (R6, no
+    # delivery key at all). dsh detection mirrors start-role's
+    # Resolve-RuntimeMode chain (RDD_RUNTIME=app wins, then DSH_WEB_URL).
+    param([string]$ArchivePath, [int]$TaskIdNum, [string]$ToRole, [string]$FromRole, [string]$ReasonText, $TaskRow)
+    $isDshDelivery = ($env:RDD_RUNTIME -ne "app") -and (-not [string]::IsNullOrWhiteSpace($env:DSH_WEB_URL))
+    if (-not $isDshDelivery) { return $null }
+    if (-not $script:SessionReuseLibLoaded) {
+        Write-DeliveryNotice "[!] session-reuse 公共库缺失（lib/session-reuse.ps1），跳过自动送信——路由已写好，按现状手动交接。"
+        return @{ state = "skipped"; reason = "session-reuse library missing" }
+    }
+    try {
+        return (Invoke-RejectDelivery -ArchivePath $ArchivePath -TaskIdNum $TaskIdNum -TargetRole $ToRole -FromRole $FromRole -ReasonText $ReasonText -RejectTrail ([string]$TaskRow.remark) -RequirementRel ([string]$TaskRow.requirement))
+    }
+    catch {
+        # best-effort tail: a delivery crash must never surface as a reject
+        # failure (the route write in the caller has already succeeded).
+        Write-DeliveryNotice "[!] 打回送信分支异常（$($_.Exception.Message)）——路由已写好，按现状手动交接。"
+        return @{ state = "error"; reason = [string]$_.Exception.Message }
+    }
+}
+
 function Invoke-Reject {
     param([string]$ArchivePath)
 
@@ -2173,17 +2362,168 @@ function Invoke-Reject {
     }
     Sync-TaskClaims -Tasks $data.tasks
 
+    # ROUTE WRITE FIRST (design hard order ①): the routing truth is persisted
+    # before any delivery attempt; everything below is best-effort and never
+    # rolls back or blocks this command.
     Write-TaskJson -ArchivePath $ArchivePath -Data $data
+
+    # --- dsh delivery branch (single-point-session-reuse) --------------------
+    # Non-dsh backends (CLI/Plus) keep byte-for-byte current behavior: no
+    # delivery key, no spawn (R6). The tail helper returns $null on non-dsh.
+    $delivery = Invoke-RejectDeliveryTail -ArchivePath $ArchivePath -TaskIdNum $TaskId -ToRole $To -FromRole $From -ReasonText $Reason -TaskRow $data.tasks[$taskIndex]
+
+    $resultData = @{
+        taskId       = $TaskId
+        currentOwners = @($To)
+        phase        = $data.tasks[$taskIndex].phase
+        rejectedBy   = $From
+        rejectedTo   = $To
+        remark       = $data.tasks[$taskIndex].remark
+    }
+    if ($null -ne $delivery) { $resultData.delivery = $delivery }
+
+    return @{
+        success = $true
+        data    = $resultData
+    }
+}
+
+# --- reentry (single-point-session-reuse) --------------------------------------
+
+function Get-ReentryAnchorRows {
+    # Anchor rows for the task's status view + exempt validation: one row per
+    # anchored role (role/sessionId/reentries/anchoredAt) + whether the task
+    # carries an explicit task-level reentryMax override.
+    param($Anchors, [int]$TaskIdNum)
+    $rows = @()
+    $hasExplicitMax = $false
+    $taskKey = "$TaskIdNum"
+    if ($Anchors.Contains($taskKey) -and $null -ne $Anchors[$taskKey] -and ($Anchors[$taskKey] -is [System.Collections.IDictionary])) {
+        $taskEntry = $Anchors[$taskKey]
+        if ($taskEntry.Contains("reentryMax") -and $null -ne $taskEntry["reentryMax"]) { $hasExplicitMax = $true }
+        if ($taskEntry.Contains("roles") -and $null -ne $taskEntry["roles"] -and ($taskEntry["roles"] -is [System.Collections.IDictionary])) {
+            foreach ($roleName in @($taskEntry["roles"].Keys)) {
+                $e = Get-SessionAnchorEntry -Anchors $Anchors -TaskIdNum $TaskIdNum -RoleName $roleName
+                if ($null -ne $e) { $rows += @{ role = $roleName; sessionId = $e.sessionId; reentries = [int]$e.reentries; anchoredAt = $e.anchoredAt } }
+            }
+        }
+    }
+    return @{ rows = $rows; hasExplicitMax = $hasExplicitMax }
+}
+
+function Invoke-ReentryRaiseAction {
+    # Adjudication exit ④ (raise-only numeric bump). Validations fail loud
+    # BEFORE any write; the sidecar reentryMax is the operative change, the
+    # decisions.jsonl append rides along (advisory at the caller).
+    param([string]$ArchivePath, [int]$TaskIdNum, $Anchors, [int]$CurrentMax, [int]$RaiseToNum, [string]$Verdict)
+    if ($RaiseToNum -le $CurrentMax) {
+        Write-ErrorResult "REENTRY_RAISE_ONLY" "raise-only: -RaiseTo $RaiseToNum must be strictly greater than the current effective max $CurrentMax (只增不减, R8)" 1
+    }
+    $null = Set-TaskReentryMax -Anchors $Anchors -TaskIdNum $TaskIdNum -Max $RaiseToNum
+    $write = Write-SessionAnchors -ArchivePath $ArchivePath -Data $Anchors
+    if (-not $write.ok) { Write-ErrorResult "ANCHORS_WRITE_FAILED" "session-anchors.json write failed: $($write.error)" 1 }
+    $ledger = Add-ReentryDecisionEntry -ArchivePath $ArchivePath -Action "raise" -TaskIdNum $TaskIdNum -DecisionText "reentry cap raised: $CurrentMax -> $RaiseToNum (task $TaskIdNum)" -ReasonText $Verdict -UserVerdict $Verdict -ReentryMaxAfter $RaiseToNum
+    return @{ action = "raise"; newMax = $RaiseToNum; ledger = $ledger }
+}
+
+function Invoke-ReentryExemptAction {
+    # Adjudication exit ③ (one-shot exemption): grant exactly ONE more reentry
+    # (reentryMax := max role reentries + 1); only valid AT the cap.
+    param([string]$ArchivePath, [int]$TaskIdNum, $Anchors, [int]$CurrentMax, $Rows, [string]$Verdict)
+    if ($Rows.Count -eq 0) {
+        Write-ErrorResult "REENTRY_EXEMPT_INVALID" "no session anchors for TaskId $TaskIdNum -- nothing to exempt (anchors appear after the first start-role dsh handoff)" 1
+    }
+    $maxReentries = 0
+    foreach ($r in $Rows) { if ([int]$r.reentries -gt $maxReentries) { $maxReentries = [int]$r.reentries } }
+    if (($maxReentries + 1) -le $CurrentMax) {
+        Write-ErrorResult "REENTRY_EXEMPT_NOT_CAPPED" "task $TaskIdNum is not capped (max role reentries $maxReentries, effective max $CurrentMax) -- exemption applies only at the adjudication point" 1
+    }
+    $newMax = $maxReentries + 1
+    $null = Set-TaskReentryMax -Anchors $Anchors -TaskIdNum $TaskIdNum -Max $newMax
+    $write = Write-SessionAnchors -ArchivePath $ArchivePath -Data $Anchors
+    if (-not $write.ok) { Write-ErrorResult "ANCHORS_WRITE_FAILED" "session-anchors.json write failed: $($write.error)" 1 }
+    $ledger = Add-ReentryDecisionEntry -ArchivePath $ArchivePath -Action "exempt" -TaskIdNum $TaskIdNum -DecisionText "reentry cap exempted for one more reentry: $CurrentMax -> $newMax (task $TaskIdNum)" -ReasonText $Verdict -UserVerdict $Verdict -ReentryMaxAfter $newMax
+    return @{ action = "exempt"; newMax = $newMax; ledger = $ledger }
+}
+
+function Get-ReentryStatusResult {
+    # Read-only status view for the reentry command (no action flags, no
+    # -UserVerdict needed): effective max + its source + one row per anchored
+    # role.
+    param([int]$TaskIdNum, [int]$CurrentMax, $RowsInfo)
+    return @{
+        success = $true
+        data    = @{
+            type       = "rdd-task-reentry-status"
+            taskId     = $TaskIdNum
+            reentryMax = $CurrentMax
+            maxSource  = $(if ($RowsInfo.hasExplicitMax) { "task-level override" } else { "engine default ($script:SessionReuseDefaultReentryMax)" })
+            roles      = $RowsInfo.rows
+        }
+    }
+}
+
+function Invoke-Reentry {
+    # Reentry-cap management subcommand (design decision #7/#10): status view
+    # (no action flags), raise-only -RaiseTo, or one-shot -Exempt; every
+    # mutation REQUIRES -UserVerdict and lands in the archive's decisions.jsonl
+    # (kind=reentry_verdict, decider=user) via the bridge-mirrored lock+append
+    # chain. The sidecar reentryMax is the operative change; the ledger append
+    # is advisory (a ledger failure warns, never fails the command).
+    param([string]$ArchivePath)
+
+    if (-not $script:SessionReuseLibLoaded) {
+        Write-ErrorResult "REUSE_LIB_MISSING" "lib/session-reuse.ps1 not found next to this script -- the reentry command requires the session-reuse library." 1
+    }
+
+    $data = Read-TaskJsonEditable -ArchivePath $ArchivePath
+    if ($null -eq $data) { Write-ErrorResult "TASK_JSON_NOT_FOUND" "task.json not found." 1 }
+    if ($TaskId -lt 1)   { Write-ErrorResult "MISSING_TASK_ID" "-TaskId is required" 1 }
+    $task = Find-TaskById -Tasks $data.tasks -Id $TaskId
+    if ($null -eq $task) { Write-ErrorResult "TASK_NOT_FOUND" "TaskId $TaskId not found" 1 }
+
+    $anchorRead = Read-SessionAnchors -ArchivePath $ArchivePath
+    $currentMax = Get-EffectiveReentryMax -Anchors $anchorRead.data -TaskIdNum $TaskId
+    $rowsInfo = Get-ReentryAnchorRows -Anchors $anchorRead.data -TaskIdNum $TaskId
+
+    # --- status view (read-only): no action flags, no -UserVerdict needed ---
+    if (-not $Exempt -and $RaiseTo -lt 1) {
+        return (Get-ReentryStatusResult -TaskIdNum $TaskId -CurrentMax $currentMax -RowsInfo $rowsInfo)
+    }
+
+    # --- mutation gate: verdict required, actions mutually exclusive ---------
+    if ([string]::IsNullOrWhiteSpace($UserVerdict)) {
+        Write-ErrorResult "MISSING_USER_VERDICT" "-UserVerdict is required for every reentry mutation (adjudication lands in decisions.jsonl, decider=user)" 1
+    }
+    if ($Exempt -and $RaiseTo -ge 1) {
+        Write-ErrorResult "REENTRY_ACTION_CONFLICT" "-Exempt and -RaiseTo are mutually exclusive (pick one adjudication exit)" 1
+    }
+
+    if ($RaiseTo -ge 1) {
+        $result2 = Invoke-ReentryRaiseAction -ArchivePath $ArchivePath -TaskIdNum $TaskId -Anchors $anchorRead.data -CurrentMax $currentMax -RaiseToNum $RaiseTo -Verdict $UserVerdict
+    }
+    else {
+        $result2 = Invoke-ReentryExemptAction -ArchivePath $ArchivePath -TaskIdNum $TaskId -Anchors $anchorRead.data -CurrentMax $currentMax -Rows $rowsInfo.rows -Verdict $UserVerdict
+    }
+
+    $ledgerEntry = $null
+    if ($result2.ledger -is [System.Collections.IDictionary] -and -not ($result2.ledger.Contains("failed") -and [bool]$result2.ledger["failed"])) {
+        $ledgerEntry = $result2.ledger["entry"]
+    }
+    else {
+        Write-Host "[!] 裁决入账失败（advisory）：$([string]$result2.ledger['error'])——配额变更已生效，账本缺此条记录" -ForegroundColor Yellow
+    }
 
     return @{
         success = $true
         data    = @{
-            taskId       = $TaskId
-            currentOwners = @($To)
-            phase        = $data.tasks[$taskIndex].phase
-            rejectedBy   = $From
-            rejectedTo   = $To
-            remark       = $data.tasks[$taskIndex].remark
+            type        = "rdd-task-reentry"
+            taskId      = $TaskId
+            action      = $result2.action
+            previousMax = $currentMax
+            reentryMax  = $result2.newMax
+            userVerdict = $UserVerdict
+            ledgerEntry = $ledgerEntry
         }
     }
 }
@@ -2529,6 +2869,10 @@ switch ($Command) {
     "reject" {
         $result = Invoke-Reject -ArchivePath $archivePath
         ConvertTo-PortableJson $result -Depth 6
+    }
+    "reentry" {
+        $result = Invoke-Reentry -ArchivePath $archivePath
+        ConvertTo-PortableJson $result -Depth 8
     }
     "complete" {
         $result = Invoke-Complete -ArchivePath $archivePath

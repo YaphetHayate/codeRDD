@@ -87,6 +87,17 @@ param(
     # -TaskBrief/-TaskSummary).
     [string]$Appendix = "",
 
+    # auto session-reuse opt-out (single-point-session-reuse): skip the dsh
+    # auto-reuse gate below and force the CURRENT fresh-session behavior — the
+    # designated escape hatch for the reentry-cap adjudication exit ② (换新会
+    # 承接) and for any shape where the caller has already adjudicated the
+    # fallback itself (rdd-flow reject's dead-anchor branch passes it). The
+    # ANCHOR WRITE on the fresh session still happens (the new session becomes
+    # the task×role anchor with a reset reentry count). Absent → the gate
+    # applies only under its full condition set; every non-gated call keeps
+    # byte-for-byte identical behavior (regression anchor).
+    [switch]$NoReuse,
+
     # PLANNER uniqueness guard (planner-uniqueness-callback): explicit user
     # override that skips ONLY the startup gate below — the session gets
     # created, but the orchestration right and callback re-pointing still
@@ -155,6 +166,7 @@ function Show-Usage {
   -GoalTreeRun / -GoalTreeNode / -GoalTreeWorker   goal-tree 派发三件套（引擎代传）
   -SessionLabel / -TaskSummary    dsh 会话标题 / 任务摘要（仅显示层）
   -ExistingSessionId / -Appendix  既有会话复用 / 重做附录（引擎代传）
+  -NoReuse         跳过自动会话复用门强制新建会话（重入触顶裁决出口② / 调用方已裁定回退时用）
   -NoLineage      dsh 会话建为侧栏顶层行（默认按需求根会话打包，见 transition-guide dsh 后端）
   -EmployeeId      Plus 后端员工 UUID（必填）
   -DshUrl / -PlusUrl   后端地址覆盖（缺省自动判后端：RDD_RUNTIME=app→Plus；DSH_WEB_URL→dsh；否则 CLI）
@@ -1308,6 +1320,18 @@ function Test-PlannerTakeoverBlocked {
 $root = Resolve-ProjectRoot
 $mode = Resolve-RuntimeMode
 
+# --- single-point session-reuse shared library (single-point-session-reuse) ---
+# Anchor sidecar CRUD / liveness probe mirror / reentry quota gate / cap
+# refusal text. Fail-soft load: a missing library disables ONLY the auto-reuse
+# gate and the anchor/tick writes (warned inline); every other behavior,
+# byte for byte, is untouched.
+$script:SessionReuseLibLoaded = $false
+$sessionReuseLibPath = Join-Path $PSScriptRoot "lib\session-reuse.ps1"
+if (Test-Path -LiteralPath $sessionReuseLibPath -PathType Leaf) {
+    . $sessionReuseLibPath
+    $script:SessionReuseLibLoaded = $true
+}
+
 # --- session-reuse backend gate (inplace-redo-session-reuse) -------------------
 # -ExistingSessionId names a dsh session to re-enter: only the dsh backend can
 # deliver by id (a CLI terminal window cannot be re-entered; Plus conversations
@@ -1418,6 +1442,64 @@ if ($mode -eq "dsh") {
     $pointerMessage = Build-PointerMessage
     $preset = "rdd-" + $Role.ToLower()
 
+    # --- auto session-reuse resolution gate (single-point-session-reuse) ------
+    # Full condition set (design decision #3): dsh backend (this branch) ∧ task
+    # scope (-TaskId >= 1 with a resolvable task.json; NoArchive intake /
+    # GoalTreeWorker excluded) ∧ no explicit -ExistingSessionId (the caller's
+    # own carrier — the gate never intervenes on it) ∧ no -GoalTreeRun bridge
+    # marker (bridge dispatches carry it ALWAYS, so the single-point and
+    # bridge anchor systems stay mutually invisible — R7 zero-impact) ∧ no
+    # -NoReuse (escape hatch) ∧ anchor alive ∧ under the reentry cap. A
+    # positive resolution falls into the EXPLICIT reuse branch below by
+    # setting $ExistingSessionId — ONE delivery branch, ONE failure semantics
+    # (自动门仅新增解析层). A dead/unknown anchor degrades to the normal create
+    # path (unknown is never a reuse verdict — conservative, decision #5).
+    if ($script:SessionReuseLibLoaded -and [string]::IsNullOrWhiteSpace($ExistingSessionId) -and -not $NoReuse -and
+        (Test-AnchorPlaneTaskScope -TaskIdNum $TaskId -GoalTreeRunMarker $GoalTreeRun -NoArchiveIntake:$NoArchive -GoalTreeWorkerMode:$GoalTreeWorker)) {
+        $autoTaskJson = Resolve-TaskJsonAbsolute
+        if (-not [string]::IsNullOrWhiteSpace($autoTaskJson)) {
+            $autoArchive = Split-Path -Parent $autoTaskJson
+            $anchorRead = Read-SessionAnchors -ArchivePath $autoArchive
+            $entry = Get-SessionAnchorEntry -Anchors $anchorRead.data -TaskIdNum $TaskId -RoleName $Role
+            if ($null -ne $entry) {
+                $reentryMax = Get-EffectiveReentryMax -Anchors $anchorRead.data -TaskIdNum $TaskId
+                # liveness FIRST (decision #5: dead/unknown is a pre-delivery
+                # verdict -> safe fallback to the create path; a dead anchor
+                # also BYPASSES the cap -- the budget guards a LIVE session's
+                # context, and the replacement session resets the count).
+                $live = Get-SessionLivenessProbe -SessionId $entry.sessionId -RepoRoot $root
+                if ($live.liveness -ne "alive") {
+                    Write-Host "[i] 会话复用跳过：task $TaskId × $Role 的锚点会话 $($entry.sessionId) 不可达（liveness=$($live.liveness)：$($live.reason)）——按现状新建会话，新会话将重新锚定并清零计数。" -ForegroundColor Cyan
+                }
+                elseif (([int]$entry.reentries + 1) -gt $reentryMax) {
+                    # cap adjudication point (four exits, copyable commands) —
+                    # no delivery, no silent new session (R8: 触顶=裁决点非硬停)
+                    $taskRow = $null
+                    try {
+                        $taskData = Get-Content -LiteralPath $autoTaskJson -Raw -Encoding UTF8 | ConvertFrom-Json
+                        if ($null -ne $taskData) { foreach ($t in @($taskData.tasks)) { if ([int]$t.id -eq $TaskId) { $taskRow = $t; break } } }
+                    } catch { $taskRow = $null }
+                    Write-Host ""
+                    Write-Host (Get-ReentryCapRefusal -Context @{
+                        task_id         = $TaskId
+                        role            = $Role
+                        reentries       = [int]$entry.reentries
+                        reentry_max     = $reentryMax
+                        archive_rel     = (Get-RelativePathFromRoot -AbsPath $autoArchive -RootPath $root)
+                        task_json       = $autoTaskJson
+                        requirement_rel = $(if ($null -ne $taskRow) { [string]$taskRow.requirement } else { "" })
+                        reject_trail    = $(if ($null -ne $taskRow -and $taskRow.remark) { [string]$taskRow.remark } else { "（task.json 无打回轨迹记录）" })
+                    }) -ForegroundColor Red
+                    exit 1
+                }
+                else {
+                    Write-Host "[i] 会话复用：task $TaskId × $Role 的锚点会话 $($entry.sessionId) 存活（重入 $($entry.reentries)/$reentryMax）——指针投回原会话，保留其完整上下文（-NoReuse 可强制新建）。" -ForegroundColor Cyan
+                    $ExistingSessionId = $entry.sessionId
+                }
+            }
+        }
+    }
+
     # --- reuse carrier (inplace-redo-session-reuse) ---------------------------
     # Re-delivery into an EXISTING session: no preset pre-check, no workspace,
     # no session.create, no badges/rename (the session already carries its
@@ -1456,6 +1538,26 @@ if ($mode -eq "dsh") {
         Write-Ok "已向角色 $Role 的既有会话投递指针（复用会话 sessionId: $ExistingSessionId）"
         Write-Host "[i] 指针消息: $pointerMessage" -ForegroundColor Cyan
         Write-Host "[i] 目标会话保留原上下文，目标角色已在原会话内继续工作，可点开查看进度" -ForegroundColor Cyan
+        # reentry accounting (single-point-session-reuse): one tick per
+        # SUCCESSFUL reuse delivery (投递失败不计数 — the failure paths above
+        # exit before reaching here). Scope mirrors the anchor-write scope:
+        # task-scoped single-point deliveries only (bridge dispatches carry
+        # -GoalTreeRun and never tick; the PM intake callback carries no
+        # -TaskId). Advisory: a persist failure warns, never blocks.
+        if ($script:SessionReuseLibLoaded -and (Test-AnchorPlaneTaskScope -TaskIdNum $TaskId -GoalTreeRunMarker $GoalTreeRun -NoArchiveIntake:$NoArchive -GoalTreeWorkerMode:$GoalTreeWorker)) {
+            $tickJson = Resolve-TaskJsonAbsolute
+            if (-not [string]::IsNullOrWhiteSpace($tickJson)) {
+                $tickArchive = Split-Path -Parent $tickJson
+                $tickRead = Read-SessionAnchors -ArchivePath $tickArchive
+                if ($null -ne (Get-SessionAnchorEntry -Anchors $tickRead.data -TaskIdNum $TaskId -RoleName $Role)) {
+                    $null = Add-ReentryTick -Anchors $tickRead.data -TaskIdNum $TaskId -RoleName $Role
+                    $tickWrite = Write-SessionAnchors -ArchivePath $tickArchive -Data $tickRead.data
+                    if (-not $tickWrite.ok) {
+                        Write-Host "[!] 重入计数落盘失败（advisory）：$($tickWrite.error)——投递已成功，上限软预算偏差 ±1 可接受" -ForegroundColor Yellow
+                    }
+                }
+            }
+        }
         exit 0
     }
 
@@ -1501,6 +1603,30 @@ if ($mode -eq "dsh") {
 
     Write-Step "检测到 dsh 运行时（$DshUrl），为角色 $Role 自动创建会话 ..."
     $result = Invoke-DshHandoff -Message $pointerMessage -Preset $preset
+
+    # anchor write (single-point-session-reuse): the freshly created session
+    # becomes the task×role anchor with a RESET reentry count (锚点在会话创建
+    # 成功时写入；prompt-failed carries a created session too — the pointer may
+    # be pasted manually into it later). Scope mirrors the auto-gate's task
+    # scope: bridge dispatches (-GoalTreeRun) / NoArchive intake /
+    # GoalTreeWorker never write single-point anchors — the two anchor systems
+    # stay mutually invisible (R7). -NoReuse still anchors (the new session IS
+    # the new anchor by contract). Advisory: a write failure warns and never
+    # blocks the handoff (anchor plane is non-routing display state).
+    if ($script:SessionReuseLibLoaded -and ($result.status -eq "done" -or $result.status -eq "prompt-failed") -and
+        (Test-AnchorPlaneTaskScope -TaskIdNum $TaskId -GoalTreeRunMarker $GoalTreeRun -NoArchiveIntake:$NoArchive -GoalTreeWorkerMode:$GoalTreeWorker)) {
+        $anchorJson = Resolve-TaskJsonAbsolute
+        if (-not [string]::IsNullOrWhiteSpace($anchorJson)) {
+            $anchorArchive = Split-Path -Parent $anchorJson
+            $anchorData = Read-SessionAnchors -ArchivePath $anchorArchive
+            $null = Set-SessionAnchorEntry -Anchors $anchorData.data -TaskIdNum $TaskId -RoleName $Role -SessionId ([string]$result.sessionId)
+            $anchorWrite = Write-SessionAnchors -ArchivePath $anchorArchive -Data $anchorData.data
+            if (-not $anchorWrite.ok) {
+                Write-Host "[!] 会话锚点写入失败（advisory）：$($anchorWrite.error)——交接不受影响，后续打回将回退手动交接" -ForegroundColor Yellow
+            }
+        }
+    }
+
     switch ($result.status) {
         "done" {
             Write-Ok "已在 dsh 内为 $Role 创建会话（preset: $preset, sessionId: $($result.sessionId)）"

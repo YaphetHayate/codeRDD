@@ -282,6 +282,36 @@ CTO/UX 完成设计归档后，先 `add-design` 再 `set-route`（收窄或汇�
 
 驳回记录的完整表格仍写在文档自身的 `## 驳回记录` 章节（见 `rejection-protocol.md`）。本命令只同步路由状态。
 
+**dsh 后端送信三态（single-point-session-reuse）**：路由写**先行**落盘，随后 best-effort 送信（失败不回滚不阻断，结果附在返回 JSON 的 `data.delivery`）：
+
+| 状态 | 触发条件 | 行为 |
+|------|---------|------|
+| `reused` | 原会话锚点存活且未触重入上限 | 重做指针（含打回理由 `-Appendix` 尾段）自动投回该角色处理本任务的**原会话**，重入计数 +1；原会话在原上下文内直接续作 |
+| `new-session` | 锚点探活为死/unknown | 自动回退 `start-role -NoReuse` 开新会话（新会话重新锚定、计数清零），输出明示回退原因 |
+| `capped` | 重入计数触顶（默认 3，任务级可覆盖） | 不投递不新建，输出**裁决点四出口**（升级用户 / `-NoReuse` 换新会话 / `-Exempt` 显式豁免 / `-RaiseTo` 提额），裁决经 `reentry` 子命令入决策账本 |
+| `no-anchor` | 无会话锚点（桥接 run / 原会话未经单点流程建立） | 现状行为：输出手动交接指引，不自动开新会话 |
+| `pointer-failed` | 探活为活但投递 RPC 失败 | **禁止自动新建**（防原会话晚到消费 + 新会话重复处理），输出手动二选一（重推原会话 / `-NoReuse` 换新） |
+
+- 会话锚点存于归档级边车 `<归档>/session-anchors.json`（`{"<taskId>": {"roles": {"<ROLE>": {"sessionId","reentries","anchoredAt"}}, "reentryMax": <int 可选>}}`），task.json 零改动；探活 unknown 一律按不可复用处理（保守降级）
+- 非 dsh 后端（CLI/Plus）reject 行为与现状完全一致：无送信、无 `delivery` 键
+- planner 桥接 run 不受影响：桥接派发的会话不写单点锚点（无锚点 = 现状行为）
+
+#### `reentry` — 重入上限管理（裁决入账）
+
+```powershell
+# 状态视图（只读，无需 -UserVerdict）
+& "$rdd\scripts\rdd-flow.cmd" -Command reentry -Archive ".rdd/changes/archive/<name>" -TaskId 1
+# 裁决出口④：提额（只增不减，必带用户裁决原文）
+& "$rdd\scripts\rdd-flow.cmd" -Command reentry -Archive <归档> -TaskId 1 -RaiseTo 5 -UserVerdict "<提额理由（用户裁决）>"
+# 裁决出口③：显式豁免（豁免恰好一次重入）
+& "$rdd\scripts\rdd-flow.cmd" -Command reentry -Archive <归档> -TaskId 1 -Exempt -UserVerdict "<豁免理由（用户裁决）>"
+```
+
+- 上限默认 3（引擎硬编码），任务级 `reentryMax` 覆盖存于 session-anchors.json
+- `-RaiseTo` 严格大于当前生效上限，否则 `REENTRY_RAISE_ONLY` 拒绝（只增不减）
+- `-Exempt` 仅在触顶时可用的单次豁免（上限提到 max 角色重入数 + 1），未触顶时 `REENTRY_EXEMPT_NOT_CAPPED` 拒绝
+- 任何变更必带 `-UserVerdict`；裁决原文入归档 `decisions.jsonl`（kind=`reentry_verdict`，decider=`user`，与 checkpoint/auto/ruling 条目 kind 区分）
+
 ### 校验类
 
 #### `check` — 校验 task.json
@@ -363,6 +393,7 @@ task.json 此前只有 `lifecycle`（生命周期）与 `currentOwners`（路由
 | **QA** | 验证通过闭环 | `complete` |
 | **QA** | 发现问题回退 | `reopen -To DEV`（桥接 run 进行中改走 `delivery-bridge -Command rollback`，见 reopen 条目注记） |
 | **任意角色** | 发起驳回 | `reject -From <自己> -To <被驳回方> -Reason` |
+| **任意角色（dsh）** | 查看重入预算 / 触顶裁决提额或豁免 | `reentry -TaskId <n>`（状态视图）/ `reentry -TaskId <n> -RaiseTo <N> -UserVerdict "<裁决>"` / `reentry -TaskId <n> -Exempt -UserVerdict "<裁决>"` |
 | **PLANNER** | 需求审查门驳回回流（建树前，AUDITOR 未部署 / 用户裁定跳过时的主路径） | `reject -From PLANNER -To PM -Reason`（见 `rejection-protocol.md`「PLANNER 发起的驳回」） |
 | **AUDITOR** | 需求审视驳回回流（建树前，AUDITOR 已部署时的**主路径**，事前把关角色） | `reject -From AUDITOR -To PM -Reason`（见 `rejection-protocol.md`「AUDITOR 发起的驳回」；`-From AUDITOR` 是自由字符串，非五角色枚举——AUDITOR 非路由角色） |
 | **EVAL/PSE** | 只读了解状态 | `show` |

@@ -146,12 +146,13 @@
                                           ".rdd/tests/role-handoff/run-tests.ps1",
                                           ".rdd/tests/role-handoff/test-preset-crlf.mjs",
                                           "rdd-engine/tests/test-multi-owner-routing.ps1",
-                                          "rdd-engine/tests/test-multi-owner-routing-qa.ps1"
+                                          "rdd-engine/tests/test-multi-owner-routing-qa.ps1",
+                                          "rdd-engine/tests/test-session-reuse.ps1"
                                       ],
-                         "activeCount":  53,
+                         "activeCount":  61,
                          "deprecatedCount":  0,
-                         "lastUpdated":  "2026-10-10",
-                         "lastChange":  "2026-10-10-planner-intake-callback"
+                         "lastUpdated":  "2026-10-20",
+                         "lastChange":  "2026-10-20-single-point-session-reuse"
                      },
                      {
                          "feature":  "session-badges",

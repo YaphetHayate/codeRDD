@@ -1,4 +1,4 @@
-﻿{
+{
   "feature": "role-handoff",
   "status": "active",
   "relatedCode": [
@@ -777,6 +777,150 @@
         "回投载波：start-role -Role PLANNER -ExistingSessionId <原会话> -TaskJson 复用 DryRun——断言跳过 create 四步且 payload 直投「请以规划者（PLANNER）身份接管…promulgate」接管指针"
       ],
       "expected": "PM 立项完成不再新开规划者：接管指针 in-place 投回发起分诊的原规划者会话（三断言全过）；无 DSH_SESSION_ID / 非 dsh 后端时消息形态字节不变"
+    },
+    {
+      "id": "TC-145",
+      "title": "dsh 打回自动投回 DEV 原会话：理由+任务锚附录、零新建、路由先行、stderr 叙事",
+      "type": "positive",
+      "priority": "P0",
+      "acceptance": "SR-AC-1",
+      "codeRef": "rdd-engine/tests/test-session-reuse.ps1",
+      "sourceChange": "2026-10-20-single-point-session-reuse",
+      "status": "active",
+      "crossFeature": [],
+      "precondition": "stub dsh 端点（liveness + /api 信封载波）；夹具归档 DEV 锚点存活（create 路径写入 reentries=0）；Invoke-Flow 分流捕获（stdout=JSON、stderr=送信叙事，tip QA-c3de）",
+      "steps": [
+        "start-role -Role DEV -TaskId 1 -TaskJson <夹具> 建 DEV 会话（断言锚点写入 reentries=0）",
+        "rdd-flow reject -From QA -To DEV -Reason <打回理由>",
+        "断言 JSON delivery / stub 调用日志 / session-anchors.json / task.json / stderr 叙事"
+      ],
+      "expected": "delivery.state=reused 且 sessionId=锚点 sid、reentries=1；全程零 session.create（无冷启动）；恰一次新 prompt 且载荷含打回理由+【打回重做】+claim 任务锚；task.json 路由先行落库（owners=[DEV]+remark 打回轨迹）；.bak 轮换存在；叙事在 stderr、stdout 纯 JSON"
+    },
+    {
+      "id": "TC-150",
+      "title": "二次正向交接投回第一轮验收原会话：auto gate 同 task×role 存活复用",
+      "type": "positive",
+      "priority": "P0",
+      "acceptance": "SR-AC-2",
+      "codeRef": "rdd-engine/tests/test-session-reuse.ps1",
+      "sourceChange": "2026-10-20-single-point-session-reuse",
+      "status": "active",
+      "crossFeature": [],
+      "precondition": "stub dsh 端点；同任务 QA 锚点已建且存活（reentries=0，默认上限 3）",
+      "steps": [
+        "start-role -Role QA -TaskId 1 首派（建会话+锚点）",
+        "再次 start-role -Role QA -TaskId 1（无 -ExistingSessionId、无 -NoReuse）",
+        "断言 stub 调用计数、prompt 目标、sidecar 计数"
+      ],
+      "expected": "auto gate 命中（输出含「会话复用」）；零 session.create（QA 全程单会话）；prompt 恰 +1 且投回原 sid；reentries tick 至 1——dev/qa 各只占一个会话的复用语义成立"
+    },
+    {
+      "id": "TC-155",
+      "title": "重入触顶=裁决点非硬停：start-role 拒投四出口 + reject capped 路由先行",
+      "type": "boundary",
+      "priority": "P0",
+      "acceptance": "SR-AC-3",
+      "codeRef": "rdd-engine/tests/test-session-reuse.ps1",
+      "sourceChange": "2026-10-20-single-point-session-reuse",
+      "status": "active",
+      "crossFeature": [],
+      "precondition": "夹具 QA 锚点 reentries=3（默认上限）；stub 端点存活判定可用",
+      "steps": [
+        "start-role -Role QA -TaskId 1 再派（触顶态）",
+        "rdd-flow reject -From PM -To QA（同触顶态）",
+        "断言退出码、四出口文案、stub 调用计数、task.json"
+      ],
+      "expected": "start-role exit 1 且 REENTRY_CAP_EXCEEDED + 四出口可复制命令（升级/-NoReuse/-Exempt/-RaiseTo）、零 create 零 prompt；reject delivery.state=capped 且 task.json 路由已落库（触顶不硬停路由，送信 best-effort）；裁决文本在 stderr 可见"
+    },
+    {
+      "id": "TC-160",
+      "title": "reentry 裁决子命令契约：exempt/raise/status 全矩阵 + 账本 D 序列 + 锁零残留",
+      "type": "boundary",
+      "priority": "P0",
+      "acceptance": "SR-AC-3",
+      "codeRef": "rdd-engine/tests/test-session-reuse.ps1",
+      "sourceChange": "2026-10-20-single-point-session-reuse",
+      "status": "active",
+      "crossFeature": [],
+      "precondition": "触顶夹具（QA reentries=3/max=3）+ 未触顶夹具 + 无锚夹具各一",
+      "steps": [
+        "非法组：缺 -UserVerdict / -Exempt+-RaiseTo 互斥 / -RaiseTo≤当前 / 未触顶 exempt / 无锚 exempt",
+        "有效组：exempt → newMax=4；豁免后再派复用恢复；raise 至 6",
+        "status 只读视图 + decisions.jsonl 序列 + .decisions.lock 残留检查"
+      ],
+      "expected": "错误码精确（MISSING_USER_VERDICT/REENTRY_ACTION_CONFLICT/REENTRY_RAISE_ONLY/REENTRY_EXEMPT_NOT_CAPPED/REENTRY_EXEMPT_INVALID）且零写入；有效裁决 kind=reentry_verdict、decider=user、entry_id D1/D2 续号、reentryMax 落 sidecar（task-level override）；豁免后复用恢复（reentries 3→4）；status 无需 verdict；锁文件零残留"
+    },
+    {
+      "id": "TC-165",
+      "title": "原会话不可用不阻断：死锚/无锚/unknown 三态回退（新建重锚清零 / 现状手动）",
+      "type": "negative",
+      "priority": "P0",
+      "acceptance": "SR-AC-4",
+      "codeRef": "rdd-engine/tests/test-session-reuse.ps1",
+      "sourceChange": "2026-10-20-single-point-session-reuse",
+      "status": "active",
+      "crossFeature": [],
+      "precondition": "四组夹具：死锚（sid 不在存活集）/ 无 sidecar / unknown 锚（stub 注入 liveness=unknown）",
+      "steps": [
+        "死锚：start-role 再派 + reject 各一次",
+        "无锚：reject 一次",
+        "unknown：start-role 再派一次"
+      ],
+      "expected": "死锚→回退新建（exit 0、create +1、新 sid 重锚 reentries=0、提示含「不可达」），reject→delivery.state=new-session 且 reason 含 dead；无锚→delivery.state=no-anchor 且零后端接触（现状手动交接）；unknown→永不作复用判定（保守），回退新建并重锚"
+    },
+    {
+      "id": "TC-170",
+      "title": "非 dsh 后端零回归：CLI/Plus reject 零 delivery 键（字节级现状形状）",
+      "type": "boundary",
+      "priority": "P0",
+      "acceptance": "SR-AC-5",
+      "codeRef": "rdd-engine/tests/test-session-reuse.ps1",
+      "sourceChange": "2026-10-20-single-point-session-reuse",
+      "status": "active",
+      "crossFeature": [],
+      "precondition": "CLI 态：清除 DSH_WEB_URL 与 RDD_RUNTIME；Plus 态：RDD_RUNTIME=app（判据链压过 DSH_WEB_URL）；夹具归档存在",
+      "steps": [
+        "CLI 态 rdd-flow reject",
+        "Plus 态 rdd-flow reject",
+        "CLI 态 start-role -ExistingSessionId sess-x"
+      ],
+      "expected": "两个后端 reject 均 success=true 且 JSON data 无 delivery 键（路由行为与现状逐字节一致，不 spawn）；CLI -ExistingSessionId 仍 exit 非 0 + SESSION_REUSE_UNSUPPORTED（既有守卫原样）"
+    },
+    {
+      "id": "TC-175",
+      "title": "桥接 run 互不可见（R7）：marker 抑制门与锚写、对照组双向隔离、bridge 零 dot-source",
+      "type": "boundary",
+      "priority": "P0",
+      "acceptance": "SR-AC-6",
+      "codeRef": "rdd-engine/tests/test-session-reuse.ps1",
+      "sourceChange": "2026-10-20-single-point-session-reuse",
+      "status": "active",
+      "crossFeature": ["delivery-bridge"],
+      "precondition": "夹具 A 预置 DEV 锚点（存活）；夹具 B 无 sidecar；dsh 后端（stub）",
+      "steps": [
+        "夹具 A：-GoalTreeRun/-GoalTreeNode 标记 DryRun → 对照无标记 DryRun",
+        "夹具 B：标记真实派发 → 对照无标记真实派发",
+        "静态断言 delivery-bridge.ps1 源与 Test-AnchorPlaneTaskScope 单源"
+      ],
+      "expected": "标记抑制 auto gate（DryRun 无「复用会话」、真实派发 create 照常但边车不写）；无标记对照组 gate 正常触发、锚点照常写入（双向隔离证明）；delivery-bridge.ps1 零 dot-source lib/session-reuse.ps1（文档化不变量）；Test-AnchorPlaneTaskScope 全仓单一定义、start-role 三调用点改调（2026-10-20 质量驳回 #6 修复的回归锚）"
+    },
+    {
+      "id": "TC-180",
+      "title": "投递失败不计数 + pointer 类禁自动新建 + 边车损坏 fail-soft 降级",
+      "type": "exception",
+      "priority": "P1",
+      "acceptance": "SR-EDGE-1",
+      "codeRef": "rdd-engine/tests/test-session-reuse.ps1",
+      "sourceChange": "2026-10-20-single-point-session-reuse",
+      "status": "active",
+      "crossFeature": [],
+      "precondition": "夹具 A DEV 锚点存活 + stub 注入 session.prompt 业务失败；夹具 B 垃圾主文件无 bak；夹具 C 垃圾主文件+有效 bak（sess-bak-9 reentries=2）",
+      "steps": [
+        "夹具 A：reject → 断言 delivery/调用日志/sidecar/stderr",
+        "夹具 B：reject → 断言 state 与退出码",
+        "夹具 C：reject → 断言复用目标与计数"
+      ],
+      "expected": "pointer-failed（路由已落库、success=true）+ 零 session.create（防原会话晚到消费+新会话重复处理）+ reentries 不变 + stderr 手动二选一指引；垃圾主文件无 bak→no-anchor fail-soft（exit 0 不崩）；有 bak→按 bak 锚复用并续计（reentries 2→3）——advisory 边车永不阻断路由"
     }
   ]
 }
