@@ -17,6 +17,10 @@ node_modules/
 # no longer a shared git-tracked knowledge base)
 .rdd/tips/
 
+# dsh session-lineage registry (machine-local: sidebar requirement-root session
+# ids per archive, written/read by start-role.ps1 dsh branch only)
+.rdd/lineage.json
+
 # rdd labs: experimental sandpads, machine-local (regenerate per experiment)
 .rdd/labs/
 

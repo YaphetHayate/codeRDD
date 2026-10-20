@@ -87,7 +87,7 @@ $rdd = $null; $t = $null; try { $t = git rev-parse --show-toplevel } catch { }; 
 
 #### dsh 后端（`DSH_WEB_URL` 非空）
 
-脚本 **不开外部窗口，也不需要 `-EmployeeId`**，而是复用 dsh 现有 `/api` 载波四连发：`agentPreset.list` 预检 preset 存在性 → `workspace.create {path}` resolve-or-create 项目 workspace（realpath 规范化，幂等）→ `session.create {workspaceId, agentPreset: rdd-<角色>, parentSessionId?}` 创建会话并入账 workspace（session-list-lineage：planner 会话内派发时携带 `DSH_SESSION_ID` 作血统父，GUI 侧栏把新会话折叠进发起会话的打包组；无该环境变量则省略键）→ `session.prompt` 发送指针消息（B2 语义）。preset 按命名约定 `rdd-<角色小写>` 绑定，miss 时报错并列出可用 preset。新会话直接出现在 Web GUI 侧栏的项目 workspace 文件夹内（cwd-only 创建不进任何 workspace 账，只会落入侧栏底部的 Ungrouped 区）；指针消息被接受即自动驱动目标角色跑完整个 turn——全程无手动建会话/选 preset 操作。
+脚本 **不开外部窗口，也不需要 `-EmployeeId`**，而是复用 dsh 现有 `/api` 载波四连发：`agentPreset.list` 预检 preset 存在性 → `workspace.create {path}` resolve-or-create 项目 workspace（realpath 规范化，幂等）→ `session.create {workspaceId, agentPreset: rdd-<角色>, parentSessionId?}` 创建会话并入账 workspace（session-lineage-requirement-root：**按需求嵌套**——归档锚定的交接以 `.rdd/lineage.json` 登记的**需求根会话**为血统父，首次交接把发起会话（`DSH_SESSION_ID`）登记为根，此后同需求的全部角色会话在侧栏折叠为**一个**打包组，交接链再长也只有一层；未锚定形态（NoArchive 立项 / 通用树 worker / PLANNER 续跑 / 无归档可解析）沿用旧语义以发起会话为父；`-NoLineage` 显式建为顶层行；注册表读写失败降级旧语义 + 警告，不阻断交接）→ `session.prompt` 发送指针消息（B2 语义）。preset 按命名约定 `rdd-<角色小写>` 绑定，miss 时报错并列出可用 preset。新会话直接出现在 Web GUI 侧栏的项目 workspace 文件夹内（cwd-only 创建不进任何 workspace 账，只会落入侧栏底部的 Ungrouped 区）；指针消息被接受即自动驱动目标角色跑完整个 turn——全程无手动建会话/选 preset 操作。
 
 失败回退：业务错误 → 报错退出（含服务端错误码）；dsh 不可达（服务未启动/超时/403）→ 报错 + 打印人工指引（侧栏手动建会话选 preset + 指针消息全文）；create 成功但 prompt 失败 → 报错 + 打印指针消息，可点开侧栏已有会话手动粘贴。**不降级 CLI 开窗**（Web GUI 用户面前开本地终端窗无意义）。
 
@@ -136,7 +136,7 @@ $rdd = $null; $t = $null; try { $t = git rev-parse --show-toplevel } catch { }; 
 脚本行为按后端分支：
 - **CLI 后端**（判据链均未命中）：开新 Windows Terminal 窗口（检测不到 `wt.exe` 时降级为 PowerShell 窗口），`opencode --prompt` 预填 `/rdd-<角色> ...` 入口消息，用户在新窗口按回车发送即进入角色
 - **Plus 后端**（`RDD_RUNTIME=app`）：不开窗口，POST 到 Plus `/api/rdd/handoff`，Plus 创建对话并自动发送指针消息驱动目标角色（见入口 B2）；目标员工忙碌时服务端排队
-- **dsh 后端**（`DSH_WEB_URL` 非空）：不开窗口，经 dsh `/api` 载波 `workspace.create` + `session.create {workspaceId, parentSessionId?}`（绑定 `rdd-<角色>` preset 并入账；planner 会话内派发时带血统父并入侧栏打包组）+ `session.prompt`（指针消息，见入口 B2）自动创建会话并开工；新会话直接出现在 Web GUI 侧栏的项目 workspace 文件夹内
+- **dsh 后端**（`DSH_WEB_URL` 非空）：不开窗口，经 dsh `/api` 载波 `workspace.create` + `session.create {workspaceId, parentSessionId?}`（绑定 `rdd-<角色>` preset 并入账；归档锚定交接带**需求根会话**血统父并入侧栏按需求打包组，未锚定形态以发起会话为父，`-NoLineage` 建顶层行）+ `session.prompt`（指针消息，见入口 B2）自动创建会话并开工；新会话直接出现在 Web GUI 侧栏的项目 workspace 文件夹内
 
 脚本参数模式（各后端共用）：
 - **TaskId 模式**（推荐）：`-TaskId <n>`，CLI 后端预填 `/rdd-<角色> TaskId=<n> task=<task.json绝对路径>`；Plus/dsh 后端据此定位归档生成指针消息

@@ -24,7 +24,7 @@
 
 [CmdletBinding()]
 param(
-    [ValidateSet("start", "graft", "prune", "redo", "settle", "conclude", "round-start", "round-end", "status", "resume", "deps", "dispatch", "budget")]
+    [ValidateSet("start", "graft", "prune", "redo", "reset", "settle", "conclude", "round-start", "round-end", "status", "resume", "deps", "dispatch", "budget")]
     [string]$Command = "status",
 
     [string]$RunId,
@@ -103,7 +103,29 @@ param(
     [int]$SetNodeWidth = 0,
     [ValidateRange(0, 10000)]
     [int]$SetMaxNodes = 0,
+    [ValidateRange(0, 1000)]
+    [int]$SetWakeMax = 0,
     [string]$UserVerdict,
+
+    # start (wake-model shape — goal-tree-wake-model): 'wake' builds the run in
+    # the new shape discipline — sub/accept container nodes (unclaimable WBS
+    # layer, planner-owned grafts) with engine-materialized role slots beneath
+    # them, redo/reset lifecycle instead of rebuild-on-rollback, per-slot wake
+    # quotas, and WBS-layer-only dependency edges. Default 'legacy' keeps the
+    # historical behavior byte-identical (regression anchor); the layering and
+    # dep gates below fire only when manifest.shape = 'wake'.
+    [ValidateSet("legacy", "wake")]
+    [string]$Shape = "legacy",
+
+    # start / budget: default per-duty-segment wake quota for role slots
+    # (wake-model). Graft payloads may override per node; 0 = engine default (3).
+    [ValidateRange(0, 1000)]
+    [int]$WakeMax = 0,
+
+    # redo / reset (wake-model): switch the node onto a NEW duty segment —
+    # quota accounting restarts for the segment (the per-duty budget the
+    # design mandates), history stays in the ledger. Empty = keep current duty.
+    [string]$Duty,
 
     # start (coverage gates, task-dispatch-guide R1/R4)
     [string]$DomainJson,
@@ -642,6 +664,7 @@ function Read-ManifestEditable {
             max_rounds = [int]$m.budget.max_rounds
             node_width = [int]$m.budget.node_width
             max_nodes  = [int]$m.budget.max_nodes
+            wake_max   = if ((Test-PropPresent $m.budget 'wake_max') -and $null -ne $m.budget.wake_max) { [int]$m.budget.wake_max } else { 3 }
         }
         ref_roots      = @(Convert-ToSafeArray $m.ref_roots)
         state          = [string]$m.state
@@ -650,6 +673,7 @@ function Read-ManifestEditable {
         domain         = $domain
         gates          = $gates
         coverage_tolerance_s = if ($null -ne $m.coverage_tolerance_s) { [int]$m.coverage_tolerance_s } else { 0 }
+        shape          = if ((Test-PropPresent $m 'shape') -and $m.shape) { [string]$m.shape } else { "legacy" }
     }
 }
 
@@ -692,6 +716,9 @@ function Convert-NodeToHashtable {
         pruned_reason   = if ($Node.pruned_reason) { [string]$Node.pruned_reason } else { $null }
         last_verdict    = if ($Node.last_verdict) { [string]$Node.last_verdict } else { $null }
         last_confidence = if ($null -ne $Node.last_confidence) { [double]$Node.last_confidence } else { $null }
+        wake_count      = if ($null -ne $Node.wake_count) { [int]$Node.wake_count } else { 0 }
+        wake_max        = if ($null -ne $Node.wake_max) { [int]$Node.wake_max } else { $null }
+        duty            = if ($Node.duty) { [string]$Node.duty } else { $null }
         ledger_refs     = @(Convert-ToSafeArray $Node.ledger_refs)
         note            = if ($Node.note) { [string]$Node.note } else { $null }
         children        = @(Convert-ToSafeArray $Node.children)
@@ -1041,12 +1068,27 @@ function Test-GoalDepExclusivity {
 
 function Get-NodeBlockedDeps {
     # returns @{ blocked = @(unsatisfied target ids); via_prune = @(satisfied-by-prune target ids) }
+    # satisfaction = every target status in {done, pruned}; pruned satisfies with an explicit warning
+    # wake-model fold-in (goal-tree-wake-model §3.3): a slot inherits its PARENT
+    # container's dep gate; a container dep target is satisfied iff its subtree is
+    # terminal. Legacy runs (no containers) are unaffected.
     param($Tree, $Node)
     $blocked = @()
     $viaPrune = @()
-    foreach ($target in @(ConvertTo-NodeIdList $Node.depends_on)) {
+    $depSources = @(ConvertTo-NodeIdList $Node.depends_on)
+    if ($Node.parent) {
+        $p = Find-Node $Tree ([string]$Node.parent)
+        if ($null -ne $p -and @('sub', 'accept') -contains [string]$p.type) {
+            $depSources = @($depSources + @(ConvertTo-NodeIdList $p.depends_on) | Select-Object -Unique)
+        }
+    }
+    foreach ($target in $depSources) {
         $tn = Find-Node $Tree $target
         if ($null -eq $tn) { $blocked += $target; continue }
+        if (@('sub', 'accept') -contains [string]$tn.type) {
+            if (Test-SubtreeTerminal $Tree $tn) { continue }
+            $blocked += $target; continue
+        }
         if ($tn.status -eq 'done') { continue }
         if ($tn.status -eq 'pruned') { $viaPrune += $target; continue }
         $blocked += $target
@@ -1141,9 +1183,30 @@ function Get-TreeCensus {
     param($Tree)
     $census = @{ pending = @(); claimed = @(); reported = @(); done = @(); pruned = @() }
     foreach ($n in $Tree.nodes) {
+        # structure is not work (goal-tree-wake-model §3.1): the goal root and
+        # sub/accept containers never enter the work buckets — they stay
+        # status=pending forever by design, and counting them would make
+        # space_exhausted unreachable in wake-shape (and goal-root) runs.
+        if (@('goal', 'sub', 'accept') -contains [string]$n.type) { continue }
         if ($census.ContainsKey($n.status)) { $census[$n.status] += $n.id }
     }
     return $census
+}
+
+function Test-SubtreeTerminal {
+    # 容器终态判定（goal-tree-wake-model §3.4）：容器自身永 pending，其终态
+    # = 全部后代进入 done/pruned；递归穿透（嵌套容器同理）。非容器节点按
+    # 自身状态判定。
+    param($Tree, $Node, $NodeById = $null)
+    if (@('sub', 'accept') -contains [string]$Node.type) {
+        foreach ($cid in @($Node.children)) {
+            $c = if ($NodeById) { $NodeById[[string]$cid] } else { Find-Node $Tree ([string]$cid) }
+            if ($null -eq $c) { continue }
+            if (-not (Test-SubtreeTerminal $Tree $c $NodeById)) { return $false }
+        }
+        return $true
+    }
+    return @('done', 'pruned') -contains [string]$Node.status
 }
 
 function Get-NodeDescendants {
@@ -1167,7 +1230,8 @@ function Get-NodeDescendants {
 }
 
 function Render-TreeOutline {
-    param($Tree)
+    param($Tree, $Manifest)
+    $defWakeMax = if ($null -ne $Manifest -and (Test-PropPresent $Manifest 'budget') -and $null -ne $Manifest.budget -and (Test-PropPresent $Manifest.budget 'wake_max') -and $null -ne $Manifest.budget.wake_max) { [int]$Manifest.budget.wake_max } else { 3 }
     $nodeById = @{}
     $childrenOf = @{}
     foreach ($n in $Tree.nodes) {
@@ -1191,7 +1255,13 @@ function Render-TreeOutline {
             $stack = @($stack | Select-Object -Skip 1)
             $n = $nodeById[$cur.id]
             $mark = if ($blockedOf.ContainsKey($n.id)) { " ⏸[$($blockedOf[$n.id])]" } else { "" }
-            $lines += (("  " * $cur.depth) + "- $($n.id) [$($n.status)]$mark $($n.title)")
+            # wake-model markers (goal-tree-wake-model §3.4/§4): containers render
+            # as {sub}/{accept} structure rows; work slots carry the wake badge
+            # [status k/K] when a quota is stamped on the node.
+            $typeMark = if (@('sub', 'accept') -contains [string]$n.type) { "{$($n.type)} " } else { "" }
+            $effWakeMax = if ($null -ne $n.wake_max) { [int]$n.wake_max } else { $defWakeMax }
+            $wakeBadge = if (([string]$n.type -ne 'goal') -and $effWakeMax -gt 0) { " $([int]$n.wake_count)/$effWakeMax" } else { "" }
+            $lines += (("  " * $cur.depth) + "- $($n.id) $($typeMark)[$($n.status)$wakeBadge]$mark $($n.title)")
             $kids = @(Convert-ToSafeArray $childrenOf[$cur.id])
             if ($kids.Count -eq 0) { continue }
             [array]::Reverse($kids)
@@ -1272,7 +1342,7 @@ function Write-RoundSnapshot {
     $lines += "## 树形结构"
     $lines += ""
     $lines += '```'
-    $lines += (Render-TreeOutline $Tree)
+    $lines += (Render-TreeOutline $Tree $Manifest)
     $lines += '```'
     $lines += ""
     $depSection = ConvertTo-DependencySectionText $Tree
@@ -1359,7 +1429,7 @@ function Write-FinalReport {
     $lines += "## 最终树形结构"
     $lines += ""
     $lines += '```'
-    $lines += (Render-TreeOutline $Tree)
+    $lines += (Render-TreeOutline $Tree $Manifest)
     $lines += '```'
     $lines += ""
     $depSection = ConvertTo-DependencySectionText $Tree
@@ -1496,7 +1566,7 @@ function Invoke-Start {
         goal           = $Goal
         created_at     = $now
         created_by     = if ([string]::IsNullOrWhiteSpace($CreatedBy)) { "unknown" } else { $CreatedBy }
-        budget         = @{ max_rounds = $MaxRounds; node_width = $NodeWidth; max_nodes = $MaxNodes }
+        budget         = @{ max_rounds = $MaxRounds; node_width = $NodeWidth; max_nodes = $MaxNodes; wake_max = $(if ($WakeMax -gt 0) { $WakeMax } else { 3 }) }
         ref_roots      = $roots
         state          = "running"
         concluded      = $null
@@ -1504,6 +1574,7 @@ function Invoke-Start {
         domain         = $domain
         gates          = if ($GateMode) { @{ r1_settle = $GateMode; r4_conclude = $GateMode } } else { $null }
         coverage_tolerance_s = if ($CoverageToleranceS -gt 0) { $CoverageToleranceS } else { 0 }
+        shape          = $Shape
     }
 
     $tree = [ordered]@{
@@ -1534,6 +1605,9 @@ function Invoke-Start {
                 pruned_reason   = $null
                 last_verdict    = $null
                 last_confidence = $null
+                wake_count      = 0
+                wake_max        = $null
+                duty            = $null
                 ledger_refs     = @()
                 note            = $null
                 children        = @()
@@ -1673,6 +1747,69 @@ function Invoke-Graft {
         if ($null -eq $parentNode) { Write-ErrorResult "NODE_NOT_FOUND" "Parent node not found: $Parent" 2 }
         if ($parentNode.status -eq "pruned") { Write-ErrorResult "PARENT_PRUNED" "Parent $Parent is pruned; grafting onto a pruned subtree is not allowed" 1 }
 
+        # CLI-level defaults (per-task depends_on / ref win when present)
+        $cliDeps = @(ConvertTo-NodeIdList $DependsOn)
+        $cliRef = if ([string]::IsNullOrWhiteSpace($Ref)) { $null } else { $Ref.Trim() }
+
+        # --- wake-model shape layering (goal-tree-wake-model §3.2; fires only when
+        #     manifest.shape = 'wake'). The tree is a static WBS: containers
+        #     (type=sub/accept) are the planner-owned WBS layer, role slots hang
+        #     off containers and are engine-materialized — the planner grafts
+        #     containers only, the bridge materializes slots. A pm slot is the one
+        #     slot allowed at the goal root (the 分解者 worker of a bridge run).
+        #     Dependency edges live on the WBS layer: dep targets must be
+        #     containers. Legacy runs (shape absent / 'legacy') keep the free-form
+        #     graft semantics byte-for-byte.
+        $isWakeShape = ((Test-PropPresent $manifest 'shape') -and [string]$manifest.shape -eq 'wake')
+        $parentIsRoot      = [string]$parentNode.type -eq 'goal'
+        $parentIsContainer = (@('sub', 'accept') -contains [string]$parentNode.type)
+        $parentIsPmSlot    = ($parentIsContainer -eq $false -and $parentIsRoot -eq $false -and [string]$parentNode.role -eq 'pm')
+        if ($isWakeShape) {
+            foreach ($t in $inputTasks) {
+                $tType = if ($null -ne $t.PSObject.Properties['type']) { [string]$t.type } else { '' }
+                $tRole = ''
+                if ($null -ne $t.PSObject.Properties['role'] -and $null -ne $t.role) { $tRole = [string]$t.role }
+                $tIsContainer = (@('sub', 'accept') -contains $tType)
+                $tTitle = [string]$t.title
+                if ($tIsContainer) {
+                    if ($tRole.Trim() -ne '') {
+                        Write-ErrorResult "GRAFT_LAYER_INVALID" "Container task '$tTitle' (type=$tType) must not declare a role — containers are the unclaimable WBS layer (goal-tree-wake-model §3.1)" 1
+                    }
+                    if (-not ($parentIsRoot -or $parentIsContainer -or $parentIsPmSlot)) {
+                        Write-ErrorResult "GRAFT_LAYER_INVALID" "Container task '$tTitle' (type=$tType) may only hang under the goal root, another container, or the PM slot; parent $Parent is none of these" 1
+                    }
+                }
+                else {
+                    # work unit (role slot / probe / sweep): lives under a container;
+                    # the single exception is the PM slot itself, which hangs at the root
+                    if (-not $parentIsContainer) {
+                        if ($parentIsRoot -and $tRole.Trim() -eq 'pm') { }
+                        else {
+                            Write-ErrorResult "ROLE_LAYER_LOCKED" "Work task '$tTitle' must hang under a container node (type=sub/accept); the role-slot layer is engine-materialized (goal-tree-wake-model §3.2). Parent $Parent is not a container." 1
+                        }
+                    }
+                }
+                # wake payload sanity + dep layer rule
+                if ($null -ne $t.PSObject.Properties['wake_max'] -and $null -ne $t.wake_max) {
+                    $wm = 0
+                    if (-not [int]::TryParse([string]$t.wake_max, [ref]$wm) -or $wm -lt 1 -or $wm -gt 1000) {
+                        Write-ErrorResult "WAKE_MAX_INVALID" "task '$tTitle' wake_max must be an integer 1..1000" 1
+                    }
+                }
+                $tDepsList = @()
+                if ($null -ne $t.PSObject.Properties['depends_on'] -and $null -ne $t.depends_on) { $tDepsList = @(ConvertTo-NodeIdList $t.depends_on) }
+                foreach ($d in @(($tDepsList + $cliDeps) | Select-Object -Unique)) {
+                    $depNode = Find-Node $tree $d
+                    if ($null -eq $depNode) {
+                        Write-ErrorResult "DEP_TARGET_NOT_FOUND" "task '$tTitle' depends_on '$d' — node not found in tree" 1
+                    }
+                    elseif (-not (@('sub', 'accept') -contains [string]$depNode.type)) {
+                        Write-ErrorResult "DEP_LAYER_MISMATCH" "task '$tTitle' depends_on '$d' — wake-shape dependency edges live on the WBS layer (type=sub/accept containers only); role-level ordering is derived from the container route" 1
+                    }
+                }
+            }
+        }
+
         $incoming = @($inputTasks).Count
         # 宽度预算只计在途（并发面）子节点:prune 的语义就是作废该分支并释放宽度,
         # 否则 rejected-delivery 反复回收(prune+重graft)会被已剪枝节点永久挤占预算;
@@ -1697,9 +1834,6 @@ function Invoke-Graft {
         $sweepManifestCount = 0
         $graftedDeps = @()   # @{ node; target } pairs for the deps audit log
         $round = [int]$roundState.open_round
-        # CLI-level defaults (per-task depends_on / ref win when present)
-        $cliDeps = @(ConvertTo-NodeIdList $DependsOn)
-        $cliRef = if ([string]::IsNullOrWhiteSpace($Ref)) { $null } else { $Ref.Trim() }
         foreach ($t in $inputTasks) {
             $newId = Get-NextNodeId $tree
             $gRole = ''
@@ -1711,6 +1845,18 @@ function Invoke-Graft {
             if ($null -ne $t.PSObject.Properties['depends_on'] -and $null -ne $t.depends_on) { $gDeps = @(ConvertTo-NodeIdList $t.depends_on) }
             $gRef = $cliRef
             if ($null -ne $t.PSObject.Properties['ref'] -and $null -ne $t.ref -and -not [string]::IsNullOrWhiteSpace([string]$t.ref)) { $gRef = ([string]$t.ref).Trim() }
+            # --- wake-model fields (goal-tree-wake-model §4): payload wake_max is
+            #     the ONLY thing stamped at graft time — an explicit per-node
+            #     override. The run default is resolved at runtime (claim / redo /
+            #     outline) so 'budget -SetWakeMax' raises actually reach every slot
+            #     that did not pin its own ceiling. Containers carry no quota.
+            $gWakeMax = $null
+            $gNodeDuty = $null
+            $gIsContainerTask = (@('sub', 'accept') -contains $gType)
+            if ($isWakeShape -and -not $gIsContainerTask) {
+                if ($null -ne $t.PSObject.Properties['wake_max'] -and $null -ne $t.wake_max) { $gWakeMax = [int]$t.wake_max }
+                if ($null -ne $t.PSObject.Properties['duty'] -and $null -ne $t.duty -and -not [string]::IsNullOrWhiteSpace([string]$t.duty)) { $gNodeDuty = ([string]$t.duty).Trim() }
+            }
             $node = [ordered]@{
                 id              = $newId
                 parent          = $Parent
@@ -1733,6 +1879,9 @@ function Invoke-Graft {
                 pruned_reason   = $null
                 last_verdict    = $null
                 last_confidence = $null
+                wake_count      = 0
+                wake_max        = $gWakeMax
+                duty            = $gNodeDuty
                 ledger_refs     = @()
                 note            = if ($t.note) { [string]$t.note } else { $null }
                 children        = @()
@@ -1816,6 +1965,71 @@ function Invoke-Graft {
 
 # === Command: prune ===
 
+# ----------------------------------------------------------------------------
+# prune 的 claimed 节点活性门（planner-reconcile-throttle 同族机械门）：剪枝不
+# 打断 worker——对 claimed 节点 prune + 重挂 = 双 worker 并行同一任务（n49→n52
+# 事故）。门语义与 reclaim 家族（delivery-bridge Test-ReclaimLiveness）同形：
+#   alive            → PRUNE_TARGET_ALIVE 硬拒（等 report，处置走 reclaim）
+#   unknown + 未过阈 → PRUNE_UNPROVEN_DEAD 拒（超时标记 ≠ 死亡证明）
+#   unknown + 过阈值 → 需 -UserVerdict 用户裁决原文（时间阈值永远不构成放行）
+# pending/reported/done 节点的 prune 不受影响（证伪/放弃/裁定是正常用途）。
+# ----------------------------------------------------------------------------
+
+$script:PruneClaimThresholdMinutes = 60
+
+function Get-TreeClaimLiveness {
+    # 轻量探针（与 delivery-bridge Get-ClaimLiveness 同源同语义）：claims 边车的
+    # dsh_session_id → 插件 liveness 端点（DSH_WEB_URL）。无绑定 / 非 dsh shell /
+    # 端点不可达 → unknown（降级不阻断——门对 unknown 有自己的保守路径）。
+    param([string]$RunDirText, [string]$NodeIdText)
+    $claimsPath = Join-Path (Join-Path $RunDirText "state") ("claims\$NodeIdText.json")
+    $sessionId = $null
+    if (Test-Path -LiteralPath $claimsPath -PathType Leaf) {
+        try {
+            $claim = [System.IO.File]::ReadAllText($claimsPath, [System.Text.Encoding]::UTF8) | ConvertFrom-Json
+            if ($claim.dsh_session_id) { $sessionId = [string]$claim.dsh_session_id }
+        } catch {}
+    }
+    if ([string]::IsNullOrWhiteSpace($sessionId)) {
+        return @{ liveness = "unknown"; session_id = $null; reason = "no dsh session binding on the claim sidecar (CLI claim or legacy run)" }
+    }
+    if ([string]::IsNullOrWhiteSpace($env:DSH_WEB_URL)) {
+        return @{ liveness = "unknown"; session_id = $sessionId; reason = "not a dsh shell (DSH_WEB_URL absent) — registry unverifiable here" }
+    }
+    try {
+        $url = "$($env:DSH_WEB_URL.TrimEnd('/'))/rdd-goal-tree/liveness?run=$([uri]::EscapeDataString($RunId))&node=$([uri]::EscapeDataString($NodeIdText))"
+        $resp = Invoke-WebRequest -Uri $url -UseBasicParsing -TimeoutSec 5
+        $probe = $resp.Content | ConvertFrom-Json
+        $live = "unknown"
+        if ($probe.PSObject.Properties['liveness']) { $live = [string]$probe.liveness }
+        return @{ liveness = $live; session_id = $sessionId; reason = "plugin liveness endpoint" }
+    } catch {
+        return @{ liveness = "unknown"; session_id = $sessionId; reason = "liveness endpoint unreachable: $($_.Exception.Message)" }
+    }
+}
+
+function Assert-PruneClaimGate {
+    # 门本体：仅对 claimed 目标生效；返回 $true = 放行（错误路径已 Write-ErrorResult）。
+    param($Target)
+    if ([string]$Target.status -ne "claimed") { return $true }
+    $live = Get-TreeClaimLiveness $RunDir $NodeId
+    if ($live.liveness -eq "alive") {
+        Write-ErrorResult "PRUNE_TARGET_ALIVE" "Node $NodeId is claimed by a LIVE session (session_id=$($live.session_id), $($live.reason)). Pruning does not interrupt the worker — prune + re-graft means TWO workers on the same task. Long-running work is not prunable: wait for its report, or recover through the reclaim command family (delivery-bridge reclaim applies the same liveness evidence and repush semantics)." 1
+    }
+    $ageMin = $null
+    if ($Target.claimed_at) {
+        try { $ageMin = [int]((Get-Date).ToUniversalTime() - [datetime]::Parse($Target.claimed_at, $null, [System.Globalization.DateTimeStyles]::RoundtripKind)).TotalMinutes } catch {}
+    }
+    if ($null -eq $ageMin -or $ageMin -lt $script:PruneClaimThresholdMinutes) {
+        $shownAge = if ($null -ne $ageMin) { $ageMin } else { "?" }
+        Write-ErrorResult "PRUNE_UNPROVEN_DEAD" "Node $NodeId is claimed, its worker liveness is unknown ($($live.reason)), and the claim is only $shownAge min old (< $($script:PruneClaimThresholdMinutes) min threshold). A timeout mark is not proof of death — refusing to prune. Wait for the report, or recover via reclaim." 1
+    }
+    if ([string]::IsNullOrWhiteSpace($UserVerdict)) {
+        Write-ErrorResult "PRUNE_DEATH_UNPROVEN_NEEDS_VERDICT" "Node $NodeId has been claimed for $ageMin min but its worker liveness stays UNPROVABLE ($($live.reason)). Pruning a possibly-live worker creates silent duplicate work. 长任务纪律：等 > 询问用户 > 回收. Present the situation to the user; only their ruling authorizes this prune: goal-tree.cmd -Command prune -RunId $RunId -NodeId $NodeId -Reason <理由> -UserVerdict `"<用户裁决原文>`" (recorded in the prune audit)." 1
+    }
+    return $true
+}
+
 function Invoke-Prune {
     param([string]$RunDir)
 
@@ -1832,6 +2046,11 @@ function Invoke-Prune {
         $target = Find-Node $tree $NodeId
         if ($null -eq $target) { Write-ErrorResult "NODE_NOT_FOUND" "Node not found: $NodeId" 2 }
         if ($target.status -eq "pruned") { Write-ErrorResult "ALREADY_PRUNED" "Node $NodeId is already pruned" 1 }
+        # claimed 节点活性门：见 Assert-PruneClaimGate 头注（n49→n52 双跑事故的根修）
+        $null = Assert-PruneClaimGate $target
+        if (-not [string]::IsNullOrWhiteSpace($UserVerdict)) {
+            $Reason = "$Reason（用户裁决：$UserVerdict）"
+        }
 
         $now = Get-UtcNowIso
         $prunedIds = @()
@@ -1899,7 +2118,9 @@ function Add-RedoLedgerEntry {
     # redo 的台账审计行（Invoke-Redo 的留痕步骤）：type=redo 的结构化行——
     # 不是 worker 报告；下游消费方按 type 字段跳过（Get-LedgerStats /
     # Write-RoundSnapshot / 插件 parseLedgerEntry）。追加后读回校验。
-    param([string]$RunDir, [int]$Round, $Node, [string]$Worker, [string]$At, $SessionId, [string]$FailureRef, [string]$Trigger)
+    # wake 模型字段（goal-tree-wake-model §4.4）：wake=本次进入的唤醒序号，
+    # duty=所处职责段——审计等价的数据面。
+    param([string]$RunDir, [int]$Round, $Node, [string]$Worker, [string]$At, $SessionId, [string]$FailureRef, [string]$Trigger, [int]$Wake = 0, [string]$Duty = '')
     $entryId = "L$((@(Read-Ledger $RunDir).entries).Count + 1)"
     $entry = [ordered]@{
         entry_id    = $entryId
@@ -1912,11 +2133,30 @@ function Add-RedoLedgerEntry {
         session_id  = $SessionId
         failure_ref = $FailureRef
         trigger     = if ([string]::IsNullOrWhiteSpace($Trigger)) { $null } else { $Trigger }
+        wake        = $Wake
+        duty        = if ([string]::IsNullOrWhiteSpace($Duty)) { $null } else { $Duty }
     }
     $line = ConvertTo-Json $entry -Depth 8 -Compress
     [System.IO.File]::AppendAllText((Get-LedgerPath $RunDir), $line + "`n", $script:Utf8NoBom)
     $all = @([System.IO.File]::ReadAllLines((Get-LedgerPath $RunDir)) | Where-Object { $_.Trim() -ne "" })
     try { $null = $all[-1] | ConvertFrom-Json } catch { Write-ErrorResult "LEDGER_READBACK_FAILED" "ledger.jsonl last line failed to parse after append" 3 }
+}
+
+function Get-EffectiveWakeMax {
+    # 配额解析（goal-tree-wake-model §4.2）：节点显式 wake_max 优先，
+    # 其次 run 级 budget.wake_max，最后引擎默认 3。
+    param($Manifest, $Node)
+    if ($null -ne $Node -and $null -ne $Node.wake_max) { return [int]$Node.wake_max }
+    if ($null -ne $Manifest -and (Test-PropPresent $Manifest 'budget') -and $null -ne $Manifest.budget -and (Test-PropPresent $Manifest.budget 'wake_max') -and $null -ne $Manifest.budget.wake_max) { return [int]$Manifest.budget.wake_max }
+    return 3
+}
+
+function Get-WakeQuotaRefusal {
+    # 配额耗尽的拒绝文本：耗尽不是"停止"，是强制进入三路由裁定
+    # （goal-tree-wake-model §4.2）：升级用户 / 拆分需求回 PM / 带债放行。
+    param($Node, [int]$WakeMax)
+    $dutyText = if ($Node.duty) { " (duty=$($Node.duty))" } else { "" }
+    return "Node $($Node.id)$dutyText has burned its wake quota [$([int]$Node.wake_count)/$WakeMax] — every wake counts against the segment, regardless of mode. Quota exhaustion is an adjudication point, not a stop: (a) escalate to the user with the wake trail (verdicts + failure refs), (b) split the requirement and re-plan via PM, (c) explicit debt-pass waiver with user consent, or raise the run budget with 'budget -SetWakeMax <n> -UserVerdict <ruling>' (raise-only, user-approved)."
 }
 
 function Invoke-Redo {
@@ -1948,8 +2188,28 @@ function Invoke-Redo {
             Write-ErrorResult "REDO_OWNER_MISMATCH" "Node $NodeId is claimed by '$($target.claimed_by)', not '$Worker'. redo returns a reported node to its ORIGINAL holder only (in-place same-session redo); use the leaf claim -Steal channel for ownership changes." 1
         }
         if ($target.status -ne "reported") {
-            Write-ErrorResult "REDO_REQUIRES_REPORTED" "Node $NodeId is '$($target.status)'; redo only returns reported nodes to claimed (pending -> claim instead; done/pruned are terminal)." 1
+            Write-ErrorResult "REDO_REQUIRES_REPORTED" "Node $NodeId is '$($target.status)'; redo only returns reported nodes to claimed (pending -> claim instead; pruned is terminal; for done nodes use 'reset' — the wake-model rollback primitive that returns the node to pending without deleting it)." 1
         }
+
+        # --- duty segment switch FIRST (§4.2): a NEW duty restarts segment
+        #     accounting, so the quota gate below judges the FRESH segment —
+        #     switching onto a new duty is the model's intended continuation,
+        #     not a violation of the exhausted one.
+        $dutySwitched = $false
+        if (-not [string]::IsNullOrWhiteSpace($Duty)) {
+            if ([string]$target.duty -ne $Duty.Trim()) {
+                $target.duty = $Duty.Trim()
+                $target.wake_count = 0
+                $dutySwitched = $true
+            }
+        }
+        # --- wake quota gate (goal-tree-wake-model §4.2): this redo IS a wake ---
+        $wakeMax = Get-EffectiveWakeMax $manifest $target
+        if (([int]$target.wake_count + 1) -gt $wakeMax) {
+            Write-ErrorResult "WAKE_QUOTA_EXCEEDED" (Get-WakeQuotaRefusal $target $wakeMax) 1
+        }
+        $target.wake_count = [int]$target.wake_count + 1
+        $newWake = [int]$target.wake_count
 
         # --- migration: reported -> claimed, same holder, fresh clock ---
         $now = Get-UtcNowIso
@@ -1965,11 +2225,103 @@ function Invoke-Redo {
         Write-TreeFile $RunDir $tree
 
         # --- ledger audit entry (append-only; type=redo — not a worker report) ---
-        Add-RedoLedgerEntry -RunDir $RunDir -Round $round -Node $target -Worker $Worker -At $now -SessionId $sessionOfClaim -FailureRef $FailureRef -Trigger $Trigger
+        Add-RedoLedgerEntry -RunDir $RunDir -Round $round -Node $target -Worker $Worker -At $now -SessionId $sessionOfClaim -FailureRef $FailureRef -Trigger $Trigger -Wake $newWake -Duty ([string]$target.duty)
 
         return @{
             success = $true
-            data    = @{ run_id = $RunId; node_id = $NodeId; status = "claimed"; worker = $Worker; session_id = $sessionOfClaim; failure_ref = $FailureRef; trigger = $Trigger; round = $round; lock = $lockInfo }
+            data    = @{ run_id = $RunId; node_id = $NodeId; status = "claimed"; worker = $Worker; session_id = $sessionOfClaim; failure_ref = $FailureRef; trigger = $Trigger; round = $round; wake = $newWake; wake_max = $wakeMax; duty = $target.duty; duty_switched = $dutySwitched; lock = $lockInfo }
+        }
+    }
+    finally {
+        Exit-RunLock
+    }
+}
+
+# === Command: reset (wake-model rollback primitive — goal-tree-wake-model §4.1) ===
+#
+# Returns a claimed/reported/done WORK node to pending WITHOUT deleting it: the
+# route rolls back, the slot stays. wake_count is preserved (a reset is not a
+# wake — the next claim is); an optional -Duty switches the segment and restarts
+# segment accounting. Claims sidecar is left in place deliberately: the original
+# dsh session binding stays available for the bridge's session-reuse dispatch.
+# Idempotent on pending (crash-window self-heal). Containers (sub/accept) and
+# the goal root are structure, not work — never resettable.
+
+function Invoke-Reset {
+    param([string]$RunDir)
+
+    if ([string]::IsNullOrWhiteSpace($NodeId)) { Write-ErrorResult "MISSING_NODE_ID" "-NodeId is required" 1 }
+    if ([string]::IsNullOrWhiteSpace($Reason)) { Write-ErrorResult "MISSING_REASON" "-Reason is required (audit trail)" 1 }
+
+    $lockInfo = Enter-RunLock $RunDir
+    try {
+        $manifest = Read-ManifestEditable $RunDir
+        Assert-Running $manifest
+        $roundState = Get-RoundState $RunDir
+        $round = [int]$roundState.open_round
+        $readBack = Read-TreeEditable $RunDir
+        $tree = $readBack.tree
+
+        $target = Find-Node $tree $NodeId
+        if ($null -eq $target) { Write-ErrorResult "NODE_NOT_FOUND" "Node not found: $NodeId" 2 }
+        if (@('goal', 'sub', 'accept') -contains [string]$target.type) {
+            Write-ErrorResult "CONTAINER_NODE_NOT_RESETTABLE" "Node $NodeId (type=$($target.type)) is structure, not work — containers and the goal root are never reset; reset targets the role-slot layer." 1
+        }
+        if ($target.status -eq "pruned") {
+            Write-ErrorResult "ALREADY_PRUNED" "Node $NodeId is pruned (terminal); a pruned slot is re-planned, not reset." 1
+        }
+        if ($target.status -eq "pending") {
+            return @{
+                success = $true
+                data    = @{ run_id = $RunId; node_id = $NodeId; status = "pending"; idempotent_noop = $true; reason = $Reason; wake = [int]$target.wake_count; lock = $lockInfo }
+            }
+        }
+
+        $now = Get-UtcNowIso
+        $prevStatus = [string]$target.status
+        $prevWorker = [string]$target.claimed_by
+
+        # duty segment switch: new duty => segment accounting restarts (§4.2)
+        $dutySwitched = $false
+        if (-not [string]::IsNullOrWhiteSpace($Duty) -and [string]$target.duty -ne $Duty.Trim()) {
+            $target.duty = $Duty.Trim()
+            $target.wake_count = 0
+            $dutySwitched = $true
+        }
+
+        $target.status = "pending"
+        $target.claimed_by = $null
+        $target.claimed_at = $null
+        $target.reported_at = $null
+        $target.settled_at = $null
+        $target.settled_note = $null
+        $target.last_verdict = $null
+        $target.last_confidence = $null
+        # wake_count / steal_count / ledger_refs stay: history is the node's own.
+
+        Write-TreeFile $RunDir $tree
+
+        # --- ledger audit entry (type=reset — not a worker report) ---
+        $entryId = "L$((@(Read-Ledger $RunDir).entries).Count + 1)"
+        $entry = [ordered]@{
+            entry_id = $entryId
+            type     = "reset"
+            round    = $round
+            node_id  = [string]$target.id
+            role     = if ($target.role) { [string]$target.role } else { $null }
+            worker   = if ($prevWorker) { $prevWorker } else { $null }
+            at       = $now
+            reason   = $Reason
+            wake     = [int]$target.wake_count
+            duty     = if ($target.duty) { [string]$target.duty } else { $null }
+            from     = $prevStatus
+        }
+        $line = ConvertTo-Json $entry -Depth 8 -Compress
+        [System.IO.File]::AppendAllText((Get-LedgerPath $RunDir), $line + "`n", $script:Utf8NoBom)
+
+        return @{
+            success = $true
+            data    = @{ run_id = $RunId; node_id = $NodeId; status = "pending"; from = $prevStatus; worker = $prevWorker; reason = $Reason; wake = [int]$target.wake_count; wake_max = (Get-EffectiveWakeMax $manifest $target); duty = $target.duty; duty_switched = $dutySwitched; lock = $lockInfo }
         }
     }
     finally {
@@ -2132,15 +2484,21 @@ function Invoke-Conclude {
                     # goal-root terminal semantics (goal-tree-goal-root): the anchor is the
                     # original-requirement root — never a work node, so "achieved" replaces
                     # "anchor done" with "every direct child (sub-requirement chain head)
-                    # reached a terminal state". R4 gate below applies unchanged.
+                    # reached a terminal state". Wake-model extension (goal-tree-wake-model
+                    # §3.4): sub/accept containers are themselves never work — a container
+                    # counts as terminal iff its whole subtree is (recursively) done/pruned.
+                    # R4 gate below applies unchanged.
+                    $nodeById = @{}
+                    foreach ($n in $tree.nodes) { $nodeById[$n.id] = $n }
                     $nonTerminal = @()
                     foreach ($cid in @($anchor.children)) {
                         $cnode = Find-Node $tree ([string]$cid)
                         if ($null -eq $cnode) { continue }
-                        if (@('done', 'pruned') -notcontains [string]$cnode.status) { $nonTerminal += "$($cnode.id)($($cnode.status))" }
+                        $terminal = if (@('sub', 'accept') -contains [string]$cnode.type) { Test-SubtreeTerminal $tree $cnode $nodeById } else { @('done', 'pruned') -contains [string]$cnode.status }
+                        if (-not $terminal) { $nonTerminal += "$($cnode.id)($($cnode.status))" }
                     }
                     if ($nonTerminal.Count -gt 0) {
-                        Write-ErrorResult "ANCHOR_NOT_DONE" "Goal anchor $AnchorNodeId requires every direct child in a terminal state (done/pruned); non-terminal: $($nonTerminal -join ', ')." 1
+                        Write-ErrorResult "ANCHOR_NOT_DONE" "Goal anchor $AnchorNodeId requires every direct child in a terminal state (done/pruned; containers count as terminal when their whole subtree is); non-terminal: $($nonTerminal -join ', ')." 1
                     }
                 }
                 elseif ($anchor.status -ne "done") {
@@ -2243,8 +2601,9 @@ function Invoke-Budget {
     if ($SetMaxRounds -gt 0) { $provided += 'max_rounds' }
     if ($SetNodeWidth -gt 0) { $provided += 'node_width' }
     if ($SetMaxNodes -gt 0) { $provided += 'max_nodes' }
+    if ($SetWakeMax -gt 0) { $provided += 'wake_max' }
     if ($provided.Count -eq 0) {
-        Write-ErrorResult "BUDGET_TARGET_MISSING" "nothing to extend: pass at least one of -SetMaxRounds / -SetNodeWidth / -SetMaxNodes (raise-only: each value must EXCEED the current ceiling)" 1
+        Write-ErrorResult "BUDGET_TARGET_MISSING" "nothing to extend: pass at least one of -SetMaxRounds / -SetNodeWidth / -SetMaxNodes / -SetWakeMax (raise-only: each value must EXCEED the current ceiling)" 1
     }
 
     $lockInfo = Enter-RunLock $RunDir
@@ -2255,8 +2614,9 @@ function Invoke-Budget {
             max_rounds = [int]$manifest.budget.max_rounds
             node_width = [int]$manifest.budget.node_width
             max_nodes  = [int]$manifest.budget.max_nodes
+            wake_max   = if ($null -ne $manifest.budget.wake_max) { [int]$manifest.budget.wake_max } else { 3 }
         }
-        foreach ($pair in @(@('max_rounds', $SetMaxRounds), @('node_width', $SetNodeWidth), @('max_nodes', $SetMaxNodes))) {
+        foreach ($pair in @(@('max_rounds', $SetMaxRounds), @('node_width', $SetNodeWidth), @('max_nodes', $SetMaxNodes), @('wake_max', $SetWakeMax))) {
             $field = [string]$pair[0]
             $val = [int]$pair[1]
             if ($val -le 0) { continue }
@@ -2267,12 +2627,13 @@ function Invoke-Budget {
         }
         Write-ManifestFile $RunDir $manifest
         $roundState = Get-RoundState $RunDir
+        $newBudget = @{ max_rounds = [int]$manifest.budget.max_rounds; node_width = [int]$manifest.budget.node_width; max_nodes = [int]$manifest.budget.max_nodes; wake_max = if ($null -ne $manifest.budget.wake_max) { [int]$manifest.budget.wake_max } else { 3 } }
         Add-BudgetLogLine $RunDir @{
             event   = "budget-extend"
             round   = [int]$roundState.last_round
             fields  = $provided
             old     = $old
-            new     = @{ max_rounds = [int]$manifest.budget.max_rounds; node_width = [int]$manifest.budget.node_width; max_nodes = [int]$manifest.budget.max_nodes }
+            new     = $newBudget
             verdict = $UserVerdict
             at      = Get-UtcNowIso
         }
@@ -2282,9 +2643,9 @@ function Invoke-Budget {
                 run_id    = $RunId
                 extended  = $provided
                 old       = $old
-                new       = @{ max_rounds = [int]$manifest.budget.max_rounds; node_width = [int]$manifest.budget.node_width; max_nodes = [int]$manifest.budget.max_nodes }
+                new       = $newBudget
                 approval  = "user verdict recorded verbatim in state/budget-log.jsonl"
-                next_step = "ceilings lifted: graft / round-start unlock automatically; conclude -Outcome budget_exhausted re-arms its honesty check against the new ceilings"
+                next_step = "ceilings lifted: graft / round-start unlock automatically; conclude -Outcome budget_exhausted re-arms its honesty check against the new ceilings; raised wake_max applies to every slot still following the run default"
                 lock      = $lockInfo
             }
         }
@@ -2634,6 +2995,19 @@ function Invoke-Deps {
             if ($goalSides.Count -gt 0) {
                 Write-ErrorResult "DEP_GOAL_FORBIDDEN" "deps add rejected (nothing written): $($goalSides -join '; and ') — goal nodes never participate in depends_on" 1
             }
+            # wake-shape layer rule (goal-tree-wake-model §3.3): dependency edges
+            # live on the WBS layer — both endpoints must be sub/accept containers;
+            # role-level ordering is derived from the container route, never stored.
+            $isWakeShape = ((Test-PropPresent $manifest 'shape') -and [string]$manifest.shape -eq 'wake')
+            if ($isWakeShape) {
+                $layerSides = @()
+                if (-not (@('sub', 'accept') -contains [string]$node.type)) { $layerSides += "node $NodeId (type=$($node.type)) is not a container" }
+                if ($null -ne $depTarget -and -not (@('sub', 'accept') -contains [string]$depTarget.type)) { $layerSides += "target $On (type=$($depTarget.type)) is not a container" }
+                if ($null -eq $depTarget) { $layerSides += "target $On not found" }
+                if ($layerSides.Count -gt 0) {
+                    Write-ErrorResult "DEP_LAYER_MISMATCH" "deps add rejected (nothing written): $($layerSides -join '; and ') — wake-shape dependency edges live on the WBS layer (sub/accept containers only)" 1
+                }
+            }
             $newDeps = @($current) + $On
         }
         else {
@@ -2722,6 +3096,9 @@ function Invoke-Dispatch {
         if ($null -eq $node) { Write-ErrorResult "NODE_NOT_FOUND" "Node not found: $NodeId" 2 }
         if ([string]$node.type -eq 'goal') {
             Write-ErrorResult "GOAL_NODE_NOT_DISPATCHABLE" "Node $NodeId is the goal root (type=goal — the run's final objective anchor): it is never a work unit. Graft sub-nodes under it and dispatch those." 1
+        }
+        if (@('sub', 'accept') -contains [string]$node.type) {
+            Write-ErrorResult "CONTAINER_NODE_NOT_DISPATCHABLE" "Node $NodeId is a WBS container (type=$($node.type)): containers are never dispatched — they are the requirement decomposition layer (goal-tree-wake-model §3.1); dispatch their role slots." 1
         }
         if ($node.status -ne "pending") {
             Write-ErrorResult "NODE_NOT_DISPATCHABLE" "Node $NodeId is '$($node.status)'; dispatch targets open work only (pending). Stuck 'claimed' nodes are recovered via goal-tree-leaf claim -Steal by the next worker; 'reported' nodes await your settle/prune; 'done'/'pruned' are terminal." 1
@@ -2847,6 +3224,7 @@ switch ($Command) {
     "graft"       { $runDir = Resolve-RunDir $RunId; $result = Invoke-Graft $runDir }
     "prune"       { $runDir = Resolve-RunDir $RunId; $result = Invoke-Prune $runDir }
     "redo"        { $runDir = Resolve-RunDir $RunId; $result = Invoke-Redo $runDir }
+    "reset"       { $runDir = Resolve-RunDir $RunId; $result = Invoke-Reset $runDir }
     "settle"      { $runDir = Resolve-RunDir $RunId; $result = Invoke-Settle $runDir }
     "round-start" { $runDir = Resolve-RunDir $RunId; $result = Invoke-RoundStart $runDir }
     "round-end"   { $runDir = Resolve-RunDir $RunId; $result = Invoke-RoundEnd $runDir }

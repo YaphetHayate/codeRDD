@@ -105,6 +105,17 @@ param(
     # -TaskId / -GoalTreeWorker / -Role PLANNER 互斥。
     [switch]$NoArchive,
 
+    # dsh sidebar lineage opt-out (session-lineage-requirement-root): create
+    # the target session with NO parentSessionId — a top-level sidebar row
+    # outside every requirement bundle (the explicit escape hatch for shapes
+    # that must NOT nest, e.g. the sibling-PLANNER 代开). The DEFAULT is
+    # requirement-rooted bundling: every archive-anchored handoff nests under
+    # the archive's recorded root session (first dispatcher wins), so a
+    # PM→CTO→UX→DEV handoff chain renders as ONE flat bundle instead of
+    # nesting one level deeper per hop. Non-dsh backends ignore this switch
+    # (they carry no session lineage at all).
+    [switch]$NoLineage,
+
     [switch]$DryRun
 )
 
@@ -144,6 +155,7 @@ function Show-Usage {
   -GoalTreeRun / -GoalTreeNode / -GoalTreeWorker   goal-tree 派发三件套（引擎代传）
   -SessionLabel / -TaskSummary    dsh 会话标题 / 任务摘要（仅显示层）
   -ExistingSessionId / -Appendix  既有会话复用 / 重做附录（引擎代传）
+  -NoLineage      dsh 会话建为侧栏顶层行（默认按需求根会话打包，见 transition-guide dsh 后端）
   -EmployeeId      Plus 后端员工 UUID（必填）
   -DshUrl / -PlusUrl   后端地址覆盖（缺省自动判后端：RDD_RUNTIME=app→Plus；DSH_WEB_URL→dsh；否则 CLI）
   -Project         项目根覆盖（缺省=项目根定位链）
@@ -372,7 +384,7 @@ function Get-IntakeCallbackSegment {
     if ($mode -ne "dsh") { return "" }
     if ([string]::IsNullOrWhiteSpace($env:DSH_SESSION_ID)) { return "" }
     $sid = $env:DSH_SESSION_ID
-    return " 【立项回调协议】本次立项由规划者会话 $sid 发起：归档完成后**把接管指针投回本会话由其做路由裁定**——裁定为自接管则执行 start-role.cmd -Role PLANNER -ExistingSessionId $sid -TaskJson <新归档task.json>（可先 -DryRun 验指针）接续 promulgate；裁定为结构化档（模块/运维）则按 planner-guide.md §一 PM 锚定前提以归档为锚 goal-tree start -GoalRoot -GoalFile <归档>/requirements/overview.md（桥接链不启动）；裁定为异关注点则按 §一 路由拒绝块处置；裁定为平级规划者代开则在显式许可下执行 -Role PLANNER -TaskJson <新归档> -NoLineage（**-NoLineage 开关属延后项**，本期未落地时仍建议在侧栏手动新建 rdd-planner 会话以避免侧栏嵌套）。"
+    return " 【立项回调协议】本次立项由规划者会话 $sid 发起：归档完成后**把接管指针投回本会话由其做路由裁定**——裁定为自接管则执行 start-role.cmd -Role PLANNER -ExistingSessionId $sid -TaskJson <新归档task.json>（可先 -DryRun 验指针）接续 promulgate；裁定为结构化档（模块/运维）则按 planner-guide.md §一 PM 锚定前提以归档为锚 goal-tree start -GoalRoot -GoalFile <归档>/requirements/overview.md（桥接链不启动）；裁定为异关注点则按 §一 路由拒绝块处置；裁定为平级规划者代开则在显式许可下执行 -Role PLANNER -TaskJson <新归档> -NoLineage（**-NoLineage 已落地**：代开规划者会话为侧栏顶层行，不并入本会话打包组）。"
 }
 
 function Build-GoalTreeWorkerMessage {
@@ -1019,26 +1031,144 @@ function Invoke-DshApi {
     return @{ status = "business"; code = [string]$result.error.code; message = [string]$result.error.message; details = $result.error.details }
 }
 
+# --- session-lineage-requirement-root ----------------------------------------
+# dsh 侧栏嵌套策略：**按需求嵌套**。旧语义把 parentSessionId 永远指向"当前
+# 发起会话"，交接链 PM→CTO→UX→DEV 在侧栏一层套一层（GUI 按血统逐跳折叠）。
+# 新语义：归档锚定的交接以 .rdd/lineage.json 登记的**需求根会话**为血统父，
+# 首次交接把发起会话登记为根——此后同需求的全部角色会话折叠进同一个打包组
+# （PM { CTO, UX, DEV }），链再长也只有一层。未锚定形态（NoArchive 立项 /
+# 通用树 worker / PLANNER 续跑 / 无归档可解析）沿用旧语义（父=当前会话）；
+# -NoLineage 显式顶层（按需逃生阀）。注册表是显示层状态（machine-local，
+# gitignored）：任何读写失败降级旧语义 + 警告，绝不阻断交接（与标题/徽章
+# 同策略——显示层永远 fail-soft）。
+
+function Get-LineageRegistryPath {
+    # Machine-local display-layer registry: archive name -> the root dsh
+    # session id that every same-requirement session nests under.
+    return (Join-Path $root ".rdd\lineage.json")
+}
+
+function Read-LineageRoot {
+    # Recorded root session id for the archive, or "" on any miss (absent
+    # file/section/key, corrupt JSON) — fail-soft, display-layer only.
+    param([string]$ArchiveName)
+    if ([string]::IsNullOrWhiteSpace($ArchiveName)) { return "" }
+    $path = Get-LineageRegistryPath
+    if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { return "" }
+    try {
+        $reg = Get-Content -LiteralPath $path -Raw -Encoding UTF8 | ConvertFrom-Json
+    } catch {
+        Write-Host "[!] 血统注册表读取失败（$($_.Exception.Message)），本次按旧语义取当前会话为血统父" -ForegroundColor Yellow
+        return ""
+    }
+    if ($null -eq $reg -or $null -eq $reg.archives) { return "" }
+    $entry = $reg.archives.PSObject.Properties[$ArchiveName]
+    if ($null -eq $entry) { return "" }
+    $sid = [string]$entry.Value.rootSessionId
+    if ([string]::IsNullOrWhiteSpace($sid)) { return "" }
+    return $sid
+}
+
+function Write-LineageRoot {
+    # Record the archive's root session (first dispatcher wins; a later write
+    # of the same value is idempotent). Read-modify-write keeps other
+    # archives' records intact; a corrupt file restarts from an empty map
+    # (recovery write). Fail-soft: any error warns and returns — the handoff
+    # proceeds with whatever parent the caller already resolved.
+    param([string]$ArchiveName, [string]$SessionId)
+    if ([string]::IsNullOrWhiteSpace($ArchiveName) -or [string]::IsNullOrWhiteSpace($SessionId)) { return }
+    $path = Get-LineageRegistryPath
+    $archivesObj = $null
+    if (Test-Path -LiteralPath $path -PathType Leaf) {
+        try {
+            $reg = Get-Content -LiteralPath $path -Raw -Encoding UTF8 | ConvertFrom-Json
+            if ($null -ne $reg -and $null -ne $reg.archives) { $archivesObj = $reg.archives }
+        } catch { $archivesObj = $null }
+    }
+    if ($null -eq $archivesObj) { $archivesObj = New-Object System.Management.Automation.PSObject }
+    $entry = @{
+        rootSessionId = $SessionId
+        recordedAt    = (Get-Date).ToUniversalTime().ToString("o")
+        recordedBy    = "$Role handoff"
+    }
+    $archivesObj | Add-Member -NotePropertyName $ArchiveName -NotePropertyValue $entry -Force
+    try {
+        $dir = Split-Path -Parent $path
+        if (-not (Test-Path -LiteralPath $dir -PathType Container)) {
+            New-Item -ItemType Directory -Path $dir -Force | Out-Null
+        }
+        $json = ([pscustomobject]@{ archives = $archivesObj }) | ConvertTo-Json -Depth 6
+        [System.IO.File]::WriteAllText($path, ($json + "`n"), (New-Object System.Text.UTF8Encoding($false)))
+    } catch {
+        Write-Host "[!] 血统注册表写入失败（$($_.Exception.Message)），本次会话仍按解析出的父会话创建，后续交接可能降级旧语义" -ForegroundColor Yellow
+    }
+}
+
+function Get-LineageAnchor {
+    # The requirement anchor (= archive dir name), but ONLY for invocation
+    # shapes whose dsh pointer message itself anchors on a task.json — the
+    # anchor must mirror Build-PointerMessage's branch order exactly, so
+    # lineage never claims an archive the message does not point at:
+    #   unanchored  -NoArchive intake / -GoalTreeWorker / PLANNER resume
+    #               (-RunId) / brief-only fallback (no task.json found)
+    #   anchored    every archive form (TaskId mode / PLANNER takeover /
+    #               plain B2 / handoff-annotated B2)
+    if ($NoArchive) { return "" }
+    if ($GoalTreeWorker) { return "" }
+    if ($Role -eq "PLANNER" -and -not [string]::IsNullOrWhiteSpace($RunId)) { return "" }
+    $taskJsonAbs = Resolve-TaskJsonAbsolute
+    if (-not $taskJsonAbs) { return "" }
+    return (Split-Path -Leaf (Split-Path -Parent $taskJsonAbs))
+}
+
+function Resolve-SessionLineageParent {
+    # Single resolution point for the dsh session.create lineage parent.
+    # Returns @{ parent = <id or "">; source = <human label> }:
+    #   -NoLineage                    → no parent (top-level row; opt-out)
+    #   anchored + recorded root      → recorded root (requirement bundling)
+    #   anchored + no record + env id → record current as root, parent=current
+    #   anchored + no record + no env → no parent (legacy shape)
+    #   unanchored + env id           → current session (legacy semantics)
+    #   unanchored + no env           → no parent
+    # -NoRecord keeps DryRun side-effect-free (no registry write on a
+    # rehearsal); the real dispatch path records by default.
+    param([switch]$NoRecord)
+    if ($NoLineage) { return @{ parent = ""; source = "-NoLineage 显式顶层" } }
+    $current = [string]$env:DSH_SESSION_ID
+    $anchor = Get-LineageAnchor
+    if (-not $anchor) {
+        if ([string]::IsNullOrWhiteSpace($current)) { return @{ parent = ""; source = "无血统父（未锚定且无 DSH_SESSION_ID）" } }
+        return @{ parent = $current; source = "当前会话（未锚定形态，旧语义）" }
+    }
+    $recorded = Read-LineageRoot -ArchiveName $anchor
+    if (-not [string]::IsNullOrWhiteSpace($recorded)) {
+        return @{ parent = $recorded; source = "需求根会话（归档 $anchor 已登记）" }
+    }
+    if ([string]::IsNullOrWhiteSpace($current)) { return @{ parent = ""; source = "无血统父（归档 $anchor 未登记根且无 DSH_SESSION_ID）" } }
+    if (-not $NoRecord) { Write-LineageRoot -ArchiveName $anchor -SessionId $current }
+    return @{ parent = $current; source = "需求根会话（归档 $anchor 本次登记）" }
+}
+
 function New-DshHandoffSession {
     # Workspace resolve-or-create + workspace-scoped session.create for the
     # dsh handoff: the workspace step is realpath-normalized and idempotent
     # (same step the GUI's New Session flow relies on), so the handoff
     # session lands in the project's workspace folder rather than Ungrouped.
-    # session-list bundling: name the spawning session as the fresh session's
-    # lineage parent ($env:DSH_SESSION_ID — the harness injects the calling
-    # session's id into every tool process, so a planner dispatch records the
-    # planner itself). The Web GUI bundles spawned rows under their planner;
-    # CLI/Plus backends and bare terminals carry no id, so the key is omitted
-    # (byte-identical legacy payload). Fail-soft on the host side: an unknown
-    # parent simply renders the child as an ordinary top-level row.
+    # session-lineage-requirement-root: the lineage parent is the archive's
+    # recorded REQUIREMENT ROOT session (first dispatcher wins), resolved by
+    # the caller via Resolve-SessionLineageParent — a PM→CTO→UX→DEV handoff
+    # chain therefore bundles into ONE flat sidebar group instead of nesting
+    # one level deeper per hop. Unanchored shapes keep the legacy
+    # caller-as-parent; -NoLineage creates a top-level row; the host renders
+    # an unknown parent fail-soft as an ordinary top-level row.
     # Returns the LAST api status object (ok only when the session exists);
     # callers early-return on non-ok, success path exposes .value.sessionId.
-    param([string]$Preset)
+    param([string]$Preset, [string]$LineageParent = "")
     $ws = Invoke-DshApi -Method "workspace.create" -Payload @{ path = $root }
     if ($ws.status -ne "ok") { return $ws }
     $createPayload = @{ workspaceId = [string]$ws.value.workspace.workspaceId; agentPreset = $Preset }
-    if (-not [string]::IsNullOrWhiteSpace($env:DSH_SESSION_ID)) {
-        $createPayload.parentSessionId = [string]$env:DSH_SESSION_ID
+    if (-not [string]::IsNullOrWhiteSpace($LineageParent)) {
+        $createPayload.parentSessionId = $LineageParent
     }
     return Invoke-DshApi -Method "session.create" -Payload $createPayload
 }
@@ -1062,9 +1192,22 @@ function Invoke-DshHandoff {
         return @{ status = "preset-missing"; preset = $Preset; availablePresets = $availablePresets }
     }
 
-    $create = New-DshHandoffSession -Preset $Preset
+    # session-lineage-requirement-root: resolve the lineage parent ONCE here
+    # (before create) so the payload and the narration share one resolution;
+    # the resolver records the archive's root on first anchored handoff.
+    $lineage = Resolve-SessionLineageParent
+
+    $create = New-DshHandoffSession -Preset $Preset -LineageParent $lineage.parent
     if ($create.status -ne "ok") { return $create }
     $sessionId = [string]$create.value.sessionId
+    # session-lineage-requirement-root: surface the grouping fact right after
+    # the create succeeds (display-layer narration, never a mission param).
+    if (-not [string]::IsNullOrWhiteSpace($lineage.parent)) {
+        Write-Host "[i] 会话血统: parentSessionId=$($lineage.parent)（$($lineage.source)）——同需求角色会话在侧栏折叠为一个打包组" -ForegroundColor Cyan
+    }
+    elseif ($NoLineage) {
+        Write-Host "[i] 会话血统: -NoLineage 生效，新会话为侧栏顶层行（不并入任何打包组）" -ForegroundColor Cyan
+    }
 
     # session-list-badges v2: pin the structural chips BEFORE the title
     # rename (design RPC matrix: create → setBadges → rename → prompt — badges
@@ -1323,9 +1466,15 @@ if ($mode -eq "dsh") {
         Write-Host "[DRYRUN] RPC 1:   POST $DshUrl/api/workspace.create" -ForegroundColor Yellow
         Write-Host "[DRYRUN] payload: path=$root（resolve-or-create，realpath 规范化）" -ForegroundColor Yellow
         Write-Host "[DRYRUN] RPC 2:   POST $DshUrl/api/session.create" -ForegroundColor Yellow
-        # session-list bundling: parentSessionId rides along only when the
-        # harness injected the caller's session id (planner-context dispatch).
-        $dryParent = if ([string]::IsNullOrWhiteSpace($env:DSH_SESSION_ID)) { "" } else { " parentSessionId=$env:DSH_SESSION_ID（血统打包：侧栏并入发起会话）" }
+        # session-lineage-requirement-root: preview the resolved lineage parent
+        # WITHOUT recording the root (-NoRecord keeps DryRun side-effect
+        # free — no registry write on a rehearsal).
+        $dryLineage = Resolve-SessionLineageParent -NoRecord
+        $dryParent = if (-not [string]::IsNullOrWhiteSpace($dryLineage.parent)) {
+            " parentSessionId=$($dryLineage.parent)（$($dryLineage.source)，侧栏按需求打包）"
+        } else {
+            "（无血统父：$($dryLineage.source)）"
+        }
         Write-Host "[DRYRUN] payload: workspaceId=<RPC 1 返回> agentPreset=$preset（入账 workspace，侧栏进项目文件夹）$dryParent" -ForegroundColor Yellow
         # planner-session-roster + session-list-badges: the setBadges/rename
         # RPCs print ONLY when they apply — an unmarked plain handoff keeps the

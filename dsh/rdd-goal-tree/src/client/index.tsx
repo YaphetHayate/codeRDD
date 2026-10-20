@@ -172,6 +172,10 @@ interface GoalTreeNodeView {
   confidence?: number | null
   claimSessionId: string | null
   blockedBy: string[]
+  /** Wake-model fields (goal-tree-wake-model): segment usage badge [k/K]. */
+  wakeCount: number
+  wakeMax: number | null
+  duty: string | null
   depth: number
 }
 
@@ -363,15 +367,70 @@ function Count({ label, glyph, value }: { label: string; glyph: string; value: n
   return <span title={label}>{glyph}{value}</span>
 }
 
+/**
+ * Display order for the outline renderer: DFS pre-order rebuilt from the
+ * parent links, children by numeric id. The wire list arrives in tree.json's
+ * GRAFT order (not a DFS traversal), and NodeList communicates nesting purely
+ * through (order, depth) — without this re-derivation a deep node created
+ * before its shallower successors' siblings (n8 under n2 vs the later n1-heads)
+ * renders visually nested under the wrong predecessor (n7). Also hardens the
+ * strip against old hosts that predate the host-side ordering. Twin of
+ * orderOutlineNodes in the host half (src/goaltrees.ts); both stay
+ * dependency-free so each half compiles standalone.
+ */
+export function orderOutlineNodes<T extends { id: string; parent: string | null }>(nodes: readonly T[]): T[] {
+  const inputIndex = new Map<string, number>()
+  for (const [i, node] of nodes.entries()) if (!inputIndex.has(node.id)) inputIndex.set(node.id, i)
+  const known = new Set(inputIndex.keys())
+  const numericId = (id: string): number => (/^n\d+$/.test(id) ? Number.parseInt(id.slice(1), 10) : Number.MAX_SAFE_INTEGER)
+  const byOutline = (a: T, b: T): number => {
+    const delta = numericId(a.id) - numericId(b.id)
+    return delta !== 0 ? delta : (inputIndex.get(a.id) ?? 0) - (inputIndex.get(b.id) ?? 0)
+  }
+  const childrenOf = new Map<string, T[]>()
+  const roots: T[] = []
+  for (const node of nodes) {
+    if (node.parent === null || !known.has(node.parent)) roots.push(node)
+    else {
+      const bucket = childrenOf.get(node.parent)
+      if (bucket === undefined) childrenOf.set(node.parent, [node])
+      else bucket.push(node)
+    }
+  }
+  const out: T[] = []
+  const seen = new Set<string>()
+  const visit = (node: T): void => {
+    if (seen.has(node.id)) return
+    seen.add(node.id)
+    out.push(node)
+    const children = childrenOf.get(node.id)
+    if (children === undefined) return
+    children.sort(byOutline)
+    for (const child of children) visit(child)
+  }
+  roots.sort(byOutline)
+  for (const root of roots) visit(root)
+  // cycle leftovers (parent chain never reaching a root): keep them visible
+  if (out.length !== nodes.length) for (const node of nodes) visit(node)
+  return out
+}
+
 /** The expandable whole-tree list, shared by the full bar and the worker bar. */
 function NodeList({ run, t }: { run: GoalTreeRunView; t: (key: GoalTreeKey) => string }) {
   return (
     <ul className="rdgt-list">
-      {run.nodes.map(node => {
+      {orderOutlineNodes(run.nodes).map(node => {
         const status = STATUS_GLYPH[node.status] ?? STATUS_GLYPH.pending!
         // type=goal root: the original requirement's final objective — its own glyph
         // (◎) and posture; plain nodes (type null) render exactly as before.
+        // type=sub/accept containers (wake-model WBS layer) render as structure
+        // rows (▤) excluded from claim posture; work slots carry the wake badge
+        // [k/K] from their duty-segment quota when stamped/known.
         const isGoal = node.type === 'goal'
+        const isContainer = node.type === 'sub' || node.type === 'accept'
+        const wakeBadge = !isGoal && !isContainer && (node.wakeCount > 0 || node.wakeMax !== null)
+          ? ` [${node.wakeCount}${node.wakeMax !== null ? `/${node.wakeMax}` : ''}]`
+          : ''
         return (
           <li
             key={node.id}
@@ -380,8 +439,11 @@ function NodeList({ run, t }: { run: GoalTreeRunView; t: (key: GoalTreeKey) => s
             data-status={node.status}
             data-node-type={node.type ?? undefined}
           >
-            <span aria-hidden>{isGoal ? '◎' : status.glyph}</span>
-            <span className="rdgt-itemTitle" title={node.task ?? node.title}>{node.id} · {node.title}</span>
+            <span aria-hidden>{isGoal ? '◎' : isContainer ? '▤' : status.glyph}</span>
+            <span className="rdgt-itemTitle" title={node.task ?? node.title}>
+              {node.id}{isContainer ? ` {${node.type}}` : ''} · {node.title}
+            </span>
+            {wakeBadge !== '' && <span className="rdgt-wake" data-duty={node.duty ?? undefined}>{wakeBadge}{node.duty !== null ? `·${node.duty}` : ''}</span>}
             {node.claimedBy !== null && <span className="rdgt-itemWorker">@{node.claimedBy}</span>}
             {node.blockedBy.length > 0 && <span className="rdgt-blocked">{t('blocked')} ← {node.blockedBy.join('+')}</span>}
           </li>

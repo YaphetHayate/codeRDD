@@ -176,15 +176,26 @@ async function serveLiveness(
   const sessionIdParam = url.searchParams.get('session_id')
   if (sessionIdParam !== null && sessionIdParam.trim() !== '') {
     // session-keyed probe (inplace-redo-session-reuse): registry direct, no
-    // sidecar resolution — the run/node query params are ignored in this form
-    let liveness: 'alive' | 'dead' = 'dead'
+    // sidecar resolution — the run/node query params are ignored in this form.
+    // Failure semantics (liveness-false-dead fix): a registry MISS is
+    // 'unknown', never 'dead' — the in-process registry only carries LOADED
+    // conversations, so a miss conflates "unloaded but resumable" with
+    // "terminal", and a false 'dead' unlocks exactly the wrong action
+    // (reclaim/prune of a live worker). A probe EXCEPTION is equally
+    // 'unknown' — errors are not death verdicts. Only an explicit terminal
+    // signal may ever answer 'dead'; this view has none, so it never does.
+    let liveness: 'alive' | 'unknown' = 'unknown'
+    let reason = 'session not live in this process (unloaded or terminal — unverifiable here)'
     try {
       const agent = ctx.agents.get(sessionIdParam as SessionId)
-      liveness = agent !== undefined ? 'alive' : 'dead'
-    } catch {
-      liveness = 'dead'
+      if (agent !== undefined) {
+        liveness = 'alive'
+        reason = 'agents registry (session-keyed probe)'
+      }
+    } catch (error) {
+      reason = `registry probe failed: ${error instanceof Error ? error.message : String(error)}`
     }
-    send(200, { session_id: sessionIdParam, liveness, reason: 'agents registry (session-keyed probe, same source as callback delivery)' })
+    send(200, { session_id: sessionIdParam, liveness, reason })
     return
   }
   const run = url.searchParams.get('run')
@@ -199,19 +210,26 @@ async function serveLiveness(
     // Liveness shortcut (plugin-perf L2): the node-keyed probe reads the one
     // claim sidecar directly instead of aggregating every run — the binding
     // lives in state/claims/<node>.json and nothing else is needed.
+    // Failure semantics: identical to the session-keyed form above
+    // (liveness-false-dead fix) — miss and exception both answer 'unknown';
+    // this view never asserts 'dead'.
     const sessionId = await readClaimSession(join(repoRoot, '.rdd', 'goal-trees'), run, node)
     if (sessionId === null) {
       send(200, { run, node, session_id: null, liveness: 'unknown', reason: 'no dsh session binding on the claim sidecar' })
       return
     }
-    let liveness: 'alive' | 'dead' = 'dead'
+    let liveness: 'alive' | 'unknown' = 'unknown'
+    let reason = 'session not live in this process (unloaded or terminal — unverifiable here)'
     try {
       const agent = ctx.agents.get(sessionId as SessionId)
-      liveness = agent !== undefined ? 'alive' : 'dead'
-    } catch {
-      liveness = 'dead'
+      if (agent !== undefined) {
+        liveness = 'alive'
+        reason = 'agents registry (same source as callback delivery)'
+      }
+    } catch (error) {
+      reason = `registry probe failed: ${error instanceof Error ? error.message : String(error)}`
     }
-    send(200, { run, node, session_id: sessionId, liveness, reason: 'agents registry (same source as callback delivery)' })
+    send(200, { run, node, session_id: sessionId, liveness, reason })
   } catch (error) {
     send(500, { error: error instanceof Error ? error.message : String(error) })
   }

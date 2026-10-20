@@ -541,6 +541,34 @@ try {
     $r = Invoke-GoalTreeLeaf @('-Command','report','-RunId','gate-i','-Worker','wi2','-CallbackFile',$cf)
     $en = (@($r.data.validation.notes) -join ' ')
     Assert-True ($r.success -eq $true -and $r.data.accepted -eq $true -and $en -match 'manifest_missing') 'I2 missing extras: accepted with manifest_missing note'
+
+    # ---- prune claimed-node liveness gate (n49->n52 double-work root fix) ----
+    # CLI claim => no dsh binding => liveness unknown: young claim refuses
+    # (PRUNE_UNPROVEN_DEAD), past-threshold claim demands -UserVerdict, the
+    # ruling authorizes it, and pending nodes prune unchanged (no gate).
+    $r = Invoke-GoalTree @('-Command','start','-RunId','gate-pg','-Goal','g','-RefRoots','.')
+    Assert-True ($r.success -eq $true) 'PG0 start gate-pg'
+    $null = Invoke-GoalTree @('-Command','round-start','-RunId','gate-pg')
+    $tf = Write-TempJson 'pg1.json' @(@{ title='pg work'; task='t' })
+    $r = Invoke-GoalTree @('-Command','graft','-RunId','gate-pg','-Parent','n1','-TasksFile',$tf)
+    $pg1 = $r.data.grafted[0].id
+    $null = Invoke-GoalTreeLeaf @('-Command','claim','-RunId','gate-pg','-NodeId',$pg1,'-Worker','wpg')
+    $r = Invoke-GoalTree @('-Command','prune','-RunId','gate-pg','-NodeId',$pg1,'-Reason','test: young claim')
+    Assert-True ($r.success -eq $false -and $r.error.code -eq 'PRUNE_UNPROVEN_DEAD') 'PG1 young claimed node refuses prune (liveness unknown, timeout marks != dead)'
+    # age the claim past the threshold, then demand a ruling
+    $treePath = Join-Path $Work '.rdd/goal-trees/gate-pg/state/tree.json'
+    $treeJson = Get-Content $treePath -Raw -Encoding UTF8 | ConvertFrom-Json
+    foreach ($n in @($treeJson.nodes)) { if ($n.id -eq $pg1) { $n.claimed_at = (Get-Date).ToUniversalTime().AddMinutes(-61).ToString('yyyy-MM-ddTHH:mm:ss.fffZ') } }
+    [System.IO.File]::WriteAllText($treePath, ($treeJson | ConvertTo-Json -Depth 8), (New-Object System.Text.UTF8Encoding($false)))
+    $r = Invoke-GoalTree @('-Command','prune','-RunId','gate-pg','-NodeId',$pg1,'-Reason','test: aged claim no verdict')
+    Assert-True ($r.success -eq $false -and $r.error.code -eq 'PRUNE_DEATH_UNPROVEN_NEEDS_VERDICT') 'PG2 aged unprovable claim demands -UserVerdict'
+    $r = Invoke-GoalTree @('-Command','prune','-RunId','gate-pg','-NodeId',$pg1,'-Reason','test: user ruled','-UserVerdict','user: 该会话已确认离线，同意剪枝')
+    Assert-True ($r.success -eq $true -and $r.data.pruned -contains $pg1) 'PG3 user ruling authorizes the prune (audit carries the verbatim verdict)'
+    $tf = Write-TempJson 'pg2.json' @(@{ title='pg pending'; task='t2' })
+    $r = Invoke-GoalTree @('-Command','graft','-RunId','gate-pg','-Parent','n1','-TasksFile',$tf)
+    $pg2 = $r.data.grafted[0].id
+    $r = Invoke-GoalTree @('-Command','prune','-RunId','gate-pg','-NodeId',$pg2,'-Reason','test: falsified')
+    Assert-True ($r.success -eq $true) 'PG4 pending node prunes without the gate (normal falsify/abandon path)'
 }
 finally {
     Pop-Location

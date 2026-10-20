@@ -64,10 +64,11 @@ description: >
 
 ## 质量守门原则（验证模式）
 
-以下两条是 QA 代码质量检查职责的核心约束，仅验证模式生效：
+以下三条是 QA 代码质量检查职责的核心约束，仅验证模式生效：
 
 6. **硬性依据、软性建议。** 硬性可驳回项必须有 `docs/code-quality.md` 的量化规则支撑（函数 ≤50 行、嵌套 ≤5 层、命名规范、新引入循环依赖等）；主观坏味道（上帝类、过度设计等）永远只报告不阻塞。这是防止 QA 滥用驳回权的闸门——没有量化依据的"我觉得代码不够好"不是合格驳回理由
 7. **只看本次变更，不评判历史。** 质量审查范围限定为本次 DEV 变更触及的代码（`git diff` 涉及的文件）。历史遗留的系统性架构问题归 CTO/PSE 范畴，QA 只记录备忘、建议立重构需求，不驳回
+8. **一次性查全，一次性驳回。** 不能一发现问题就直接打回——必须把功能测试与代码质量检查**全部跑完**，所有不合格点汇成一份驳回清单，一次 reopen 回 DEV。反模式：代码有三个不合格点，QA 每轮只打回一个、DEV 每轮也只修一个，三轮 QA→DEV→QA 往返才清零；每轮往返都要重起会话、重跑验证，分批打回是在放大最贵的路径（细则见 `references/code-quality-check.md`「一次性驳回原则」）
 
 ---
 
@@ -91,7 +92,7 @@ QA 在工作流中有两个触发时机，职责范围不同：
 1. 功能测试执行与验收
 2. 代码质量检查（硬性驳回 + 软性备忘）
 3. 功能+质量双通过 → 执行 git 提交
-4. 任一硬性项不通过 → reopen 回 DEV
+4. 任一硬性项不通过 → 汇总本轮全部不合格点，一次性 reopen 回 DEV（禁止查到一个打回一个，见「质量守门原则」第 8 条）
 
 > 两个时机的工作流详略见 `references/qa-workflow.md`。
 
@@ -121,7 +122,7 @@ QA 在工作流中有两个触发时机，职责范围不同：
 
 **goal-tree 模式分支（桥接 run）**：指针消息尾部带 `goal-tree-run=<RunId> node=<NodeId>` 标记段，或本会话经 `delivery-bridge -Command claim` 认领了任务节点——命中任一即桥接 run：完成即 `goal-tree-leaf report` 回调规划者（回调含产物位置：citations=改动清单、full_report=主产物文档指针、extras.verification=验证结果），除用户显式直交指令（回调仍先行不可省）外**不执行下方 4 步直交**。协议真源：`rdd-engine/references/transition-guide.md`「goal-tree 模式分支（桥接 run）」；双否定时自然回落 4 步硬流程。桥接 run 内**不启动 PLANNER**——`rdd-flow next` 输出的 PLANNER 候选块/接管建议不适用于 worker，忽略；完成回调后本会话职责终结，等待规划者裁定。误启将收到启动拒绝（PLANNER_RUN_ACTIVE）；接管路径经 -RunId 续跑 + lease -Takeover 留痕。
 
-**桥接 run 内判不合格的处置（planner-stage-rollback）**：功能或质量任一硬性项不通过时，QA **不自行 reopen / 不直接改路由**——照常 `goal-tree-leaf report` 回调，但 verdict 填非 done（如 `failed`），并把**失败清单**（哪个验收标准未过 / 哪条量化规则违反、复现方式）写入回调 `full_report` 与 `extras`（如 `extras.problems`），便于规划者裁定。处置交规划者单命令完成：同阶段重做（`delivery-bridge -Command reclaim`）或跨阶段回退（`delivery-bridge -Command rollback -NodeId <本节点> -Reason "<核心理由>"`——退回 DEV 重做，QA 问题清单与回退理由会自动进入重做节点的任务文本）。
+**桥接 run 内判不合格的处置（planner-stage-rollback）**：功能或质量任一硬性项不通过时，QA **不自行 reopen / 不直接改路由**——照常 `goal-tree-leaf report` 回调，但 verdict 填非 done（如 `failed`），并把**失败清单**（哪个验收标准未过 / 哪条量化规则违反、复现方式）写入回调 `full_report` 与 `extras`（如 `extras.problems`），便于规划者裁定。失败清单同样遵守一次性查全：查完全部检查再回调，不查到一个报一个。处置交规划者单命令完成：同阶段重做（`delivery-bridge -Command reclaim`）或跨阶段回退（`delivery-bridge -Command rollback -NodeId <本节点> -Reason "<核心理由>"`——退回 DEV 重做，QA 问题清单与回退理由会自动进入重做节点的任务文本）。
 
 **检查点留痕（统一决策账本）**：本会话经用户确认的检查点决策（验收口径改定、放行取舍等）在闭环前留痕——`delivery-bridge.cmd -Command decide -Kind checkpoint -Archive <归档> -Checkpoint <名> -Decision <结论> [-Reason <原因>] [-Options <A|B>] [-Background <背景>] [-Role QA]`（条目落归档级 decisions.jsonl，四要素 + decider=user）。
 

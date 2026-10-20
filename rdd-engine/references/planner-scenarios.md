@@ -39,7 +39,11 @@ PM 归档（longTask 信号触发）→ start-role -Role PLANNER -TaskJson ...�
 
 **职责分工**：推送全自动（解锁即推、同 task×role 存活会话复用、session-create 类失败自动重试），规划者的工作收敛为**裁定**（settle / reclaim / rollback / replan）与**异常处置**（pointer 类推送失败人工 `dispatch` 重推、依赖调整、驳回移交、冲突调和）。长任务纪律：等 > 询问用户 > 回收。
 
-**等待期对账纪律（干等是反模式）**：回调通知与自动推送都是**尽力而为的运输层**——watcher 停摆、租约漂移、pointer 类失败都会让通知缺席，但引擎状态不会说谎。「等」的动作定义包含对账：每次被唤醒（用户消息/升级投递/任意触达）先 `status -RunId` 对账，重点看四类信号——`reported` 节点（**回调可能未达但账本已记**，直接四查 settle）、`pushes`/`dispatches.failed`（session-create 类触碰即重试、pointer 类人工 `dispatch` 重推）、`held_by_conflict`/`held_by_file_overlap`（待消解）、`warnings`（悬挂轮 / pending_sync）。**「没收到通知」≠「没发生」——以 status/ledger 为准，不以 inbox 为准。**
+**等待期纪律（对账跟决策走，决策跟事件走）**：回调通知与自动推送仍是**尽力而为的运输层**，但兜底已机械化——面板 watcher 定时臂（整/半点）扫描活动树，凡存在**已回调待裁决**（reported 未 settle）节点且规划者 30 分钟内无活动（双谓词：`idle` 且无近期会话事件），即带统一清单唤醒（digest；即时回调可能未达/丢失时由此补位）。因此：
+- **被唤醒 = 消息自带待决事实**（单条回调或 digest 清单）：先处理清单内节点，**不做全局 status 对账**；仅当处置需要全树视野（graft 下探方向、rollback 波及面判断）时查对应 run。
+- **升级投递零对账**：消息自带裁定上下文（checkpoint/question/inputs），呈用户 → `decide` 记账，消息内闭环。
+- **主动 status 仅三种时机**：处置失败排障（按 `SETTLE_EVIDENCE_REJECTED` / `ROLLBACK_GRAFT_FAILED` 等错误指引查对应 run；pointer 类推送失败 `dispatch` 重推亦在此列）／用户询问态势／**静默自检**（>1h 无任何唤醒且存在在途认领——运输层可能整体停摆，含定时臂自身，查一次确认）。
+- **「没收到通知」≠「没发生」——以 status/ledger 为准，不以 inbox 为准**——不变；变的只是查询时机：从「每次唤醒」收窄到「决策/排障/被问」。
 
 **阶段链模型**：任务路由带 `phase`，全序 `REQ → DESIGN → IMPL → VERIFY → 完成`；阶段内角色白名单并行（DESIGN = CTO∥UX∥QA，QA 测试先行——尽量与 CTO 同期而非堆到 VERIFY，见速查 6）。多 owner 任务颁布时每角色各建一个链头节点；settle 阶段感知：阶段内收窄不流转，最后一个 owner settle 才整组切换阶段并收敛 graft 下一阶段链头。rollback 显式 `-To <角色集> -Phase <阶段>` 指定回退目标（回退 REQ 可达：`-To "PM" -Phase REQ`）；展示面用 `∥`（阶段内并行）/`→`（阶段间）渲染。旧归档（phase=null）保守降级为原线性链行为。阶段白名单真源 `references/phase-model.md`。
 

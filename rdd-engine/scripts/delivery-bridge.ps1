@@ -213,6 +213,18 @@ param(
                                    # file); R1 constitutional hard floor is force-merged
                                    # back no matter what the file says
     [switch]$NoPush,              # promulgate isolation: build the run but suppress
+                                   # every push (test/incident isolation)
+
+    # promulgate (goal-tree-wake-model): 'wake' promulgates the run in the new
+    # tree shape — requirement containers (type=sub) at the goal root with
+    # engine-materialized role slots beneath them, requirement-level dependency
+    # edges, and redo/reset lifecycle instead of prune+rebuild on rework waves
+    # (fail waves / cross-stage rollbacks / stage re-entries wake the SAME slot,
+    # the tree never grows). Default 'legacy' keeps the chain-head shape and
+    # every anchor policy byte-identical (regression anchor); the wake branches
+    # below key on bridge.json shape=wake only.
+    [ValidateSet("legacy", "wake")]
+    [string]$Shape = "legacy",
                                    # auto-push for its WHOLE lifetime — persisted as
                                    # bridge.json no_push=true and consumed by every
                                    # auto-dispatch trigger (engine test suite / incident
@@ -2434,6 +2446,32 @@ function New-AcceptanceChainGraftItem {
     }
 }
 
+function Invoke-WakeAcceptanceGraft {
+    # wake-model acceptance graft (goal-tree-wake-model §3.1): chain nodes hang
+    # as role slots under a type=accept container at the goal root (created once,
+    # recorded in acceptance.chain_container). Keeps integrate/accept node ids as
+    # SLOT ids so the unified tree-level branch / claim / settle machinery is
+    # untouched.
+    param([string]$RunId, $Bridge, $Spec, $Item)
+    $a = Get-AcceptanceSection $Bridge
+    $container = $null
+    if ($null -ne $a -and (Test-PropPresent $a 'chain_container') -and $a['chain_container']) { $container = [string]$a['chain_container'] }
+    if ([string]::IsNullOrWhiteSpace($container)) {
+        $cItem = @{
+            title = "[验收] $($Bridge.goal.title)"
+            task  = "验收容器（type=accept，WBS 层，不可认领）：[集成/联调]与[整体验收]角色槽的挂载点（goal-tree-wake-model §3.1）。"
+            type  = "accept"
+        }
+        $gc = Invoke-GraftOne $RunId ([string]$Bridge.goal_root) $cItem
+        if (-not $gc.ok) { return @{ ok = $false; text = $gc.text } }
+        $container = $gc.node_id
+    }
+    $Item['duty'] = ([string]$Spec.role).ToLower()
+    $g = Invoke-GraftOne $RunId $container $Item
+    if (-not $g.ok) { return @{ ok = $false; text = $g.text; container = $container } }
+    return @{ ok = $true; node_id = $g.node_id; container = $container }
+}
+
 function Update-AcceptanceChain {
     # Timing-expression state machine (idempotent, rides every auto-dispatch
     # trigger so a crash window self-heals): planned -> graft [集成/联调] when all
@@ -2462,7 +2500,14 @@ function Update-AcceptanceChain {
         }
         $spec = @($script:AcceptanceChainSpecs | Where-Object { $_.kind -eq "integrate" })[0]
         $item = New-AcceptanceChainGraftItem $spec "requirements/overview.md" ([string]$a['criteria_ref']) ([string]$Bridge.run_id)
-        $g = Invoke-GraftOne ([string]$Bridge.run_id) ([string]$Bridge.goal_root) $item
+        $g = $null
+        if (Test-WakeShapeBridge $Bridge) {
+            $wg = Invoke-WakeAcceptanceGraft ([string]$Bridge.run_id) $Bridge $spec $item
+            if ($wg.ok) { $a['chain_container'] = $wg.container; $g = @{ ok = $true; node_id = $wg.node_id } } else { $g = @{ ok = $false; text = $wg.text } }
+        }
+        else {
+            $g = Invoke-GraftOne ([string]$Bridge.run_id) ([string]$Bridge.goal_root) $item
+        }
         if (-not $g.ok) {
             # ①：graft 失败落账（retries on next trigger——但失败原因必须可见）
             $a['last_error'] = "acceptance chain graft failed (retries on next trigger): $($g.text)"
@@ -2494,7 +2539,13 @@ function Update-AcceptanceChainTail {
     if ($integrateDone -and -not ([string]$A['accept_node'])) {
         $spec = @($script:AcceptanceChainSpecs | Where-Object { $_.kind -eq "accept" })[0]
         $item = New-AcceptanceChainGraftItem $spec "requirements/overview.md" ([string]$A['criteria_ref']) ([string]$Bridge.run_id)
-        $g = Invoke-GraftOne ([string]$Bridge.run_id) ([string]$Bridge.goal_root) $item
+        if (Test-WakeShapeBridge $Bridge) {
+            $wg = Invoke-WakeAcceptanceGraft ([string]$Bridge.run_id) $Bridge $spec $item
+            if ($wg.ok) { $A['chain_container'] = $wg.container; $g = @{ ok = $true; node_id = $wg.node_id } } else { $g = @{ ok = $false; text = $wg.text } }
+        }
+        else {
+            $g = Invoke-GraftOne ([string]$Bridge.run_id) ([string]$Bridge.goal_root) $item
+        }
         if (-not $g.ok) {
             $A['last_error'] = "acceptance chain graft failed (retries on next trigger): $($g.text)"
             $A['last_error_at'] = Get-UtcNowIso
@@ -3457,15 +3508,24 @@ function Get-DesignReviewVerdict {
     # 总裁定推导（验收 2：引擎推导，不采信声明值）：pass ⇔ 全文档 verdict=pass 且
     # 全局（docs[].findings + summary.cross_design）零 blocking。blocking 清单
     # （cross_design 项按 involved_docs 展开）供 fail 波与记账消费。
-    param($ReviewData)
+    # wake 形态（goal-tree-wake-model §5.2）四判据收窄：审查者标 blocking 的发现
+    # 只有落在机械四判据维度（internal_consistency 内部自相矛盾 / cross_design
+    # 跨文档冲突 / requirement_alignment|user_ruling|feasibility 违反需求·用户裁
+    # 决·不可实现——其中当前契约枚举（DesignReviewDims）可表达的是前两者 +
+    # alignment=违反需求对齐）才计 fail；其余（change_map/completeness/…）降级
+    # deferred（doc verdict=fail 的声明通道同样被引擎推导收编——不采信声明值）。
+    # deferred 清单交债务账本。legacy（缺键/shape=legacy）逐字节保持旧行为。
+    param($ReviewData, [switch]$WakeShape)
+    $script:DebtBlockingDimensions = @('internal_consistency', 'cross_design', 'requirement_alignment', 'user_ruling', 'feasibility')
     $verdict = "pass"
     $blocking = @()
+    $deferred = @()
     foreach ($d in @(Convert-ToSafeArray $ReviewData['docs'])) {
-        if (([string]$d['verdict']) -ne 'pass') { $verdict = "fail" }
         foreach ($f in @(Convert-ToSafeArray $d['findings'])) {
             if (([string]$f['severity']) -eq 'blocking') {
-                $verdict = "fail"
-                $blocking += @{ doc = [string]$d['doc']; dimension = [string]$f['dimension']; item = [string]$f['item']; suggestion = [string]$f['suggestion'] }
+                $entry = @{ doc = [string]$d['doc']; dimension = [string]$f['dimension']; item = [string]$f['item']; suggestion = [string]$f['suggestion'] }
+                if ($WakeShape -and $script:DebtBlockingDimensions -notcontains ([string]$f['dimension'])) { $deferred += $entry }
+                else { $blocking += $entry; $verdict = "fail" }
             }
         }
     }
@@ -3473,14 +3533,20 @@ function Get-DesignReviewVerdict {
     if ($null -ne $summary) {
         foreach ($f in @(Convert-ToSafeArray $summary['cross_design'])) {
             if (([string]$f['severity']) -eq 'blocking') {
-                $verdict = "fail"
                 foreach ($doc in @(Convert-ToSafeArray $f['involved_docs'])) {
+                    # cross_design 本身是四判据之一：wake 与 legacy 都计 fail
                     $blocking += @{ doc = [string]$doc; dimension = "cross_design"; item = [string]$f['item']; suggestion = [string]$f['suggestion'] }
+                    $verdict = "fail"
                 }
             }
         }
     }
-    return @{ verdict = $verdict; blocking = @($blocking) }
+    if (-not $WakeShape) {
+        foreach ($d in @(Convert-ToSafeArray $ReviewData['docs'])) {
+            if (([string]$d['verdict']) -ne 'pass') { $verdict = "fail" }
+        }
+    }
+    return @{ verdict = $verdict; blocking = @($blocking); deferred = @($deferred) }
 }
 
 function Test-DesignReviewDocEntry {
@@ -3782,13 +3848,91 @@ function Resolve-DesignReviewGraftParent {
     return $goalRoot
 }
 
+# ----------------------------------------------------------------------------
+# 债务账本（goal-tree-wake-model §5.3）：非阻塞审查发现按 doc+item 去重入账；
+# 同一项跨 ≥2 个阶段未修自动升 blocking（escalated，老化升级）；单文档 open>N
+# 触发 threshold_flag（数量门槛升级 planner）。真源 = state/debt.json，status/面
+# 板按需聚合（树存储不镜像——单一真源纪律）。清偿/触发点修订微周期属后续切片。
+# ----------------------------------------------------------------------------
+
+function Read-DebtLedger {
+    param([string]$RunDir)
+    $p = Join-Path $RunDir 'state/debt.json'
+    if (-not (Test-Path $p)) { return @() }
+    try {
+        $raw = [System.IO.File]::ReadAllText($p, [System.Text.Encoding]::UTF8) | ConvertFrom-Json
+        # deep-hashtable normalization（与 Read-Bridge 同纪律）：下游按键索引/回写
+        return @(Convert-PSObjectToHashtable $raw)
+    } catch { return @() }
+}
+
+function Write-DebtLedger {
+    param([string]$RunDir, $Entries)
+    $dir = Join-Path $RunDir 'state'
+    if (-not (Test-Path $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
+    [System.IO.File]::WriteAllText((Join-Path $dir 'debt.json'), ($Entries | ConvertTo-Json -Depth 6), $script:Utf8NoBom)
+}
+
+function Add-DebtEntries {
+    # wake 审查裁定落账（Update-DesignReviewGrafted / Submit-DesignReviewVerdict）：
+    # deferred 发现入账。去重键 doc|item——已 open 的同项追加阶段到 deferred_stages
+    # （distinct），≥2 段 → status=escalated（老化升级：下次审查该维度强制 blocking
+    # 语义由 escalated 状态承担）；新项 open 入账。返回更新后清单。
+    param([string]$RunDir, [string]$StageId, $Deferred)
+    $entries = @(Read-DebtLedger $RunDir)
+    foreach ($d in @($Deferred)) {
+        $key = ("{0}|{1}" -f [string]$d['doc'], [string]$d['item'])
+        $hit = $null
+        foreach ($e in @($entries)) { if (([string]$e['key']) -eq $key -and ([string]$e['status']) -ne 'cleared') { $hit = $e; break } }
+        if ($null -ne $hit) {
+            $stages = @()
+            foreach ($s in @($hit['deferred_stages'])) { $stages += [string]$s }
+            if ($stages -notcontains $StageId) { $stages += $StageId }
+            $hit['deferred_stages'] = @($stages)
+            if ($stages.Count -ge 2) { $hit['status'] = 'escalated' }
+        }
+        else {
+            $entries += @{
+                key = $key; doc = [string]$d['doc']; dimension = [string]$d['dimension']
+                item = [string]$d['item']; suggestion = [string]$d['suggestion']
+                deferred_stages = @($StageId); status = 'open'
+            }
+        }
+    }
+    Write-DebtLedger $RunDir $entries
+    return @($entries)
+}
+
+function Get-DebtSummary {
+    # status 面（§5.3 可见性）：open/escalated 计数 + 每文档 ⚠n + 数量门槛标记
+    # （单文档 open > 5 → threshold_flag=true，升级 planner 裁定修订波）。
+    param([string]$RunDir)
+    $entries = @(Read-DebtLedger $RunDir)
+    $open = @($entries | Where-Object { ([string]$_.status) -eq 'open' })
+    $escalated = @($entries | Where-Object { ([string]$_.status) -eq 'escalated' })
+    $perDoc = @{}
+    foreach ($e in @($open) + @($escalated)) {
+        $doc = [string]$e['doc']
+        if (-not $perDoc.Contains($doc)) { $perDoc[$doc] = 0 }
+        $perDoc[$doc] = [int]$perDoc[$doc] + 1
+    }
+    return @{
+        open       = $open.Count
+        escalated  = $escalated.Count
+        warn_badge = $open.Count + $escalated.Count
+        per_doc    = $perDoc
+        threshold  = $(foreach ($k in @($perDoc.Keys)) { if ([int]$perDoc[$k] -gt 5) { $true } } ) -contains $true
+        note       = "debt ledger (goal-tree-wake-model §5.3): deferred non-blocking findings; escalated = deferred across >=2 stages (aging); threshold = >5 open per doc"
+    }
+}
+
 function Get-DesignReviewTaskBlockers {
     # blocking -> 受影响任务映射（Invoke-DesignReviewFailWave 子过程）：tid -> @(
     # blocking)；文件不可读时全部有产物任务按审查失败整体回退（空 blocking 列表）。
-    param($ReviewRead, $StageDocs)
+    param($ReviewRead, $StageDocs, [switch]$WakeShape)
     $taskBlockers = @{}
     if ($ReviewRead.ok) {
-        $dv = Get-DesignReviewVerdict $ReviewRead.data
+        $dv = Get-DesignReviewVerdict $ReviewRead.data -WakeShape:$WakeShape
         foreach ($b in @($dv.blocking)) {
             $docKey = [string]$b['doc']
             $mapped = @()
@@ -3825,6 +3969,19 @@ function Invoke-DesignReviewFailPrune {
     param($Bridge, $BridgeTask, [int]$TaskId, [string]$PruneReason)
     $warnings = @()
     if ($null -eq $BridgeTask -or -not ($BridgeTask.Contains('stages') -and $null -ne $BridgeTask['stages'])) { return @() }
+    # wake-model branch (goal-tree-wake-model §4.1): post-DESIGN slots are RESET
+    # (pending, wake preserved — they will re-materialize when the route returns),
+    # never pruned: the tree does not lose structure to a rework wave.
+    if (Test-WakeShapeBridge $Bridge) {
+        foreach ($role in @($BridgeTask['stages'].Keys)) {
+            if (@($script:PhaseRoles['DESIGN']) -contains $role) { continue }
+            $nid = [string]$BridgeTask['stages'][$role]
+            if ([string]::IsNullOrWhiteSpace($nid)) { continue }
+            $ro = Invoke-WakeReopenSlot ([string]$Bridge.run_id) $nid $PruneReason "design-review fail-wave" "wake-wave:reset" $null
+            if (-not $ro.ok) { $warnings += "fail-wave wake-reset of $role slot $nid (task #$TaskId) failed: $($ro.warning)" }
+        }
+        return @($warnings)
+    }
     $treeData = Get-TreeStatusView ([string]$Bridge.run_id)
     foreach ($role in @($BridgeTask['stages'].Keys)) {
         if (@($script:PhaseRoles['DESIGN']) -contains $role) { continue }
@@ -3907,7 +4064,7 @@ function Invoke-DesignReviewFailWave {
     if (-not $rv.ok) {
         $warnings += "DesignReviewFile 不可读（$($rv.error)）——全部有产物任务按审查失败整体回退"
     }
-    $taskBlockers = Get-DesignReviewTaskBlockers $rv $dd
+    $taskBlockers = Get-DesignReviewTaskBlockers $rv $dd -WakeShape:$(Test-WakeShapeBridge $Bridge)
     foreach ($tidKey in @($taskBlockers.Keys)) {
         $tid = [int]$tidKey
         $task = Find-ArchiveTask $FlowTasks $tid
@@ -3930,6 +4087,31 @@ function Invoke-DesignReviewFailWave {
         Write-BridgeFile $RunDir $Bridge | Out-Null
     }
     return @{ bridge = $Bridge; rolled = @($rolled); deferred = @($deferred); warnings = @($warnings) }
+}
+
+function Invoke-WakeReviewGraft {
+    # wake-model design-review graft: the [设计审查·S<k>] AUDITOR slot hangs under
+    # a dedicated type=sub review container at the goal root (created once,
+    # bridge.review_container). The review slot itself stays round-scoped (graft /
+    # reclaim per review round — bounded churn, never a requirement-slot rebuild).
+    param([string]$RunId, $Bridge, $Item)
+    $container = $null
+    if (Test-PropPresent $Bridge 'review_container' -And $Bridge['review_container']) { $container = [string]$Bridge['review_container'] }
+    if ([string]::IsNullOrWhiteSpace($container)) {
+        $cItem = @{
+            title = "[设计审查] 汇聚审查"
+            task  = "设计审查容器（type=sub，WBS 层，不可认领）：各阶段 [设计审查·S<k>] AUDITOR 槽挂载点（goal-tree-wake-model §3.2）。"
+            type  = "sub"
+        }
+        $gc = Invoke-GraftOne $RunId ([string]$Bridge.goal_root) $cItem
+        if (-not $gc.ok) { return @{ ok = $false; text = $gc.text; bridge = $Bridge } }
+        $container = $gc.node_id
+        $Bridge['review_container'] = $container
+    }
+    $Item['duty'] = 'design-review'
+    $g = Invoke-GraftOne $RunId $container $Item
+    if (-not $g.ok) { return @{ ok = $false; text = $g.text; bridge = $Bridge } }
+    return @{ ok = $true; node_id = $g.node_id; bridge = $Bridge }
 }
 
 function Update-DesignReviewPlanned {
@@ -3959,6 +4141,15 @@ function Update-DesignReviewPlanned {
     $a = Get-AcceptanceSection $Bridge
     if ($null -ne $a) { $accRef = [string]$a['criteria_ref'] }
     $spec = New-StageDesignReviewSpec $Stage (Get-PlanStageReqRel $Bridge $Stage) ([string]$Bridge.run_id) @($trig.docs) $accRef
+    if (Test-WakeShapeBridge $Bridge) {
+        # wake: AUDITOR slot under the review container (never a bare role node at
+        # the root — the layer lock would refuse it)
+        $wg = Invoke-WakeReviewGraft ([string]$Bridge.run_id) $Bridge $spec.item
+        $Bridge = $wg.bridge
+        if (-not $wg.ok) { return @{ bridge = $Bridge; grafted = $null } }   # retried on the next trigger
+        $Bridge = Set-DesignReviewState $RunDir $Bridge $Stage 'grafted' $wg.node_id 'design_review_grafted' @{ title = $spec.title; docs = @($trig.docs) }
+        return @{ bridge = $Bridge; grafted = @{ node = $wg.node_id; title = $spec.title; stage = [string]$Stage['id'] } }
+    }
     $g = Invoke-GraftOne ([string]$Bridge.run_id) ([string]$Bridge.goal_root) $spec.item
     if (-not $g.ok) { return @{ bridge = $Bridge; grafted = $null } }   # retried on the next trigger
     $Bridge = Set-DesignReviewState $RunDir $Bridge $Stage 'grafted' $g.node_id 'design_review_grafted' @{ title = $spec.title; docs = @($trig.docs) }
@@ -3976,10 +4167,16 @@ function Update-DesignReviewGrafted {
     $rv = Read-DesignReviewFile ([string]$Bridge.archive) ([string]$Stage['id'])
     $verdict = 'fail'
     $blocking = @()
+    $deferredFindings = @()
     if ($rv.ok) {
-        $dv = Get-DesignReviewVerdict $rv.data
+        $dv = Get-DesignReviewVerdict $rv.data -WakeShape:$(Test-WakeShapeBridge $Bridge)
         $verdict = $dv.verdict
         $blocking = @($dv.blocking)
+        $deferredFindings = @($dv.deferred)
+    }
+    # defer 通道（§5.2/§5.3）：非四判据 blocking 发现降级入债——pass 不打回
+    if ($deferredFindings.Count -gt 0) {
+        $null = Add-DebtEntries $RunDir ([string]$Stage['id']) $deferredFindings
     }
     $Bridge = Add-DesignReviewLedger $RunDir $Bridge $Stage $(if ($rv.ok) { $rv.data } else { $null }) $verdict $blocking (Get-DesignReviewLedgerReviewer $Bridge $(if ($rv.ok) { $rv.data } else { $null }))
     # 裁定明细落段（verdict/reviewed_at/basis 与 status 同步持久化）
@@ -4176,9 +4373,14 @@ function Submit-DesignReviewVerdict {
     # 返回 @{ bridge; verdict; blocking; wave; reviewed_at; reviewer }。
     param([string]$RunDir, $Bridge, $Stage, [string]$ModeText, $ReviewData)
     $stageId = [string]$Stage['id']
-    $dv = Get-DesignReviewVerdict $ReviewData
+    $dv = Get-DesignReviewVerdict $ReviewData -WakeShape:$(Test-WakeShapeBridge $Bridge)
     $verdict = [string]$dv.verdict
     $blocking = @($dv.blocking)
+    # defer 通道（§5.2/§5.3，与 grafted 路径同构）：非四判据降级入债
+    $deferredFindings = @($dv.deferred)
+    if ($deferredFindings.Count -gt 0) {
+        $null = Add-DebtEntries $RunDir $stageId $deferredFindings
+    }
     $reviewerText = Get-DesignReviewLedgerReviewer $Bridge $ReviewData
     $Bridge = Add-DesignReviewLedger $RunDir $Bridge $Stage $ReviewData $verdict $blocking $reviewerText
     $dr = $Stage['design_review']
@@ -4283,6 +4485,9 @@ function Get-DesignReviewStatusView {
             review_mode = $modeText
             chain       = $(if ($null -ne $modeText) { "contract (submit)" } else { "legacy (node settle)" })
             reviewers   = @($script:DesignReviewReviewers)
+            # 债务面（goal-tree-wake-model §5.3 可见性）：⚠n / escalated / 数量门槛
+            # ——wake 形态审查 defer 的非阻塞发现聚合；legacy run 恒零（无 defer 通道）。
+            debt        = Get-DebtSummary $RunDir
             stages      = @($rows)
             next_step   = $(if (@($rows | Where-Object { [string]$_.status -eq 'ready' }).Count -gt 0) { "有 ready 阶段：按模板常量表填充 review-input-template.md 机械清单派评审子代理（独立上下文），产出 DesignReviewFile 后 -Action submit 入库" } else { "无待派审阶段" })
         }
@@ -4850,13 +5055,15 @@ function Invoke-GoalRootStart {
     $goalFile = Join-Path ([System.IO.Path]::GetTempPath()) ("bridge-goal-{0}.md" -f ([guid]::NewGuid().ToString("N").Substring(0, 10)))
     [System.IO.File]::WriteAllText($goalFile, $Goal.description, $script:Utf8NoBom)
     try {
-        $r = Invoke-GoalTree @("-Command", "start", "-RunId", $RunId,
+        $startArgs = @("-Command", "start", "-RunId", $RunId,
             "-Goal", "$($Goal.title) — deliver $ArchiveRel",
             "-Title", $Goal.title,
             "-GoalRoot", "-GoalFile", $goalFile,
             "-RefRoots", ".", "-CreatedBy", $CreatedBy,
             "-MaxRounds", "$MaxRounds", "-NodeWidth", "$EffWidth", "-MaxNodes", "$EffMaxNodes",
             "-Notes", "delivery-bridge run for $ArchiveRel")
+        if ($Shape -eq 'wake') { $startArgs += @("-Shape", "wake") }
+        $r = Invoke-GoalTree $startArgs
     }
     finally {
         Remove-Item -LiteralPath $goalFile -Force -ErrorAction SilentlyContinue
@@ -4949,7 +5156,82 @@ function New-BridgeSkeleton {
     # auditor-subagent-review: review_mode 落桥（决策 #4 配置项载体）——有键 = 新链
     # （纯契约）；缺键 = 存量 run 旧链逐字节（决策 #7 缺键兼容判据）。
     if (-not [string]::IsNullOrWhiteSpace($ReviewMode)) { $skel['review_mode'] = [string]$ReviewMode }
+    # goal-tree-wake-model: shape 落桥（缺键 = 旧链 chain-head 形状，逐字节兼容）
+    if ($Shape -eq 'wake') { $skel['shape'] = 'wake' }
     return $skel
+}
+
+# === wake-model helpers (goal-tree-wake-model; active only when bridge.json shape=wake) ===
+
+function Test-WakeShapeBridge {
+    param($Bridge)
+    return ($null -ne $Bridge -and (Test-PropPresent $Bridge 'shape') -and [string]$Bridge['shape'] -eq 'wake')
+}
+
+function Get-TaskContainerNode {
+    # wake promulgate records the requirement container per task (bridge.json
+    # tasks.<id>.container) — the graft anchor for every slot materialization.
+    param($Bridge, [int]$TaskId)
+    if (-not $Bridge.tasks.Contains("$TaskId")) { return $null }
+    $bTask = $Bridge.tasks["$TaskId"]
+    if ($bTask.Contains('container') -and $bTask['container']) { return [string]$bTask['container'] }
+    return $null
+}
+
+function Invoke-WakeReopenSlot {
+    # wake-style reopen of an EXISTING slot (goal-tree-wake-model §4.1): the tree
+    # never grows — reported -> redo (in-place, same holder, wake++), done /
+    # claimed -> reset (back to pending, wake preserved, next claim wakes).
+    # Optional -Duty switches the segment (segment accounting restarts).
+    # Returns @{ ok; node; mode; warning }.
+    param([string]$RunId, [string]$NodeId, [string]$Reason, [string]$FailureRef, [string]$TriggerText, [string]$DutyText)
+    $full = Read-TreeFullNode (Join-Path $script:GoalTreesRoot $RunId) $NodeId
+    $st = if ($full) { [string]$full.status } else { "missing" }
+    if ($st -notin @('done', 'claimed', 'reported')) {
+        return @{ ok = $true; node = $NodeId; mode = "live($st)" }
+    }
+    if ($st -eq 'reported' -and $full.claimed_by) {
+        $args_ = @("-Command", "redo", "-RunId", $RunId, "-NodeId", $NodeId, "-Worker", ([string]$full.claimed_by), "-FailureRef", $FailureRef, "-Trigger", $TriggerText)
+        if (-not [string]::IsNullOrWhiteSpace($DutyText)) { $args_ += @("-Duty", $DutyText) }
+        $r = Invoke-GoalTree $args_
+        if ($r.exit -eq 0 -and $null -ne $r.json -and $r.json.success) {
+            return @{ ok = $true; node = $NodeId; mode = "redo(wake $($r.json.data.wake))" }
+        }
+        $code = if ($null -ne $r.json -and $null -ne $r.json.error) { [string]$r.json.error.code } else { "" }
+        if ($code -eq 'WAKE_QUOTA_EXCEEDED') {
+            # quota exhaustion is an adjudication point (§4.2): surface it loudly,
+            # leave the node as-is — the planner/user must pick a route.
+            return @{ ok = $false; node = $NodeId; mode = "quota-exhausted"; warning = "slot $NodeId wake quota exhausted — adjudicate: escalate / split / waive / budget -SetWakeMax. $($r.text)" }
+        }
+        return @{ ok = $false; node = $NodeId; mode = "redo-failed"; warning = "wake redo of $NodeId failed: $($r.text)" }
+    }
+    # claimed 节点的 reset 活性门（n49→n52 双跑事故的同族修复）：reset 不打断
+    # worker——活会话持有中 reset = 下一 claim 双跑。alive → 拒（defer 等 report，
+    # redo 路径自然接管）；unknown 且未过阈值 → 同样 defer；unknown 过阈值 → 放行
+    # （fail 波/rollback 本身是已裁定的重做决策，与 reclaim 的 -UserVerdict 同级）。
+    if ($st -eq 'claimed') {
+        $live = Get-ClaimLiveness $RunId $NodeId
+        if ($live.liveness -eq 'alive') {
+            return @{ ok = $false; node = $NodeId; mode = "defer-live-holder"; warning = "slot $NodeId is claimed by a LIVE session ($($live.session_id)) — reset deferred to its report (redo path takes over); wave proceeds without touching this slot" }
+        }
+        if ($live.liveness -eq 'unknown') {
+            $ageMin = $null
+            if ($full -and $full.claimed_at) {
+                try { $ageMin = [int]((Get-Date).ToUniversalTime() - [datetime]::Parse($full.claimed_at, $null, [System.Globalization.DateTimeStyles]::RoundtripKind)).TotalMinutes } catch {}
+            }
+            if ($null -eq $ageMin -or $ageMin -lt $DeadClaimMinutes) {
+                $shownAge = if ($null -ne $ageMin) { $ageMin } else { "?" }
+                return @{ ok = $false; node = $NodeId; mode = "defer-unproven"; warning = "slot $NodeId claim liveness unknown ($($live.reason)), claim only $shownAge min old (< $DeadClaimMinutes) — reset deferred (timeout marks ≠ dead); it re-enters on the next wave trigger" }
+            }
+        }
+    }
+    $rargs = @("-Command", "reset", "-RunId", $RunId, "-NodeId", $NodeId, "-Reason", $Reason)
+    if (-not [string]::IsNullOrWhiteSpace($DutyText)) { $rargs += @("-Duty", $DutyText) }
+    $r = Invoke-GoalTree $rargs
+    if ($r.exit -eq 0 -and $null -ne $r.json -and $r.json.success) {
+        return @{ ok = $true; node = $NodeId; mode = "reset($($r.json.data.from))" }
+    }
+    return @{ ok = $false; node = $NodeId; mode = "reset-failed"; warning = "wake reset of $NodeId failed: $($r.text)" }
 }
 
 function Invoke-InitialChainGrafts {
@@ -4959,6 +5241,57 @@ function Invoke-InitialChainGrafts {
     #    settles). Returns @{ bridge; initial_nodes_of_task }.
     param([string]$RunId, $Plan, $Bridge, [string]$ArchiveName, [string]$AcceptanceRef)
     $initialNodesOfTask = @{}
+    # --- wake shape (goal-tree-wake-model §3): one requirement CONTAINER per task
+    #     at the goal root (deps at requirement level between containers) + one
+    #     role SLOT per initial-group role under the container (duty = stage). No
+    #     chain heads at the root; initial_nodes_of_task carries the CONTAINER ids
+    #     so deferred review edges also land container-level (layer rule).
+    if (Test-WakeShapeBridge $Bridge) {
+        $initialContainersOfTask = @{}
+        foreach ($p in $Plan) {
+            $t = $p.task
+            $taskId = [int]$t.id
+            $reqRel = ([string]$t.requirement -replace '\\', '/')
+            $depContainers = @()
+            foreach ($d in $p.dep_ids) { if ($initialContainersOfTask.ContainsKey($d)) { $depContainers += $initialContainersOfTask[$d] } }
+            $containerItem = @{
+                title = [string]$t.title
+                task  = "需求容器（WBS 层，不可认领）：task #$taskId —— $([string]$t.title)。判据与任务正文见 $reqRel；本容器聚合该需求的全部角色槽（goal-tree-wake-model）。"
+                type  = "sub"
+            }
+            if ($depContainers.Count -gt 0) { $containerItem['depends_on'] = @($depContainers) }
+            $gc = Invoke-GraftOne $RunId ([string]$Bridge.goal_root) $containerItem
+            if (-not $gc.ok) { Write-ErrorResult "PROMULGATE_GRAFT_FAILED" "wake container graft failed for task ${taskId}: $($gc.text)" 3 }
+            $initialContainersOfTask[$taskId] = $gc.node_id
+            $initialNodesOfTask[$taskId] = @($gc.node_id)
+            $designRels = @()
+            foreach ($d in @(Convert-ToSafeArray $t.designDocs)) { $designRels += ([string]$d.path -replace '\\', '/') }
+            $Bridge.tasks["$taskId"] = @{
+                title          = [string]$t.title
+                requirement    = $reqRel
+                initial_group  = @($p.group)
+                dep_task_ids   = @($p.dep_ids)
+                container      = $gc.node_id
+                stages         = @{}
+            }
+            foreach ($role in @($p.group)) {
+                $conventionsRef = $null
+                if (Test-DesignStageNode ([string]$role) $t) { $conventionsRef = Get-ConventionsRef $Bridge }
+                $taskText = New-NodeTaskText -Title ([string]$t.title) -Stage $role -ReqRel $reqRel -DesignRels $designRels -RunId $RunId -AcceptanceRef $AcceptanceRef -ConventionsRef $conventionsRef
+                $slotItem = @{
+                    title = [string]$t.title
+                    task  = $taskText
+                    role  = $role.ToLower()
+                    ref   = "$ArchiveName/$reqRel"
+                    duty  = $role.ToLower()
+                }
+                $g = Invoke-GraftOne $RunId $gc.node_id $slotItem
+                if (-not $g.ok) { Write-ErrorResult "PROMULGATE_GRAFT_FAILED" "wake slot graft failed for task $taskId ($role): $($g.text)" 3 }
+                Set-NodeTaskStage $Bridge $g.node_id $taskId $role
+            }
+        }
+        return @{ bridge = $Bridge; initial_nodes_of_task = $initialNodesOfTask }
+    }
     foreach ($p in $Plan) {
         $t = $p.task
         $taskId = [int]$t.id
@@ -6301,6 +6634,16 @@ function Invoke-RollbackPrune {
     # phase-model format; legacy runs left the bare single-stage form).
     param([string]$RunDir, $Ctx, [string]$Holder)
     $auditReason = "cross-stage rollback to $(@($Ctx.target_roles) -join '+') @ $($Ctx.target_phase) (by $Holder): $($Ctx.reason); evidence problems: $(@($Ctx.problems) -join '; ')"
+    # wake-model branch (goal-tree-wake-model §4.1): the failed delivery node is
+    # RESET (pending, wake preserved) instead of pruned — the slot stays for the
+    # route's return; the ledger carries the rollback signature.
+    if (Test-WakeShapeBridge $Bridge) {
+        $ro = Invoke-WakeReopenSlot $RunId $NodeId $auditReason "rollback evidence problems: $(@($Ctx.problems) -join '; ')" "wake-rollback" $null
+        if (-not $ro.ok) {
+            Write-ErrorResult "ROLLBACK_PRUNE_FAILED" "wake reset of the failed delivery failed (nothing rolled back): $($ro.warning)" 1
+        }
+        return
+    }
     $rp = Invoke-GoalTree @("-Command", "prune", "-RunId", $RunId, "-NodeId", $NodeId, "-Reason", $auditReason)
     if ($rp.exit -ne 0 -or $null -eq $rp.json -or -not $rp.json.success) {
         Write-ErrorResult "ROLLBACK_PRUNE_FAILED" "prune of the failed delivery failed (nothing rolled back): $($rp.text)" 1
@@ -7424,6 +7767,33 @@ function Get-NodeTaskText {
 function Invoke-GraftNextStage {
     param([string]$RunDir, $Bridge, $Task, [string]$ParentNodeId, [string]$NextStage, $RedoContext)
     $taskId = [int]$Task.id
+    # --- wake-model branch (goal-tree-wake-model §4.1): the slot for (task, role)
+    #     is UNIQUE and permanent. A mapped slot in ANY state is woken in place
+    #     (done/claimed -> reset; reported -> redo) instead of grafted — this is
+    #     the single choke point every rework path (fail wave / cross-stage
+    #     rollback / stage re-entry) funnels through, so rework storms grow the
+    #     ledger, never the tree. The parent anchor argument is IGNORED: wake slots
+    #     materialize under the task's requirement container.
+    if (Test-WakeShapeBridge $Bridge) {
+        $existing = $null
+        if ($Bridge.tasks.Contains("$taskId") -and $Bridge.tasks["$taskId"].Contains('stages') -and $null -ne $Bridge.tasks["$taskId"]['stages'] -and $Bridge.tasks["$taskId"]['stages'].Contains($NextStage)) {
+            $existing = [string]$Bridge.tasks["$taskId"]['stages'][$NextStage]
+        }
+        if ($null -ne $existing) {
+            $wakeReason = if ($RedoContext) { "rework: $([string]$RedoContext['reason'])" } else { "stage re-entry: $NextStage" }
+            $failureRef = if ($RedoContext) { "redo-context: $([string]$RedoContext['from_stage'])" } else { "stage-transition" }
+            $triggerText = if ($RedoContext) { "wake-rework:$([string]$RedoContext['from_stage'])" } else { "wake-stage:$NextStage" }
+            $dutyText = $NextStage.ToLower()
+            $ro = Invoke-WakeReopenSlot ([string]$Bridge.run_id) $existing $wakeReason $failureRef $triggerText $dutyText
+            if (-not $ro.ok) { return @{ success = $false; error = "WAKE_REOPEN_FAILED: task #$taskId $NextStage slot $existing — $($ro.warning)" } }
+            return @{ success = $true; bridge = $Bridge; node_id = $existing; wake_mode = $ro.mode }
+        }
+        $container = Get-TaskContainerNode $Bridge $taskId
+        if ([string]::IsNullOrWhiteSpace($container)) {
+            return @{ success = $false; error = "WAKE_CONTAINER_MISSING: task #$taskId has no requirement container in bridge.json — wake-shape slots materialize under it" }
+        }
+        $ParentNodeId = $container
+    }
     # duplicate-graft hard gate (settle-route-narrow-duplicate-graft): refuse when
     # a LIVE node already maps to (task, stage) — the single choke point every
     # stage-graft path passes through (EnsureStageNodes guards first; rollback /
@@ -7451,6 +7821,7 @@ function Invoke-GraftNextStage {
         role  = $NextStage.ToLower()
         ref   = "$((Split-Path $Bridge.archive -Leaf))/$reqRel"   # stage nodes of a requirement keep its doc ref (goal-tree-goal-root)
     }
+    if (Test-WakeShapeBridge $Bridge) { $graftItem['duty'] = $NextStage.ToLower() }
     $g = Invoke-GraftOne $Bridge.run_id $ParentNodeId $graftItem
     if (-not $g.ok) {
         return @{ success = $false; error = $g.text }
@@ -7677,8 +8048,15 @@ function Get-BridgeTaskRows {
 }
 
 function Get-BridgeDeadClaims {
-    # dead claims: tree side claimed too old, or flow worker entries too old
+    # stale/dead/live claims (planner-reconcile-throttle 拆分——纯年龄判死是误判源):
+    #   live_claims  — 超龄但探针证实存活（长跑中，等 report，不是任何回收对象）
+    #   stale_claims — 超龄且活性不可证（unknown；处置=探会话/呈用户，别自行判死）
+    #   dead_claims  — 探针证实死（唯一建议 reclaim 的组）
+    # flow 侧 worker entries 无边车绑定 → 一律 stale（带 note）。非 dsh shell 下
+    # 探针恒 unknown → 全部 stale（与旧行为一致的保守面，但名词不再谎报死亡）。
     param($TreeData, $FlowTasks)
+    $liveTreeClaims = @()
+    $staleTreeClaims = @()
     $deadTreeClaims = @()
     $now = Get-Date
     foreach ($n in @(Convert-ToSafeArray $TreeData.nodes.claimed)) {
@@ -7687,10 +8065,16 @@ function Get-BridgeDeadClaims {
             try { $ageMin = [int](($now.ToUniversalTime() - [datetime]::Parse($n.claimed_at, $null, [System.Globalization.DateTimeStyles]::RoundtripKind)).TotalMinutes) } catch {}
         }
         if ($null -ne $ageMin -and $ageMin -ge $DeadClaimMinutes) {
-            $deadTreeClaims += @{ node = $n.id; claimed_by = $n.claimed_by; age_minutes = $ageMin }
+            $row = @{ node = $n.id; claimed_by = $n.claimed_by; age_minutes = $ageMin }
+            $live = Get-ClaimLiveness $RunId ([string]$n.id)
+            $row['liveness'] = [string]$live.liveness
+            $row['liveness_reason'] = [string]$live.reason
+            if ($live.liveness -eq 'alive') { $liveTreeClaims += $row }
+            elseif ($live.liveness -eq 'dead') { $deadTreeClaims += $row }
+            else { $staleTreeClaims += $row }
         }
     }
-    $deadFlowClaims = @()
+    $staleFlowClaims = @()
     foreach ($t in $FlowTasks) {
         foreach ($w in @(Convert-ToSafeArray $t.currentWorker)) {
             if ($null -eq $w) { continue }
@@ -7700,12 +8084,12 @@ function Get-BridgeDeadClaims {
             foreach ($pair in $pairs) {
                 try {
                     $ageMin = [int](($now - [datetime]::Parse($pair[1])).TotalMinutes)
-                    if ($ageMin -ge $DeadClaimMinutes) { $deadFlowClaims += @{ task_id = [int]$t.id; role = $pair[0]; age_minutes = $ageMin } }
+                    if ($ageMin -ge $DeadClaimMinutes) { $staleFlowClaims += @{ task_id = [int]$t.id; role = $pair[0]; age_minutes = $ageMin; liveness = "unknown"; liveness_reason = "flow worker entry carries no session sidecar" } }
                 } catch {}
             }
         }
     }
-    return @{ tree = $deadTreeClaims; flow = $deadFlowClaims }
+    return @{ live = $liveTreeClaims; stale = @($staleTreeClaims); dead = $deadTreeClaims; flow = $staleFlowClaims }
 }
 
 function Get-FlaggedDeliveries {
@@ -7900,8 +8284,10 @@ function New-StatusWarnings {
     foreach ($w in @($View.tree.integrity.warnings)) { $warnings += "tree: $w" }
     if ($Roster.corrupt) { $warnings += "sessions.json roster unparseable — read as empty (the next registration self-heals the file)" }
     if ($View.repair.remaining.Count -gt 0) { $warnings += "pending_sync unresolved: $(@($View.repair.remaining | ForEach-Object { "$($_.node):$($_.op)" }) -join ', ')" }
-    if ($View.dead_claims.tree.Count -gt 0) { $warnings += "tree claim(s) older than ${DeadClaimMinutes} min: $(@($View.dead_claims.tree | ForEach-Object { $_.node }) -join ', ') — 先确认这些会话是否仍在跑（长任务纪律：等 > 询问用户 > 回收；存活不可证实时 reclaim 会被 RECLAIM_DEATH_UNPROVEN_NEEDS_VERDICT 拒，需用户裁决 -UserVerdict）；确认死会话后才 reclaim" }
-    if ($View.dead_claims.flow.Count -gt 0) { $warnings += "dead flow claim(s): $(@($View.dead_claims.flow | ForEach-Object { "task#$($_.task_id):$($_.role)" }) -join ', ')" }
+    if ($View.dead_claims.live.Count -gt 0) { $warnings += "LIVE long-run claim(s): $(@($View.dead_claims.live | ForEach-Object { "$($_.node)($($_.age_minutes)min)" }) -join ', ') — 探针证实存活会话在跑：等 report（长任务纪律：等 > 询问用户 > 回收），不是回收对象" }
+    if ($View.dead_claims.stale.Count -gt 0) { $warnings += "STALE claim(s) older than ${DeadClaimMinutes} min, liveness unprovable: $(@($View.dead_claims.stale | ForEach-Object { $_.node }) -join ', ') — 超龄 ≠ 死亡：先探会话（send_message / 面板），拿不准就呈用户裁决（reclaim/prune 需 -UserVerdict），别自行判死" }
+    if ($View.dead_claims.dead.Count -gt 0) { $warnings += "DEAD claim(s) (probe-confirmed): $(@($View.dead_claims.dead | ForEach-Object { $_.node }) -join ', ') — 已证实死会话，reclaim 回收并重推" }
+    if ($View.dead_claims.flow.Count -gt 0) { $warnings += "stale flow claim(s) (no session sidecar — liveness unknown): $(@($View.dead_claims.flow | ForEach-Object { "task#$($_.task_id):$($_.role)" }) -join ', ')" }
     if (@($View.flagged_deliveries).Count -gt 0) {
         $warnings += "unqualified reported delivery(ies): $(@($View.flagged_deliveries | ForEach-Object { $_.node }) -join ', ') — adjudicate: reclaim -NodeId <id> (redo the same stage) or rollback -NodeId <id> -Reason <why> (send the task one stage back)"
     }
@@ -8077,8 +8463,11 @@ function New-ResumeSteps {
     if ($View.claimable.Count -gt 0) {
         $steps += "Dispatch sessions for claimable nodes: [$($View.claimable -join ', ')] — 'delivery-bridge.cmd -Command dispatch -RunId $RunId -NodeId <id>'."
     }
-    if ($View.dead_claims.tree.Count -gt 0) {
-        $steps += "Recover dead claims: $(@($View.dead_claims.tree | ForEach-Object { $_.node }) -join ', ') — 'delivery-bridge.cmd -Command reclaim -RunId $RunId -NodeId <id>'."
+    if ($View.dead_claims.dead.Count -gt 0) {
+        $steps += "Recover probe-confirmed dead claims: $(@($View.dead_claims.dead | ForEach-Object { $_.node }) -join ', ') — 'delivery-bridge.cmd -Command reclaim -RunId $RunId -NodeId <id>'."
+    }
+    if ($View.dead_claims.stale.Count -gt 0) {
+        $steps += "Stale claims (unprovable, NOT confirmed dead): $(@($View.dead_claims.stale | ForEach-Object { $_.node }) -join ', ') — probe the sessions first (send_message / panel), present to the user when unsure; reclaim/prune needs -UserVerdict after the ${DeadClaimMinutes}min threshold. Do NOT prune to bypass."
     }
     if ($View.repair.remaining.Count -gt 0) {
         $steps += "pending_sync divergence still unresolved (status retries the repair on every call): $(@($View.repair.remaining | ForEach-Object { "$($_.node):$($_.op)" }) -join ', ')."

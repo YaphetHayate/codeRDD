@@ -27,7 +27,8 @@ import assert from 'node:assert/strict'
 import { execFileSync } from 'node:child_process'
 import { appendFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { join, dirname, resolve } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { aggregateGoalTrees, artifactLine, collectReportEntries } from '../lib/goaltrees.js'
 
 // --- 1. aggregation -----------------------------------------------------------
@@ -83,6 +84,58 @@ import { aggregateGoalTrees, artifactLine, collectReportEntries } from '../lib/g
   const missing = await aggregateGoalTrees(join(repoRoot, '.rdd', 'definitely-not-here'))
   assert.deepEqual(missing, { runs: [] })
   console.log('[smoke] missing root -> empty OK')
+
+  // outline order: tree.json graft order is NOT a DFS traversal — a chain
+  // node grafted under an early head (n8 → n2) while later heads still hang
+  // under the root (n3..n7) must not nest visually under its numeric
+  // predecessor (the n8-under-n7 panel regression)
+  const orderRoot = join(tmpdir(), `rdgt-smoke-order-${Date.now()}`)
+  const orderState = join(orderRoot, 'order-run', 'state')
+  mkdirSync(orderState, { recursive: true })
+  writeFileSync(join(orderRoot, 'order-run', 'manifest.json'), JSON.stringify({
+    run_id: 'order-run', state: 'running', goal: 'outline order fixture', budget: { node_width: 10, max_rounds: 5, max_nodes: 30 },
+  }))
+  writeFileSync(join(orderState, 'tree.json'), JSON.stringify({
+    format_version: 1, run_id: 'order-run', updated_at: '2026-10-16T00:00:00Z',
+    nodes: [
+      { id: 'n1', parent: null, title: 'root', task: 'root task', status: 'pending', depends_on: [] },
+      { id: 'n2', parent: 'n1', title: 'head-a', task: 'head a', status: 'done', depends_on: [] },
+      { id: 'n3', parent: 'n1', title: 'head-b', task: 'head b', status: 'pending', depends_on: [] },
+      { id: 'n4', parent: 'n1', title: 'head-c', task: 'head c', status: 'pending', depends_on: [] },
+      { id: 'n5', parent: 'n1', title: 'head-d', task: 'head d', status: 'pending', depends_on: [] },
+      { id: 'n6', parent: 'n1', title: 'head-e', task: 'head e', status: 'pending', depends_on: [] },
+      { id: 'n7', parent: 'n1', title: 'head-f', task: 'head f', status: 'pending', depends_on: [] },
+      { id: 'n8', parent: 'n2', title: 'chain', task: 'chain of head a', status: 'done', depends_on: [] },
+      { id: 'n9', parent: 'n8', title: 'chain-2', task: 'chain of n8', status: 'done', depends_on: [] },
+      { id: 'n10', parent: 'n1', title: 'late-head', task: 'late head', status: 'pending', depends_on: [] },
+    ],
+  }))
+  const { runs: orderedRuns } = await aggregateGoalTrees(orderRoot)
+  const ordered = orderedRuns.find(run => run.runId === 'order-run')
+  assert.ok(ordered !== undefined, 'order-run aggregated')
+  assert.deepEqual(ordered.nodes.map(node => node.id), [
+    'n1', 'n2', 'n8', 'n9', 'n3', 'n4', 'n5', 'n6', 'n7', 'n10',
+  ], 'wire node list is DFS pre-order, not graft order')
+  assert.ok(
+    ordered.nodes.findIndex(node => node.id === 'n8') === ordered.nodes.findIndex(node => node.id === 'n2') + 1,
+    'n8 renders directly under n2 (not under its numeric predecessor n7)',
+  )
+  // orphan parent (dangling ref) anchors at the top level instead of dropping
+  const { orderOutlineNodes } = await import('../lib/goaltrees.js')
+  const withOrphan = [
+    { id: 'n1', parent: null },
+    { id: 'n2', parent: 'n1' },
+    { id: 'n3', parent: 'nX' },
+  ]
+  assert.deepEqual(orderOutlineNodes(withOrphan).map(node => node.id), ['n1', 'n2', 'n3'], 'orphan anchors top-level, nothing dropped')
+  const withCycle = [
+    { id: 'n1', parent: null },
+    { id: 'n2', parent: 'n3' },
+    { id: 'n3', parent: 'n2' },
+  ]
+  assert.deepEqual(orderOutlineNodes(withCycle).map(node => node.id), ['n1', 'n2', 'n3'], 'cycle leftovers stay visible in input order')
+  rmSync(orderRoot, { recursive: true, force: true })
+  console.log('[smoke] outline DFS order (graft order != DFS) OK')
 
   const tmpRoot = join(tmpdir(), `rdgt-smoke-${Date.now()}`)
   mkdirSync(join(tmpRoot, 'half-run'), { recursive: true })
@@ -653,6 +706,88 @@ import { aggregateGoalTrees, artifactLine, collectReportEntries } from '../lib/g
   console.log('[smoke] watcher delivery harness (send+wakeup, exactly-once, hydration, pending guard) OK')
 }
 
+// --- 2g-bis. digest backstop arm (planner-reconcile-throttle) -------------------
+// The timed arm crosses a 30-minute boundary, collects every active tree's
+// reported-but-unsettled nodes into ONE wakeful digest per planner, and ONLY
+// through the dual quiet predicate (status 'idle' AND no session event within
+// 30 min). The instant arms are untouched (scanRoot's second arg defaults
+// false); a digest is a state reminder, never a durable exactly-once event.
+{
+  const { PlannerCallbackWatcher } = await import('../lib/watcher.js')
+  const PLUGIN_ID = '@coderrdd/dsh-rdd-goal-tree'
+  const tmpRoot = join(tmpdir(), `rdgt-smoke-digest-${Date.now()}`)
+  const runDir = join(tmpRoot, '.rdd', 'goal-trees', 'digest-run')
+  const stateDir = join(runDir, 'state')
+  mkdirSync(stateDir, { recursive: true })
+  writeFileSync(join(runDir, 'manifest.json'), JSON.stringify({
+    run_id: 'digest-run', state: 'running', goal: 'digest harness goal', budget: { max_rounds: 2, max_nodes: 6 },
+  }))
+  writeFileSync(join(stateDir, 'planner.json'), JSON.stringify({
+    format_version: 1, run_id: 'digest-run', dsh_session_id: 'session-planner-d', recorded_at: '2026-01-01T00:00:00Z',
+  }))
+  // two reported nodes (the pending backstop payload) + one claimed (must NOT
+  // appear: workers stuck on a question/permission are still claimed, and a
+  // claimed worker never enters the digest collection)
+  writeFileSync(join(stateDir, 'tree.json'), JSON.stringify({
+    format_version: 1, run_id: 'digest-run', updated_at: '2026-01-01T00:10:00Z',
+    nodes: [
+      { id: 'n1', parent: null, title: 'root', task: 't', status: 'pending', depends_on: [] },
+      { id: 'n2', parent: 'n1', title: 'a', task: 't', status: 'reported', depends_on: [], claimed_by: 'DEV', last_verdict: 'done', last_confidence: 0.9 },
+      { id: 'n3', parent: 'n1', title: 'b', task: 't', status: 'reported', depends_on: [], claimed_by: 'QA', last_verdict: 'redo', last_confidence: 0.4 },
+      { id: 'n4', parent: 'n1', title: 'c', task: 't', status: 'claimed', depends_on: [], claimed_by: 'CTO' },
+    ],
+  }))
+  writeFileSync(join(stateDir, 'ledger.jsonl'), '')
+
+  const sends = []
+  let seq = 0
+  const stubFactory = input => ({ id: `m-${++seq}`, role: 'user', content: input.content, source: input.source })
+  const quietAgent = () => ({
+    inbox: { nextTurn: [], nextStep: [] },
+    send: (message, target, wakeup) => { sends.push({ message, target, wakeup }) },
+    status: 'idle',
+    session: { events: [{ time: Date.now() - 31 * 60_000 }] }, // long quiet
+  })
+  const ctx = {
+    logger: { info: () => {}, warn: () => {} },
+    agents: { get: sid => (sid === 'session-planner-d' ? fake : undefined) },
+  }
+  let fake = quietAgent()
+
+  // positive: boundary due + idle + quiet -> one wakeful digest carrying the list
+  const watcher = new PlannerCallbackWatcher(ctx, true, 0, stubFactory)
+  await watcher.scanRoot(tmpRoot, true)
+  assert.equal(sends.length, 1, 'digest delivered once (instant arms empty: no ledger entries)')
+  const digest = sends[0]
+  assert.ok(digest.target === 'next-turn' && digest.wakeup === true, 'digest rides the same wakeful send path')
+  const text = digest.message.content.map(block => block.text).join('\n')
+  assert.ok(text.includes('2 个节点已回调待裁决'), 'digest states the pending count')
+  assert.ok(text.includes('n2 by DEV (verdict=done, conf 0.9)') && text.includes('n3 by QA (verdict=redo, conf 0.4)'), 'digest lists each reported node with owner+verdict')
+  assert.ok(!text.includes('n4'), 'claimed nodes never enter the digest (question/permission-stuck workers are still claimed)')
+  assert.ok(text.includes('无需全局 status 对账'), 'digest retires the global reconcile sweep')
+
+  // negative 1: planner mid-turn (held on a question/permission) -> no digest
+  sends.length = 0
+  fake = quietAgent(); fake.status = 'running'
+  await watcher.scanRoot(tmpRoot, true)
+  assert.equal(sends.length, 0, 'running planner is never interrupted by the backstop')
+
+  // negative 2: planner active within the quiet window -> no digest
+  sends.length = 0
+  fake = quietAgent(); fake.session.events = [{ time: Date.now() - 5 * 60_000 }]
+  await watcher.scanRoot(tmpRoot, true)
+  assert.equal(sends.length, 0, 'recently active planner is left alone')
+
+  // negative 3: boundary not due (scanRoot default) -> no digest even when idle+quiet
+  sends.length = 0
+  fake = quietAgent()
+  await watcher.scanRoot(tmpRoot)
+  assert.equal(sends.length, 0, 'no boundary crossing, no backstop')
+
+  rmSync(tmpRoot, { recursive: true, force: true })
+  console.log('[smoke] digest backstop arm (dual quiet predicate, claimed exclusion, no-sweep action line) OK')
+}
+
 // --- 2i. plugin-perf L2/L3: liveness shortcut + wire projection ----------------
 // The node-keyed liveness route now reads state/claims/<node>.json directly
 // (no full aggregation); the /runs default payload ships slim summaries and
@@ -718,10 +853,11 @@ import { aggregateGoalTrees, artifactLine, collectReportEntries } from '../lib/g
   assert.deepEqual(slim.counts, { pending: 1, claimed: 1, reported: 0, done: 0, pruned: 0 })
   assert.equal(slim.plannerSessionId, null)
   // slim nodes carry EXACTLY the census fields (view gating needs
-  // claimSessionId; the tree list needs id/title/status/owner/depth/blockedBy)
+  // claimSessionId; the tree list needs id/title/status/owner/depth/blockedBy;
+  // wake-model badge needs wakeCount/wakeMax/duty — goal-tree-wake-model §4)
   const slimN2 = slim.nodes.find(n => n.id === 'n2')
   assert.deepEqual(Object.keys(slimN2).sort(),
-    ['blockedBy', 'claimSessionId', 'claimedBy', 'depth', 'id', 'parent', 'status', 'title', 'type'])
+    ['blockedBy', 'claimSessionId', 'claimedBy', 'depth', 'duty', 'id', 'parent', 'status', 'title', 'type', 'wakeCount', 'wakeMax'])
   assert.equal(slimN2.claimSessionId, 'session-live-2', 'claimSessionId kept on slim nodes (view gating)')
   assert.equal(slimN2.claimedBy, 'DEV', 'owner kept for the tree list')
   const slimN1 = slim.nodes.find(n => n.id === 'n1')
@@ -793,8 +929,15 @@ import { aggregateGoalTrees, artifactLine, collectReportEntries } from '../lib/g
 {
   let cliAllowed = true
   try {
-    const repoRoot = process.cwd()
+    // repo root from THIS FILE's location (tests/ -> plugin dir -> checkout
+    // root), never process.cwd() — the harness runs smoke from varying cwds
+    // and a cwd-relative 'rdd-engine' silently resolves to a nonexistent path
+    // under the plugin dir (previously masked by the EPERM skip).
+    const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..', '..')
     const engineScripts = join(repoRoot, 'rdd-engine', 'scripts')
+    if (!existsSync(join(engineScripts, 'goal-tree.ps1'))) {
+      console.log('[smoke] engine sidecar regression SKIPPED (no rdd-engine checkout alongside the plugin) — run from the harness shell')
+    } else {
     const tmpRepo = join(tmpdir(), `rdgt-smoke-cli-${Date.now()}`)
     mkdirSync(tmpRepo, { recursive: true })
     // goal-tree.ps1 resolves its repo root via `git rev-parse` from cwd — the
@@ -844,6 +987,7 @@ import { aggregateGoalTrees, artifactLine, collectReportEntries } from '../lib/g
 
     rmSync(tmpRepo, { recursive: true, force: true })
     console.log('[smoke] engine sidecar regression OK')
+    }
   } catch (skip) {
     if (!cliAllowed) {
       console.log('[smoke] engine sidecar regression SKIPPED (sandbox forbids capturing subprocesses) — run from the harness shell')
@@ -886,6 +1030,25 @@ import { aggregateGoalTrees, artifactLine, collectReportEntries } from '../lib/g
   assert.equal(typeof face.GoalTreeBar, 'function', 'exports.GoalTreeBar')
   assert.equal(typeof face.WorkerNodeBar, 'function', 'exports.WorkerNodeBar')
   assert.equal(typeof face.GoalTreeDock, 'function', 'exports.GoalTreeDock')
+  // the shipped renderer guard: the outline must derive nesting from parent
+  // links, not from the wire order (the n8-under-n7 panel regression)
+  assert.equal(typeof face.orderOutlineNodes, 'function', 'exports.orderOutlineNodes')
+  const graftOrderList = [
+    { id: 'n1', parent: null },
+    { id: 'n2', parent: 'n1' },
+    { id: 'n3', parent: 'n1' },
+    { id: 'n4', parent: 'n1' },
+    { id: 'n5', parent: 'n1' },
+    { id: 'n6', parent: 'n1' },
+    { id: 'n7', parent: 'n1' },
+    { id: 'n8', parent: 'n2' },
+    { id: 'n9', parent: 'n8' },
+  ]
+  assert.deepEqual(
+    face.orderOutlineNodes(graftOrderList).map(node => node.id),
+    ['n1', 'n2', 'n8', 'n9', 'n3', 'n4', 'n5', 'n6', 'n7'],
+    'client outline order is DFS pre-order regardless of wire order',
+  )
   // the dock routes through the gating table, and the picker ships inlined in
   // the bundle (its relative require intercepted — no non-baseline require)
   assert.ok(src.includes('pickGoalTreeView'), 'bundle carries the gating table call')

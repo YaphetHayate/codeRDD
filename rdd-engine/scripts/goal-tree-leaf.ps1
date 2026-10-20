@@ -584,7 +584,9 @@ function Read-Manifest {
             max_rounds = [int]$m.budget.max_rounds
             node_width = [int]$m.budget.node_width
             max_nodes  = [int]$m.budget.max_nodes
+            wake_max   = if ($null -ne $m.budget.PSObject.Properties['wake_max'] -and $null -ne $m.budget.wake_max) { [int]$m.budget.wake_max } else { 3 }
         }
+        shape     = if ($null -ne $m.PSObject.Properties['shape'] -and $m.shape) { [string]$m.shape } else { "legacy" }
         ref_roots = @(Convert-ToSafeArray $m.ref_roots)
         state     = [string]$m.state
         concluded = $m.concluded
@@ -615,6 +617,9 @@ function Convert-NodeToHashtable {
         pruned_reason   = if ($Node.pruned_reason) { [string]$Node.pruned_reason } else { $null }
         last_verdict    = if ($Node.last_verdict) { [string]$Node.last_verdict } else { $null }
         last_confidence = if ($null -ne $Node.last_confidence) { [double]$Node.last_confidence } else { $null }
+        wake_count      = if ($null -ne $Node.wake_count) { [int]$Node.wake_count } else { 0 }
+        wake_max        = if ($null -ne $Node.wake_max) { [int]$Node.wake_max } else { $null }
+        duty            = if ($Node.duty) { [string]$Node.duty } else { $null }
         ledger_refs     = @(Convert-ToSafeArray $Node.ledger_refs)
         note            = if ($Node.note) { [string]$Node.note } else { $null }
         children        = @(Convert-ToSafeArray $Node.children)
@@ -724,15 +729,44 @@ function ConvertTo-NodeIdList {
     return @($ids)
 }
 
+function Test-SubtreeTerminalLeaf {
+    # 容器终态（goal-tree-wake-model §3.4，leaf 侧副本）：容器 = 全部后代 done/pruned
+    param($Tree, $Node)
+    if (@('sub', 'accept') -contains [string]$Node.type) {
+        foreach ($cid in @($Node.children)) {
+            $c = Find-Node $Tree ([string]$cid)
+            if ($null -eq $c) { continue }
+            if (-not (Test-SubtreeTerminalLeaf $Tree $c)) { return $false }
+        }
+        return $true
+    }
+    return @('done', 'pruned') -contains [string]$Node.status
+}
+
 function Get-NodeBlockedDeps {
     # returns @{ blocked = @(unsatisfied target ids); via_prune = @(satisfied-by-prune target ids) }
     # satisfaction = every target status in {done, pruned}; pruned satisfies with an explicit warning
+    # wake-model fold-in (goal-tree-wake-model §3.3): a slot inherits its PARENT
+    # container's dependency gate — deps live on the WBS layer, the engine derives
+    # the role-level gate from the parent; a container dep target is satisfied iff
+    # its whole subtree is terminal. Legacy runs (no containers) are unaffected.
     param($Tree, $Node)
     $blocked = @()
     $viaPrune = @()
-    foreach ($target in @(ConvertTo-NodeIdList $Node.depends_on)) {
+    $depSources = @(ConvertTo-NodeIdList $Node.depends_on)
+    if ($Node.parent) {
+        $p = Find-Node $Tree ([string]$Node.parent)
+        if ($null -ne $p -and @('sub', 'accept') -contains [string]$p.type) {
+            $depSources = @($depSources + @(ConvertTo-NodeIdList $p.depends_on) | Select-Object -Unique)
+        }
+    }
+    foreach ($target in $depSources) {
         $tn = Find-Node $Tree $target
         if ($null -eq $tn) { $blocked += $target; continue }
+        if (@('sub', 'accept') -contains [string]$tn.type) {
+            if (Test-SubtreeTerminalLeaf $Tree $tn) { continue }
+            $blocked += $target; continue
+        }
         if ($tn.status -eq 'done') { continue }
         if ($tn.status -eq 'pruned') { $viaPrune += $target; continue }
         $blocked += $target
@@ -902,6 +936,9 @@ function Convert-NodeToPublicView {
         reported_at     = $Node.reported_at
         last_verdict    = $Node.last_verdict
         last_confidence = $Node.last_confidence
+        wake_count      = if ($null -ne $Node.wake_count) { [int]$Node.wake_count } else { 0 }
+        wake_max        = if ($null -ne $Node.wake_max) { [int]$Node.wake_max } else { $null }
+        duty            = $Node.duty
         ledger_refs     = @($Node.ledger_refs)
         note            = $Node.note
         children        = @($Node.children)
@@ -921,6 +958,7 @@ function Invoke-Next {
     $blocked = @()
     foreach ($n in $tree.nodes) {
         if ([string]$n.type -eq 'goal') { continue }   # goal root: conclude anchor, not claimable work (goal-tree-goal-root)
+        if (@('sub', 'accept') -contains [string]$n.type) { continue }  # WBS containers: structure, not claimable work (goal-tree-wake-model §3.1)
         if ($n.status -eq "pending") {
             $entry = [ordered]@{ id = $n.id; parent = $n.parent; title = $n.title; task = $n.task; type = $n.type; role = $n.role; grafted_round = $n.created_round; depends_on = @(ConvertTo-NodeIdList $n.depends_on); ref = $n.ref }
             $blockedBy = @(Get-NodeBlockedDeps $tree $n).blocked
@@ -950,7 +988,7 @@ function Invoke-Next {
             ref_roots   = @($manifest.ref_roots)
             pending     = $pending
             blocked     = $blocked
-            pending_all = @($tree.nodes | Where-Object { $_.status -eq "pending" -and [string]$_.type -ne 'goal' }).Count
+            pending_all = @($tree.nodes | Where-Object { $_.status -eq "pending" -and [string]$_.type -ne 'goal' -and @('sub','accept') -notcontains [string]$_.type }).Count
             hint        = $(if ($openRound -eq 0) { "no open round — claim will be rejected until the Planner runs round-start" } elseif ($blocked.Count -gt 0 -and $pending.Count -eq 0) { "all pending nodes are blocked by unsatisfied dependencies (NODE_BLOCKED_BY_DEPS); wait for the Planner or dependency completion" } else { "claim one node with: goal-tree-leaf.cmd -Command claim -RunId $RunId -NodeId <id> -Worker <label>" })
         }
     }
@@ -985,6 +1023,11 @@ function Invoke-Claim {
             # an unclaimable conclude anchor, never a work unit, on both claim paths (-Steal included).
             Write-ErrorResult "GOAL_NODE_NOT_CLAIMABLE" "Node $NodeId is the goal root (type=goal — the original requirement's final objective and conclude anchor): it is never claimable. Pick a sub-requirement node from next instead." 1
         }
+        if (@('sub', 'accept') -contains [string]$node.type) {
+            # WBS container (goal-tree-wake-model §3.1): the requirement decomposition
+            # layer — a container is the planner's subtitle, never a work unit.
+            Write-ErrorResult "CONTAINER_NODE_NOT_CLAIMABLE" "Node $NodeId is a WBS container (type=$($node.type)): containers are the requirement decomposition layer and never claimable. Claim its role slots via next." 1
+        }
 
         if ($Steal) {
             if ($node.status -ne "claimed") {
@@ -1008,9 +1051,16 @@ function Invoke-Claim {
                 # pruned targets satisfy the gate but are surfaced loudly, never silently
                 $pruneNote = "deps satisfied via pruned targets: [$($depState.via_prune -join ', ')] (prune discharges the obligation — visible, not silent)"
             }
+            # --- wake quota gate (goal-tree-wake-model §4.2): this claim IS a wake ---
+            $wakeMax = if ($null -ne $node.wake_max) { [int]$node.wake_max } elseif ($null -ne $manifest.budget.wake_max) { [int]$manifest.budget.wake_max } else { 3 }
+            if (([int]$node.wake_count + 1) -gt $wakeMax) {
+                $dutyText = if ($node.duty) { " (duty=$($node.duty))" } else { "" }
+                Write-ErrorResult "WAKE_QUOTA_EXCEEDED" "Node $NodeId$dutyText has burned its wake quota [$([int]$node.wake_count)/$wakeMax] — every wake counts against the segment, regardless of mode. This is an adjudication point for the Planner, not a stop: (a) escalate to the user with the wake trail, (b) split the requirement and re-plan via PM, (c) explicit debt-pass waiver with user consent, or raise the budget via 'goal-tree budget -SetWakeMax <n> -UserVerdict <ruling>'." 1
+            }
             $node.status = "claimed"
             $node.claimed_by = $Worker
             $node.claimed_at = Get-UtcNowIso
+            $node.wake_count = [int]$node.wake_count + 1
             $stole = $false
         }
 
@@ -1224,6 +1274,8 @@ function Invoke-Report {
             role        = if ($node.role) { [string]$node.role } else { $null }
             worker      = $Worker
             reported_at = $now
+            wake        = if ($null -ne $node.wake_count) { [int]$node.wake_count } else { 0 }
+            duty        = if ($node.duty) { [string]$node.duty } else { $null }
             callback    = $finalCallback
             validation  = [ordered]@{
                 status              = $validationStatus

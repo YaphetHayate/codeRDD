@@ -89,6 +89,16 @@ export interface GoalTreeNodeView {
   claimSessionId: string | null
   /** Unsatisfied depends_on targets (the claim gate) — empty when none. */
   blockedBy: string[]
+  /**
+   * Wake-model fields (goal-tree-wake-model §4): per-duty-segment wake usage.
+   * wakeMax null = not stamped (payload never set one; the engine resolves the
+   * run default at claim/redo time) — the badge then shows the count alone.
+   * Containers and the goal root carry no quota.
+   */
+  wakeCount: number
+  wakeMax: number | null
+  /** Current duty segment label (e.g. 'cto' / 'design-review'); null when unset. */
+  duty: string | null
   depth: number
 }
 
@@ -296,6 +306,56 @@ function depthOf(id: string, parentOf: ReadonlyMap<string, string | null>): numb
     if (depth > 64) break
   }
   return Math.max(0, depth - 1)
+}
+
+/**
+ * Outline order for the wire node list: DFS pre-order from the roots, children
+ * sorted by numeric node id (the engine assigns ids monotonically with graft
+ * order). The panel renders this list as an indented outline whose nesting
+ * semantics come from (order, depth) alone — but tree.json's array order is
+ * GRAFT order, not a DFS traversal: a chain continuation grafted under n2
+ * (n8) can follow later-created heads still hanging under n1 (n7), and the
+ * outline then nests n8 visually under n7. Roots here also cover orphans (a
+ * parent id absent from the set); anything unreachable through a corrupted
+ * parent cycle is appended in input order — no node is ever dropped.
+ * Twin of the client-side renderer guard in client/index.tsx (kept
+ * dependency-free on both sides so each half can stand alone).
+ */
+export function orderOutlineNodes<T extends { id: string; parent: string | null }>(nodes: readonly T[]): T[] {
+  const inputIndex = new Map<string, number>()
+  for (const [i, node] of nodes.entries()) if (!inputIndex.has(node.id)) inputIndex.set(node.id, i)
+  const known = new Set(inputIndex.keys())
+  const numericId = (id: string): number => (/^n\d+$/.test(id) ? Number.parseInt(id.slice(1), 10) : Number.MAX_SAFE_INTEGER)
+  const byOutline = (a: T, b: T): number => {
+    const delta = numericId(a.id) - numericId(b.id)
+    return delta !== 0 ? delta : (inputIndex.get(a.id) ?? 0) - (inputIndex.get(b.id) ?? 0)
+  }
+  const childrenOf = new Map<string, T[]>()
+  const roots: T[] = []
+  for (const node of nodes) {
+    if (node.parent === null || !known.has(node.parent)) roots.push(node)
+    else {
+      const bucket = childrenOf.get(node.parent)
+      if (bucket === undefined) childrenOf.set(node.parent, [node])
+      else bucket.push(node)
+    }
+  }
+  const out: T[] = []
+  const seen = new Set<string>()
+  const visit = (node: T): void => {
+    if (seen.has(node.id)) return
+    seen.add(node.id)
+    out.push(node)
+    const children = childrenOf.get(node.id)
+    if (children === undefined) return
+    children.sort(byOutline)
+    for (const child of children) visit(child)
+  }
+  roots.sort(byOutline)
+  for (const root of roots) visit(root)
+  // cycle leftovers (parent chain never reaching a root): keep them visible
+  if (out.length !== nodes.length) for (const node of nodes) visit(node)
+  return out
 }
 
 // --- Structured node-task decomposition (node-doc-links) -----------------------
@@ -566,9 +626,10 @@ async function aggregateOneRun(rootDir: string, dirName: string, repoRoot: strin
     const status = typeof node.status === 'string' ? node.status : 'pending'
     const type = str(node.type)
     // The five-state census counts WORK nodes only: the type=goal root is the
-    // original requirement's conclude anchor — pending forever by design and
-    // never a delivery unit, so it stays out of every status count.
-    if (type !== 'goal') {
+    // original requirement's conclude anchor and type=sub/accept containers are
+    // the WBS layer (goal-tree-wake-model §3.1) — pending forever by design and
+    // never delivery units, so they stay out of every status count.
+    if (type !== 'goal' && type !== 'sub' && type !== 'accept') {
       if (status === 'pending') counts.pending += 1
       else if (status === 'claimed') counts.claimed += 1
       else if (status === 'reported') counts.reported += 1
@@ -579,6 +640,8 @@ async function aggregateOneRun(rootDir: string, dirName: string, repoRoot: strin
       ? (node.depends_on as unknown[]).filter((d): d is string => typeof d === 'string' && known.has(d) && d !== id)
       : []
     const confidenceRaw = node.last_confidence
+    const wakeCountRaw = node.wake_count
+    const wakeMaxRaw = node.wake_max
     const task = str(node.task)
     const nodeView: GoalTreeNodeView = {
       id,
@@ -593,6 +656,9 @@ async function aggregateOneRun(rootDir: string, dirName: string, repoRoot: strin
       confidence: typeof confidenceRaw === 'number' && Number.isFinite(confidenceRaw) ? confidenceRaw : null,
       claimSessionId: claimSession.get(id) ?? null,
       blockedBy: dependsOn,
+      wakeCount: typeof wakeCountRaw === 'number' && Number.isFinite(wakeCountRaw) ? wakeCountRaw : 0,
+      wakeMax: typeof wakeMaxRaw === 'number' && Number.isFinite(wakeMaxRaw) ? wakeMaxRaw : null,
+      duty: str(node.duty),
       depth: depthOf(id, parentOf),
     }
     nodes.push(nodeView)
@@ -647,7 +713,7 @@ async function aggregateOneRun(rootDir: string, dirName: string, repoRoot: strin
     roundsUsed,
     openRound,
     counts,
-    nodes,
+    nodes: orderOutlineNodes(nodes),
     plannerSessionId: str(planner?.dsh_session_id),
   }
 }
@@ -778,6 +844,9 @@ export function projectRunView(run: GoalTreeRunView, detail?: boolean): GoalTree
       claimedBy: node.claimedBy,
       claimSessionId: node.claimSessionId,
       blockedBy: node.blockedBy,
+      wakeCount: node.wakeCount,
+      wakeMax: node.wakeMax,
+      duty: node.duty,
       depth: node.depth,
     })),
     detail: false,

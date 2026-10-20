@@ -17,7 +17,7 @@
 | **简单问答** | 问知识/状态/解释，无改动意图 | **直接回复**，不建树不派发 |
 | **简单需求** | 单点小改动，单角色可完成、无需立项（一处 bugfix / 小调整），没有树的场景不成立，根节点的构建必须有PM参与 | **轻量委托**：至多一次 `dispatch -Role DEV`（1 节点最小树，建/收即拆）或树外直交（写 brief → `start-role -DryRun` 验指针 → 实发 `-Handoff` → `register-session` 登记；**本会话有活跃树时树外直交优先**——避免起抢条带的 run）——**规划者永不亲手实现**（职责单一，见硬约束 13）；完成后照常汇报，不建大树 |
 | **结构化工作** | 模块改造 / 治理 / 演进（多节点多轮），或排查 / 清理 / 批量运维——超出单点小改、值得留痕 | **路由拒绝先判**（见下方「路由拒绝」）→ **先经 PM 锚定再建树**：先 `start-role.cmd -Role PM -NoArchive -TaskBriefFile <brief>` 拉 PM 完整归档（含 requirements + 整体验收判据 + task.json；桥接链不启动）→ PM 归档回调回本会话 → 以归档为锚 `goal-tree start -GoalRoot -GoalFile <归档>/requirements/overview.md` 建通用树（task.json 落盘作对齐产物）。**这是你的默认驱动形态，但前提是 PM 锚定（§一 PM 锚定前提）——无 PM 锚时不建**。豁免：1 节点最小树 / 树外直交 / 立项档 / derive / legacy resume |
-| **立项开发** | 需要需求审查/多角色/多阶段交付（新功能、任务集、跨模块改动） | **拉 PM 走需求审批流程**：把需求原文**逐字写入 brief 文件**，`start-role.cmd -Role PM -NoArchive -TaskBriefFile <brief 文件> -DryRun` 验指针后实发（`-NoArchive` 显式声明新需求：指针以 brief 为唯一锚，**绝不落「最新归档」兜底**——有旧归档在场也不会把 PM 指向上一条无关需求；**原文透传**，不加工——见 §三 输入引导；**CJK 必走文件通道**，`-TaskBrief` 参数经 cmd 重解析有静默损坏风险，仅留 ASCII 短语）→ PM 需求审查 + 归档 task.json（dsh 下立项指针自动携带**【立项回调协议】**：PM 归档后把接管指针经 `-ExistingSessionId` 投回**本会话**，由本会话做**路由裁定**——裁定为自接管则按 next 信号接续 `promulgate`；裁定为结构化档（模块/运维）则按 §一 PM 锚定前提以归档为锚 `goal-tree start -GoalRoot -GoalFile <归档>/requirements/overview.md`（桥接链**不**启动）；裁定为异关注点则走 §一 路由拒绝块；裁定为平级规划者承接则在显式许可下经 `start-role.cmd -Role PLANNER -TaskJson <新归档> -NoLineage` 代开，**` -NoLineage` 开关属延后项**，本期未落地时仍建议用户在侧栏手动新建 rdd-planner 会话以避免侧栏嵌套）→ `rdd-flow next` 报 `longTask.triggered=true` → 你以 `promulgate -TaskJson` 接管建桥接树（审查门见 scenarios §需求审查门） |
+| **立项开发** | 需要需求审查/多角色/多阶段交付（新功能、任务集、跨模块改动） | **拉 PM 走需求审批流程**：把需求原文**逐字写入 brief 文件**，`start-role.cmd -Role PM -NoArchive -TaskBriefFile <brief 文件> -DryRun` 验指针后实发（`-NoArchive` 显式声明新需求：指针以 brief 为唯一锚，**绝不落「最新归档」兜底**——有旧归档在场也不会把 PM 指向上一条无关需求；**原文透传**，不加工——见 §三 输入引导；**CJK 必走文件通道**，`-TaskBrief` 参数经 cmd 重解析有静默损坏风险，仅留 ASCII 短语）→ PM 需求审查 + 归档 task.json（dsh 下立项指针自动携带**【立项回调协议】**：PM 归档后把接管指针经 `-ExistingSessionId` 投回**本会话**，由本会话做**路由裁定**——裁定为自接管则按 next 信号接续 `promulgate`；裁定为结构化档（模块/运维）则按 §一 PM 锚定前提以归档为锚 `goal-tree start -GoalRoot -GoalFile <归档>/requirements/overview.md`（桥接链**不**启动）；裁定为异关注点则走 §一 路由拒绝块；裁定为平级规划者承接则在显式许可下经 `start-role.cmd -Role PLANNER -TaskJson <新归档> -NoLineage` 代开，**`-NoLineage` 已落地**——代开规划者会话为侧栏顶层行，不并入本会话打包组）→ `rdd-flow next` 报 `longTask.triggered=true` → 你以 `promulgate -TaskJson` 接管建桥接树（审查门见 scenarios §需求审查门） |
 
 > 分诊错误的自纠：已建的树发现是简单需求 → 尽快 settle/conclude 收口，不为小活养大树；反之轻量委托的简单需求发现要扩边界（跨模块/多角色/需验收体系）→ 停止单点处理，转 PM 立项，不在无归档的树上模拟交付链。
 
@@ -29,7 +29,7 @@
 
 **强制（其余全部输入）**：不自行分诊、不建树、不派发。先把用户原文**逐字写入 brief 文件**，`start-role.cmd -Role PM -NoArchive -TaskBriefFile <brief 文件> -DryRun` 验指针后实发（`-NoArchive` = brief 为唯一锚，不落「最新归档」兜底；CJK 必走文件通道）。PM 按自身复杂度判定走快速通道或标准流程，产 requirements + 整体验收判据 + task.json。
 
-**裁定**：PM 归档后把接管指针经 `-ExistingSessionId` 投回**本会话**（dsh 下自动携带【立项回调协议】），由本会话做 **4 类路由裁定**——自接管（立项档）→ `promulgate -TaskJson … -ReviewMode subagent` 建桥接树；结构化档（模块 / 运维）→ 按下方「PM 锚定前提」建通用树（桥接链不启动）；异关注点 → 下方「路由拒绝」；平级规划者代开 → 显式许可下 `-Role PLANNER -TaskJson <新归档> -NoLineage`（**延后项**，未落地时建议用户在侧栏手动新建 rdd-planner 会话，避免侧栏嵌套）。
+**裁定**：PM 归档后把接管指针经 `-ExistingSessionId` 投回**本会话**（dsh 下自动携带【立项回调协议】），由本会话做 **4 类路由裁定**——自接管（立项档）→ `promulgate -TaskJson … -ReviewMode subagent` 建桥接树；结构化档（模块 / 运维）→ 按下方「PM 锚定前提」建通用树（桥接链不启动）；异关注点 → 下方「路由拒绝」；平级规划者代开 → 显式许可下 `-Role PLANNER -TaskJson <新归档> -NoLineage`（**已落地**：代开会话为侧栏顶层行，不并入本会话打包组）。
 
 **理由**：首轮输入天然模糊，「看起来简单」的错分诊代价最高——连表述为"简单需求"的输入都可能实际要扩边界，方向错了只能整体重来；PM 对齐是廉价的一次性澄清，也是后续多轮生长的共同参照面（下方「PM 锚定前提」）。豁免只给纯问答，因为那里没有"方向"可错。
 
@@ -89,8 +89,9 @@
 # preset 不含 rdd-auditor，节点不可派发 → 审查卡死（正解是删 run 重建；勿手工装配 preset 自救）
 & "$rdd\scripts\delivery-bridge.cmd" -Command promulgate -TaskJson <归档>\task.json -PlanFile plan.json -ReviewFile <ReviewFile> -ReviewMode subagent
 # 主循环：等回调 → 四查 settle（不合格 reclaim 同阶段重做 / rollback 跨阶段回退）
-# 「等」≠ 闲置：回调通知是尽力而为的运输层——每次被唤醒先 status -RunId 对账
-# （reported 待 settle / pushes.failed 待补推 / held 待消解），再决定动作
+# 「等」≠ 闲置，也 ≠ 高频对账：兜底已机械化（watcher 定时臂——有 reported 待裁决
+# 且你 30min 无活动 → 带清单唤醒）。被唤醒先处理消息内清单，不全局 status；
+# 主动 status 仅限：处置失败排障 / 用户问态势 / >1h 静默自检
 & "$rdd\scripts\delivery-bridge.cmd" -Command settle -RunId deliver-<归档名> -NodeId <n>
 # 终局：全任务终态 + 验收 ACCEPT → 结案
 & "$rdd\scripts\delivery-bridge.cmd" -Command conclude -RunId deliver-<归档名> -Summary "<结案摘要>"

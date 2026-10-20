@@ -2,18 +2,26 @@
 /**
  * 聚合发布构建（unified-release 需求 4）。
  *
- * 串联三组件构建保证同源，汇聚产物到 dist/release/：
+ * 串联四组件构建保证同源，汇聚产物到 dist/release/：
  *   node scripts/build-release.mjs [--tag vX.Y.Z]
  *     1. build-engine-package.mjs   → dist/engine/rdd-engine{,-<v>}.tgz
  *     2. build-dsh-plugin.mjs       → dist/plugin/dsh-rdd-explore{,-<v>}.tgz
  *     3. build-skills-package.mjs   → dist/skills/rdd-skills{,-<v>}.tgz
- *     4. 汇聚 6 个 tarball 到 dist/release/（固定名 + 带版本名双份）
- *     5. 生成 SHA256SUMS（全部 6 件）+ release-notes.md 模板（组件版本对照表）
+ *     4. build-dsh-goal-tree.mjs    → dist/plugin/dsh-rdd-goal-tree.tgz
+ *                                   + dist/plugin/coderrdd-dsh-rdd-goal-tree-<v>.tgz
+ *     5. 汇聚 8 个 tarball 到 dist/release/（固定名 + 带版本名双份）
+ *     6. 生成 SHA256SUMS（全部 8 件）+ release-notes.md 模板（编排三组件表 + goal-tree 独立表）
  *
  * 版本方案：release tag 统一 vX.Y.Z（codeRDD 仓库主版本，起步 v1.0.0，--tag 覆盖）；
- * 三 tarball 内部版本各自独立线（notes 模板携带对照表）。
+ * 各 tarball 内部版本各自独立线（notes 模板携带对照表）。
  *
- * --check（CI）：委托三组件各自 --check；dist/release/ 存在时附加 SHA256SUMS
+ * 组件分组：engine / plugin / skills 是 install-rdd.ps1 硬编排的三组件（engine →
+ * plugin → skills 顺序不可变）；goal-tree 是可选独立分发插件（`dsh plugin --profile
+ * web add dsh-rdd-goal-tree.tgz` 自行安装），不进 install-rdd.ps1 编排，但必须随
+ * release 发布——awesome-dsh-plugin 条目的固定名 tarball URL（releases/latest/
+ * download/dsh-rdd-goal-tree.tgz）只认最新 Release，漏传即市场安装 404。
+ *
+ * --check（CI）：委托四组件各自 --check；dist/release/ 存在时附加 SHA256SUMS
  * 一致性复核（产物被篡改/过期即失败）。
  *
  * 发布动作（手动，本期非验收项）：
@@ -28,7 +36,7 @@
 
 import { execFileSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -40,15 +48,26 @@ const fail = msg => { console.error(`✗ ${msg}`); process.exit(1) }
 const tagIndex = process.argv.indexOf('--tag')
 const releaseTag = tagIndex !== -1 && process.argv[tagIndex + 1] ? process.argv[tagIndex + 1] : 'v1.0.0'
 
-/** 三组件构建脚本（顺序即依赖顺序：plugin 构建读 rdd-engine 的 vendored guide 源）。 */
+/** 四组件构建脚本（顺序即依赖顺序：plugin 构建读 rdd-engine 的 vendored guide 源；goal-tree 独立）。 */
 const COMPONENTS = [
   { name: 'engine', script: 'build-engine-package.mjs', dist: join('dist', 'engine'), fixed: 'rdd-engine.tgz', version: () => JSON.parse(readFileSync(join(repoRoot, 'rdd-engine', 'package.json'), 'utf8')).version },
   { name: 'plugin', script: 'build-dsh-plugin.mjs', dist: join('dist', 'plugin'), fixed: 'dsh-rdd-explore.tgz', version: () => JSON.parse(readFileSync(join(repoRoot, 'dsh', 'dsh-rdd-explore', 'package.json'), 'utf8')).version },
   { name: 'skills', script: 'build-skills-package.mjs', dist: join('dist', 'skills'), fixed: 'rdd-skills.tgz', version: () => JSON.parse(readFileSync(join(repoRoot, 'dist', 'skills-staging', 'package.json'), 'utf8')).version },
+  {
+    name: 'goal-tree',
+    script: 'build-dsh-goal-tree.mjs',
+    dist: join('dist', 'plugin'),
+    fixed: 'dsh-rdd-goal-tree.tgz',
+    // 该组件的带版本产物沿用 npm pack 命名（coderrdd-dsh-rdd-goal-tree-<v>.tgz），
+    // 与三组件的 `<fixed-stem>-<v>.tgz` 模式不同——override 之。
+    versioned: version => `coderrdd-dsh-rdd-goal-tree-${version}.tgz`,
+    version: () => JSON.parse(readFileSync(join(repoRoot, 'dsh', 'rdd-goal-tree', 'package.json'), 'utf8')).version,
+    standalone: true,
+  },
 ]
 
 // ---------------------------------------------------------------------------
-// 1. 串联三组件构建（--check 委托各组件 --check）
+// 1. 串联四组件构建（--check 委托各组件 --check）
 // ---------------------------------------------------------------------------
 for (const comp of COMPONENTS) {
   const cmd = `node scripts/${comp.script}${checkMode ? ' --check' : ''}`
@@ -77,7 +96,7 @@ if (checkMode) {
     }
     console.log('ok - dist/release SHA256SUMS consistent with artifacts')
   }
-  console.log('CHECK OK: all three components verified')
+  console.log('CHECK OK: all four components verified')
   process.exit(0)
 }
 
@@ -86,13 +105,22 @@ if (checkMode) {
 // ---------------------------------------------------------------------------
 const releaseDir = join(repoRoot, 'dist', 'release')
 mkdirSync(releaseDir, { recursive: true })
+// Fresh-staging semantics：先清场上一次的 staging 产物——带版本名会随版本轮换
+// （如 coderrdd-dsh-rdd-goal-tree-0.6.0 → 0.6.1），残留文件会被下方
+// readdirSync 的全量 SHA256SUMS 收编并随 gh release create 上传，且 --check
+// 从此要求它永远存在。清场让每次 staging 都是可复现的完整快照。
+for (const file of readdirSync(releaseDir)) {
+  if (file.endsWith('.tgz') || file === 'SHA256SUMS' || file === 'release-notes.md') {
+    rmSync(join(releaseDir, file), { force: true })
+  }
+}
 const versioned = []
 for (const comp of COMPONENTS) {
   const version = comp.version()
-  const versionedName = comp.fixed.replace(/\.tgz$/, `-${version}.tgz`)
+  const versionedName = comp.versioned ? comp.versioned(version) : comp.fixed.replace(/\.tgz$/, `-${version}.tgz`)
   copyFileSync(join(repoRoot, comp.dist, comp.fixed), join(releaseDir, comp.fixed))
   copyFileSync(join(repoRoot, comp.dist, versionedName), join(releaseDir, versionedName))
-  versioned.push({ label: comp.name, fixed: comp.fixed, versionedName, version })
+  versioned.push({ label: comp.name, fixed: comp.fixed, versionedName, version, standalone: comp.standalone === true })
 }
 
 const sums = readdirSync(releaseDir).filter(f => f.endsWith('.tgz')).sort()
@@ -106,7 +134,19 @@ const notes = [
   '',
   '| component | asset (fixed name) | internal version |',
   '|---|---|---|',
-  ...versioned.map(v => `| ${v.label} | ${v.fixed} | ${v.version} |`),
+  ...versioned.filter(v => !v.standalone).map(v => `| ${v.label} | ${v.fixed} | ${v.version} |`),
+  '',
+  'Plus one optional plugin, built and distributed independently (not orchestrated by install-rdd.ps1):',
+  '',
+  '| component | asset (fixed name) | internal version |',
+  '|---|---|---|',
+  ...versioned.filter(v => v.standalone).map(v => `| ${v.label} | ${v.fixed} | ${v.version} |`),
+  '',
+  'Standalone install (per profile):',
+  '',
+  '```powershell',
+  ...versioned.filter(v => v.standalone).map(v => `dsh plugin --profile web add ${v.fixed}`),
+  '```',
   '',
   '## Install (one command)',
   '',
@@ -125,7 +165,7 @@ const notes = [
   'powershell -ExecutionPolicy Bypass -File install-rdd.ps1 -Remove',
   '```',
   '',
-  'Checksums: SHA256SUMS (beside the assets).',
+  'Checksums: SHA256SUMS (beside the assets; covers every tarball above).',
   '',
   '> Release notes template generated by scripts/build-release.mjs - edit the body before publishing.',
 ].join('\n') + '\n'
