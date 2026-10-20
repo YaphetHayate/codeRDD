@@ -225,6 +225,10 @@ function TB   {
             if (Test-Path -LiteralPath $plan) { $A = @($A) + @("-PlanFile", $plan) }
         }
     }
+    # bridge 默认形状翻转（promulgate legacy→wake）：本套件按旧链 chain-head 拓扑
+    # 书写——promulgate 未显式带 -Shape 时机械补 legacy（显式 -Shape 优先，
+    # 非 promulgate 命令零影响）。
+    if ($A -contains "promulgate" -and $A -notcontains "-Shape") { $A = @($A) + @("-Shape", "legacy") }
     Invoke-EngineCli $BridgeCmd $A
 }
 function TRun { param([string[]]$A) Invoke-EngineCli $GoalTreeCmd $A }

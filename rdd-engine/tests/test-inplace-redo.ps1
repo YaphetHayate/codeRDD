@@ -47,7 +47,12 @@ function Invoke-Ps1 { param([string]$Script, [string[]]$ArgList)
     try { $json = ($out | ConvertFrom-Json) } catch { $json = $null }
     return @{ json = $json; exit = $code; raw = $out }
 }
-function Invoke-Bridge { param([string[]]$A) Invoke-Ps1 $BridgePs1 $A }
+function Invoke-Bridge { param([string[]]$A)
+    # bridge 默认形状翻转（promulgate legacy→wake）：本套件按旧链 chain-head 拓扑
+    # 书写——promulgate 未显式带 -Shape 时机械补 legacy（显式 -Shape 优先，
+    # 非 promulgate 命令零影响）。
+    if ($A -contains 'promulgate' -and -not ($A -contains '-Shape')) { $A = @($A) + @('-Shape', 'legacy') }
+    Invoke-Ps1 $BridgePs1 $A }
 function Invoke-Flow   { param([string[]]$A) Invoke-Ps1 $FlowPs1 $A }
 function Invoke-Leaf   { param([string[]]$A) Invoke-Ps1 $LeafPs1 $A }
 function Invoke-Tree   { param([string[]]$A) Invoke-Ps1 $TreePs1 $A }

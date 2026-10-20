@@ -1,4 +1,4 @@
-# design-review-qa-verify.ps1 - QA independent black-box probe for
+﻿# design-review-qa-verify.ps1 - QA independent black-box probe for
 # auditor-design-stage-review (stage-boundary design review node + DesignReviewFile
 # contract). Requirement source (QA reads requirements only, never design/):
 # .rdd/changes/archive/2026-10-02-auditor-independent-review/requirements/
@@ -78,7 +78,12 @@ function Invoke-Ps1 { param([string]$Script, [string[]]$ArgList)
     try { $json = ($out | ConvertFrom-Json) } catch { $json = $null }
     return @{ json = $json; exit = $code; raw = $out }
 }
-function Invoke-Bridge { param([string[]]$A) Invoke-Ps1 $BridgePs1 $A }
+function Invoke-Bridge { param([string[]]$A)
+    # bridge 默认形状翻转（promulgate legacy→wake）：本探针按旧链 chain-head 拓扑
+    # 书写——promulgate 未显式带 -Shape 时机械补 legacy（显式 -Shape 优先，
+    # 非 promulgate 命令零影响）。
+    if ($A -contains 'promulgate' -and -not ($A -contains '-Shape')) { $A = @($A) + @('-Shape', 'legacy') }
+    Invoke-Ps1 $BridgePs1 $A }
 function Invoke-Flow   { param([string[]]$A) Invoke-Ps1 $FlowPs1 $A }
 function Invoke-Leaf   { param([string[]]$A) Invoke-Ps1 $LeafPs1 $A }
 

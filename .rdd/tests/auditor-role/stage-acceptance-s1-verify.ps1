@@ -1,4 +1,4 @@
-# stage-acceptance-s1 QA integration probe - [集成验收·S1] auditor-role
+﻿# stage-acceptance-s1 QA integration probe - [集成验收·S1] auditor-role
 # Target: deliver-2026-10-02-auditor-independent-review node n6 (stage acceptance S1)
 # Slice coverage (plan S1 acceptance point):
 #   TC-A10  start-role -Role AUDITOR three-backend -DryRun against a fixture
@@ -73,7 +73,12 @@ function Invoke-Ps1 { param([string]$Script, [string[]]$ArgList)
     try { $json = ($out | ConvertFrom-Json) } catch { $json = $null }
     return @{ json = $json; exit = $code; raw = $out }
 }
-function Invoke-Bridge { param([string[]]$A) Invoke-Ps1 $BridgePs1 $A }
+function Invoke-Bridge { param([string[]]$A)
+    # bridge 默认形状翻转（promulgate legacy→wake）：本探针按旧链 chain-head 拓扑
+    # 书写——promulgate 未显式带 -Shape 时机械补 legacy（显式 -Shape 优先，
+    # 非 promulgate 命令零影响）。
+    if ($A -contains 'promulgate' -and -not ($A -contains '-Shape')) { $A = @($A) + @('-Shape', 'legacy') }
+    Invoke-Ps1 $BridgePs1 $A }
 function Invoke-Flow   { param([string[]]$A) Invoke-Ps1 $FlowPs1 $A }
 
 # start-role -DryRun under an explicit backend env (strip inherited DSH_WEB_URL /

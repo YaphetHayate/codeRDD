@@ -215,16 +215,18 @@ param(
     [switch]$NoPush,              # promulgate isolation: build the run but suppress
                                    # every push (test/incident isolation)
 
-    # promulgate (goal-tree-wake-model): 'wake' promulgates the run in the new
-    # tree shape — requirement containers (type=sub) at the goal root with
-    # engine-materialized role slots beneath them, requirement-level dependency
-    # edges, and redo/reset lifecycle instead of prune+rebuild on rework waves
-    # (fail waves / cross-stage rollbacks / stage re-entries wake the SAME slot,
-    # the tree never grows). Default 'legacy' keeps the chain-head shape and
-    # every anchor policy byte-identical (regression anchor); the wake branches
-    # below key on bridge.json shape=wake only.
+    # promulgate (goal-tree-wake-model): tree shape of the run being created.
+    # 'wake' (DEFAULT since engine 1.2.0) promulgates in the new tree shape —
+    # requirement containers (type=sub) at the goal root with engine-materialized
+    # role slots beneath them, requirement-level dependency edges, and redo/reset
+    # lifecycle instead of prune+rebuild on rework waves (fail waves / cross-stage
+    # rollbacks / stage re-entries wake the SAME slot, the tree never grows).
+    # '-Shape legacy' is the compat path (historical chain-head shape + anchor
+    # policies). The shape is pinned INTO bridge.json at promulgate time only —
+    # existing runs keep their recorded shape (missing key = legacy) byte-identical;
+    # the wake branches below key on bridge.json shape=wake only.
     [ValidateSet("legacy", "wake")]
-    [string]$Shape = "legacy",
+    [string]$Shape = "wake",
                                    # auto-push for its WHOLE lifetime — persisted as
                                    # bridge.json no_push=true and consumed by every
                                    # auto-dispatch trigger (engine test suite / incident

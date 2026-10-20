@@ -105,6 +105,39 @@ try {
     $pf = Join-Path $Work 'wk-l1-plan.json'
     Write-Utf8NoBom $pf ($plan | ConvertTo-Json -Depth 8)
 
+    # ================= WK0: DEFAULT shape pin (no -Shape flag) =================
+    # 引擎 1.2.0 起 promulgate 缺省形状 = wake（历史 default legacy 翻转）。本块
+    # 用不传 -Shape 的颁布钉死默认值：bridge.json/manifest 双落 wake + 容器拓扑。
+    # 若未来误将默认翻回 legacy，这里第一时刻红。
+    $arch0 = Join-Path $Work '.rdd/changes/archive/wk-l0'
+    New-Item -ItemType Directory -Path (Join-Path $arch0 'requirements') -Force | Out-Null
+    Write-Utf8NoBom (Join-Path $arch0 'requirements/overview.md') "# wk-l0`n`nwake 默认形状钉定归档。`n`n## 整体验收判据`n`n无整体判据（理由：默认形状钉定测试归档，显式声明）`n"
+    Write-Utf8NoBom (Join-Path $arch0 'requirements/t1.md') "# wk-l0 需求 1`n`n- **描述**：默认形状钉定需求 1`n- **验收标准**：见 overview.md`n"
+    $tasks0 = '[{"title":"WK0","requirement":"requirements/t1.md","currentOwners":["UX"]}]'
+    $tf0 = Join-Path $Work 'wk-l0-init.json'
+    Write-Utf8NoBom $tf0 $tasks0
+    $r = Invoke-Flow @('-Command', 'init', '-Archive', '.rdd/changes/archive/wk-l0', '-TasksFile', 'wk-l0-init.json')
+    if ($r.json.success -ne $true) { throw "wk-l0 init failed: $($r.raw)" }
+    $plan0 = [ordered]@{ planned_at = '2026-10-17T00:00:00Z'; planner = 'test'; stages = @(
+        @{ id = 'S1'; goal = 'stage S1 目标'; milestone = 'S1 里程碑'; task_ids = @(1); batches = @(,@(1)); acceptance_point = @{ criteria_items = @('smoke: default shape pinned'); slice = 'runnable slice' } }
+    ); risks = @() }
+    $pf0 = Join-Path $Work 'wk-l0-plan.json'
+    Write-Utf8NoBom $pf0 ($plan0 | ConvertTo-Json -Depth 8)
+    $r = Invoke-Bridge @('-Command', 'promulgate', '-TaskJson', '.rdd/changes/archive/wk-l0/task.json', '-PlanFile', $pf0, '-NoPush')
+    Assert-True ($r.json.success -eq $true) 'WK0 promulgate WITHOUT -Shape ok (default = wake)' ($r.raw)
+    $b0 = Read-BridgeJson 'deliver-wk-l0'
+    Assert-True ([string]$b0.shape -eq 'wake') 'WK0 bridge.json shape=wake by DEFAULT' ($b0 | ConvertTo-Json -Depth 3 -Compress)
+    $mf0 = (Get-Content -LiteralPath (Join-Path $Work '.rdd/goal-trees/deliver-wk-l0/manifest.json') -Raw -Encoding UTF8 | ConvertFrom-Json)
+    Assert-True ([string]$mf0.shape -eq 'wake') 'WK0 manifest.json shape=wake by DEFAULT' ($mf0 | ConvertTo-Json -Compress)
+    $cont0 = [string]$b0.tasks.'1'.container
+    $ux0 = [string]$b0.tasks.'1'.stages.UX
+    $nodes0 = Read-TreeNodes 'deliver-wk-l0'
+    $contNode0 = $nodes0 | Where-Object { $_.id -eq $cont0 }
+    $uxNode0 = $nodes0 | Where-Object { $_.id -eq $ux0 }
+    Assert-True ($null -ne $contNode0 -and [string]$contNode0.type -eq 'sub' -and ($null -eq $contNode0.parent -or [string]$contNode0.parent -eq 'n1')) 'WK0 requirement container (type=sub) at goal root by default' ($contNode0 | ConvertTo-Json -Compress)
+    Assert-True ($null -ne $uxNode0 -and [string]$uxNode0.parent -eq $cont0 -and [string]$uxNode0.duty -eq 'ux') 'WK0 UX slot under container with duty=ux' ($uxNode0 | ConvertTo-Json -Compress)
+    Assert-True (@($nodes0 | Where-Object { -not $_.parent -and $_.role }).Count -eq 0) 'WK0 no bare role node at the goal root (default layer discipline)'
+
     # ================= WK1: wake promulgate shape =================
     $r = Invoke-Bridge @('-Command', 'promulgate', '-TaskJson', '.rdd/changes/archive/wk-l1/task.json', '-PlanFile', $pf, '-NoPush', '-Shape', 'wake')
     Assert-True ($r.json.success -eq $true) 'WK1 promulgate -Shape wake ok' ($r.raw)

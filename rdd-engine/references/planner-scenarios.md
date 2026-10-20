@@ -12,7 +12,9 @@ PM 归档（longTask 信号触发）→ start-role -Role PLANNER -TaskJson ...�
                   产 ReviewFile → 呈用户 → promulgate -ReviewFile 机械消费
                   —— 细则见 §需求审查门
   1.5 规划       产出 PlanFile（必做，缺 → PLAN_MISSING）——见 §长程规划与滚动追踪
-  2. promulgate  颁布：归档任务集 → goal-tree run（目标根 + 链头 + 阶段链 + 依赖推导）
+  2. promulgate  颁布：归档任务集 → goal-tree run（目标根 + 需求容器(type=sub) + 角色槽
+                  + 阶段链 + 依赖推导；缺省形状 wake——引擎 1.2.0 起，`-Shape legacy`
+                  为存量兼容路径）
                   → 尾部自动推送全部无前置依赖节点
   3. （推送即调度）角色会话被自动拉起，第一动作 bridge claim
   4. （worker）claim → 干活 → 完成即 leaf report 回调规划者
@@ -45,7 +47,7 @@ PM 归档（longTask 信号触发）→ start-role -Role PLANNER -TaskJson ...�
 - **主动 status 仅三种时机**：处置失败排障（按 `SETTLE_EVIDENCE_REJECTED` / `ROLLBACK_GRAFT_FAILED` 等错误指引查对应 run；pointer 类推送失败 `dispatch` 重推亦在此列）／用户询问态势／**静默自检**（>1h 无任何唤醒且存在在途认领——运输层可能整体停摆，含定时臂自身，查一次确认）。
 - **「没收到通知」≠「没发生」——以 status/ledger 为准，不以 inbox 为准**——不变；变的只是查询时机：从「每次唤醒」收窄到「决策/排障/被问」。
 
-**阶段链模型**：任务路由带 `phase`，全序 `REQ → DESIGN → IMPL → VERIFY → 完成`；阶段内角色白名单并行（DESIGN = CTO∥UX∥QA，QA 测试先行——尽量与 CTO 同期而非堆到 VERIFY，见速查 6）。多 owner 任务颁布时每角色各建一个链头节点；settle 阶段感知：阶段内收窄不流转，最后一个 owner settle 才整组切换阶段并收敛 graft 下一阶段链头。rollback 显式 `-To <角色集> -Phase <阶段>` 指定回退目标（回退 REQ 可达：`-To "PM" -Phase REQ`）；展示面用 `∥`（阶段内并行）/`→`（阶段间）渲染。旧归档（phase=null）保守降级为原线性链行为。阶段白名单真源 `references/phase-model.md`。
+**阶段链模型**：任务路由带 `phase`，全序 `REQ → DESIGN → IMPL → VERIFY → 完成`；阶段内角色白名单并行（DESIGN = CTO∥UX∥QA，QA 测试先行——尽量与 CTO 同期而非堆到 VERIFY，见速查 6）。多 owner 任务颁布时同需求各角色共享一个需求容器、每角色一个槽（wake 缺省形状，引擎 1.2.0 起；`-Shape legacy` 下仍为每角色一个链头节点）；settle 阶段感知：阶段内收窄不流转，最后一个 owner settle 才整组切换阶段并收敛 graft 下一阶段。rollback 显式 `-To <角色集> -Phase <REQ/DESIGN/IMPL/VERIFY>` 指定回退目标（回退 REQ 可达：`-To "PM" -Phase REQ`）；展示面用 `∥`（阶段内并行）/`→`（阶段间）渲染。旧归档（phase=null）保守降级为原线性链行为。阶段白名单真源 `references/phase-model.md`。
 
 **依赖**：promulgate 从各需求文档「依赖关系」字段机读推导（标注格式以 `rdd-pm/references/requirement-item-template.md` 为准；单遍建树只回连先建节点，前向引用需审查门 `depends_on_override` 兜底）；运行中调整走 `goal-tree deps add/remove`（DAG 校验 + 审计）。目标根（承载归档原始需求）不可认领、不参与依赖，是 conclude 的终局锚点。
 
