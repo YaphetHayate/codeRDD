@@ -69,3 +69,17 @@ export function shortenPath(path, limit = 56) {
   const tail = Math.floor((limit - 1) / 2)
   return `${path.slice(0, head)}…${path.slice(-tail)}`
 }
+
+/**
+ * vscode://file target (§6.4 jump protocol) from projectRoot + a repo-relative
+ * path, always forward slashes regardless of host separator. Single shared
+ * implementation — entry details and pair details must never drift apart.
+ * @param {string} projectRoot
+ * @param {string} relativePath
+ * @returns {string}
+ */
+export function absoluteFilePath(projectRoot, relativePath) {
+  const root = String(projectRoot ?? '').replace(/\\/g, '/').replace(/\/+$/, '')
+  const relative = String(relativePath ?? '').replace(/\\/g, '/').replace(/^\/+/, '')
+  return `${root}/${relative}`
+}

@@ -1,0 +1,276 @@
+{
+  "feature": "ops-dashboard-exploration-pair-observability",
+  "status": "active",
+  "relatedCode": [
+    "rdd-engine/dashboard/lib/readers/exploration.mjs",
+    "rdd-engine/dashboard/lib/views/exploration.mjs",
+    "rdd-engine/dashboard/lib/components.mjs",
+    "rdd-engine/dashboard/static/app.js",
+    "rdd-engine/dashboard/static/style.css"
+  ],
+  "testCode": [
+    ".rdd/tests/ops-dashboard-exploration-pair-observability/exploration-pair-observability-qa-verify.mjs"
+  ],
+  "lastChange": "2026-10-20-exploration-cache-ux",
+  "cases": [
+    {
+      "id": "TC-105",
+      "title": "产物计数口径地面真值：KPI 面携带 N=5 条产物、M=4 对配对（混合夹具含 2 孤儿 + 1 缺 summary + 1 孤儿 summary），合并前后语义不变",
+      "type": "positive",
+      "priority": "P0",
+      "acceptance": "AC-1",
+      "codeRef": ".rdd/tests/ops-dashboard-exploration-pair-observability/exploration-pair-observability-qa-verify.mjs:296",
+      "sourceChange": "2026-10-20-exploration-cache-ux",
+      "status": "active",
+      "crossFeature": [],
+      "precondition": "混合夹具根（3 条目 + 5 记录/4 配对/2 孤儿/1 缺 summary/1 孤儿 summary）；数字按边界断言（防 substring 假阳）；区域模型 = ops-main 至其后首个内容 <section（顶栏切换器 section 在 ops-main 之前，不得混入）",
+      "steps": [
+        "以夹具根进程内起真实服务（临时端口）",
+        "GET /exploration，在 KPI 面区域断言边界化的真值 5 与 4 同时在场"
+      ],
+      "expected": "配对计数口径与现状一致（reader artifacts.count/pairedCount 为唯一事实源，改造只合并不改口径）"
+    },
+    {
+      "id": "TC-110",
+      "title": "只读不变量：探针全流程（三夹具根起服/双 GET/API/静态资源）对夹具树零回写（size+mtime+SHA256 全树快照）",
+      "type": "negative",
+      "priority": "P0",
+      "acceptance": "整体判据-2,AC-7",
+      "codeRef": ".rdd/tests/ops-dashboard-exploration-pair-observability/exploration-pair-observability-qa-verify.mjs:321",
+      "sourceChange": "2026-10-20-exploration-cache-ux",
+      "status": "active",
+      "crossFeature": ["ops-dashboard"],
+      "precondition": "三个夹具根构建后即拍全树快照（内容不变但 mtime 滚动也算写）；产物文件 mtime 已被 utimesSync 定值，快照捕获该定值；引擎脚本零改动项在验证轮以 git diff 范围复核，不在运行时断言",
+      "steps": [
+        "构建夹具后快照 rich/bare/lone 三根全树",
+        "执行全部读交互（含二次 GET 稳定性读）",
+        "重算快照逐文件严格比对（新增/丢失/改写/mtime 滚动均违规）"
+      ],
+      "expected": "读交互零写入（看板侧现算不落盘——产物对状态可观测的只读基线面）"
+    },
+    {
+      "id": "TC-115",
+      "title": "API 数据面基线：/api/exploration 信封 + 计数/artifacts{5,4}/zones 与 reader 契约一致（数据面不缩水）",
+      "type": "positive",
+      "priority": "P0",
+      "acceptance": "整体判据-2,AC-7",
+      "codeRef": ".rdd/tests/ops-dashboard-exploration-pair-observability/exploration-pair-observability-qa-verify.mjs:338",
+      "sourceChange": "2026-10-20-exploration-cache-ux",
+      "status": "active",
+      "crossFeature": ["ops-dashboard"],
+      "precondition": "同 TC-105 夹具；聚合扩展只增不改——既有字段面（含 artifacts{count,pairedCount}）冻结为回归锚；generatedAt 仅类型断言（时间戳永不入断言）",
+      "steps": [
+        "GET /api/exploration 断言信封 {domain,available,meta,data}",
+        "断言 hot/index/total 计数与 entries 长度 = 夹具真值 2/1/3",
+        "断言 artifacts 5/4 与双 zone present"
+      ],
+      "expected": "JSON 面与改造前同构——新增产物对数据只增字段，不缩既有契约"
+    },
+    {
+      "id": "TC-120",
+      "title": "summary 缺失沿用现有 note 口径：meta.notes 保留「…缺少配对 summary」措辞",
+      "type": "positive",
+      "priority": "P1",
+      "acceptance": "EC-2",
+      "codeRef": ".rdd/tests/ops-dashboard-exploration-pair-observability/exploration-pair-observability-qa-verify.mjs:346",
+      "sourceChange": "2026-10-20-exploration-cache-ux",
+      "status": "active",
+      "crossFeature": [],
+      "precondition": "需求钉死：summary 缺失等异常配对沿用现有 note 口径如实展示",
+      "steps": [
+        "读取 /api/exploration meta.notes，断言「缺少配对 summary」措辞在场"
+      ],
+      "expected": "异常配对的提示面不被合并改造吞掉（1 条缺 summary 记录如实提示）"
+    },
+    {
+      "id": "TC-125",
+      "title": "孤儿 summary（有 summary 无记录）不进任何计数、页面不崩",
+      "type": "boundary",
+      "priority": "P2",
+      "acceptance": "EC-3",
+      "codeRef": ".rdd/tests/ops-dashboard-exploration-pair-observability/exploration-pair-observability-qa-verify.mjs:354",
+      "sourceChange": "2026-10-20-exploration-cache-ux",
+      "status": "active",
+      "crossFeature": [],
+      "precondition": "第三隔离根仅含 1 条目 + artifacts/ 内一个无宿主记录的 *.summary.md",
+      "steps": [
+        "GET /exploration 断言 200 且无错误栈",
+        "GET /api/exploration 断言 artifacts 0/0（孤儿 summary 不算记录也不算配对）"
+      ],
+      "expected": "反常配对是容忍态：计数口径严格按记录文件计，页面不崩"
+    },
+    {
+      "id": "TC-130",
+      "title": "entries 非空但 artifacts 目录缺失：配对面降级 0/0、页面不崩",
+      "type": "boundary",
+      "priority": "P2",
+      "acceptance": "EC-4",
+      "codeRef": ".rdd/tests/ops-dashboard-exploration-pair-observability/exploration-pair-observability-qa-verify.mjs:367",
+      "sourceChange": "2026-10-20-exploration-cache-ux",
+      "status": "active",
+      "crossFeature": [],
+      "precondition": "第二隔离根仅有 hot.json（1 条目），无 index.json、无 artifacts 目录",
+      "steps": [
+        "GET /exploration 断言 200 且无错误栈",
+        "GET /api/exploration 断言 available=true（条目在场）且 artifacts 0/0"
+      ],
+      "expected": "目录级缺失走容忍读（listFiles 返 []）：条目面正常，配对面如实为 0"
+    },
+    {
+      "id": "TC-135",
+      "title": "两块 KPI 合并为一块且可点击展开产物对清单：合并 tile 携带双计数与展开接线，清单含全部 5 条产物记录（含孤儿与缺 summary）",
+      "type": "positive",
+      "priority": "P0",
+      "acceptance": "AC-1",
+      "codeRef": ".rdd/tests/ops-dashboard-exploration-pair-observability/exploration-pair-observability-qa-verify.mjs:409",
+      "sourceChange": "2026-10-20-exploration-cache-ux",
+      "status": "active",
+      "crossFeature": [],
+      "precondition": "skip 守卫：交付信号 = 「无条目」/「文件时间」标记或孤儿 slug 在场且伴随接线语义，或 KPI 前缀（ops-main 至首个内容 section，顶栏排除）有展开接线；接线语义取并集（<summary>/aria-expanded/role=button/<button>/data-* 接线/tabindex），不绑实现形态",
+      "steps": [
+        "delivered-probe 探测交付信号（无信号 → 整组 SKIP）",
+        "断言 5 个唯一 slug 全部出现在剥离 script 的 HTML（孤儿 slug 只有产物对清单会渲染）",
+        "断言合并 tile 携带 5/4 双计数与展开接线语义"
+      ],
+      "expected": "点击一块 KPI 即见产物对全清单，行集 = 产物记录集（N=5），口径双数字同 tile 在场"
+    },
+    {
+      "id": "TC-140",
+      "title": "新鲜状态现算：files 全匹配 + 记录存在判新鲜（不带近似时间口径）；哈希不匹配条目逐项列出已变更文件路径",
+      "type": "positive",
+      "priority": "P0",
+      "acceptance": "AC-2",
+      "codeRef": ".rdd/tests/ops-dashboard-exploration-pair-observability/exploration-pair-observability-qa-verify.mjs:422",
+      "sourceChange": "2026-10-20-exploration-cache-ux",
+      "status": "active",
+      "crossFeature": [],
+      "precondition": "同 TC-135 skip 守卫；夹具含真实 SHA-256 三态（全匹配/内容改写/路径缺失），探针内现算哈希、未经引擎执行即检出失效 = 看板侧现算的直接证明；新鲜/失效状态词取并集（新鲜/fresh/有效 vs 失效/已变更/stale 等），产物项用 files 路径锚定（条目明细表不渲染 files 清单）",
+      "steps": [
+        "新鲜条目产物项窗内断言 files 路径在场 + 新鲜语义标记 + 无「文件时间/近似」字样",
+        "失效条目产物项窗内断言已变更文件路径（src/explpair/login.ts）在场 + 失效语义标记"
+      ],
+      "expected": "新鲜度与引擎 Test-EntryFresh 同语义且由看板现算，不新鲜时逐项点名已变更文件"
+    },
+    {
+      "id": "TC-145",
+      "title": "缺失文件逐项列出：files 清单中不存在的路径被点名并伴随缺失态信号",
+      "type": "negative",
+      "priority": "P0",
+      "acceptance": "AC-2",
+      "codeRef": ".rdd/tests/ops-dashboard-exploration-pair-observability/exploration-pair-observability-qa-verify.mjs:434",
+      "sourceChange": "2026-10-20-exploration-cache-ux",
+      "status": "active",
+      "crossFeature": [],
+      "precondition": "同 TC-135 skip 守卫；夹具持久条目的 files 指向从未写盘的路径（src/explpair/ghost.ts）；path 存在性判定同引擎语义（缺文件即不新鲜）",
+      "steps": [
+        "缺失条目产物项窗内断言缺失路径（src/explpair/ghost.ts）在场 + 缺失/失效语义标记"
+      ],
+      "expected": "记录 path 存在性纳入现算，缺失文件被逐项点名（运营不用开文件手工比对）"
+    },
+    {
+      "id": "TC-150",
+      "title": "孤儿产物在清单中标注「无条目」：2 个孤儿（含缺 summary 记录）均标注",
+      "type": "positive",
+      "priority": "P0",
+      "acceptance": "AC-3",
+      "codeRef": ".rdd/tests/ops-dashboard-exploration-pair-observability/exploration-pair-observability-qa-verify.mjs:442",
+      "sourceChange": "2026-10-20-exploration-cache-ux",
+      "status": "active",
+      "crossFeature": [],
+      "precondition": "同 TC-135 skip 守卫；「无条目」断言用负 lookbehind（(?<!暂)）避开既有「暂无条目」空态文案；孤儿 = 有文件无缓存条目（非缺 summary）",
+      "steps": [
+        "explpair-orphan 产物项窗内断言「无条目」标注",
+        "explpair-nosummary 产物项窗内对称断言"
+      ],
+      "expected": "无条目孤儿如实标注展示（只展示不删，删除属需求 #3 范围）"
+    },
+    {
+      "id": "TC-155",
+      "title": "生成时间口径：热区=registeredAt（真实注册时间）；持久/孤儿=文件 mtime + 「文件时间（近似）」标注",
+      "type": "positive",
+      "priority": "P0",
+      "acceptance": "AC-4",
+      "codeRef": ".rdd/tests/ops-dashboard-exploration-pair-observability/exploration-pair-observability-qa-verify.mjs:450",
+      "sourceChange": "2026-10-20-exploration-cache-ux",
+      "status": "active",
+      "crossFeature": [],
+      "precondition": "同 TC-135 skip 守卫；产物文件 mtime 以 utimesSync 定值（10:00Z，UTC-9..UTC+13 同日历日），断言只钉日期部分——零时钟噪声；热区产物项另断言不带「近似」口径（D3）",
+      "steps": [
+        "热区产物项（files 路径锚定）断言 registeredAt 日期 2026-10-20 在场且无近似标注",
+        "持久产物项断言 mtime 日期 2026-03-04 + 「文件时间/近似」标注",
+        "explpair-orphan 与 explpair-nosummary 产物项对称断言（2026-05-06 / 2026-07-08）"
+      ],
+      "expected": "三种来源三种时间口径各归其位：热区真实注册时间，持久层与孤儿如实标注近似文件时间"
+    },
+    {
+      "id": "TC-160",
+      "title": "相关产物展示：artifact 路径、summary 路径、files 清单（路径可复制——机读载体三形态并集）",
+      "type": "positive",
+      "priority": "P0",
+      "acceptance": "AC-5",
+      "codeRef": ".rdd/tests/ops-dashboard-exploration-pair-observability/exploration-pair-observability-qa-verify.mjs:475",
+      "sourceChange": "2026-10-20-exploration-cache-ux",
+      "status": "active",
+      "crossFeature": [],
+      "precondition": "同 TC-135 skip 守卫；复制载体并集沿用 .btn-copy data-copy 惯例 / <code> 含精确路径 / 文本节点精确路径（data-copy 必须携带完整路径，缩短显示可接受）",
+      "steps": [
+        "5 条产物项逐一断言记录路径在场且带复制载体",
+        "新鲜产物项断言 summary 路径在场且带复制载体",
+        "新鲜产物项断言 files 两路径在场且至少一条带复制载体"
+      ],
+      "expected": "产物对的三族路径（记录/配对摘要/覆盖文件）可查可复制，运营可直达文件"
+    },
+    {
+      "id": "TC-165",
+      "title": "展开区高度有界：产物对容器 class 在 style.css 存在 max-height + overflow 内部滚动规则（双侧契约）",
+      "type": "positive",
+      "priority": "P1",
+      "acceptance": "AC-6",
+      "codeRef": ".rdd/tests/ops-dashboard-exploration-pair-observability/exploration-pair-observability-qa-verify.mjs:512",
+      "sourceChange": "2026-10-20-exploration-cache-ux",
+      "status": "active",
+      "crossFeature": [],
+      "precondition": "同 TC-135 skip 守卫；具体数值由 UX/DEV 定（与 #1 同一交互基线），断言只钉「有界 + 内部滚动」存在性；候选 class 按语义词族从 KPI 面/产物项窗/标记窗提取",
+      "steps": [
+        "从产物对相关区域提取容器 class 候选",
+        "style.css 中逐 class 提取规则体",
+        "断言至少一个候选类同时命中 max-height 与 overflow(-y): auto|scroll"
+      ],
+      "expected": "HTML 容器与 CSS 规则双侧咬合——产物对清单条目多时内部滚动不撑破页面"
+    },
+    {
+      "id": "TC-170",
+      "title": "接线一致性：产物对面引入的新 data-* 词汇全部被 app.js 引用（无死接线；原生 details 零词汇同样通过）",
+      "type": "positive",
+      "priority": "P1",
+      "acceptance": "AC-1,AC-6",
+      "codeRef": ".rdd/tests/ops-dashboard-exploration-pair-observability/exploration-pair-observability-qa-verify.mjs:534",
+      "sourceChange": "2026-10-20-exploration-cache-ux",
+      "status": "active",
+      "crossFeature": [],
+      "precondition": "同 TC-135 skip 守卫；新词汇扣除 21 项既有遗留集（data-copy/data-href/data-tone/data-at 等，grep 全仓核实）；<details> 原生方案无需 JS 接线 → 空词汇集判 PASS",
+      "steps": [
+        "产物对相关区域 matchAll 提取 data-* 词表并扣除遗留集",
+        "逐词汇断言 app.js 文本包含同名引用"
+      ],
+      "expected": "SSR 打出的每个接线标记都有消费方（防「标记无人绑」的假接线）"
+    },
+    {
+      "id": "TC-175",
+      "title": "布局不破坏：合并改造后页面骨架契约保持（DOCTYPE/ops-main/样式表/app.js），tag 分布与注册时间线兄弟面板存活",
+      "type": "positive",
+      "priority": "P1",
+      "acceptance": "AC-6",
+      "codeRef": ".rdd/tests/ops-dashboard-exploration-pair-observability/exploration-pair-observability-qa-verify.mjs:544",
+      "sourceChange": "2026-10-20-exploration-cache-ux",
+      "status": "active",
+      "crossFeature": ["ops-dashboard"],
+      "precondition": "同 TC-135 skip 守卫；骨架契约与 ops-dashboard/TC-175 同源（本用例钉合并改造自身不击穿）",
+      "steps": [
+        "断言 DOCTYPE 开头、ops-main 容器、stylesheet 与 app.js 引用",
+        "断言「tag 分布」「注册时间线」panel 标题在场"
+      ],
+      "expected": "KPI 合并与产物对清单落地不破坏页面其他面板（骨架与兄弟面板均在）"
+    }
+  ]
+}
