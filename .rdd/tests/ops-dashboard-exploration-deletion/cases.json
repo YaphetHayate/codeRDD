@@ -1,0 +1,198 @@
+{
+  "feature": "ops-dashboard-exploration-deletion",
+  "status": "active",
+  "relatedCode": [
+    "rdd-engine/dashboard/server.mjs",
+    "rdd-engine/dashboard/lib/readers/exploration.mjs",
+    "rdd-engine/dashboard/lib/views/exploration.mjs",
+    "rdd-engine/dashboard/static/app.js"
+  ],
+  "testCode": [
+    ".rdd/tests/ops-dashboard-exploration-deletion/exploration-deletion-qa-verify.mjs"
+  ],
+  "lastChange": "2026-10-20-exploration-cache-ux",
+  "cases": [
+    {
+      "id": "TC-180",
+      "title": "读面真值基线：混合夹具页面 KPI 3/1/4 与产物 5 同场 + API 信封计数冻结（写路径落地后读面口径不变）",
+      "type": "positive",
+      "priority": "P1",
+      "acceptance": "整体判据-2",
+      "codeRef": ".rdd/tests/ops-dashboard-exploration-deletion/exploration-deletion-qa-verify.mjs:311",
+      "sourceChange": "2026-10-20-exploration-cache-ux",
+      "status": "active",
+      "crossFeature": ["ops-dashboard-exploration-pair-observability"],
+      "precondition": "夹具根 hot 3 条目（victim-hot/fail-victim/keep-hot）+ index 1 条目（victim-persist）+ artifacts 5 记录 5 配对；区域模型 = ops-main 至其后首个 <section（顶栏切换器 section 在 ops-main 之前，不得混入）；数字按边界断言；generatedAt 只断类型",
+      "steps": [
+        "以夹具根进程内起真实服务（临时端口）",
+        "GET /exploration 断言 KPI 面边界化真值 3/1/4/5",
+        "GET /api/exploration 断言信封 {domain,available,meta,data} 与 hot3/index1/total4/artifacts 5/5"
+      ],
+      "expected": "删除能力引入写路径但不得改变读侧计数语义（判据 #2 读半边的地面真值锚）"
+    },
+    {
+      "id": "TC-185",
+      "title": "纯读零回写：探针读交互（双 GET/API/静态资源）对夹具树零变更（size+mtime+SHA256 全树快照）",
+      "type": "negative",
+      "priority": "P1",
+      "acceptance": "整体判据-2",
+      "codeRef": ".rdd/tests/ops-dashboard-exploration-deletion/exploration-deletion-qa-verify.mjs:337",
+      "sourceChange": "2026-10-20-exploration-cache-ux",
+      "status": "active",
+      "crossFeature": ["ops-dashboard"],
+      "precondition": "夹具构建后即拍全树快照；删除能力交付后本用例仍须绿——GET 交互永不写盘（仅删除动作产生变更是判据 #2 的另一半）",
+      "steps": [
+        "构建夹具后快照全树",
+        "执行全部读交互（含二次 GET 稳定性读）",
+        "重算快照逐文件严格比对（新增/丢失/改写/mtime 滚动均违规）"
+      ],
+      "expected": "读交互零写入（写路径落地不污染只读基线）"
+    },
+    {
+      "id": "TC-190",
+      "title": "删除入口 + 二次确认门：entry 产物对暴露删除入口（SSR 逐对控件或携带对身份的 JS 通道并集），确认门在触发路径上（confirm 词族并集）",
+      "type": "positive",
+      "priority": "P0",
+      "acceptance": "AC-1,AC-5",
+      "codeRef": ".rdd/tests/ops-dashboard-exploration-deletion/exploration-deletion-qa-verify.mjs:372",
+      "sourceChange": "2026-10-20-exploration-cache-ux",
+      "status": "active",
+      "crossFeature": [],
+      "precondition": "skip 守卫：delivered-probe 命中（entry 产物对窗内删除词族×接线并集，或 app.js 删除语义 fetch 通道）；确认门 = window.confirm/data-confirm/二次确认/确认删除 并集且锚定删除词邻域（不与 config 页既有 confirm 混淆）；孤儿产物对（无条目）不在删除范围，不设断言；AC-5 行为级「点击取消」无法进程内模拟——断言面为确认门在触发路径，行为级取消留验证轮人工协议项",
+      "steps": [
+        "delivered-probe 探测交付信号（无信号 → 整组 SKIP）",
+        "断言全部 entry 产物对携带删除入口（SSR 控件并集，或 JS 通道携带 slug/key/path/pair 身份）",
+        "断言删除词邻域存在确认门语义（app.js 删除路径窗或 HTML 控件窗）"
+      ],
+      "expected": "删除入口在产物对展开视图可达，且任何删除执行前必经二次确认（确认后才执行的接线证据）"
+    },
+    {
+      "id": "TC-195",
+      "title": "触发通道可发现可重放：app.js fetch 模板（含字符串拼接形态）/ SSR 表单（具体 slug 提升为占位符）/ 路由候选探测 三源并集",
+      "type": "positive",
+      "priority": "P0",
+      "acceptance": "AC-2",
+      "codeRef": ".rdd/tests/ops-dashboard-exploration-deletion/exploration-deletion-qa-verify.mjs:397",
+      "sourceChange": "2026-10-20-exploration-cache-ux",
+      "status": "active",
+      "crossFeature": [],
+      "precondition": "skip 守卫同 TC-190；源 1 模板字面量与 '前缀'+encodeURIComponent(slug) 拼接两形态均解析（占位 {slug} 替换）；源 2 表单须携带锚定对身份（action 含 slug 或 hidden value），防邻行表单误删，表单通道用 urlencoded 编码；源 3 候选探测以 404/405 判非通道、以 victim 实删判命中；三源皆空而交付信号在场 → 本用例 FAIL（不静默 SKIP，防假交付）；挑战式两步 API 以 confirm 提示重试一次兜底",
+      "steps": [
+        "依次尝试三源发现触发通道",
+        "命中后以夹具 victim 重放同一请求形态（模拟 UI 发出的请求）",
+        "记录通道来源与响应面（INFO 证据）"
+      ],
+      "expected": "无浏览器环境下可确定性地重放 UI 删除请求（可执行断言面的闸门）"
+    },
+    {
+      "id": "TC-200",
+      "title": "热区产物对成对删除全链：artifact+summary 双文件消失、hot 条目移除且兄弟条目幸存、index 字节不动、刷新不可见、计数精确递减",
+      "type": "positive",
+      "priority": "P0",
+      "acceptance": "AC-2,AC-3",
+      "codeRef": ".rdd/tests/ops-dashboard-exploration-deletion/exploration-deletion-qa-verify.mjs:496",
+      "sourceChange": "2026-10-20-exploration-cache-ux",
+      "status": "active",
+      "crossFeature": [],
+      "precondition": "skip 守卫同 TC-190；经 TC-195 通道触发；若发现阶段以路由探测消耗了 victim，响应面断言降级为仅效应断言；页面刷新断言基于每请求重读（无缓存）架构基线",
+      "steps": [
+        "对 victim-hot 触发删除并记录响应面（2xx 或 ok:true）",
+        "断言磁盘双文件消失 + hot.json 条目移除 + 兄弟热区条目幸存",
+        "断言 index.json 字节不变（区域隔离）",
+        "GET /exploration 断言 slug 不再出现；API 断言 hot 3→2 / total 4→3 / artifacts 5→4 / paired 5→4"
+      ],
+      "expected": "热区产物对删除后磁盘与双区条目同步干净，页面与计数三处一致（不留孤儿文件或孤儿条目）"
+    },
+    {
+      "id": "TC-205",
+      "title": "持久层产物对成对删除全链（对称面）：index 条目移除、双文件消失、计数至 total 2 / artifacts 3、刷新不可见",
+      "type": "positive",
+      "priority": "P0",
+      "acceptance": "AC-2,AC-3",
+      "codeRef": ".rdd/tests/ops-dashboard-exploration-deletion/exploration-deletion-qa-verify.mjs:542",
+      "sourceChange": "2026-10-20-exploration-cache-ux",
+      "status": "active",
+      "crossFeature": [],
+      "precondition": "skip 守卫同 TC-190；与 TC-200 同一通道连续执行（占位符提升后通道可服务任意 victim——这正是通道发现正确性的证明）",
+      "steps": [
+        "对 victim-persist 触发删除并断言响应面",
+        "断言双文件消失 + index.json 条目移除（index 计数至 0）",
+        "断言页面刷新 slug 消失 + API 计数 total 2 / artifacts 3/3"
+      ],
+      "expected": "持久层产物对同样可删（热区与持久层双区均可删，删除语义成对）"
+    },
+    {
+      "id": "TC-210",
+      "title": "写边界精确集：两次成功删除的全树变更 = 恰好 4 个 victim 文件 + hot/index 双 json，其余零附带（含孤儿产物对 byte+mtime 不变）",
+      "type": "negative",
+      "priority": "P0",
+      "acceptance": "整体判据-2",
+      "codeRef": ".rdd/tests/ops-dashboard-exploration-deletion/exploration-deletion-qa-verify.mjs:569",
+      "sourceChange": "2026-10-20-exploration-cache-ux",
+      "status": "active",
+      "crossFeature": [],
+      "precondition": "skip 守卫同 TC-190；夹具初始快照 vs 两次删除后快照；非目标文件比对 size+sha+mtime 三元组（谁都不该碰它们）；引擎脚本零改动项（explore-store.ps1/explore.ps1 冻结契约）不在运行时断言，验证轮以 git diff 复核（shell 证据层）",
+      "steps": [
+        "计算删除后全树快照差集",
+        "断言移除集 = 恰好两个 victim 的 artifact+summary 四文件",
+        "断言变更集 ⊆ {hot.json, index.json}，其余文件三元组全等"
+      ],
+      "expected": "删除动作的写足迹精确（不误伤其他产物对、不碰孤儿、不写任何额外文件）"
+    },
+    {
+      "id": "TC-215",
+      "title": "失败面：hot.json 只读注入 → 明确错误信封（4xx/5xx 或 ok:false + 非空 message）且无半删（文件与条目全留）",
+      "type": "negative",
+      "priority": "P0",
+      "acceptance": "AC-4",
+      "codeRef": ".rdd/tests/ops-dashboard-exploration-deletion/exploration-deletion-qa-verify.mjs:583",
+      "sourceChange": "2026-10-20-exploration-cache-ux",
+      "status": "active",
+      "crossFeature": [],
+      "precondition": "skip 守卫同 TC-190；注入位 = chmod 0o444 hot.json（writeFileSync/rename 落盘遵守只读属性 → EPERM 确定触发）；平台事实：chmod 0o444 挡不住 Windows unlink（libuv 清只读位重试），故不注入产物文件；404 不算失败面（那是目标不存在语义）；「先删文件后写 json」的实现将暴露文件已删/条目仍在的半删态——恰是 AC-4 要拦的一致性违规；内容级快照比对（等价重序列化容忍，数据面必须零变更）",
+      "steps": [
+        "对 hot.json 置只读后触发 fail-victim 删除",
+        "断言响应携带明确失败面与非空 message/error",
+        "断言双文件仍在 + hot 条目仍在 + 计数不变（要么全删要么全留）",
+        "恢复可写（cleanup 兜底）"
+      ],
+      "expected": "权限类失败有明确错误提示且不留半删状态（一致性由实现保证）"
+    },
+    {
+      "id": "TC-220",
+      "title": "目标不存在边界：对不存在 slug 触发 → 明确错误信封、数据零变更、页面不崩",
+      "type": "boundary",
+      "priority": "P2",
+      "acceptance": "AC-4",
+      "codeRef": ".rdd/tests/ops-dashboard-exploration-deletion/exploration-deletion-qa-verify.mjs:629",
+      "sourceChange": "2026-10-20-exploration-cache-ux",
+      "status": "active",
+      "crossFeature": [],
+      "precondition": "skip 守卫同 TC-190；真实场景 = 双开标签页重复删除/刷新竞态；内容级快照（size+sha，等价重序列化容忍）；服务不崩 = 后续 GET /exploration 仍 200",
+      "steps": [
+        "对从未存在的 slug 触发删除",
+        "断言 4xx 或 ok:false 且零磁盘数据变更",
+        "断言页面继续正常渲染"
+      ],
+      "expected": "重复/竞态删除目标已消失时 fail-loud 且零副作用"
+    },
+    {
+      "id": "TC-225",
+      "title": "写不破读：删除能力落地后页面骨架（DOCTYPE/ops-main/stylesheet/app.js）+ 兄弟面板（tag 分布/注册时间线）+ 无 JS 平铺产物对清单存活",
+      "type": "positive",
+      "priority": "P1",
+      "acceptance": "整体判据-2",
+      "codeRef": ".rdd/tests/ops-dashboard-exploration-deletion/exploration-deletion-qa-verify.mjs:646",
+      "sourceChange": "2026-10-20-exploration-cache-ux",
+      "status": "active",
+      "crossFeature": ["ops-dashboard"],
+      "precondition": "skip 守卫同 TC-190；无 JS 基线 = 剥离 script 后 keep-hot 与孤儿 slug 仍可见（架构基线：SSR 双面）；与 #1/#2 的骨架契约同源",
+      "steps": [
+        "删除操作后重取 /exploration",
+        "断言骨架契约与兄弟面板在场",
+        "断言无 JS 平铺清单仍渲染幸存产物对（keep + orphan）"
+      ],
+      "expected": "引入写路径不击穿只读架构基线（SSR 无 JS 可见、每请求重读、兄弟面板不受影响）"
+    }
+  ]
+}

@@ -908,6 +908,90 @@ function bindUxForm(scope) {
   }
 }
 
+// ── pair deletion (/exploration, artifact-deletion #3) ────────────────
+var isDeleteBusy = false // single-flight: at most one pair deletion in flight
+
+/** Busy lock: EVERY delete button on the page is disabled while a delete runs. */
+function setDeleteBusy(busy) {
+  Array.prototype.forEach.call(document.querySelectorAll('[data-delete-pair]'), function (button) {
+    button.disabled = busy
+    if (busy) button.setAttribute('aria-busy', 'true')
+    else button.removeAttribute('aria-busy')
+  })
+}
+
+/** Inline failure note inside the pair's detail cell (one note, replaced in place). */
+function showDeleteError(button, text) {
+  var actions = button === null || button === undefined ? null : button.closest('.detail-actions')
+  var scope = actions === null || actions === undefined || actions.parentElement === null ? document.getElementById('ops-main') : actions.parentElement
+  if (scope === null) return
+  var existing = scope.querySelector('.delete-note')
+  if (existing !== null && existing !== undefined) existing.remove()
+  var bar = document.createElement('div')
+  bar.className = 'note-bar note-error delete-note'
+  var span = document.createElement('span')
+  span.className = 'note-text'
+  span.textContent = text
+  bar.appendChild(span)
+  scope.appendChild(bar)
+}
+
+function handleDeleteResult(result, slug, button) {
+  var payload = result.payload
+  if (payload !== null && payload !== undefined && payload.ok === true) {
+    // reuse the refresh pipeline: re-fetch the page, swap <main>; per-request
+    // re-read makes the counts land consistent with the new pair set
+    window
+      .fetch(window.location.pathname + window.location.search, { cache: 'no-store' })
+      .then(function (response) {
+        if (!response.ok) throw new Error('HTTP ' + response.status)
+        return response.text()
+      })
+      .then(function (html) {
+        swapRefreshedContent(html)
+        isDeleteBusy = false // the swapped DOM carries fresh, enabled buttons
+      })
+      .catch(function (error) {
+        isDeleteBusy = false
+        setDeleteBusy(false)
+        showDeleteError(button, '产物对 ' + slug + ' 已删除，但刷新页面失败（' + error.message + '）。请手动刷新查看最新状态。')
+      })
+    return
+  }
+  isDeleteBusy = false
+  setDeleteBusy(false)
+  var message =
+    payload !== null && payload !== undefined && typeof payload.message === 'string'
+      ? payload.message
+      : '删除失败（HTTP ' + result.status + '）。文件与条目保持删除前状态。'
+  showDeleteError(button, message)
+}
+
+/** Delete one pair: the confirmation gate fires BEFORE any request (AC-1/AC-5). */
+function requestPairDelete(slug, button) {
+  if (isDeleteBusy) return
+  var confirmed = window.confirm('确认删除产物对 ' + slug + '？将同时移除 artifact 与 summary 两个文件，并同步移除 hot.json / index.json 中的对应条目；此操作不可恢复。')
+  if (!confirmed) return // 取消二次确认 = 不发任何请求，磁盘零变更
+  isDeleteBusy = true
+  setDeleteBusy(true)
+  // The URL stays a string literal on the fetch call (channel-discoverable).
+  window
+    .fetch('/api/exploration/pair/delete', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ slug: slug }),
+    })
+    .then(readControlResponse)
+    .then(function (result) {
+      handleDeleteResult(result, slug, button)
+    })
+    .catch(function (error) {
+      isDeleteBusy = false
+      setDeleteBusy(false)
+      showDeleteError(button, '删除请求失败（' + error.message + '）。文件与条目保持删除前状态，可重试。')
+    })
+}
+
 // ── copy path (inline feedback, no toast) ────────────────────────────
 function copyText(button) {
   var value = button.getAttribute('data-copy') || ''
@@ -1052,6 +1136,11 @@ function setupKpiExpansion() {
     var target = event.target
     if (target === null || typeof target.closest !== 'function') return
     if (target.closest('a')) return // links keep their native behaviour (vscode:// etc.)
+    var deleteButton = target.closest('[data-delete-pair]')
+    if (deleteButton !== null) {
+      requestPairDelete(deleteButton.getAttribute('data-delete-pair') || '', deleteButton)
+      return
+    }
     var activate = expansionTarget(target)
     if (activate !== null) handleExpansionActivate(activate)
   })

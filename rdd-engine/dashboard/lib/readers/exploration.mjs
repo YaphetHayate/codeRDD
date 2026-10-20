@@ -12,8 +12,8 @@
 // frozen entry face stay untouched; the covered-files list rides on `pairs[]`
 // because the /api/exploration entry field set is frozen (probe TC-015).
 import { createHash } from 'node:crypto'
-import { readFileSync, statSync } from 'node:fs'
-import { join } from 'node:path'
+import { readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from 'node:fs'
+import { isAbsolute, join, relative } from 'node:path'
 
 import { isoFromMs, listFiles, makeEnvelope, readJson } from '../io.mjs'
 
@@ -190,6 +190,217 @@ function readArtifacts(absolutePath, projectRoot, hotRecords, indexRecords, note
     notes.push(`新鲜度现算涉及 ${hashedTotal} 个文件，页面生成耗时可能上升。`)
   }
   return { count: records.length, pairedCount, totalFiles: files.length, pairs }
+}
+
+// ── 写面：产物对成对删除（artifact-deletion 技术方向「删除一致性执行序」）──
+// The FIRST data-face write path of the read-only dashboard. Fully synchronous
+// (read → stage → write → unlink with no await gaps); every reversible step
+// precedes the irreversible ones and any failure rolls the done steps back, so
+// a pair is either fully deleted or fully present (AC 4). Engine scripts and
+// the frozen GET envelope stay untouched.
+
+/** Contracted deletion rejection: HTTP status + machine-readable code. */
+export class DeletePairRejected extends Error {
+  constructor(code, status, message) {
+    super(message)
+    this.code = code
+    this.status = status
+  }
+}
+
+const SLUG_MAX_LENGTH = 200
+
+/** Step 1 gate — the slug shape problem, or null (path-traversal hard gate). */
+function slugShapeProblem(slug) {
+  if (slug === '') return 'slug 不能为空。'
+  if (slug.length > SLUG_MAX_LENGTH) return `slug 长度 ${slug.length} 超过 ${SLUG_MAX_LENGTH} 上限。`
+  if (slug.includes('/') || slug.includes('\\') || slug.includes('..')) return 'slug 含路径分隔符或「..」。'
+  return null
+}
+
+/** Path identity (engine Get-PathIdentity semantics): lowercased repo-relative form. */
+function pathIdentity(storedPath, projectRoot) {
+  const raw = String(storedPath ?? '')
+  if (raw.trim() !== '') {
+    const absolute = isAbsolute(raw) ? raw : join(projectRoot, raw)
+    try {
+      statSync(absolute)
+      return relative(projectRoot, absolute).replaceAll('\\', '/').toLowerCase()
+    } catch {
+      /* unreadable/unresolvable falls back to the raw lowercased form */
+    }
+  }
+  return raw.toLowerCase()
+}
+
+/** Step 3 — raw zone read for the write face: missing file is empty, damage rejects. */
+function readZoneForWrite(absolutePath, zone) {
+  let raw
+  try {
+    raw = readFileSync(absolutePath, 'utf8')
+  } catch (error) {
+    if (error != null && error.code === 'ENOENT') return { existed: false, top: { entries: [] }, entries: [] }
+    throw new DeletePairRejected('zone-corrupt', 500, `${zone} 文件读取失败（${absolutePath}）：${error instanceof Error ? error.message : String(error)}。写面拒绝在不可读 zone 上执行删除。`)
+  }
+  let parsed
+  try {
+    parsed = JSON.parse(raw)
+  } catch (error) {
+    throw new DeletePairRejected('zone-corrupt', 500, `${zone} 文件解析失败（${absolutePath}）：${error instanceof Error ? error.message : String(error)}。写面拒绝把损坏 zone 当空处理。`)
+  }
+  if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed) || !Array.isArray(parsed.entries)) {
+    throw new DeletePairRejected('zone-corrupt', 500, `${zone} 文件形状异常（entries 非数组）：${absolutePath}。写面拒绝把损坏 zone 当空处理。`)
+  }
+  return { existed: true, top: parsed, entries: parsed.entries }
+}
+
+/**
+ * Atomic zone write mirroring the engine's Write-Index / Write-Hot shape
+ * (compact `{"entries":[...]}`, no trailing newline — round-trip compatible).
+ * Same-dir tmp → rename, mirroring writeSearchConfigAtomic; the tmp file is
+ * best-effort unlinked on failure so a rejected write leaves zero residue.
+ */
+function writeZoneAtomic(absolutePath, top) {
+  const tmp = `${absolutePath}.${process.pid}.tmp`
+  const body = JSON.stringify(top)
+  try {
+    writeFileSync(tmp, body, 'utf8')
+    renameSync(tmp, absolutePath)
+  } catch (error) {
+    try {
+      unlinkSync(tmp)
+    } catch {
+      /* best effort — the rethrown error below is the actionable one */
+    }
+    throw error
+  }
+  return { bytes: Buffer.byteLength(body, 'utf8') }
+}
+
+/** Steps 3-4 — raw-read both zones and partition each by path identity. */
+function prepareZonePlans(context, projectRoot, artifactPath) {
+  const identity = relative(projectRoot, artifactPath).replaceAll('\\', '/').toLowerCase()
+  const root = join(context.rddRoot, 'exploration')
+  const plan = (file, zone) => {
+    const state = readZoneForWrite(join(root, file), zone)
+    const removed = []
+    const kept = []
+    for (const entry of state.entries) {
+      if (pathIdentity(entry && entry.path, projectRoot) === identity) removed.push(entry)
+      else kept.push(entry)
+    }
+    return { zone, absolutePath: join(root, file), top: state.top, removed, kept }
+  }
+  return { hot: plan('hot.json', 'hot'), index: plan('index.json', 'index') }
+}
+
+/** Rollback: staged files back to their names, written zones back to original bytes. */
+function rollbackPairDeletion(staged, written) {
+  for (const item of staged) {
+    try {
+      renameSync(item.tmp, item.original)
+    } catch {
+      /* best effort — the rethrown cause is the actionable error */
+    }
+  }
+  for (const plan of written) {
+    try {
+      writeZoneAtomic(plan.absolutePath, plan.top)
+    } catch {
+      /* best effort */
+    }
+  }
+}
+
+/** Step 7 — physically remove the staged files; returns the rare leftovers. */
+function unlinkStaged(staged) {
+  const residual = []
+  for (const item of staged) {
+    try {
+      unlinkSync(item.tmp)
+    } catch {
+      residual.push(item.tmp)
+    }
+  }
+  return residual
+}
+
+/** Step 5a: stage the summary file, tolerating one that vanished; null when absent. */
+function stageSummaryFile(summaryPath) {
+  const tmp = `${summaryPath}.${process.pid}.tmp`
+  try {
+    renameSync(summaryPath, tmp)
+  } catch (error) {
+    if (error != null && error.code === 'ENOENT') return null // vanished since the scan: artifact-only delete
+    throw error
+  }
+  return { original: summaryPath, tmp }
+}
+
+/** Steps 5-7 — stage → rewrite → unlink; any failure rolls everything back. */
+function commitPairDeletion(zones, artifactPath, summaryPath, slug, projectRoot) {
+  const staged = []
+  const written = []
+  try {
+    // summary stages first: if the artifact rename then bounces, the rollback
+    // surface stays minimal (design step 5)
+    const summaryStaged = stageSummaryFile(summaryPath)
+    if (summaryStaged !== null) staged.push(summaryStaged)
+    const artifactStaged = { original: artifactPath, tmp: `${artifactPath}.${process.pid}.tmp` }
+    renameSync(artifactPath, artifactStaged.tmp) // Windows file-lock early detection
+    staged.push(artifactStaged)
+    for (const plan of [zones.hot, zones.index]) {
+      if (plan.removed.length === 0) continue // an unchanged zone stays byte-identical
+      writeZoneAtomic(plan.absolutePath, { ...plan.top, entries: plan.kept })
+      written.push(plan)
+    }
+  } catch (error) {
+    rollbackPairDeletion(staged, written)
+    const detail = error instanceof Error ? error.message : String(error)
+    throw new DeletePairRejected('delete-failed', 500, `删除失败：${detail}。已回滚——文件与条目保持删除前状态。`)
+  }
+  const residual = unlinkStaged(staged)
+  return {
+    ok: true,
+    code: 'deleted',
+    slug,
+    removed: { hot: zones.hot.removed.length, index: zones.index.removed.length },
+    files: staged.map((item) => relative(projectRoot, item.original).replaceAll('\\', '/')),
+    ...(residual.length > 0 ? { warning: `物理删除残留（可手工清理）：${residual.join('；')}。` } : {}),
+  }
+}
+
+/**
+ * Delete one artifact pair (write face, artifact-deletion design): remove
+ * artifact.md + summary.md and the matching hot.json / index.json entries as
+ * one all-or-nothing unit. Orphan pairs (no entry in either zone) are refused.
+ * @param {{rddRoot: string, projectRoot?: string}} context
+ * @returns {{ok: true, code: string, slug: string, removed: {hot: number, index: number}, files: string[], warning?: string}}
+ */
+export function deletePair(context, slug) {
+  const shapeProblem = slugShapeProblem(slug)
+  if (shapeProblem !== null) {
+    throw new DeletePairRejected('invalid-payload', 400, `拒绝删除：${shapeProblem}请求体应为 {"slug": "<产物对 slug>"}。`)
+  }
+  const projectRoot = context.projectRoot ?? join(context.rddRoot, '..')
+  const artifactsDir = join(context.rddRoot, 'exploration', 'artifacts')
+  const artifactPath = join(artifactsDir, `${slug}.md`)
+  const summaryPath = join(artifactsDir, `${slug}.summary.md`)
+  let present = false
+  try {
+    statSync(artifactPath)
+    present = true
+  } catch {
+    /* absence lands in the 404 below (idempotent re-delete semantics) */
+  }
+  if (!present) {
+    throw new DeletePairRejected('pair-not-found', 404, `产物对 ${slug} 不存在（artifacts/ 内无 ${slug}.md）。可能已被删除，数据无需变更。`)
+  }
+  const zones = prepareZonePlans(context, projectRoot, artifactPath)
+  if (zones.hot.removed.length + zones.index.removed.length === 0) {
+    throw new DeletePairRejected('orphan-not-deletable', 422, `产物对 ${slug} 为孤儿（hot.json 与 index.json 均无关联条目），不在删除范围内；孤儿清理属缓存维护，不在看板职责内。`)
+  }
+  return commitPairDeletion(zones, artifactPath, summaryPath, slug, projectRoot)
 }
 
 /**

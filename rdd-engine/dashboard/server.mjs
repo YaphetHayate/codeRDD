@@ -16,6 +16,7 @@ import { createDataRootHolder } from './lib/data-root.mjs'
 import { pickDirectory } from './lib/native-dialog.mjs'
 import { readAllDomains, buildOverview, navCounts, DOMAIN_DEFS } from './lib/overview.mjs'
 import { readArchiveDetail } from './lib/readers/archives.mjs'
+import { DeletePairRejected, deletePair } from './lib/readers/exploration.mjs'
 import {
   crossModuleImpact,
   loadEffectiveSearchConfig,
@@ -156,6 +157,28 @@ function configShapeProblem(payload) {
   return null
 }
 
+/** Unknown-field + predicate gates (design §5.3) → the 422 body, or null when fine. */
+function searchConfigRejectBody(config) {
+  const { unknownFields, fieldErrors } = validateSearchConfigPatch(config)
+  if (unknownFields.length > 0) {
+    return {
+      ok: false,
+      code: 'unknown-field',
+      message: `拒绝保存：存在未知字段（拼错即拒，不静默忽略）：${unknownFields.join('、')}。原文件保持不变。`,
+      fieldErrors: unknownFields.map((path) => ({ path, reason: '未知字段（不在 14 字段集内）' })),
+    }
+  }
+  if (fieldErrors.length > 0) {
+    return {
+      ok: false,
+      code: 'invalid-field',
+      message: `拒绝保存：${fieldErrors.length} 个字段值不合法（${fieldErrors.map((error) => error.path).join('、')}）。原文件保持不变。`,
+      fieldErrors,
+    }
+  }
+  return null
+}
+
 /** POST /api/config/search-config — validate + atomically save the L2 tuning file. */
 async function handleConfigSave(req, res, holder) {
   let payload
@@ -171,23 +194,8 @@ async function handleConfigSave(req, res, holder) {
     return sendJson(res, 400, { ok: false, code: 'invalid-payload', message: shapeProblem })
   }
   const config = payload.config
-  const { unknownFields, fieldErrors } = validateSearchConfigPatch(config)
-  if (unknownFields.length > 0) {
-    return sendJson(res, 422, {
-      ok: false,
-      code: 'unknown-field',
-      message: `拒绝保存：存在未知字段（拼错即拒，不静默忽略）：${unknownFields.join('、')}。原文件保持不变。`,
-      fieldErrors: unknownFields.map((path) => ({ path, reason: '未知字段（不在 14 字段集内）' })),
-    })
-  }
-  if (fieldErrors.length > 0) {
-    return sendJson(res, 422, {
-      ok: false,
-      code: 'invalid-field',
-      message: `拒绝保存：${fieldErrors.length} 个字段值不合法（${fieldErrors.map((error) => error.path).join('、')}）。原文件保持不变。`,
-      fieldErrors,
-    })
-  }
+  const rejectBody = searchConfigRejectBody(config)
+  if (rejectBody !== null) return sendJson(res, 422, rejectBody)
   const context = holder.getCurrent()
   const effective = loadEffectiveSearchConfig(context)
   const merged = mergeSearchConfigPatch(effective, config)
@@ -302,6 +310,35 @@ async function handleUxSyncOnly(res, holder) {
   return sendJson(res, 200, { ok: true, code: 'synced', sync, syncStatusAfter: reread.syncStatus })
 }
 
+/**
+ * POST /api/exploration/pair/delete — the first data-face write endpoint
+ * (artifact-deletion #3): validate the payload shape here, then delegate to
+ * deletePair whose consistency sequence maps its own rejections (400/404/422/
+ * 500 contract) onto the response.
+ */
+async function handlePairDelete(req, res, holder) {
+  let payload
+  try {
+    payload = await parseJsonBody(req)
+  } catch {
+    return sendJson(res, 413, { ok: false, code: 'payload-too-large', message: '请求体超过大小上限（8192 字节）。' })
+  }
+  if (payload === null || typeof payload.slug !== 'string') {
+    return sendJson(res, 400, { ok: false, code: 'invalid-payload', message: '请求体必须是 JSON 对象：{"slug": "<产物对 slug>"}。' })
+  }
+  let outcome
+  try {
+    outcome = deletePair(holder.getCurrent(), payload.slug)
+  } catch (error) {
+    if (error instanceof DeletePairRejected) {
+      return sendJson(res, error.status, { ok: false, code: error.code, message: error.message })
+    }
+    const message = error instanceof Error ? error.message : String(error)
+    return sendJson(res, 500, { ok: false, code: 'delete-failed', message: `删除失败：${message}；已回滚，文件与条目保持删除前状态。` })
+  }
+  return sendJson(res, 200, outcome)
+}
+
 /** Read every domain once for this request and build the shared view input. */
 function buildViewInput(context, routeKey) {
   const domains = readAllDomains(context)
@@ -374,30 +411,25 @@ function renderNotFound(pathname, context) {
   return renderOverview(input)
 }
 
+/** POST-only endpoints (method guard is shared): path → (req, res, holder) handler. */
+const POST_ENDPOINTS = new Map([
+  ['/api/project/pick', (req, res) => handleProjectPick(res)],
+  ['/api/project/switch', handleProjectSwitch],
+  ['/api/config/search-config', handleConfigSave],
+  ['/api/config/ux-subagents', handleUxSave],
+  ['/api/config/ux-subagents/sync', (req, res, holder) => handleUxSyncOnly(res, holder)],
+  ['/api/exploration/pair/delete', handlePairDelete],
+])
+
 /** API routes — the CTO-contracted envelope per domain, plus control plane. */
 function serveApi(pathname, req, res, holder) {
-  if (pathname === '/api/project/pick' || pathname === '/api/project/switch') {
+  const postEndpoint = POST_ENDPOINTS.get(pathname)
+  if (postEndpoint !== undefined) {
     if (req.method !== 'POST') {
       sendJson(res, 405, { ok: false, code: 'method-not-allowed', message: '该端点只接受 POST。' })
       return
     }
-    if (pathname === '/api/project/pick') return handleProjectPick(res)
-    return handleProjectSwitch(req, res, holder)
-  }
-  if (pathname === '/api/config/search-config') {
-    if (req.method !== 'POST') {
-      sendJson(res, 405, { ok: false, code: 'method-not-allowed', message: '该端点只接受 POST。' })
-      return
-    }
-    return handleConfigSave(req, res, holder)
-  }
-  if (pathname === '/api/config/ux-subagents' || pathname === '/api/config/ux-subagents/sync') {
-    if (req.method !== 'POST') {
-      sendJson(res, 405, { ok: false, code: 'method-not-allowed', message: '该端点只接受 POST。' })
-      return
-    }
-    if (pathname === '/api/config/ux-subagents') return handleUxSave(req, res, holder)
-    return handleUxSyncOnly(res, holder)
+    return postEndpoint(req, res, holder)
   }
   const context = holder.getCurrent()
   if (pathname === '/api/overview') {

@@ -519,6 +519,11 @@ code {
 .btn-primary:hover { background: var(--ops-action-fill-hover); border-color: var(--ops-action-fill-hover); color: var(--ops-text-on-action); }
 .btn:disabled, .btn[aria-disabled="true"] { background: var(--ops-bg-subtle); color: var(--ops-text-secondary); border-color: var(--ops-border-subtle); cursor: not-allowed; }
 .btn-ghost { border-color: transparent; background: transparent; color: var(--ops-text-secondary); }
+/* Destructive pair delete (artifact-deletion #3): --ops-error BORDER only (3.76:1,
+   passes 1.4.11 as a component boundary) — semantic colour never carries text
+   (#2 §1.2 judgement rule), so the label keeps --ops-text-primary. Zero new tokens. */
+.btn-danger { border-color: var(--ops-error); background: transparent; color: var(--ops-text-primary); }
+.btn-danger:hover { background: var(--ops-error-tint); border-color: var(--ops-error); color: var(--ops-text-primary); }
 .btn-icon { width: 13px; height: 13px; }
 .btn.is-loading .btn-icon { animation: ops-spin 1s linear infinite; }
 @keyframes ops-spin { to { transform: rotate(360deg); } }

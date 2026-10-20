@@ -369,11 +369,17 @@ export function pairDetail(pair, options) {
     })
     .join('')
   const face = pairStateFace(fresh)
+  // The delete entry (#3) renders ONLY for entry-bearing pairs — orphan pairs
+  // are out of delete scope (D10: no entry point, endpoint independently refuses).
+  const deleteButton =
+    pair.entry === null
+      ? ''
+      : `<button type="button" class="btn btn-ghost btn-danger" data-delete-pair="${esc(pair.slug)}">删除产物对</button>`
   return `<div class="pair-verdict"><span class="dot ${face.dot}" aria-hidden="true"></span><span class="pair-verdict-text">${esc(pairVerdictText(pair))}</span></div>${pairFilesBlock(pair, options)}<div class="field-list">${fieldHtml}</div><div class="detail-actions"><a class="btn" href="vscode://file/${esc(artifactAbsolute)}">在编辑器中打开</a>${
     pair.summaryPath === null
       ? ''
       : `<a class="btn" href="vscode://file/${esc(absoluteFilePath(options.projectRoot, pair.summaryPath))}">打开 summary</a>`
-  }<button type="button" class="btn btn-ghost btn-copy" data-copy="${esc(artifactAbsolute)}">复制路径</button><span class="copy-hint" aria-live="polite"></span><span class="detail-note">编辑器打开失败时可用「复制路径」兜底</span></div>`
+  }<button type="button" class="btn btn-ghost btn-copy" data-copy="${esc(artifactAbsolute)}">复制路径</button><span class="copy-hint" aria-live="polite"></span>${deleteButton}<span class="detail-note">编辑器打开失败时可用「复制路径」兜底</span></div>`
 }
 
 /**

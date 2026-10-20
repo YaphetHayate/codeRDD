@@ -371,6 +371,22 @@
       "deprecatedCount": 0,
       "lastUpdated": "2026-10-20",
       "lastChange": "2026-10-20-exploration-cache-ux"
+    },
+    {
+      "feature": "ops-dashboard-exploration-deletion",
+      "relatedCode": [
+        "rdd-engine/dashboard/server.mjs",
+        "rdd-engine/dashboard/lib/readers/exploration.mjs",
+        "rdd-engine/dashboard/lib/views/exploration.mjs",
+        "rdd-engine/dashboard/static/app.js"
+      ],
+      "testCode": [
+        ".rdd/tests/ops-dashboard-exploration-deletion/exploration-deletion-qa-verify.mjs"
+      ],
+      "activeCount": 10,
+      "deprecatedCount": 0,
+      "lastUpdated": "2026-10-20",
+      "lastChange": "2026-10-20-exploration-cache-ux"
     }
   ]
 }
