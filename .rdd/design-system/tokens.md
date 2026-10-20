@@ -102,9 +102,22 @@
 | pathInput-* | h32 / mono 13px / bg-surface / border-default / radius-card / focus=action-primary 边+accent-tertiary 2px 光晕 | PathInput · 路径输入框 | 同上 §5.3 |
 | panelNote-* | 同 NoteBar（bg-subtle+4px 语义左条+radius-card） | PanelNote · 面板内反馈区（info/error/success） | 同上 §5.4 |
 | switchFlash-* | NoteBar note-success + sessionStorage 一次性消费 | SwitchFlash · 切换成功提示 | 同上 §5.5 |
+| statExpander-hover-border / open-bg / open-label | action-primary / accent-tertiary / action-on-tertiary | StatExpanderTile · hover 边框 / 展开态底 / 展开态 label·hint 字色 | exploration-entry-expansion-ux.md §5.1 |
+| statExpander-chevron | text-secondary → hover action-primary / open action-on-tertiary | StatExpanderTile · 指示箭头（JS 注入） | 同上 |
+| kpiExpansion-* | bg-surface / border-subtle / radius-panel / shadow-card / padding 24px | KpiExpansionPanel · 容器（与 panel 组件同参） | 同上 §5.2 |
+| expHead-hover-bg | bg-subtle | KpiExpansionPanel 头部行 · hover 底 | 同上 |
+| rowDetail-bg / rail | bg-subtle / inset 3px action-primary | ExpandableRow 详情行 · 底 / 左轨（对齐 row-selected 模式） | 同上 §5.3 |
+| pairStatusBadge-* | bg-subtle 底 / text-primary 字 / dot 8px success·warn·error·neutral-400 | PairStatusBadge · 状态徽章（**色点+文字双编码**：语义识别由达标文字承担，色点为装饰冗余编码按 1.4.11 豁免——语义色禁作文字/淡底） | artifact-pair-observability-ux.md §5.3 |
+| pairVerdict-* | dot 同上 / text-primary 14px/1.7 | PairDetail · 判定行（判定+依据同句自证口径） | 同上 §5.4 |
+| pairFiles-* | bg-surface / border-subtle / radius-card / max-height 240px 内滚 / 组标题 sticky bg-subtle+text-secondary | PairDetail · 文件清单区（变更/缺失/其余匹配分组，不新鲜组排前） | 同上 |
+| pairFileRow-* | mono 12px text-primary / dot 6px / btn-copy-mini 高 22px ghost | PairDetail · 清单行（mini 复制按钮闪变 ✓/× 反馈） | 同上 |
+| pairTimeApprox | text-secondary「≈」前缀 + title/aria-label 全文字 | 生成时间 · 近似标注（mtime 双轨口径） | 同上 §5.5 |
+| pairPathCopy | field-val-mono + btn-copy-mini + copy-hint | PairDetail · 路径行内复制（动作行之外的第二复制落点） | 同上 §5.4 |
 
 ## 变更记录
 
 - 2026-09-20 建立：session-list-badges 首次登记（全部为既有 alias 消费，无新建全局 Token）。
 - 2026-10-08 ops-dashboard 登记：① 新增「作用域说明」——"消费既有 alias"规则的作用域边界（DSH 页面内 vs 独立页面），独立页面按"值镜像"建自有命名空间；② 新增 Primitive 登记 11 项，其中 **deepseek-700 rgb(58,84,140) 为 UX 新增值**（品牌色阶深档补位，DSH 无通用对应档）；③ 新增「独立页面作用域 Semantic 层（`--ops-*`）」分节（14 项）并附"淡底品牌蓝文字系统性不达 AA"的可复用教训；④ 新增看板组件级映射 11 项；⑤ 本次登记中验证的对比度数据见表内注明（19 组 ≥4.5:1）。
 - 2026-10-09 project-switcher 登记：① Semantic 零新增（全部消费既有 `--ops-*`）；② 新增 `shadow-pop`（浮层投影档，浅深两值）；③ 新增组件级映射 4 组（switcherPanel/pathInput/panelNote/switchFlash）；④ 教训补录：**语义功能色作"文字"落浅底普遍不达 AA**——green-500 on bg-subtle 仅 2.05:1、amber-500 仅 1.93:1，语义色只可用于装饰性冗余编码（左边条/图标），文字一律 text-primary/secondary；success 左条 2.05:1 按装饰豁免与既有 warn/info 同模式处理（完整实测数据见该归档 design/project-switcher-ux.md 附录 A：16 项强制全 PASS）。
+- 2026-10-20 exploration-entry-expansion 登记：① Semantic 零新增（全部消费既有 `--ops-*`，本次组合复用既有实测：action-on-tertiary on accent-tertiary 4.57:1 / 深色 6.19:1 等）；② 新增组件级映射 5 组（statExpander 三态 / kpiExpansion 容器 / expHead / rowDetail）；③ 实现教训固化：**行级交互组件的事件绑定用 document 级委托**——视觉稿 v2 逐元素绑定实测存在时序失效面（tbody 填充/刷新换 main 后绑定丢失、点击静默无反应），v3 委托重构根治，已写为规格 §6.2 实现约束。
+- 2026-10-20 artifact-pair-observability 登记：① Semantic 零新增（全组合内联脚本实测：文字 10 组全 ≥4.5:1，色点 8 组按 1.4.11 装饰豁免如实记录；green-500 on bg-subtle 2.05:1 回归锚点复现验证脚本正确性）；② 新增组件级映射 6 组（pairStatusBadge/pairVerdict/pairFiles/pairFileRow/pairTimeApprox/pairPathCopy）；③ **状态色判定法**升级为显式规格：语义识别由达标文字承担、色点仅作冗余编码通道（8px/6px + aria-hidden），语义色禁作文字与淡底双禁令落规格 §1.2。
