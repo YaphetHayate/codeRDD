@@ -24,7 +24,24 @@ Plan-and-Execute 范式的树形编排：**规划者**把目标拆解为节点�
 - **预算三上限**（MaxRounds 5 / NodeWidth 4 / MaxNodes 30）引擎机械强制；三终局 `achieved` / `budget_exhausted`（引擎校验确实耗尽，伪造会被 `BUDGET_NOT_EXHAUSTED` 拒绝）/ `space_exhausted`
 - **回调契约**（引擎强制校验）：`node_id` / `verdict` / `confidence∈[0,1]` / `summary≤600 字符` / `full_report` 文件指针 / `citations[{ref,locator}]`（RefRoots 范围内机械归一，越界拒采）/ `next_suggestion` / `extras`；降级规则保证坏回调不破坏运行（invalid 不流转、confidence 截断、拒采后无有效 citation 降 inconclusive）
 - **B2 通道分离**：summary 只装判定层，完整调查写 `report/workers/<node-id>.md`——上下游交接不被长报告污染
-- **dispatch**：角色 × 任务 × 节点三绑定，工单走 `state/briefs/<node-id>.md` 文件通道（防 cmd.exe 参数重解析损伤），经 `start-role -GoalTreeWorker` 拉起角色会话
+- **dispatch**：角色 × 任务 × 节点三绑定——规划者根据当前态势把子任务派发给指定角色的 worker 会话：按节点任务性质选角，无依赖的 pending 节点可并行派发（连续 dispatch 各拉各的会话，一个回调周期推进多条线，如 CTO ∥ UX ∥ QA 齐发）；有依赖的等上游 settle 解锁再派——依赖图就是并行计划表。工单走 `state/briefs/<node-id>.md` 文件通道（防 cmd.exe 参数重解析损伤），经 `start-role -GoalTreeWorker` 拉起角色会话
+
+### 可派发 worker 角色
+
+`dispatch -Role` 白名单为会话型八角色，规划者按节点任务性质对号入座选角（`PLANNER` 不可派发——规划者是树维护者不是 worker）：
+
+| 角色 | 职能 | 技能卡 |
+|------|------|--------|
+| **PM** | 把用户意图变成可执行需求集（依赖关系 + 验收标准 + 整体验收判据）；唯一直吃用户原话的角色 | [`rdd-pm/SKILL.md`](../rdd-pm/SKILL.md) |
+| **CTO** | 定技术方向五问（技术/模块/关键要素/配置/涉及文件），不写实现 | [`rdd-cto/SKILL.md`](../rdd-cto/SKILL.md) |
+| **UX** | 需求/参考图 → 可执行设计规格（具体值而非感受词） | [`rdd-ux/SKILL.md`](../rdd-ux/SKILL.md) |
+| **QA** | 两段职责：DESIGN 测试先行（只依需求写用例，禁读设计）+ VERIFY 独立验收执行 | [`rdd-qa/SKILL.md`](../rdd-qa/SKILL.md) |
+| **DEV** | 按需求/设计实现并自测；提交交 QA（IMPL 阶段不 commit） | [`rdd-dev/SKILL.md`](../rdd-dev/SKILL.md) |
+| **AUDITOR** | 独立审视：需求侧审查门 + 设计汇聚审查（事前把关） | [`rdd-auditor/SKILL.md`](../rdd-auditor/SKILL.md) |
+| **EVAL** | 交付质量评估、协作效率复盘（二级档：常走树外直交，经 `register-session` 登记溯源） | [`rdd-eval/SKILL.md`](../rdd-eval/SKILL.md) |
+| **PSE** | README / AGENT / code-quality 等项目上下文文档维护（二级档：树外直交） | [`rdd-pse/SKILL.md`](../rdd-pse/SKILL.md) |
+
+另有卡片型调查角色族（`data-prep` / `metric-analyst` / `log-analyst` / `trace-analyst` / `root-cause-analyst`）不走 dispatch——由宿主扇出子代理整卡嵌入，权威定义见 [`investigation-roles.md`](../rdd-engine/references/investigation-roles.md)。两级选角菜单（一级常用六角色、二级按职责收拢）与输入通道细则见 [`planner-guide.md`](../rdd-engine/references/planner-guide.md) §三。
 
 ## delivery-bridge：归档任务集的树化交付
 

@@ -19,8 +19,10 @@ SDD（规范驱动开发）理念的多角色 AI 开发工作流系统：8 个�
 | 实现 | **做** | [DEV](./rdd-dev/) | 任务拆解、并行开发、代码审查 |
 | 验证 | **验证** | [QA](./rdd-qa/) | 独立测试、质量验证 |
 | 评价 | **评价** | [EVAL](./rdd-eval/) | 交付质量评估、协作效率复盘 |
-| 审视 | **事前把关** | [AUDITOR](./rdd-auditor/) | 上游产物独立审视（需求集/设计汇聚进建树/实现前）——独立于 QA 的事前把关角色；EVAL 是事后回顾（报告不进流转），二者定位不同 |
+| 审视 | **事前把关** | [AUDITOR](./rdd-auditor/) | 上游产物独立审视（需求集/设计汇聚进建树/实现前） |
 | 呈现 | **怎么讲？** | [PSE](./rdd-pse/) | README 维护、项目上下文文档生成 |
+
+> **AUDITOR 与 QA / EVAL 的定位差异**：AUDITOR 是独立于 QA 的**事前把关**角色，审视结论进入流转；EVAL 是**事后回顾**，报告不进流转。
 
 ### 核心迭代关系
 
@@ -33,12 +35,12 @@ SDD（规范驱动开发）理念的多角色 AI 开发工作流系统：8 个�
 
 [rdd-engine](./rdd-engine/) 是能力总线,以下能力各自独立成篇详写:
 
-| 能力 | 一句话 | 详见 |
-|------|--------|------|
-| **探索缓存** | 跨角色/跨会话复用的代码理解知识库——任一角色探索过的代码,其余会话直接命中复用(BM25 + 向量双路召回 → RRF 融合);未命中自动派探索 worker 调查并注册回缓存 | [docs/exploration-cache.md](./docs/exploration-cache.md) |
-| **goal-tree 目标树** | 长程任务的 Plan-and-Execute 树形编排:规划者拆目标为节点树、多 Worker 会话并行认领、回报裁定闭环;预算三上限机械强制、中断可续跑、终局必出结案报告;delivery-bridge 把归档任务集树化交付 | [docs/goal-tree.md](./docs/goal-tree.md) |
-| **运营端** | 零 npm 依赖的本地只读看板(`ops-dashboard.cmd`):需求归档 / 探索缓存 / 命中率 / 检索质量 / tips / 交付树 / 配置中心七个数据域 + 受控配置写面 | [docs/ops-dashboard.md](./docs/ops-dashboard.md) |
-| **DSH 适配** | DeepSeek Harness 宿主的增强套件:rdd-explore 插件(模型工具)/ goal-tree 状态条插件(回调自动唤醒)/ 9 组角色 presets / start-role 三后端判据链 | [docs/dsh-integration.md](./docs/dsh-integration.md) |
+| 能力 | 场景（为什么） | 一句话（怎么解决） | 详见 |
+|------|------|--------|------|
+| **探索缓存** | LLM 执行开发工作前必须在项目代码里检索问题相关信息,多 agent 场景下各 agent 的检索产物彼此独立,涉及大量重复探索;业界常见的代码图又存在检索范围过大、重点模糊、维护困难、生成成本高、时效性低等问题——故采用懒加载机制生成代码缓存 | 跨角色/跨会话复用的代码理解知识库——任一角色探索过的代码,其余会话直接命中复用(BM25 + 向量双路召回 → RRF 融合);未命中自动派探索 worker 调查并注册回缓存 | [docs/exploration-cache.md](./docs/exploration-cache.md) |
+| **goal-tree 目标树** | 长程大任务无法在单次对话里扛完:上下文随轮次膨胀直至溢出、计划在长对话中漂移失焦;多 Worker 并行时人工编排易重复消费同一事项、预算失控,中断后状态全丢无法续跑;常见的「单会话长提示 + todo 清单」又没有依赖 DAG、认领互斥、预算上限、断点续跑等语义——故以持久化状态机承载树形编排 | 长程任务的 Plan-and-Execute 树形编排:规划者拆目标为节点树、多 Worker 会话并行认领、回报裁定闭环;预算三上限机械强制、中断可续跑、终局必出结案报告;delivery-bridge 把归档任务集树化交付 | [docs/goal-tree.md](./docs/goal-tree.md) |
+| **运营端** | 全链路数据虽已落盘可审计,但都是为机器设计的原始 JSON/JSONL,「命中率多少、哪些 query 高频 miss、交付树推进到哪」这类问题只能逐文件翻查;引入外部 BI/日志平台又需额外部署管道,与本地优先、零依赖的定位冲突——故做零依赖的本地看板直读落盘数据 | 零 npm 依赖的本地只读看板(`ops-dashboard.cmd`):需求归档 / 探索缓存 / 命中率 / 检索质量 / tips / 交付树 / 配置中心七个数据域 + 受控配置写面 | [docs/ops-dashboard.md](./docs/ops-dashboard.md) |
+| **DSH 适配** | 中立挂载让同一套角色卡活在 5 个宿主里,但只能取最低公分母:探索缓存只剩 CLI 一条腿、goal-tree 运行状态无处呈现、角色交接退化为开新终端;为每个宿主单独做集成又必然重复实现、各自漂移——故为插件/会话/preset 机制最全的 DSH 做单一最深适配 | DeepSeek Harness 宿主的增强套件:rdd-explore 插件(模型工具)/ goal-tree 状态条插件(回调自动唤醒)/ 9 组角色 presets / start-role 三后端判据链 | [docs/dsh-integration.md](./docs/dsh-integration.md) |
 
 三者与角色流转(rdd-flow)的关系:探索缓存、goal-tree、task.json 流转**三重正交**(目录/命令/数据零共享),delivery-bridge 是唯一受控交汇。
 
@@ -84,6 +86,15 @@ rdd-flow set-route（推进 task.json 路由到下游角色：阶段内收窄不
 ```
 
 > 角色切换必须开新会话：agent 无法在同会话内真正隔离上下文，上游长对话会污染下游——start-role 各后端都以新会话承载交接。协议细节见 `rdd-engine/references/transition-guide.md`。
+
+### 工作流怎么跑
+
+**第一步永远是 PM**：描述需求后，PM 先与你确认需求全貌，再做任务拆解。拆解后按规模分流：
+
+- **小任务** → PM 直接路由给 CTO（需技术决策）或 DEV（L1 简单需求可直达），再按阶段流转到 QA 验收
+- **大任务** → PM 推送给 **PLANNER**，由规划者把需求树化为目标树：自动拆解节点 → 调度多角色会话并行认领 → 回报裁定 → 集成联调 → 整体验收；中断可续跑、预算可封顶，终局出结案报告
+
+无论走哪条路，四条机制不变：阶段产物落盘可审、QA 独立验收（DEV 无提交权）、切换角色开新会话、代码理解沉淀进探索缓存跨会话复用。一个大任务的完整树编排实战见 [docs/case-ops-dashboard.md](./docs/case-ops-dashboard.md)。
 
 ## 项目结构
 
