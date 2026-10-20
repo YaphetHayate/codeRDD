@@ -421,7 +421,7 @@ code {
   font-variant-numeric: tabular-nums;
   max-width: 320px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
-.data-table tbody tr:hover { background: var(--ops-accent-tertiary); }
+.data-table tbody tr:not(.row-detail):hover { background: var(--ops-accent-tertiary); }
 .data-table tbody tr[data-selected="true"] { background: var(--ops-accent-tertiary); box-shadow: inset 3px 0 0 var(--ops-action-primary); }
 .data-table tr.row-clickable { cursor: pointer; }
 .td-mono { font-family: var(--ops-font-mono); font-size: var(--ops-font-aux-lg); }
@@ -720,6 +720,129 @@ select.config-input { flex: 0 0 auto; padding-right: var(--ops-space-3); }
 @media (max-width: 900px) {
   .ux-agent-block .config-label { flex-basis: 100%; }
 }
+
+/* ── 5.20 KPI 层级式展开（/exploration，exploration-entry-expansion §5） ──
+ * 零新建 Token：全部消费既有 var(--ops-*)。SSR 基线为纯展示形态，
+ * .is-expandable / .stat-chevron 由 app.js 注入（§5.1 决策 D7）。 */
+
+/* StatExpanderTile（§5.1） */
+.stat-tile.is-expandable { position: relative; cursor: pointer; transition: background-color var(--ops-transition), border-color var(--ops-transition); }
+.stat-tile.is-expandable:hover { border-color: var(--ops-action-primary); }
+.stat-tile.is-expandable:hover .stat-chevron { color: var(--ops-action-primary); }
+.stat-chevron {
+  position: absolute; top: var(--ops-space-3); right: var(--ops-space-3);
+  width: 16px; height: 16px; color: var(--ops-text-secondary);
+  transition: transform var(--ops-transition), color var(--ops-transition);
+}
+.stat-tile.is-open { background: var(--ops-accent-tertiary); }
+.stat-tile.is-open .stat-label,
+.stat-tile.is-open .stat-hint { color: var(--ops-action-on-tertiary); }
+.stat-tile.is-open .stat-chevron { transform: rotate(180deg); color: var(--ops-action-on-tertiary); }
+
+/* KpiExpansionPanel（§5.2）—— 容器与 .panel 同参 */
+.kpi-expansion {
+  background: var(--ops-bg-surface);
+  border: 1px solid var(--ops-border-subtle);
+  border-radius: var(--ops-radius-panel);
+  box-shadow: var(--ops-shadow-card);
+  padding: var(--ops-panel-padding);
+  display: flex; flex-direction: column; gap: var(--ops-space-4);
+  min-width: 0;
+  animation: ops-expand-in var(--ops-transition);
+}
+.kpi-expansion[hidden] { display: none; }
+@keyframes ops-expand-in {
+  from { opacity: 0; transform: translateY(-4px); }
+  to { opacity: 1; transform: none; }
+}
+.exp-head {
+  display: flex; align-items: center; gap: var(--ops-space-2); flex-wrap: wrap;
+  cursor: pointer;
+  padding: var(--ops-space-2) var(--ops-space-3);
+  margin: -8px -12px;
+  border-radius: var(--ops-radius-card);
+  transition: background-color var(--ops-transition);
+}
+.exp-head:hover { background: var(--ops-bg-subtle); }
+.exp-head:hover .exp-collapse-hint { color: var(--ops-action-on-tertiary); }
+.exp-title { font-size: var(--ops-font-panel-title); font-weight: 700; }
+.exp-note { margin-left: auto; font-size: var(--ops-font-aux); color: var(--ops-text-secondary); }
+.exp-collapse-hint { display: inline-flex; align-items: center; gap: 4px; font-size: var(--ops-font-aux); color: var(--ops-text-secondary); flex: 0 0 auto; }
+.exp-foot { border-top: 1px solid var(--ops-border-subtle); padding-top: var(--ops-space-2); font-size: var(--ops-font-aux); color: var(--ops-text-secondary); }
+
+/* ExpandableRow（§5.3）—— 触发行与详情行 */
+tr[data-entry] { cursor: pointer; }
+tr[data-entry]:focus-visible { outline: var(--ops-focus-ring); outline-offset: -2px; }
+tr[data-entry]:hover .row-caret { color: var(--ops-action-primary); }
+.row-caret { display: inline-flex; align-items: center; justify-content: center; width: 16px; height: 16px; color: var(--ops-text-secondary); }
+.row-caret svg { width: 16px; height: 16px; transition: transform var(--ops-transition); }
+tr[data-entry].is-open .row-caret svg { transform: rotate(180deg); }
+tr[data-entry].is-open > td:first-child { box-shadow: inset 3px 0 0 var(--ops-action-primary); }
+tr.row-detail > td {
+  background: var(--ops-bg-subtle);
+  box-shadow: inset 3px 0 0 var(--ops-action-primary);
+  padding: var(--ops-space-4) var(--ops-space-5);
+  height: auto; max-width: none; overflow: visible; white-space: normal;
+}
+tr.row-detail[hidden] { display: none; }
+
+/* EntryDetail（§5.4）—— fieldList 全量复用，此处只补详情特有块 */
+.detail-brief { font-size: var(--ops-font-body); line-height: 1.7; max-width: 90ch; margin-bottom: var(--ops-space-3); overflow-wrap: anywhere; }
+.detail-actions { display: flex; align-items: center; gap: var(--ops-space-2); flex-wrap: wrap; margin-top: var(--ops-space-3); padding-top: var(--ops-space-3); border-top: 1px solid var(--ops-border-subtle); }
+.detail-note { font-size: var(--ops-font-aux); color: var(--ops-text-secondary); margin-left: auto; }
+
+/* 页底平铺基线（§6.6）：app.js 启动后置 hidden；.panel 的 display:flex 会
+ * 压过 UA 的 [hidden] 默认样式，必须显式钉死（负向锚） */
+#entries-flat[hidden] { display: none; }
+
+/* ── 5.21 产物对可观测（/exploration，artifact-pair-observability §5.3/§5.4） ──
+ * 零新建 Token：色点仅作文字徽章旁的冗余装饰编码（aria-hidden，1.4.11 豁免），
+ * 状态语义一律由相邻文字承担——语义色禁作文字/淡底（§1.2 判定法）。 */
+
+/* ExpandableRow 产物对行（tr[data-entry] 同款交互态，词汇扩展 §6.2） */
+tr[data-pair] { cursor: pointer; }
+tr[data-pair]:focus-visible { outline: var(--ops-focus-ring); outline-offset: -2px; }
+tr[data-pair]:hover .row-caret { color: var(--ops-action-primary); }
+tr[data-pair].is-open .row-caret svg { transform: rotate(180deg); }
+tr[data-pair].is-open > td:first-child { box-shadow: inset 3px 0 0 var(--ops-action-primary); }
+
+/* PairStatusBadge（§5.3）—— 色点 + 文字双编码 */
+.dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; flex: 0 0 auto; }
+.dot-success { background: var(--ops-success); }
+.dot-warn { background: var(--ops-warn); }
+.dot-error { background: var(--ops-error); }
+.dot-neutral { background: var(--ops-neutral-400); }
+.badge-pair {
+  display: inline-flex; align-items: center; gap: 6px;
+  font-size: var(--ops-font-aux); padding: 2px 10px;
+  border-radius: var(--ops-radius-pill); background: var(--ops-bg-subtle);
+  color: var(--ops-text-primary); white-space: nowrap;
+}
+.badge-pair .dot { width: 8px; height: 8px; }
+
+/* PairDetail（§5.4）—— 判定行 / 文件清单区（240px 界内滚）/ 时间近似标注 */
+.pair-verdict { display: flex; align-items: flex-start; gap: var(--ops-space-2); margin-bottom: var(--ops-space-3); }
+.pair-verdict .dot { margin-top: 6px; }
+.pair-verdict-text { font-size: var(--ops-font-body); line-height: 1.7; max-width: 90ch; overflow-wrap: anywhere; }
+.pair-files {
+  max-height: 240px; overflow-y: auto;
+  border: 1px solid var(--ops-border-subtle); border-radius: var(--ops-radius-card);
+  background: var(--ops-bg-surface); margin-bottom: var(--ops-space-3);
+}
+.pair-files-group {
+  position: sticky; top: 0; background: var(--ops-bg-subtle); color: var(--ops-text-secondary);
+  font-size: var(--ops-font-aux); font-weight: 600; padding: 4px 12px;
+  border-bottom: 1px solid var(--ops-border-subtle);
+}
+.pair-file-row { display: flex; align-items: center; gap: var(--ops-space-2); padding: 4px 12px; border-bottom: 1px solid var(--ops-border-subtle); }
+.pair-file-row:last-child { border-bottom: 0; }
+.pair-file-row .dot { width: 6px; height: 6px; }
+.pair-file-path { font-family: var(--ops-font-mono); font-size: var(--ops-font-aux); overflow-wrap: anywhere; min-width: 0; }
+.btn-copy-mini { height: 22px; padding: 0 8px; font-size: 11px; margin-left: auto; flex: 0 0 auto; }
+.time-approx { color: var(--ops-text-secondary); font-size: var(--ops-font-aux); }
+
+/* 页底产物对平铺基线（§5.5）：同 #entries-flat 的负向锚（.panel flex 压过 UA [hidden]） */
+#pairs-flat[hidden] { display: none; }
 
 /* ── 6.5 prefers-reduced-motion 降级 ───────────────────────────────── */
 @media (prefers-reduced-motion: reduce) {

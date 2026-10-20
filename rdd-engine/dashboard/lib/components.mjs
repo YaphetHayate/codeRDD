@@ -3,7 +3,7 @@
 // Convention used throughout this module: a parameter named `html` is inserted
 // verbatim (the caller escaped or built it), while `text` parameters are escaped
 // here. That keeps every .rdd/ value out of the raw-injection path.
-import { esc, dateTime } from './format.mjs'
+import { absoluteFilePath, dateTime, esc } from './format.mjs'
 
 /** 16px inline icons — no emoji, no icon font (offline requirement). */
 const ICONS = {
@@ -82,12 +82,16 @@ export function emptyState(options) {
   return `<div class="empty-state">${title}${rows}${extra}</div>`
 }
 
-/** KPI tile used on every domain page's first layer. */
+/** KPI tile used on every domain page's first layer.
+ * `id` / `dataKpi` mark the expandable variant (exploration-entry-expansion §5.1);
+ * the tile stays a pure display box — tabindex / role / chevron are injected by app.js. */
 export function statTile(options) {
   const unit = options.unit === undefined ? '' : `<span class="stat-unit">${esc(options.unit)}</span>`
   const hint = options.hint === undefined ? '' : `<div class="stat-hint">${esc(options.hint)}</div>`
   const tone = options.tone === undefined ? '' : ` stat-${esc(options.tone)}`
-  return `<div class="stat-tile${tone}"><div class="stat-value">${esc(options.value)}${unit}</div><div class="stat-label">${esc(options.label)}</div>${hint}</div>`
+  const id = options.id === undefined ? '' : ` id="${esc(options.id)}"`
+  const kpi = options.dataKpi === undefined ? '' : ` data-kpi="${esc(options.dataKpi)}"`
+  return `<div class="stat-tile${tone}"${id}${kpi}><div class="stat-value">${esc(options.value)}${unit}</div><div class="stat-label">${esc(options.label)}</div>${hint}</div>`
 }
 
 /** Panel / ChartFrame container. */
@@ -110,23 +114,36 @@ export function sectionHead(title, note) {
 
 /**
  * DataTable.
- * @param {{columns: {label: string, align?: string}[], rows: object[], empty?: string, foot?: string, caption?: string}} options
+ * Rows may carry `expand` ({ detailId, label, detail }) to render an expandable
+ * row (exploration-entry-expansion §5.3): the row gets the trigger attributes and
+ * a hidden `<tr class="row-detail">` with a full-width detail cell follows it.
+ * Columns may carry `width` for fixed trigger-column sizing.
+ * @param {{columns: {label: string, align?: string, width?: string}[], rows: object[], empty?: string, foot?: string, caption?: string}} options
  */
 export function dataTable(options) {
   const head = options.columns
-    .map((column) => `<th${column.align ? ` class="ta-${esc(column.align)}"` : ''}>${esc(column.label)}</th>`)
+    .map((column) => {
+      const width = column.width === undefined ? '' : ` style="width:${esc(column.width)}"`
+      return `<th${column.align ? ` class="ta-${esc(column.align)}"` : ''}${width}>${esc(column.label)}</th>`
+    })
     .join('')
   const body =
     options.rows.length === 0
       ? `<tr class="table-empty"><td colspan="${options.columns.length}">${options.empty ?? ''}</td></tr>`
-      : options.rows.map((row) => renderRow(row)).join('')
+      : options.rows.map((row) => renderRow(row, options.columns.length)).join('')
   const foot = options.foot === undefined ? '' : `<div class="panel-foot">${options.foot}</div>`
   return `<div class="table-wrap"><table class="data-table"><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table></div>${foot}`
 }
 
-/** One table row (cells may carry text, html, tone, title, mono). */
-function renderRow(row) {
-  const cells = row.cells
+/**
+ * Shared cell mapping of data-table rows — dataTable and pairTable render the
+ * identical td face (mono/muted/align classes, verbatim html or escaped text,
+ * optional title). The two row renderers differ only in their trigger
+ * vocabulary (§6.2), so the cells / detail-row / trigger-attrs faces live here
+ * once.
+ */
+function renderCells(cells) {
+  return cells
     .map((cell) => {
       const classes = [cell.mono ? 'td-mono' : '', cell.muted ? 'td-muted' : '', cell.align ? `ta-${cell.align}` : '']
         .filter((name) => name !== '')
@@ -136,13 +153,30 @@ function renderRow(row) {
       return `<td${classes === '' ? '' : ` class="${classes}"`}${title}>${content}</td>`
     })
     .join('')
+}
+
+/** Hidden full-width detail row following an expandable row. */
+function detailRowHtml(detailId, columnCount, detail) {
+  return `<tr class="row-detail" id="${esc(detailId)}" hidden><td colspan="${columnCount}">${detail}</td></tr>`
+}
+
+/** Trigger attributes of an expandable row (`data-entry` / `data-pair`, §6.2). */
+function expandRowAttrs(vocabulary, trigger) {
+  return ` ${vocabulary}="${esc(trigger.detailId)}" tabindex="0" role="button" aria-expanded="false" aria-controls="${esc(trigger.detailId)}" aria-label="${esc(trigger.label)}"`
+}
+
+/** One table row (cells may carry text, html, tone, title, mono). */
+function renderRow(row, columnCount) {
+  const expand = row.expand
   const attrs = [
     row.href === undefined ? '' : ` data-href="${esc(row.href)}"`,
     row.href === undefined ? '' : ' class="row-clickable"',
     row.selected ? ' data-selected="true"' : '',
     row.dataQuery === undefined ? '' : ` data-query="${esc(row.dataQuery)}"`,
+    expand === undefined ? '' : expandRowAttrs('data-entry', expand),
   ].join('')
-  return `<tr${attrs}>${cells}</tr>`
+  const detailRow = expand === undefined ? '' : detailRowHtml(expand.detailId, columnCount, expand.detail)
+  return `<tr${attrs}>${renderCells(row.cells)}</tr>${detailRow}`
 }
 
 /**
@@ -176,6 +210,193 @@ export function fieldList(options) {
       return `<div class="field"><span class="field-key">${esc(row.key)}</span><span class="field-val${mono}">${valueHtml}</span>${copy}</div>`
     })
     .join('')}</div>`
+}
+
+/** Leading caret cell of an expandable entry row (exploration-entry-expansion §5.3). */
+export function expandRowCaret() {
+  return '<span class="row-caret" aria-hidden="true"><svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor" aria-hidden="true"><path d="M7 10l5 5 5-5z"/></svg></span>'
+}
+
+const ZONE_LABELS = { hot: '热区 hot.json', index: '持久 index.json' }
+
+/**
+ * EntryDetail — one entry's full fields plus the open-in-editor / copy-path
+ * action row (exploration-entry-expansion §5.4). Rendered inside the hidden
+ * `<td>` of an expandable row; the copy button reuses the existing btn-copy
+ * + copy-hint mechanism bound by app.js.
+ * @param {{zone: string, key: string, tags: string[], brief: string, path: string, fileCount?: number, registeredAt: string}} entry
+ * @param {{absolutePath: string}} options
+ */
+export function entryDetail(entry, options) {
+  const tagsHtml = entry.tags.map((tag) => chip(tag)).join(' ')
+  const fields = fieldList({
+    rows: [
+      { key: 'key', text: entry.key, mono: true },
+      { key: '所属区', text: ZONE_LABELS[entry.zone] ?? entry.zone },
+      { key: 'tags', html: tagsHtml === '' ? '<span class="field-empty">—</span>' : tagsHtml },
+      { key: '涉及文件数', text: entry.fileCount === undefined || entry.fileCount === null ? '' : `${entry.fileCount} 个` },
+      { key: '记录路径', text: entry.path, mono: true },
+      { key: '注册时间 (UTC)', text: dateTime(entry.registeredAt), mono: true },
+    ],
+  })
+  const target = esc(options.absolutePath)
+  return `<div class="detail-brief">${esc(entry.brief)}</div>${fields}<div class="detail-actions"><a class="btn" href="vscode://file/${target}">在编辑器中打开</a><button type="button" class="btn btn-ghost btn-copy" data-copy="${target}">复制路径</button><span class="copy-hint" aria-live="polite"></span><span class="detail-note">编辑器打开失败时可用「复制路径」兜底</span></div>`
+}
+
+// ── Pair observability (artifact-pair-observability §5.3/§5.4) ──────────
+// Freshness states come from the exploration reader (dashboard-side, engine
+// Test-EntryFresh semantics). Colour dots are redundant decoration next to the
+// text badge (aria-hidden, WCAG 1.4.11 exemption) — semantic colour never
+// carries text (§1.2 判定法).
+
+/** Status label + dot class + optional title for one freshness state (§5.3). */
+function pairStateFace(freshness) {
+  const state = freshness?.state
+  if (state === 'orphan') return { label: '无条目', dot: 'dot-neutral', title: '无对应缓存条目，无法现算' }
+  if (state === 'no-list') return { label: '无清单', dot: 'dot-neutral', title: '条目未携带 files 清单，无法现算' }
+  if (state === 'stale') {
+    return {
+      label: `不新鲜 · ${freshness.changed.length} 变更 ${freshness.missing.length} 缺失`,
+      dot: 'dot-warn',
+      title: undefined,
+    }
+  }
+  return { label: '新鲜', dot: 'dot-success', title: undefined }
+}
+
+/** PairStatusBadge (§5.3): dot + text, the text carries the semantics. */
+export function pairStatusBadge(freshness) {
+  const face = pairStateFace(freshness)
+  const title = face.title === undefined ? '' : ` title="${esc(face.title)}"`
+  return `<span class="badge-pair"${title}><span class="dot ${face.dot}" aria-hidden="true"></span>${esc(face.label)}</span>`
+}
+
+/** Zone badge for the pair's related entry, or the neutral orphan form (§5.2 col 3). */
+export function pairEntryBadge(pair) {
+  if (pair.entry === null) {
+    return '<span class="badge-pair"><span class="dot dot-neutral" aria-hidden="true"></span>无条目</span>'
+  }
+  return badge(pair.entry.zone === 'hot' ? '热区' : '持久', pair.entry.zone === 'hot' ? 'info' : 'neutral')
+}
+
+/** Time face (§7.4): hot entries show registeredAt, everything else the artifact mtime (approx). */
+export function pairTimeCell(pair) {
+  const hot = pair.entry !== null && pair.entry.zone === 'hot'
+  const prefix = hot
+    ? ''
+    : '<span class="time-approx" title="文件时间（近似）" aria-label="文件时间（近似）">≈ </span>'
+  return `${prefix}${esc(dateTime(hot ? pair.entry.registeredAt : pair.mtime))}`
+}
+
+/** Verdict line (§2.1): the judgement and its basis in one self-evident sentence. */
+function pairVerdictText(pair) {
+  const fresh = pair.freshness ?? { state: 'orphan', changed: [], missing: [], total: 0 }
+  const suffix = pair.summaryPath === null ? '　异常配对：无 summary 文件。' : ''
+  if (fresh.state === 'orphan') return `判定：无条目 —— artifacts/ 中存在产物文件，但双 zone 无对应缓存条目，无法现算新鲜度。${suffix}`
+  if (fresh.state === 'no-list') return `判定：无清单 —— 关联条目未携带 files 清单，无法现算新鲜度。${suffix}`
+  if (fresh.state === 'stale') {
+    return `判定：不新鲜 —— ${fresh.changed.length} 个文件已变更、${fresh.missing.length} 个文件缺失（条目清单共 ${fresh.total} 个文件）。${suffix}`
+  }
+  return `判定：新鲜 —— ${fresh.total} 个文件哈希全部匹配，记录文件存在。${suffix}`
+}
+
+/**
+ * 文件清单区 (§5.4) — the covered-files list, rendered only for computable
+ * states (fresh/stale). Stale puts the changed/missing groups first; matched
+ * rows carry no dot. Mini copy buttons copy the absolute path; without a hint
+ * container their feedback is the button-label flip (§2.1).
+ */
+export function pairFilesBlock(pair, options) {
+  const fresh = pair.freshness
+  if (!fresh || (fresh.state !== 'fresh' && fresh.state !== 'stale')) return ''
+  const fileRow = (relativePath, dotClass) =>
+    `<div class="pair-file-row">${dotClass === undefined ? '' : `<span class="dot ${dotClass}" aria-hidden="true"></span>`}<span class="pair-file-path">${esc(relativePath)}</span><button type="button" class="btn btn-ghost btn-copy btn-copy-mini" data-copy="${esc(absoluteFilePath(options.projectRoot, relativePath))}">复制</button></div>`
+  const group = (title, rows, dotClass) =>
+    rows.length === 0 ? '' : `<div class="pair-files-group">${esc(title)}</div>${rows.map((file) => fileRow(file, dotClass)).join('')}`
+  let html = '<div class="pair-files">'
+  if (fresh.state === 'stale') {
+    const changedSet = new Set(fresh.changed)
+    const missingSet = new Set(fresh.missing)
+    const rest = pair.files.filter((file) => !changedSet.has(file) && !missingSet.has(file))
+    html += group(`已变更（${fresh.changed.length}）`, fresh.changed, 'dot-warn')
+    html += group(`缺失（${fresh.missing.length}）`, fresh.missing, 'dot-error')
+    html += group(`其余匹配（${rest.length}）`, rest, undefined)
+  } else {
+    html += group(`涉及文件（${fresh.total}）`, pair.files, undefined)
+  }
+  return `${html}</div>`
+}
+
+/**
+ * PairDetail (§5.4) — verdict line, files block, field list and the
+ * open-in-editor / copy-path action row, rendered inside the hidden `<td>` of
+ * an expandable pair row. Field-level copy buttons carry the absolute path
+ * (#1 §6.4 parity); the display text stays the repo-relative path.
+ * @param {object} pair envelope pair record (slug/artifactPath/summaryPath/mtime/entry/freshness/files)
+ * @param {{projectRoot: string}} options
+ */
+export function pairDetail(pair, options) {
+  const fresh = pair.freshness ?? { state: 'orphan', changed: [], missing: [], total: 0 }
+  const hot = pair.entry !== null && pair.entry.zone === 'hot'
+  const timeValue = hot ? pair.entry.registeredAt : pair.mtime
+  const timeLabel = hot ? '（注册时间 · 热区条目）' : '（文件时间 · 近似）'
+  const artifactAbsolute = absoluteFilePath(options.projectRoot, pair.artifactPath)
+  const fields = [
+    pair.entry === null
+      ? { key: '关联条目', html: '<span class="field-empty">—（无对应缓存条目）</span>' }
+      : {
+          key: '关联条目',
+          html: `<span class="field-val-mono">${esc(pair.entry.key)}</span>　${esc(pair.entry.zone === 'hot' ? '热区 hot.json' : '持久 index.json')}`,
+        },
+    { key: '生成时间 (UTC)', mono: true, html: `${esc(dateTime(timeValue))} <span class="time-approx">${esc(timeLabel)}</span>` },
+    { key: 'artifact 路径', mono: true, text: pair.artifactPath, miniCopy: artifactAbsolute },
+    pair.summaryPath === null
+      ? { key: 'summary 路径', mono: true, html: '<span class="field-empty">—（无 summary 文件）</span>' }
+      : { key: 'summary 路径', mono: true, text: pair.summaryPath, miniCopy: absoluteFilePath(options.projectRoot, pair.summaryPath) },
+  ]
+  if (pair.summaryPath === null) {
+    fields.push({ key: '配对状态', text: '异常：无配对 summary 文件（页顶提示口径）。' })
+  }
+  const fieldHtml = fields
+    .map((field) => {
+      const mono = field.mono === true ? ' field-val-mono' : ''
+      const valueHtml = field.html ?? esc(field.text ?? '')
+      const copy =
+        field.miniCopy === undefined
+          ? ''
+          : `<button type="button" class="btn btn-ghost btn-copy btn-copy-mini" data-copy="${esc(field.miniCopy)}">复制</button><span class="copy-hint" aria-live="polite"></span>`
+      return `<div class="field"><span class="field-key">${esc(field.key)}</span><span class="field-val${mono}">${valueHtml}</span>${copy}</div>`
+    })
+    .join('')
+  const face = pairStateFace(fresh)
+  return `<div class="pair-verdict"><span class="dot ${face.dot}" aria-hidden="true"></span><span class="pair-verdict-text">${esc(pairVerdictText(pair))}</span></div>${pairFilesBlock(pair, options)}<div class="field-list">${fieldHtml}</div><div class="detail-actions"><a class="btn" href="vscode://file/${esc(artifactAbsolute)}">在编辑器中打开</a>${
+    pair.summaryPath === null
+      ? ''
+      : `<a class="btn" href="vscode://file/${esc(absoluteFilePath(options.projectRoot, pair.summaryPath))}">打开 summary</a>`
+  }<button type="button" class="btn btn-ghost btn-copy" data-copy="${esc(artifactAbsolute)}">复制路径</button><span class="copy-hint" aria-live="polite"></span><span class="detail-note">编辑器打开失败时可用「复制路径」兜底</span></div>`
+}
+
+/**
+ * Expandable pair table (§5.2) — same face as dataTable but rows carry
+ * data-pair vocabulary (§6.2: tr[data-entry], tr[data-pair] share the toggle
+ * logic in app.js; the row face itself comes from the shared renderCells /
+ * detailRowHtml / expandRowAttrs helpers).
+ */
+export function pairTable(options) {
+  const head = options.columns
+    .map((column) => `<th${column.width === undefined ? '' : ` style="width:${esc(column.width)}"`}>${esc(column.label)}</th>`)
+    .join('')
+  const body =
+    options.rows.length === 0
+      ? `<tr class="table-empty"><td colspan="${options.columns.length}">${options.empty ?? ''}</td></tr>`
+      : options.rows.map(renderPairRow).join('')
+  const foot = options.foot === undefined ? '' : `<div class="panel-foot">${options.foot}</div>`
+  return `<div class="table-wrap"><table class="data-table"><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table></div>${foot}`
+}
+
+/** One expandable pair row — renderRow's face with the data-pair vocabulary (§6.2). */
+function renderPairRow(row) {
+  return `<tr${expandRowAttrs('data-pair', row.pair)}>${renderCells(row.cells)}</tr>${detailRowHtml(row.pair.detailId, row.cells.length, row.pair.detail)}`
 }
 
 /** Breadcrumb (detail views). */

@@ -913,11 +913,19 @@ function copyText(button) {
   var value = button.getAttribute('data-copy') || ''
   var hint = button.parentElement === null ? null : button.parentElement.querySelector('.copy-hint')
   var report = function (message) {
-    if (hint === null) return
-    hint.textContent = message
+    if (hint !== null) {
+      hint.textContent = message
+      window.setTimeout(function () {
+        hint.textContent = ''
+      }, 1500)
+      return
+    }
+    // mini copy buttons have no hint container — the label flips briefly (§2.1)
+    var label = button.textContent
+    button.textContent = message === '已复制' ? '✓' : '×'
     window.setTimeout(function () {
-      hint.textContent = ''
-    }, 1500)
+      button.textContent = label
+    }, 900)
   }
   if (navigator.clipboard !== undefined && navigator.clipboard.writeText !== undefined) {
     navigator.clipboard.writeText(value).then(
@@ -956,6 +964,96 @@ function bindRows(scope) {
       var href = row.getAttribute('data-href')
       if (href) window.location.href = href
     })
+  })
+}
+
+// ── KPI expansion (/exploration): count tiles toggle in-place detail panels ──
+// The server renders the pure display shape (no chevron, no tabindex, §6.6);
+// this section upgrades the tiles into triggers, hides the flat baseline panel
+// and keeps the interactions on document-level delegation (§6.2) so refresh
+// re-binding needs no extra work here.
+var KPI_CHEVRON_SVG =
+  '<svg class="stat-chevron" viewBox="0 0 24 24" width="16" height="16" fill="currentColor" aria-hidden="true"><path d="M7 10l5 5 5-5z"/></svg>'
+
+/** Upgrade the SSR tiles into expandable triggers and hide the flat baseline. */
+function enhanceKpiExpansion(scope) {
+  var tiles = scope.querySelectorAll('.stat-tile[data-kpi]')
+  Array.prototype.forEach.call(tiles, function (tile) {
+    if (tile.getAttribute('data-bound') === '1') return
+    tile.setAttribute('data-bound', '1')
+    tile.classList.add('is-expandable')
+    tile.setAttribute('tabindex', '0')
+    tile.setAttribute('role', 'button')
+    tile.setAttribute('aria-expanded', 'false')
+    tile.setAttribute('aria-controls', 'exp-' + tile.getAttribute('data-kpi'))
+    tile.insertAdjacentHTML('beforeend', KPI_CHEVRON_SVG)
+  })
+  var flat = scope.querySelector('#entries-flat')
+  if (flat !== null) flat.hidden = true
+  var pairsFlat = scope.querySelector('#pairs-flat')
+  if (pairsFlat !== null) pairsFlat.hidden = true
+}
+
+function setKpiExpanded(zone, open) {
+  var tile = document.getElementById('kpi-' + zone)
+  var panel = document.getElementById('exp-' + zone)
+  if (tile === null || panel === null) return
+  tile.setAttribute('aria-expanded', open ? 'true' : 'false')
+  tile.classList.toggle('is-open', open)
+  panel.hidden = !open
+}
+
+/** Collapse one zone and hand focus back to its KPI tile (§6.5). */
+function collapseKpiZone(zone) {
+  setKpiExpanded(zone, false)
+  var tile = document.getElementById('kpi-' + zone)
+  if (tile !== null) tile.focus()
+}
+
+function toggleEntryRow(row) {
+  var detail = document.getElementById(row.getAttribute('aria-controls'))
+  if (detail === null) return
+  var open = detail.hidden
+  detail.hidden = !open
+  row.classList.toggle('is-open', open)
+  row.setAttribute('aria-expanded', open ? 'true' : 'false')
+}
+
+/** The expansion trigger under a click/keyboard target, or null. */
+function expansionTarget(target) {
+  if (target === null || target === undefined || typeof target.closest !== 'function') return null
+  var head = target.closest('.exp-head[data-collapse-zone]')
+  if (head !== null) return { kind: 'head', zone: head.getAttribute('data-collapse-zone') }
+  var tile = target.closest('.stat-tile.is-expandable[data-kpi]')
+  if (tile !== null) return { kind: 'tile', zone: tile.getAttribute('data-kpi'), open: tile.getAttribute('aria-expanded') !== 'true' }
+  var row = target.closest('tr[data-entry]') || target.closest('tr[data-pair]')
+  if (row !== null) return { kind: 'row', row: row }
+  return null
+}
+
+function handleExpansionActivate(activate) {
+  if (activate.kind === 'head') collapseKpiZone(activate.zone)
+  else if (activate.kind === 'tile') setKpiExpanded(activate.zone, activate.open)
+  else toggleEntryRow(activate.row)
+}
+
+/** Esc with focus inside an open expansion collapses it and refocuses the tile. */
+function collapseFocusedExpansion() {
+  var active = document.activeElement
+  if (active === null || active === undefined || typeof active.closest !== 'function') return false
+  var panel = active.closest('.kpi-expansion')
+  if (panel === null || panel.hidden || typeof panel.id !== 'string' || panel.id.indexOf('exp-') !== 0) return false
+  collapseKpiZone(panel.id.slice(4))
+  return true
+}
+
+function setupKpiExpansion() {
+  document.addEventListener('click', function (event) {
+    var target = event.target
+    if (target === null || typeof target.closest !== 'function') return
+    if (target.closest('a')) return // links keep their native behaviour (vscode:// etc.)
+    var activate = expansionTarget(target)
+    if (activate !== null) handleExpansionActivate(activate)
   })
 }
 
@@ -1002,6 +1100,7 @@ function bindFilter(scope) {
 
 /** Re-bind the behaviours that live inside the swapped <main> content. */
 function bindContent(scope) {
+  enhanceKpiExpansion(scope)
   bindCopy(scope)
   bindRows(scope)
   bindFilter(scope)
@@ -1026,6 +1125,14 @@ function routeForKey(key) {
 function setupShortcuts() {
   document.addEventListener('keydown', function (event) {
     if (isTypingTarget(event.target) || event.metaKey || event.ctrlKey || event.altKey) return
+    if (event.key === 'Enter' || event.key === ' ') {
+      var activate = expansionTarget(event.target)
+      if (activate !== null) {
+        event.preventDefault()
+        handleExpansionActivate(activate)
+        return
+      }
+    }
     if (event.key === 'r' || event.key === 'R') {
       event.preventDefault()
       refreshView()
@@ -1047,6 +1154,10 @@ function setupShortcuts() {
         closeSwitcherPanel(switcherEls())
         return
       }
+      if (collapseFocusedExpansion()) {
+        event.preventDefault()
+        return
+      }
       if (window.location.pathname.indexOf('/requirements/') === 0) window.history.back()
       return
     }
@@ -1060,6 +1171,7 @@ function init() {
   setupHero()
   setupRefresh()
   setupProjectSwitcher()
+  setupKpiExpansion()
   consumeSwitchFlash()
   setupShortcuts()
   bindContent(document)

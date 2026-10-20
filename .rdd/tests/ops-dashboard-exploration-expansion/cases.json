@@ -1,0 +1,259 @@
+{
+  "feature": "ops-dashboard-exploration-expansion",
+  "status": "active",
+  "relatedCode": [
+    "rdd-engine/dashboard/lib/views/exploration.mjs",
+    "rdd-engine/dashboard/lib/components.mjs",
+    "rdd-engine/dashboard/static/app.js",
+    "rdd-engine/dashboard/static/style.css"
+  ],
+  "testCode": [
+    ".rdd/tests/ops-dashboard-exploration-expansion/exploration-kpi-expansion-qa-verify.mjs"
+  ],
+  "lastChange": "2026-10-20-exploration-cache-ux",
+  "cases": [
+    {
+      "id": "TC-005",
+      "title": "SSR 基线保留：原始 HTML（剥离 script 后）携带全部条目 key 与 brief（无 JS 可见面）",
+      "type": "positive",
+      "priority": "P0",
+      "acceptance": "AC-5",
+      "codeRef": ".rdd/tests/ops-dashboard-exploration-expansion/exploration-kpi-expansion-qa-verify.mjs:176",
+      "sourceChange": "2026-10-20-exploration-cache-ux",
+      "status": "active",
+      "crossFeature": [],
+      "precondition": "隔离夹具根（hot 2 条 + index 2 条，key/brief 唯一 token）；基线用例，改造前后均须绿",
+      "steps": [
+        "以夹具根进程内起真实服务（临时端口）",
+        "GET /exploration 取原始 HTML，剥离 <script> 后断言 4 个 key 与 4 条 brief 逐字在场"
+      ],
+      "expected": "条目信息不依赖 JS 即存在于 SSR 标记（AC-5 的机读面；今日由页底明细 panel 满足，改造后仍须成立）"
+    },
+    {
+      "id": "TC-010",
+      "title": "KPI 计数地面真值：「条目总数」=4、「热区条目」=2、「持久条目」=2 与夹具真值一致（计数侧）",
+      "type": "positive",
+      "priority": "P0",
+      "acceptance": "AC-1,AC-2",
+      "codeRef": ".rdd/tests/ops-dashboard-exploration-expansion/exploration-kpi-expansion-qa-verify.mjs:184",
+      "sourceChange": "2026-10-20-exploration-cache-ux",
+      "status": "active",
+      "crossFeature": [],
+      "precondition": "同 TC-005 夹具；计数按数字边界断言（防 substring 假阳）",
+      "steps": [
+        "在标签 ±600 字符窗内断言边界化的真值数字出现",
+        "三个 KPI 标签逐一核对"
+      ],
+      "expected": "三个 KPI 计数均与独立计算的夹具真值一致（「计数与明细行数一致」的计数侧锚点）"
+    },
+    {
+      "id": "TC-015",
+      "title": "API 数据面冻结：/api/exploration 信封四键 + 计数/artifacts/zones + entries 字段集与 reader 契约一致",
+      "type": "positive",
+      "priority": "P0",
+      "acceptance": "整体判据-2",
+      "codeRef": ".rdd/tests/ops-dashboard-exploration-expansion/exploration-kpi-expansion-qa-verify.mjs:203",
+      "sourceChange": "2026-10-20-exploration-cache-ux",
+      "status": "active",
+      "crossFeature": ["ops-dashboard"],
+      "precondition": "需求钉死 reader 数据面不变；本用例把数据面冻结为回归锚（改造不得动 reader）",
+      "steps": [
+        "断言信封 {domain,available,meta,data} 结构",
+        "断言 hot/index/total 计数与 entries 长度 = 夹具真值",
+        "断言 artifacts 4/4 配对与双 zone present",
+        "断言每条 entry 字段集恰为 {zone,key,tags,brief,path,fileCount,registeredAt}"
+      ],
+      "expected": "JSON 面与改造前完全同构——展示层重做不击穿数据面"
+    },
+    {
+      "id": "TC-020",
+      "title": "只读不变量：探针全流程（起服/双 GET/ API/静态资源）对夹具 .rdd 树零回写（size+mtime+SHA256）",
+      "type": "negative",
+      "priority": "P0",
+      "acceptance": "整体判据-2",
+      "codeRef": ".rdd/tests/ops-dashboard-exploration-expansion/exploration-kpi-expansion-qa-verify.mjs:239",
+      "sourceChange": "2026-10-20-exploration-cache-ux",
+      "status": "active",
+      "crossFeature": ["ops-dashboard"],
+      "precondition": "夹具构建后即拍全树快照（含 mtimeMs——内容不变但 mtime 滚动也算写）；引擎脚本零改动项在验证轮以 git diff 范围复核，不在运行时断言",
+      "steps": [
+        "构建夹具后快照全树",
+        "执行全部读交互（含二次 GET 稳定性读）",
+        "重算快照逐文件严格比对（新增/丢失/改写/mtime 滚动均违规）"
+      ],
+      "expected": "读交互零 .rdd 变更（只读基线；引擎零改动约束的运行时面）"
+    },
+    {
+      "id": "TC-025",
+      "title": "空 zone 降级：空探索域（空 hot.json + 无 index.json）页面 200 走既有 emptyState、无崩溃，API available=false",
+      "type": "boundary",
+      "priority": "P1",
+      "acceptance": "EC-1",
+      "codeRef": ".rdd/tests/ops-dashboard-exploration-expansion/exploration-kpi-expansion-qa-verify.mjs:226",
+      "sourceChange": "2026-10-20-exploration-cache-ux",
+      "status": "active",
+      "crossFeature": [],
+      "precondition": "第二隔离根仅含 {entries:[]} 的 hot.json；需求钉死空 zone 沿用现有 emptyState 口径",
+      "steps": [
+        "GET /exploration 断言 200 + 「暂无」类空态文案 + 无错误栈",
+        "GET /api/exploration 断言 available=false 且三计数为 0"
+      ],
+      "expected": "空数据是正常态：不报错不空白，空态口径与 API 降级语义在改造后保持"
+    },
+    {
+      "id": "TC-030",
+      "title": "「条目总数」计数即入口：tile 携带展开接线语义，展开区含全部 4 条夹具 key（双 zone 合并）且行数=计数",
+      "type": "positive",
+      "priority": "P0",
+      "acceptance": "AC-1",
+      "codeRef": ".rdd/tests/ops-dashboard-exploration-expansion/exploration-kpi-expansion-qa-verify.mjs:316",
+      "sourceChange": "2026-10-20-exploration-cache-ux",
+      "status": "active",
+      "crossFeature": [],
+      "precondition": "skip 守卫：三个 KPI tile 均无展开接线语义时整组 SKIP（待 DEV 交付），交付后同命令自动激活；接线语义取并集（<summary>/aria-expanded/role=button/<button>/data-* 接线/tabindex），不绑实现形态；区域模型 v2（验证轮修正，tip 20261020T124430Z-QA-2dda）：按交付的 id/data-kpi 关联词汇定位面板（tile id=kpi-{zone} ↔ panel id=exp-{zone}），面板区=开标签到下一 <section；标签窗模型保留为词表缺席时的兜底——需求钉行为（zone 明细可达）不钉 DOM 邻接，属定位器修正非基线弱化",
+      "steps": [
+        "delivered-probe 探测三 tile 接线（0/3 → SKIP）",
+        "「条目总数」区域内断言 4 个唯一 key 全在场",
+        "断言区域条目行数 = 总数计数"
+      ],
+      "expected": "点击总数即见双 zone 合并明细（不滚页底），计数与明细行数一致"
+    },
+    {
+      "id": "TC-035",
+      "title": "zone 过滤隔离：「热区条目」展开区恰含 2 条 hot key 且 0 条 index key；「持久条目」对称",
+      "type": "positive",
+      "priority": "P0",
+      "acceptance": "AC-2",
+      "codeRef": ".rdd/tests/ops-dashboard-exploration-expansion/exploration-kpi-expansion-qa-verify.mjs:325",
+      "sourceChange": "2026-10-20-exploration-cache-ux",
+      "status": "active",
+      "crossFeature": [],
+      "precondition": "同 TC-030 skip 守卫与区域模型 v2；hot/index key 用互斥唯一 token（explkpi-hot-*/explkpi-persist-*），泄漏判定零歧义",
+      "steps": [
+        "热区区域断言 2 hot key 在场 + 0 index key",
+        "持久区域对称断言"
+      ],
+      "expected": "展开内容仅含本 zone 条目（「持久条目」面板不得混入热区条目，反之亦然）"
+    },
+    {
+      "id": "TC-040",
+      "title": "收起状态机：三面板 SSR 默认收起（hidden）+ 面板头收起控件（role=button）+ app.js 携带 aria 状态升级",
+      "type": "positive",
+      "priority": "P1",
+      "acceptance": "AC-1",
+      "codeRef": ".rdd/tests/ops-dashboard-exploration-expansion/exploration-kpi-expansion-qa-verify.mjs:341",
+      "sourceChange": "2026-10-20-exploration-cache-ux",
+      "status": "active",
+      "crossFeature": [],
+      "precondition": "同 TC-030 skip 守卫；验证轮修正（设计 D7 依据）：SSR tile 为纯展示形态（aria/tabindex 由 app.js 运行时升级），SSR 面可证的状态契约=面板默认 hidden 收起态 + exp-head 收起控件 + JS 侧 aria-expanded 升级代码在场——对裸 tile 扫 aria 是在测 AC-5 明示允许降级的无 JS 面",
+      "steps": [
+        "逐 zone 断言面板开标签含 hidden 且面板头含 role=button 收起控件",
+        "断言 app.js 文本含 aria-expanded（JS 状态机存在）"
+      ],
+      "expected": "收起路径三要素齐备：默认收起态可翻转到展开、展开态可经面板头/Esc 收起（运行时行为由 DEV page-contract Section E 14 断言覆盖）"
+    },
+    {
+      "id": "TC-045",
+      "title": "条目二级展开：每条条目行携带自身展开控件，且全字段（key/brief/tags/记录路径/注册时间）在 SSR 面可查",
+      "type": "positive",
+      "priority": "P0",
+      "acceptance": "AC-3",
+      "codeRef": ".rdd/tests/ops-dashboard-exploration-expansion/exploration-kpi-expansion-qa-verify.mjs:315",
+      "sourceChange": "2026-10-20-exploration-cache-ux",
+      "status": "active",
+      "crossFeature": [],
+      "precondition": "同 TC-030 skip 守卫；控件判定同接线并集（key ±400 窗）；字段可见性按页面级断言（AC-3 可见与 AC-5 无 JS 面共用）；注册时间为固定 ISO 夹具值，无毫秒噪声",
+      "steps": [
+        "4 个 key 逐一断言 ±400 窗内有展开控件语义",
+        "断言每条的 brief/path/tags/日期前缀在剥离 script 的 HTML 中在场"
+      ],
+      "expected": "任意条目可点开看摘要与完整字段（详情数据在 SSR 面，不依赖 JS 拉取）"
+    },
+    {
+      "id": "TC-050",
+      "title": "路径可复制 + 跳转控件：每条目携带机读复制载体（data-copy=精确路径或等价）与目标含记录文件的跳转控件",
+      "type": "positive",
+      "priority": "P0",
+      "acceptance": "AC-3",
+      "codeRef": ".rdd/tests/ops-dashboard-exploration-expansion/exploration-kpi-expansion-qa-verify.mjs:379",
+      "sourceChange": "2026-10-20-exploration-cache-ux",
+      "status": "active",
+      "crossFeature": [],
+      "precondition": "同 TC-030 skip 守卫；验证轮强化：载体关联改用条目唯一记录文件名在载体值内锚定（较位置窗口更强——交付的详情行距 key 单元格逾千字符）；复制载体 data-copy 值含该文件名；跳转控件 href/data-href 目标含该文件名（协议形态 vscode://、file:// 等由 UX/DEV 定）——「点击后编辑器打开并定位」完整行为需桌面会话人工核对，本用例钉机读载体契约",
+      "steps": [
+        "逐条目断言 data-copy 值含其唯一 .md 文件名",
+        "断言跳转控件（href|data-href）目标含该条目 .md 文件名"
+      ],
+      "expected": "4/4 条目同时具备可复制路径与可判别的跳转目标（行为验收的机读面）"
+    },
+    {
+      "id": "TC-055",
+      "title": "展开区高度有界：展开容器 class 在 style.css 存在 max-height + overflow 内部滚动规则（双侧契约）",
+      "type": "positive",
+      "priority": "P1",
+      "acceptance": "AC-4",
+      "codeRef": ".rdd/tests/ops-dashboard-exploration-expansion/exploration-kpi-expansion-qa-verify.mjs:389",
+      "sourceChange": "2026-10-20-exploration-cache-ux",
+      "status": "active",
+      "crossFeature": [],
+      "precondition": "同 TC-030 skip 守卫与区域模型 v2；具体数值由 UX/DEV 定（需求明示），断言只钉「有界 + 内部滚动」的存在性；验证轮修正：候选 class 扫描区域内的全部类名（交付复用既有 .table-wrap 560px 有界规则，语义词族过滤会漏掉它）",
+      "steps": [
+        "从三个展开区域提取容器 class 候选",
+        "style.css 中逐 class 提取规则体",
+        "断言至少一个候选类同时命中 max-height 与 overflow(-y): auto|scroll"
+      ],
+      "expected": "HTML 容器与 CSS 规则双侧咬合——条目量大时展开区内部滚动不撑破页面"
+    },
+    {
+      "id": "TC-060",
+      "title": "接线一致性：展开区域引入的新 data-* 词汇全部被 app.js 引用（无死接线；原生 details 零词汇同样通过）",
+      "type": "positive",
+      "priority": "P1",
+      "acceptance": "AC-1,AC-2",
+      "codeRef": ".rdd/tests/ops-dashboard-exploration-expansion/exploration-kpi-expansion-qa-verify.mjs:376",
+      "sourceChange": "2026-10-20-exploration-cache-ux",
+      "status": "active",
+      "crossFeature": [],
+      "precondition": "同 TC-030 skip 守卫；从 HTML 提取的新词汇扣除既有遗留集（data-copy/data-href/data-theme 等先例用语）；<details> 原生方案无需 JS 接线 → 空词汇集判 PASS",
+      "steps": [
+        "三区域 matchAll 提取 data-* 词表并扣除遗留集",
+        "逐词汇断言 app.js 文本包含同名引用"
+      ],
+      "expected": "SSR 打出的每个展开接线标记都有消费方（防「标记无人绑」的假接线）"
+    },
+    {
+      "id": "TC-065",
+      "title": "布局不破坏：KPI 改造后页面骨架契约保持（DOCTYPE/ops-main/样式表/app.js），tag 分布与注册时间线兄弟面板存活",
+      "type": "positive",
+      "priority": "P1",
+      "acceptance": "AC-4",
+      "codeRef": ".rdd/tests/ops-dashboard-exploration-expansion/exploration-kpi-expansion-qa-verify.mjs:436",
+      "sourceChange": "2026-10-20-exploration-cache-ux",
+      "status": "active",
+      "crossFeature": ["ops-dashboard"],
+      "precondition": "同 TC-030 skip 守卫；骨架契约与 ops-dashboard TC-175 同源（本用例钉改造自身不击穿）",
+      "steps": [
+        "断言 DOCTYPE 开头、ops-main 容器、stylesheet 与 app.js 引用",
+        "断言「tag 分布」「注册时间线」panel 标题在场"
+      ],
+      "expected": "展开/收起能力落地不破坏页面其他面板布局（骨架与兄弟面板均在）"
+    },
+    {
+      "id": "TC-070",
+      "title": "tile↔panel 关联完整性：三 zone 四锚点（tile id/data-kpi、panel id、aria-labelledby 回指）全咬合",
+      "type": "positive",
+      "priority": "P1",
+      "acceptance": "AC-1,AC-2",
+      "codeRef": ".rdd/tests/ops-dashboard-exploration-expansion/exploration-kpi-expansion-qa-verify.mjs:303",
+      "sourceChange": "2026-10-20-exploration-cache-ux",
+      "status": "active",
+      "crossFeature": [],
+      "precondition": "同 TC-030 skip 守卫；验证轮增量（只增不弱）：交付采用 id/data-kpi 关联词汇后，断链=死展开，关联完整性升格为独立断言面",
+      "steps": [
+        "逐 zone 断言 id=kpi-{zone}、data-kpi={zone}、id=exp-{zone} 三锚在场",
+        "断言面板开标签 400 字符内含 aria-labelledby=kpi-{zone} 回指"
+      ],
+      "expected": "三 zone 的 tile↔panel 双向关联（id 前向 + aria-labelledby 回指）全部成立——点击展开的 DOM 通路无断点"
+    }
+  ]
+}

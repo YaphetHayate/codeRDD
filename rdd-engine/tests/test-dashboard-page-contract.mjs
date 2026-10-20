@@ -163,6 +163,23 @@ function checkUxFormShell(html) {
   assertTrue(html.includes('需重启 opencode') || html.includes('sync-ux-subagents.cmd'), 'ux contract: the escape hatch footer names the manual sync path')
 }
 
+/** Minimal selector matcher for the exact selectors app.js delegates on. */
+function matchesSelector(element, selector) {
+  if (typeof selector !== 'string' || selector === '' || selector.indexOf(' ') !== -1) return false
+  let tag = ''
+  const classes = []
+  const attrs = []
+  for (const part of selector.split(/(?=[.[])/)) {
+    if (part === '') continue
+    if (part.startsWith('.')) classes.push(part.slice(1))
+    else if (part.startsWith('[')) attrs.push(part.slice(1, -1))
+    else tag = part.toLowerCase()
+  }
+  if (tag !== '' && String(element.tagName ?? '').toLowerCase() !== tag) return false
+  if (classes.some((name) => !element.classList.contains(name))) return false
+  return attrs.every((attr) => element.getAttribute(attr) !== null)
+}
+
 /** A DOM element stub (attributes, listeners and the members the script touches). */
 function stubElement(id) {
   const attrs = new Map()
@@ -170,6 +187,8 @@ function stubElement(id) {
   const classes = new Set()
   const element = {
     id,
+    tagName: id.startsWith('#') ? id.slice(1) : 'div',
+    parentElement: null,
     innerHTML: '',
     textContent: '',
     value: '',
@@ -186,7 +205,17 @@ function stubElement(id) {
     appendChild() {},
     insertBefore() {},
     remove() {},
-    closest() { return null },
+    matches(selector) { return matchesSelector(element, selector) },
+    closest(selector) {
+      let node = element
+      while (node !== null && node !== undefined) {
+        if (typeof node.matches === 'function' && node.matches(selector)) return node
+        node = node.parentElement
+      }
+      return null
+    },
+    focus() { element.focusCalls = (element.focusCalls ?? 0) + 1 },
+    insertAdjacentHTML(_position, html) { element.insertedHtml = String(html ?? '') },
   }
   element.classList = {
     add: (name) => classes.add(name),
@@ -203,6 +232,42 @@ function buildStubNodes() {
   const nodes = new Map(['ops-theme', 'ops-refresh', 'ops-main', 'ops-freshness', ...switcherIds].map((id) => [id, stubElement(id)]))
   nodes.get('ops-refresh').querySelector = () => stubElement('btn-text')
   nodes.get('ops-project-panel').hidden = true
+  // /exploration expansion anchors (exploration-entry-expansion §5): tiles,
+  // panels, one head row, one entry row + its hidden detail row and a link.
+  const statTileNode = (id, kpi) => {
+    const tile = stubElement(id)
+    tile.classList.add('stat-tile')
+    tile.setAttribute('data-kpi', kpi)
+    return tile
+  }
+  for (const kpi of ['total', 'hot', 'index']) nodes.set(`kpi-${kpi}`, statTileNode(`kpi-${kpi}`, kpi))
+  for (const zone of ['total', 'hot', 'index']) {
+    const section = stubElement(`exp-${zone}`)
+    section.classList.add('kpi-expansion')
+    const head = stubElement(`exp-head-${zone}`)
+    head.classList.add('exp-head')
+    head.setAttribute('data-collapse-zone', zone)
+    head.parentElement = section
+    nodes.set(`exp-${zone}`, section)
+    nodes.set(`exp-head-${zone}`, head)
+  }
+  const flat = stubElement('entries-flat')
+  flat.classList.add('panel')
+  nodes.set('entries-flat', flat)
+  const row = stubElement('entry-row-total-0')
+  row.tagName = 'tr'
+  row.setAttribute('data-entry', 'row-total-0')
+  row.setAttribute('aria-controls', 'row-total-0')
+  const detail = stubElement('row-total-0')
+  detail.tagName = 'tr'
+  detail.classList.add('row-detail')
+  detail.hidden = true
+  const link = stubElement('detail-link-0')
+  link.tagName = 'a'
+  link.parentElement = detail
+  nodes.set('entry-row-total-0', row)
+  nodes.set('row-total-0', detail)
+  nodes.set('detail-link-0', link)
   return nodes
 }
 
@@ -210,10 +275,18 @@ function buildStubNodes() {
 function buildStubDocument(nodes, listeners, documentElement) {
   return {
     documentElement,
+    activeElement: null,
     readyState: 'complete',
     getElementById: (id) => nodes.get(id) ?? null,
-    querySelector: () => null,
-    querySelectorAll: () => [],
+    querySelector: (selector) => (typeof selector === 'string' && selector.startsWith('#') ? nodes.get(selector.slice(1)) ?? null : null),
+    querySelectorAll: (selector) => {
+      if (typeof selector !== 'string' || selector.indexOf(' ') !== -1) return []
+      const found = []
+      nodes.forEach((node) => {
+        if (typeof node.matches === 'function' && node.matches(selector)) found.push(node)
+      })
+      return found
+    },
     addEventListener: (type, handler) => listeners.set(`document:${type}`, handler),
     createElement: (tag) => stubElement(tag),
     createTextNode: (text) => {
@@ -355,6 +428,54 @@ async function checkSwitcherModule(stub) {
   assertTrue(pick.disabled === false && pick.getAttribute('aria-busy') === null, 'switcher: a canceled dialog restores the browse button')
 }
 
+/** Section E: KPI expansion client behaviour (exploration-entry-expansion §5/§6). */
+function checkKpiExpansionBehaviour(stub) {
+  const tile = stub.nodes.get('kpi-total')
+  const panelEl = stub.nodes.get('exp-total')
+  const head = stub.nodes.get('exp-head-total')
+  const row = stub.nodes.get('entry-row-total-0')
+  const detail = stub.nodes.get('row-total-0')
+  const link = stub.nodes.get('detail-link-0')
+  const flat = stub.nodes.get('entries-flat')
+  const click = (target) => stub.listeners.get('document:click')({ target })
+  const key = (keyName, target) => stub.listeners.get('document:keydown')({ key: keyName, target, metaKey: false, ctrlKey: false, altKey: false, preventDefault() {} })
+
+  // JS enhancement (§5.1/§6.6): tiles upgraded, flat baseline hidden, chevron injected
+  assertTrue(tile.getAttribute('data-bound') === '1' && tile.classList.contains('is-expandable'), 'expansion: tiles enhanced on boot (is-expandable)')
+  assertTrue(tile.getAttribute('role') === 'button' && tile.getAttribute('tabindex') === '0', 'expansion: tile is a focusable button')
+  assertTrue(tile.getAttribute('aria-expanded') === 'false' && tile.getAttribute('aria-controls') === 'exp-total', 'expansion: tile aria wiring points at its panel')
+  assertTrue(typeof tile.insertedHtml === 'string' && tile.insertedHtml.includes('stat-chevron'), 'expansion: chevron injected by JS only (D7)')
+  assertTrue(flat.hidden === true, 'expansion: flat baseline hidden once JS runs (§6.6)')
+
+  // click tile → panel opens; second click collapses (AC1)
+  click(tile)
+  assertTrue(panelEl.hidden === false && tile.getAttribute('aria-expanded') === 'true' && tile.classList.contains('is-open'), 'expansion: clicking the total tile opens its panel (AC1)')
+  click(tile)
+  assertTrue(panelEl.hidden === true && tile.getAttribute('aria-expanded') === 'false' && !tile.classList.contains('is-open'), 'expansion: clicking the tile again collapses (AC1)')
+
+  // head-row collapse hands focus back to the tile (D5 + §6.5)
+  click(tile)
+  click(head)
+  assertTrue(panelEl.hidden === true && tile.focusCalls === 1, 'expansion: head-row collapse refocuses the KPI tile')
+
+  // entry row toggles its hidden detail row; links never toggle (AC3, §6.1)
+  click(row)
+  assertTrue(detail.hidden === false && row.classList.contains('is-open') && row.getAttribute('aria-expanded') === 'true', 'expansion: entry row opens its detail row (AC3)')
+  click(link)
+  assertTrue(detail.hidden === false, 'expansion: link clicks never toggle rows')
+  click(row)
+  assertTrue(detail.hidden === true && row.getAttribute('aria-expanded') === 'false', 'expansion: entry row collapses again')
+
+  // keyboard: Enter opens the focused tile; Esc inside the panel collapses + refocuses (§6.1)
+  key('Enter', tile)
+  assertTrue(panelEl.hidden === false, 'expansion: Enter opens the focused tile panel')
+  globalThis.document.activeElement = head
+  const backCallsBefore = stub.backCalls()
+  key('Escape', head)
+  assertTrue(panelEl.hidden === true && tile.focusCalls === 2 && stub.backCalls() === backCallsBefore, 'expansion: Esc collapses the expansion and refocuses the tile without history.back')
+  globalThis.document.activeElement = null
+}
+
 /** The client script must stay a module: an anonymous wrapper is itself a 200+ line function. */
 function checkClientScriptShape() {
   const source = readFileSync(appJsPath, 'utf8')
@@ -372,6 +493,7 @@ try {
   await checkConfigPageContract()
   const stub = await checkClientModule()
   await checkSwitcherModule(stub)
+  checkKpiExpansionBehaviour(stub)
   checkClientScriptShape()
 } finally {
   if (server !== null) await new Promise((resolvePromise) => server.close(resolvePromise))
