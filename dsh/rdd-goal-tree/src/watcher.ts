@@ -68,6 +68,15 @@ class PlannerCallbackWatcher {
   private readonly delivered = new Set<string>()
   private readonly roots = new Map<string, number>()
   private timer: ReturnType<typeof setInterval> | undefined
+  /**
+   * Overlap guard (duplicate-callback fix): a slow pass — cold aggregation
+   * cache, a burst of fresh fixture runs — can outlive the interval tick, and
+   * `setInterval` fires the next `void this.scan()` regardless. Two
+   * concurrent passes double-walk the delivery arm and race the sidecar
+   * rewrite; a tick that lands mid-pass is simply dropped (the next tick
+   * re-derives everything — scans are stateless over the same files).
+   */
+  private scanning = false
   /** Last crossed 30-minute boundary (0 = never; a fresh watcher digests on its first scan — crash recovery). */
   private lastDigestSlot = 0
 
@@ -109,15 +118,21 @@ class PlannerCallbackWatcher {
 
   /** One scan pass over every learned root; per-root errors are logged and swallowed. */
   private async scan(): Promise<void> {
-    const slot = Math.floor(Date.now() / DIGEST_PERIOD_MS)
-    const digestDue = slot > this.lastDigestSlot
-    if (digestDue) this.lastDigestSlot = slot
-    for (const repoRoot of [...this.roots.keys()]) {
-      try {
-        await this.scanRoot(repoRoot, digestDue)
-      } catch (error) {
-        this.ctx.logger.warn(`rdd-goal-tree: callback scan failed for ${repoRoot}: ${error instanceof Error ? error.message : String(error)}`)
+    if (this.scanning) return // mid-pass tick dropped: see the field doc
+    this.scanning = true
+    try {
+      const slot = Math.floor(Date.now() / DIGEST_PERIOD_MS)
+      const digestDue = slot > this.lastDigestSlot
+      if (digestDue) this.lastDigestSlot = slot
+      for (const repoRoot of [...this.roots.keys()]) {
+        try {
+          await this.scanRoot(repoRoot, digestDue)
+        } catch (error) {
+          this.ctx.logger.warn(`rdd-goal-tree: callback scan failed for ${repoRoot}: ${error instanceof Error ? error.message : String(error)}`)
+        }
       }
+    } finally {
+      this.scanning = false
     }
   }
 
@@ -309,12 +324,25 @@ class PlannerCallbackWatcher {
     }
   }
 
-  /** Whether a callback carrying this marker already sits in the agent's pending queue. */
+  /**
+   * Whether a callback carrying this marker already sits in the agent's
+   * pending queue. Exact-token match (duplicate/missed-callback fix): the
+   * old `text.includes(marker)` substring check matched `ledger L2` inside
+   * `ledger L21` — whenever a higher-numbered sibling entry id was queued,
+   * the shorter id was falsely treated as delivered, marked in the sidecar,
+   * and its callback silently skipped (the planner only learned about the
+   * node again through the 30-minute digest). Marker tokens are extracted
+   * from the notice text and compared whole; unrelated digits never
+   * collide. The digest marker namespace rides the same extraction.
+   */
   private alreadyQueued(agent: Agent, marker: string): boolean {
     for (const message of [...agent.inbox.nextTurn, ...agent.inbox.nextStep]) {
       if (message.source.kind !== 'plugin' || message.source.plugin !== PLUGIN_ID) continue
       for (const block of message.content) {
-        if (block.type === 'text' && block.text.includes(marker)) return true
+        if (block.type !== 'text') continue
+        for (const token of block.text.match(/\b(?:ledger|decision|digest)\s+[^\s,.;:)]+/g) ?? []) {
+          if (token.replace(/\s+/g, ' ') === marker) return true
+        }
       }
     }
     return false

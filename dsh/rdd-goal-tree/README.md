@@ -56,7 +56,7 @@ Worker 视图在需求/设计文档行之后渲染**「视觉稿」行**（可�
 
 ## Worker 回调（v0.2.0）
 
-宿主半边带一个 ledger 监视器（默认 5s，仅扫描该端点服务过的仓库，LRU 上限 8 个）：发现**新的 report 账目行**或（纯自动模式 run 的）**open 升级条目**且该 run 绑定了规划者会话时，经 `agent.send(msg, 'next-turn', true)`（goal round driver 同款持久队列边界 **+ 唤醒驱动**）向规划者会话投递一条插件消息——report 为节点/worker/verdict/confidence/账目号 + settle/prune/graft 行动提示；升级为 checkpoint/风险/规则 + 呈用户与 `decide -Kind resolution` 回填指引（`decision <id>` 去重命名空间，与 ledger `L<n>` 天然隔离）。**投递送达即唤醒**：空闲的规划者会话被立即唤醒开轮消费（送达但不唤醒 = 无人值守时回调永久积压，已裁决为交付缺陷）；按 entry 幂等——内存 set + 规划者 pending inbox 扫描 + run 级 `.callback-delivered.json` 持久 marker 三重去重，插件/宿主重启不重放。
+宿主半边带一个 ledger 监视器（默认 5s，仅扫描该端点服务过的仓库，LRU 上限 8 个；扫描互斥——慢扫描（冷缓存/夹具 run 洪峰）超过周期间时丢弃重叠节拍，不并发重入投递臂）：发现**新的 report 账目行**或（纯自动模式 run 的）**open 升级条目**且该 run 绑定了规划者会话时，经 `agent.send(msg, 'next-turn', true)`（goal round driver 同款持久队列边界 **+ 唤醒驱动**）向规划者会话投递一条插件消息——report 为节点/worker/verdict/confidence/账目号 + settle/prune/graft 行动提示；升级为 checkpoint/风险/规则 + 呈用户与 `decide -Kind resolution` 回填指引（`decision <id>` 去重命名空间，与 ledger `L<n>` 天然隔离）。**投递送达即唤醒**：空闲的规划者会话被立即唤醒开轮消费（送达但不唤醒 = 无人值守时回调永久积压，已裁决为交付缺陷）；按 entry 幂等——内存 set + 规划者 pending inbox 扫描（**精确 token 匹配**：`ledger L2` 不再误配 `ledger L21` 的前缀子串）+ run 级 `.callback-delivered.json` 持久 marker（**按 run 串行 + 临时文件原子替换**：并发写不再互相覆盖丢 marker、崩溃不再留下半文件导致重启全量重放）三重去重，插件/宿主重启不重放；共享同一归档账本的多条 run（replan/midrun-derive）对同一升级只投一次（按账本文件去重，首条 run 承载）。
 
 ## 构建与冒烟（codeRDD 仓）
 

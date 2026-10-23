@@ -15,7 +15,7 @@
  * @module rdd-goal-tree/goaltrees
  */
 
-import { readdir, readFile, stat, writeFile } from 'node:fs/promises'
+import { readdir, readFile, rename, stat, unlink, writeFile } from 'node:fs/promises'
 import { dirname, isAbsolute, join } from 'node:path'
 
 /**
@@ -204,12 +204,51 @@ export async function readDeliveredMarkers(runDir: string): Promise<Set<string>>
   }
 }
 
-/** Persist one delivered marker (idempotent; full-set rewrite keeps it plain). */
+/**
+ * In-flight marker-write chains per run dir (duplicate-callback fix): the
+ * sidecar update is a read-modify-write, so two concurrent writers —
+ * overlapping scan passes (a slow cold scan outlives the 5s interval tick)
+ * or a second host process watching the same repo — interleave their reads
+ * and the last write silently drops the other's marker. Every write for one
+ * run dir chains onto the previous one; the map entry is replaced with a
+ * settled (never-rejecting) tail so one failure cannot poison the chain.
+ */
+const markerWriteChains = new Map<string, Promise<void>>()
+
+/** Temp-file sequence for atomic sidecar replaces (per process). */
+let markerTempSeq = 0
+
+/**
+ * Persist one delivered marker (idempotent; full-set rewrite keeps it plain).
+ * Serialized per run dir ({@link markerWriteChains}) and committed by
+ * write-temp-then-rename: a torn in-place write reads back as EMPTY on the
+ * next restart hydration (the whole-ledger replay storm this sidecar exists
+ * to prevent), while rename leaves either the old complete set or the new
+ * one. Windows rename-over-locked-dest falls back to a direct complete
+ * write (best effort) instead of dropping the marker.
+ */
 export async function recordDeliveredMarker(runDir: string, marker: string): Promise<void> {
+  const previous = markerWriteChains.get(runDir) ?? Promise.resolve()
+  const task = previous.then(() => writeDeliveredMarkerSerialized(runDir, marker))
+  markerWriteChains.set(runDir, task.then(() => undefined, () => undefined))
+  await task
+}
+
+/** The serialized write itself — one writer per run dir at a time. */
+async function writeDeliveredMarkerSerialized(runDir: string, marker: string): Promise<void> {
+  const file = join(runDir, DELIVERED_MARKERS_FILE)
   const current = await readDeliveredMarkers(runDir)
   if (current.has(marker)) return
   current.add(marker)
-  await writeFile(join(runDir, DELIVERED_MARKERS_FILE), `${JSON.stringify({ delivered: [...current].sort() }, null, 2)}\n`, 'utf8')
+  const payload = `${JSON.stringify({ delivered: [...current].sort() }, null, 2)}\n`
+  const temp = `${file}.tmp-${process.pid}-${++markerTempSeq}`
+  try {
+    await writeFile(temp, payload, 'utf8')
+    await rename(temp, file)
+  } catch {
+    try { await unlink(temp) } catch { /* best-effort cleanup */ }
+    await writeFile(file, payload, 'utf8')
+  }
 }
 
 /** Tolerant JSON file read: missing or unparsable returns undefined (never throws). */
@@ -975,13 +1014,15 @@ async function readBridgeArchiveDir(rootDir: string, runId: string): Promise<str
 }
 
 /**
- * Read one run's decision-ledger text; null when absent (a run without pure
- * auto mode — the default — writes no ledger). Archive-level first (the single
- * standard), legacy run-dir second (pre-migration AutoMode runs wrote the
- * ledger beside the run state); the first readable candidate wins, and a
- * missing ledger yields no entries instead of an error.
+ * Read one run's decision-ledger text plus the file it came from; text null
+ * when absent (a run without pure auto mode — the default — writes no
+ * ledger). Archive-level first (the single standard), legacy run-dir second
+ * (pre-migration AutoMode runs wrote the ledger beside the run state); the
+ * first readable candidate wins, and a missing ledger yields no entries
+ * instead of an error. The resolved source path feeds the cross-run
+ * once-per-ledger dedup in {@link collectDecisionEntries}.
  */
-async function readDecisionsText(rootDir: string, runId: string): Promise<string | null> {
+async function readDecisionsText(rootDir: string, runId: string): Promise<{ text: string | null; source: string | null }> {
   const runDir = join(rootDir, runId)
   const archiveDir = await readBridgeArchiveDir(rootDir, runId)
   const candidates = [
@@ -990,12 +1031,12 @@ async function readDecisionsText(rootDir: string, runId: string): Promise<string
   ]
   for (const file of candidates) {
     try {
-      return await readFile(file, 'utf8')
+      return { text: await readFile(file, 'utf8'), source: file }
     } catch {
       // try the next candidate; all-missing reads as null
     }
   }
-  return null
+  return { text: null, source: null }
 }
 
 /**
@@ -1026,15 +1067,26 @@ function parseDecisionEntry(line: string, runId: string): Record<string, unknown
  * fallback (readDecisionsText) — and read fresh every call: it is NOT part of
  * the aggregation fingerprint, so a just-appended resolution takes effect
  * immediately. Corrupt lines are skipped; a missing ledger yields no entries.
+ *
+ * Once per ledger file (duplicate-callback fix): the ledger lives at the
+ * ARCHIVE root precisely because several runs (replan / midrun derive) can
+ * share one archive — two runs resolving the same `decisions.jsonl` each
+ * collected the same open escalation under different dedupe keys
+ * (`repo::runA::decision D3` / `repo::runB::decision D3`) and the planner got
+ * one notice per RUN. Entries are now keyed by their source file: the first
+ * run that surfaces a ledger's entry carries it; later runs sharing that
+ * file stay silent. Run-dir fallback files are per-run by construction, so
+ * legacy runs are unaffected.
  * @param rootDir - absolute path of `<repoRoot>/.rdd/goal-trees`.
  */
 export async function collectDecisionEntries(rootDir: string): Promise<GoalTreeDecisionEntry[]> {
   const { runs } = await aggregateGoalTrees(rootDir)
   const texts = await Promise.all(runs.map(run => readDecisionsText(rootDir, run.runId)))
   const open: GoalTreeDecisionEntry[] = []
+  const seenLedgerEntry = new Set<string>()
   runs.forEach((run, index) => {
-    const text = texts[index] ?? null
-    if (text === null) return
+    const { text, source } = texts[index] ?? { text: null, source: null }
+    if (text === null || source === null) return
     const raw = text.split('\n')
       .map(line => parseDecisionEntry(line, run.runId))
       .filter((e): e is Record<string, unknown> => e !== null)
@@ -1049,6 +1101,9 @@ export async function collectDecisionEntries(rootDir: string): Promise<GoalTreeD
       if (entry.kind !== 'escalation') continue
       const entryId = entry.entry_id as string
       if (referenced.has(entryId)) continue
+      const onceKey = `${source}::${entryId}`
+      if (seenLedgerEntry.has(onceKey)) continue // a sibling run already carries this archive's entry
+      seenLedgerEntry.add(onceKey)
       open.push({
         runId: run.runId,
         entryId,

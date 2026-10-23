@@ -8,10 +8,15 @@
  *   2b. goal-root aggregation: type passthrough on nodes and counts excluding
  *      the type=goal root (goal-tree-goal-root)
  *   2e. decision-ledger collection (planner-auto-mode): archive-level ledger
- *      resolved per run through bridge.json `archive_rel` + legacy run-dir fallback
+ *      resolved per run through bridge.json `archive_rel` + legacy run-dir fallback;
+ *      once-per-ledger across sibling runs sharing one archive
+ *   2f. durable delivered-markers (incident 0923 fix): restart-safe exactly-once
+ *      sidecar — serialized read-modify-write + atomic temp-rename (concurrent
+ *      writers lose nothing, no torn files, no temp residue)
  *   2g. watcher delivery harness (F3): delivery goes through
  *      agent.send(message, 'next-turn', true) — never a bare inbox.append —
  *      with exactly-once across scans, restarts, and the pending guard
+ *      (exact-token marker match: 'ledger L2' never satisfies 'ledger L21')
  *   2i. plugin-perf L2/L3: liveness shortcut (direct claim-sidecar read,
  *      no aggregation) + wire projection (slim default payload, full detail
  *      for claim-carrying runs, ?run detail shape)
@@ -25,7 +30,7 @@
  */
 import assert from 'node:assert/strict'
 import { execFileSync } from 'node:child_process'
-import { appendFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -563,6 +568,43 @@ import { aggregateGoalTrees, artifactLine, collectReportEntries } from '../lib/g
   console.log('[smoke] collectDecisionEntries (open-escalation join) OK')
 }
 
+// --- 2e-bis. shared-archive escalations deliver once (duplicate-callback fix) ----
+// The decision ledger is ARCHIVE-level precisely because several runs
+// (replan / midrun-derive) can share one archive. Two runs resolving the
+// same decisions.jsonl used to each collect the same open escalation under
+// different dedupe keys (repo::runA::decision D5 / repo::runB::decision D5)
+// and the planner got one notice per RUN. Keyed by the ledger FILE, the
+// first run carries the entry and siblings stay silent.
+{
+  const { collectDecisionEntries } = await import('../lib/goaltrees.js')
+  const repoRoot = join(tmpdir(), `rdgt-smoke-shared-arch-${Date.now()}`)
+  const rootDir = join(repoRoot, '.rdd', 'goal-trees')
+  const archiveDir = join(repoRoot, '.rdd', 'changes', 'archive', 'shared-arch')
+  mkdirSync(archiveDir, { recursive: true })
+  writeFileSync(join(archiveDir, 'decisions.jsonl'), [
+    JSON.stringify({ entry_id: 'D5', node_id: 'n1', task_id: 1, stage: 'CTO', kind: 'escalation', checkpoint: '技术选型', decision: 'A 还是 B？', risk: 'high', rule_id: 'R4', decider: null }),
+  ].join('\n'))
+  // two bridge runs pointing at the SAME archive
+  for (const runId of ['share-run-a', 'share-run-b']) {
+    const runDir = join(rootDir, runId, 'state')
+    mkdirSync(runDir, { recursive: true })
+    writeFileSync(join(rootDir, runId, 'manifest.json'), JSON.stringify({
+      run_id: runId, state: 'running', goal: 'shared archive goal', budget: { max_rounds: 2, max_nodes: 6 },
+    }))
+    writeFileSync(join(rootDir, runId, 'bridge.json'), JSON.stringify({
+      run_id: runId, archive: archiveDir, archive_rel: '.rdd/changes/archive/shared-arch',
+    }))
+  }
+
+  const open = await collectDecisionEntries(rootDir)
+  assert.equal(open.length, 1, 'one shared-archive escalation collected exactly once across sibling runs')
+  assert.ok(['share-run-a', 'share-run-b'].includes(open[0].runId), 'the first run surfacing the ledger carries the entry')
+  assert.equal(open[0].entryId, 'D5')
+
+  rmSync(repoRoot, { recursive: true, force: true })
+  console.log('[smoke] collectDecisionEntries (shared-archive once-per-ledger) OK')
+}
+
 // --- 2f. durable delivered-markers (incident 0923 fix) -------------------------
 // The exactly-once sidecar: missing/corrupt file reads empty (never throws),
 // record is idempotent, and a fresh read after "restart" (new call = new
@@ -596,7 +638,23 @@ import { aggregateGoalTrees, artifactLine, collectReportEntries } from '../lib/g
   assert.equal(repaired.size, 1, 'record repairs a corrupt sidecar')
   assert.ok(repaired.has('ledger L2'))
 
+  // concurrent writers (overlapping scans / a second host on the same repo)
+  // must not lose markers: the read-modify-write is serialized per run dir
+  // and the commit is write-temp-then-rename. The pre-fix shape — bare
+  // read → add → writeFile — deterministically kept only the LAST writer's
+  // marker (all reads resolved against the same empty file), and a restart
+  // then replayed every lost entry as a duplicate callback.
+  const raceRoot = join(tmpdir(), `rdgt-smoke-markers-race-${Date.now()}`)
+  const raceDir = join(raceRoot, 'race-run')
+  mkdirSync(raceDir, { recursive: true })
+  await Promise.all(['ledger L1', 'ledger L2', 'decision D3', 'decision D4'].map(marker => recordDeliveredMarker(raceDir, marker)))
+  const raced = await readDeliveredMarkers(raceDir)
+  assert.equal(raced.size, 4, 'concurrent marker writes lose nothing (serialized RMW)')
+  assert.ok(['ledger L1', 'ledger L2', 'decision D3', 'decision D4'].every(marker => raced.has(marker)))
+  assert.deepEqual(readdirSync(raceDir).filter(name => name.startsWith('.callback-delivered.json.tmp-')), [], 'no temp-file residue after atomic replaces')
+
   rmSync(tmpRoot, { recursive: true, force: true })
+  rmSync(raceRoot, { recursive: true, force: true })
   console.log('[smoke] durable delivered-markers (restart-safe exactly-once) OK')
 }
 
@@ -704,6 +762,72 @@ import { aggregateGoalTrees, artifactLine, collectReportEntries } from '../lib/g
 
   rmSync(tmpRoot, { recursive: true, force: true })
   console.log('[smoke] watcher delivery harness (send+wakeup, exactly-once, hydration, pending guard) OK')
+}
+
+// --- 2g-ter. pending-inbox guard matches markers EXACTLY (missed-callback fix) ---
+// The old `text.includes(marker)` substring check matched 'ledger L2' inside
+// 'ledger L21': whenever a higher-numbered sibling entry id was queued, the
+// shorter id was falsely treated as delivered, marked in the sidecar, and its
+// callback silently skipped (the node only resurfaced through the 30-minute
+// digest). Exact-token extraction must keep L2 deliverable while L21 —
+// genuinely queued — is marked and skipped.
+{
+  const { PlannerCallbackWatcher } = await import('../lib/watcher.js')
+  const { readDeliveredMarkers } = await import('../lib/goaltrees.js')
+  const PLUGIN_ID = '@coderrdd/dsh-rdd-goal-tree'
+  const tmpRoot = join(tmpdir(), `rdgt-smoke-prefix-${Date.now()}`)
+  const runDir = join(tmpRoot, '.rdd', 'goal-trees', 'prefix-run')
+  const stateDir = join(runDir, 'state')
+  mkdirSync(stateDir, { recursive: true })
+  writeFileSync(join(runDir, 'manifest.json'), JSON.stringify({
+    run_id: 'prefix-run', state: 'running', goal: 'prefix harness goal', budget: { max_rounds: 2, max_nodes: 6 },
+  }))
+  writeFileSync(join(stateDir, 'planner.json'), JSON.stringify({
+    format_version: 1, run_id: 'prefix-run', dsh_session_id: 'session-planner-p', recorded_at: '2026-01-01T00:00:00Z',
+  }))
+  writeFileSync(join(stateDir, 'tree.json'), JSON.stringify({
+    format_version: 1, run_id: 'prefix-run', updated_at: '2026-01-01T00:10:00Z',
+    nodes: [{ id: 'n1', parent: null, title: 'root', task: 't', status: 'reported', depends_on: [] }],
+  }))
+  // two ledger entries: L2 (id is a strict PREFIX of L21) and L21
+  const reportLine = (entryId, node) => JSON.stringify({
+    entry_id: entryId, node_id: node, worker: 'DEV', reported_at: '2026-01-01T00:20:00Z', callback: {
+      verdict: 'done', confidence: 0.9, summary: `report ${entryId}`, full_report: `report/${node}.md`, citations: [],
+    },
+  })
+  writeFileSync(join(stateDir, 'ledger.jsonl'), `${reportLine('L2', 'n1')}\n${reportLine('L21', 'n1')}\n`)
+
+  const sends = []
+  let seq = 0
+  const stubFactory = input => ({ id: `m-${++seq}`, role: 'user', content: input.content, source: input.source })
+  const fakeAgent = {
+    inbox: {
+      nextTurn: [
+        // a previous plugin life queued the L21 notice; its text naturally
+        // contains '(ledger L21).' — under substring matching this ALSO
+        // satisfied the pending marker 'ledger L2' (the silent skip)
+        { source: { kind: 'plugin', plugin: PLUGIN_ID }, content: [{ type: 'text', text: 'run "prefix-run" · node n1 reported by DEV — verdict=done (ledger L21).' }] },
+      ],
+      nextStep: [],
+    },
+    send: (message, target, wakeup) => { sends.push({ message, target, wakeup }) },
+  }
+  const ctx = {
+    logger: { info: () => {}, warn: () => {} },
+    agents: { get: sid => (sid === 'session-planner-p' ? fakeAgent : undefined) },
+  }
+
+  const watcher = new PlannerCallbackWatcher(ctx, true, 0, stubFactory)
+  await watcher.scanRoot(tmpRoot)
+
+  assert.equal(sends.length, 1, 'L2 is delivered — the queued L21 notice no longer satisfies it (exact-token match)')
+  const sentText = sends[0].message.content.map(block => block.text).join('\n')
+  assert.ok(sentText.includes('(ledger L2)'), 'the delivered notice is L2 itself')
+  const markers = await readDeliveredMarkers(runDir)
+  assert.ok(markers.has('ledger L2') && markers.has('ledger L21'), 'both markers persisted (one sent, one marked-and-skipped)')
+
+  rmSync(tmpRoot, { recursive: true, force: true })
+  console.log('[smoke] watcher pending guard (exact-token marker match) OK')
 }
 
 // --- 2g-bis. digest backstop arm (planner-reconcile-throttle) -------------------
