@@ -99,7 +99,7 @@ PM 在同一轮对话中可能在三种姿态间切换。关键是**知道什么
 
 ## 检查点留痕（统一决策账本）
 
-对话中经用户确认的检查点决策（需求取舍、拆分口径、验收判据改定）值得入账——判据：该决策改变了产物走向且后续环节可能追问「当时为什么这么定」。入账命令：`delivery-bridge.cmd -Command decide -Kind checkpoint -Archive <归档> -Checkpoint <名> -Decision <结论> [-Reason <原因>] [-Options <A|B>] [-Background <背景>] [-Role PM]`——条目落归档级 `decisions.jsonl`（四要素 background/options/decision/reason + decider=user），归档前完成；琐碎澄清不入账（账本噪声即失真）。
+对话中经用户确认的检查点决策（需求取舍、拆分口径、验收判据改定）值得入账——判据：该决策改变了产物走向且后续环节可能追问「当时为什么这么定」。入账命令：`delivery-bridge.cmd -Command decide -Kind checkpoint -Archive <归档> -Checkpoint <名> -Decision <结论> [-Reason <原因>] [-Options <A|B>] [-Background <背景>] [-Role PM]`——条目即时落归档级 `decisions.jsonl`（四要素 background/options/decision/reason + decider=user），**确认即记、不等归档**（集中补记会丢细节且多轮取舍互相覆盖；归档前只需核对无遗漏）；琐碎澄清不入账（账本噪声即失真）。
 
 ---
 
@@ -110,6 +110,6 @@ PM 在同一轮对话中可能在三种姿态间切换。关键是**知道什么
 | 触发逻辑 | 全部条件 AND | 任一条件 OR |
 | 姿态 | 固定顾问 | 按上述映射动态切换 |
 | 提问上限 | 1 个确认性问题 | 无硬上限，但受提问纪律约束 |
-| 方案评估 | 仅做常识级判断（"明显不可行"才说） | 同左——PM 内不做系统性评估，结构质量由 AUDITOR/规划者建树前独立审视承接 |
+| 方案评估 | 仅做常识级判断（"明显不可行"才说） | 同左——PM 内不做系统性评估，结构质量由建树前需求审视承接（单入口子代理形态 `auditor-delegated`，强形态独立会话 `auditor`） |
 | 粒度 | 1 个需求文件，不拆 | 按粒度控制规则判断 |
 | 验收标准 | 用户已提供或自明，直接采用 | 需要充分讨论和补全 |

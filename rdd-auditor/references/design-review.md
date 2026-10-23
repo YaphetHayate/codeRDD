@@ -9,9 +9,10 @@
 - **触发**（引擎自动，无人工判断）：桥接 run 中某阶段全部在册任务越过 DESIGN（phase ∈ {IMPL, VERIFY} 或 lifecycle 终态）且 ≥1 落盘设计产物。**新链**（bridge.json `review_mode`）：状态置 `ready`（plan-log `design_review_ready` + status/resume 提示，无自动会话）→ 规划者派评审子代理（或强形态会话）产 DesignReviewFile → `delivery-bridge.cmd -Command design-review -Action submit -RunId <RunId> -Stage <S<k>>` 入库；**缺键 legacy**：引擎 graft 树级节点 `[设计审查·S<k>]`（role=AUDITOR）推送会话 → `settle` 结算。全阶段无设计产物 / 无 in-run 设计工作 → `exempt` 快速通道（无门）。
 - **阶段汇聚**（原「一批一会话」，现为方法论级语义）：**汇聚审查本阶段全部设计产物**，禁止逐设计节点串行审查——并行设计间的跨设计一致性只有汇聚在同一视野内才可查。引擎侧「一批一会话」机制（节点 + 会话推送）已删（设计 #8），汇聚语义保留为方法论硬纪律。
 - **审查对象** = 阶段内在册任务的**全部落盘设计产物**（`design-review -Action status` 输出的 docs 清单 / legacy claim 输出 `acceptance.docs` 是权威清单）：CTO 技术方向文档、UX 交互/体验设计、QA 测试先行设计。**UX 纯视觉稿类产物：审查对象为变更地图与交互说明，缺产物即该文档 fail（产物契约不满足）。**
-- **审查完成后**：产出 DesignReviewFile（见「三、契约」）→ 新链由规划者 `design-review -Action submit` 入库 / legacy `settle -NodeId <审查节点id>`。契约校验与节点 settle 门**同一核心**；总裁定**由引擎推导**（pass ⇔ 全文档 pass 且全局零 blocking）——不采信任何声明值：
+- **审查完成后**：产出 DesignReviewFile（见「三、契约」）→ 新链由规划者 `design-review -Action submit` 入库 / legacy `settle -NodeId <审查节点id>`。契约校验与节点 settle 门**同一核心**；总裁定**由引擎推导**（wake 形状（默认）下：pass ⇔ 全文档 pass 且 `internal_consistency / cross_design / alignment` 三维零 blocking）——不采信任何声明值，文档级 `verdict:"fail"` 声明也不采信：
   - **pass** → `design_review=passed` → IMPL 闸门开（被闸节点下一触发点自动放行）
   - **fail** → 引擎自动触发**重做波**：受影响任务（blocking 归属）rollback 原语语义回 DESIGN（blocking 清单注入重做上下文，目标角色按文档后缀精确映射 `-cto`→CTO / `-ux`→UX / `-qa`→QA）→ 重做收敛后再审（覆盖重产重审）
+  - **wake 形状的 blocking 收窄**（默认形状必读）：只有 `internal_consistency` / `cross_design` / `alignment` 的 blocking 计入 fail；`change_map` / `completeness` 的 blocking **降级为 deferred 债务项**（落 `state/debt.json`，仍须如实记录，不阻断 IMPL，跨阶段老化可升级）。legacy 形状（`-Shape legacy`）仍是全维度 blocking → fail。审计时仍按五维如实标 blocking——收窄由引擎判定，不由审计员预判。
 - **审查会话自身失败**：legacy 节点走既有 `reclaim` dead-claim 通道（park + 重推）；新链子代理失败即重新派发（无节点状态残留）。
 
 ## 二、五查维度（每一维度都必须产出，漏一维 = 审查不完整）
@@ -74,7 +75,7 @@
 
 **字段约束（submit / legacy settle 门同源机械校验，违规 = SETTLE_EVIDENCE_REJECTED）**：
 
-- `reviewer` ∈ {`auditor-delegated`, `auditor`}（单源 `review-input-template.md` 常量表；legacy 存量文件 `planner` 值不再产出）；`production` 留痕形态（mode ∈ {subagent, session} + template ref 非空）；`stage` 必须等于被审阶段 id；`reviewed_at` 非空
+- `reviewer` ∈ {`auditor-delegated`, `auditor`}（单源 `review-input-template.md` 常量表；legacy 存量文件 `planner` 值不再产出）；`summary`（cross_design 专节）**必带**；`production` 留痕**可选**（有则校验 mode ∈ {subagent, session} + template ref 非空，缺省不拦）；`stage` 必须等于被审阶段 id；`reviewed_at` 非空
 - `docs[]` **全覆盖**：阶段落盘设计文档双向逐一致（漏审任一文档 / 审查不存在的文档均违规）；同一文档不得重复列出
 - 每文档 `verdict ∈ {pass, fail}`；**fail 必有 ≥1 条 blocking finding、pass 必无 blocking**（verdict-findings 一致性）
 - 每条 finding 四字段完备：`severity ∈ {blocking, advisory}`、`dimension ∈ {alignment, change_map, internal_consistency, completeness, cross_design}`、`item`/`suggestion` 非空

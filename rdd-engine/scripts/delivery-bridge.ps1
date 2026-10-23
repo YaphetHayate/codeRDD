@@ -1576,7 +1576,7 @@ function Add-LeafPendingToMap {
 function Test-PushCandidate {
     # Per-node push gate (state filter + unlock + push-ledger rules). Returns
     # $null = push it, or the skip record consumed by the caller's ledger.
-    param([string]$NodeId, $Node, [string]$Status, [bool]$Parked, $StatusOf, $DependsOf, $Bridge, [string]$RunDir = "")
+    param([string]$NodeId, $Node, [string]$Status, [bool]$Parked, $StatusOf, $DependsOf, $Bridge, [string]$RunDir = "", $BlockedNext = $null)
     if ($Status -in @("done", "pruned", "reported", "missing") -or ($Status -eq "claimed" -and -not $Parked)) {
         return @{ node = $NodeId; reason = $Status }
     }
@@ -1592,6 +1592,19 @@ function Test-PushCandidate {
     }
     if ($blockedHere.Count -gt 0) {
         return @{ node = $NodeId; reason = "blocked_by_deps"; blocked_by = @($blockedHere) }
+    }
+    # wake fold-in, push side (goal-tree-wake-model §3.3): the unlock check above
+    # only sees the node's OWN edges — in wake shape they live on the WBS
+    # container, and the claim path folds them in (Get-NodeBlockedDeps: a slot
+    # inherits its parent container's dep gate; container targets are satisfied
+    # iff their subtree is terminal). The leaf next view computes exactly that
+    # folded gate; a node IT calls blocked is not a push candidate — pushing it
+    # spawns a worker session whose first claim is refused (NODE_BLOCKED_BY_DEPS):
+    # session churn, zero progress (deliver-2026-10-23: all 7 initial slots
+    # pushed with blocked=[] while the leaf view held 4 of them). Legacy runs are
+    # unaffected (no containers — the own-edge check above already decided).
+    if ($null -ne $BlockedNext -and $BlockedNext.ContainsKey($NodeId)) {
+        return @{ node = $NodeId; reason = "blocked_by_deps"; blocked_by = @($BlockedNext[$NodeId]); folded = $true }
     }
     # stage gate (long-task-planning, 只增不减): on top of DAG unlock, the
     # node's task stage waits for EVERY earlier stage's acceptance point —
@@ -1786,6 +1799,15 @@ function Invoke-AutoDispatch {
     $maps = Get-PushStatusMap ([string]$Bridge.run_id)
     $nx = Get-LeafNextView ([string]$Bridge.run_id)
     Add-LeafPendingToMap $maps.status $maps.depends $nx
+    # folded dep gate, precomputed from the leaf next view (single source of
+    # truth — the same Get-NodeBlockedDeps the claim path enforces).
+    $blockedNext = @{}
+    foreach ($b in @(Convert-ToSafeArray $nx.blocked)) {
+        $bnid = if ($b -is [string]) { $b } else { [string]$b.id }
+        if ([string]::IsNullOrWhiteSpace($bnid)) { continue }
+        if ($b -isnot [string] -and $null -ne $b.blocked_by) { $blockedNext[$bnid] = @($b.blocked_by) }
+        else { $blockedNext[$bnid] = @() }
+    }
     foreach ($cand in @(Get-PushCandidates $Bridge)) {
         $result.considered++
         $node = Get-NodeFromTree $maps.tree_data ([string]$cand.node)
@@ -1793,7 +1815,7 @@ function Invoke-AutoDispatch {
         # parked = recycled by reclaim, waiting for the next claimant: it is a PUSH
         # target (the "recycle then re-push" loop), unlike a live worker claim.
         $parked = ($status -eq "claimed" -and [string]$node.claimed_by -eq "planner-reclaim")
-        $skip = Test-PushCandidate -NodeId ([string]$cand.node) -Node $node -Status $status -Parked $parked -StatusOf $maps.status -DependsOf $maps.depends -Bridge $Bridge -RunDir $RunDir
+        $skip = Test-PushCandidate -NodeId ([string]$cand.node) -Node $node -Status $status -Parked $parked -StatusOf $maps.status -DependsOf $maps.depends -Bridge $Bridge -RunDir $RunDir -BlockedNext $blockedNext
         if ($null -ne $skip) {
             $result.skipped += $skip
             continue
@@ -5592,6 +5614,77 @@ function Test-PlanPromulgateFit {
     Test-PlanCriteriaRef $PlanFileObj $Criteria
 }
 
+function Write-AdjudicatedDeps {
+    # state/adjudicated-deps.json (silent-dep-disarm regression): the ADJUDICATED
+    # requirement-level edge set this promulgation established — grafted edges
+    # (wake: container -> dep containers; legacy: initial heads -> dep heads)
+    # PLUS the deferred review-edge stitches. goal-tree's `deps remove` reads
+    # this file and hard-gates those edges behind -UserVerdict (DEP_ADJUDICATED):
+    # they are the requirement-level ordering gate, and a silent strip leaves
+    # bridge.dep_task_ids inconsistent with the live tree (deliver-2026-10-23
+    # incident). Conflict-serialize edges are deliberately NOT listed — they are
+    # runtime conflict machinery with their own audit (conflicts history).
+    param([string]$RunDir, [string]$RunId, $Bridge, $Plan, $InitialNodesOfTask, $DeferredEdges)
+    $edges = @()
+    $seen = @{}
+    $wake = Test-WakeShapeBridge $Bridge
+    # reverse maps: layer node -> task id (wake: bridge container; legacy: initial nodes)
+    $nodeToTask = @{}
+    if ($wake) {
+        $taskKeys = @(); if ($Bridge.tasks -is [System.Collections.IDictionary]) { $taskKeys = @($Bridge.tasks.Keys) } else { $taskKeys = @($Bridge.tasks.PSObject.Properties | ForEach-Object { $_.Name }) }
+        foreach ($k in $taskKeys) {
+            $t = $(if ($Bridge.tasks -is [System.Collections.IDictionary]) { $Bridge.tasks[$k] } else { $Bridge.tasks.$k })
+            if ($null -ne $t -and (Test-PropPresent $t 'container') -and $(if ($t -is [System.Collections.IDictionary]) { $t['container'] } else { $t.container })) { $nodeToTask[[string]$(if ($t -is [System.Collections.IDictionary]) { $t['container'] } else { $t.container })] = [int]$k }
+        }
+    }
+    else {
+        foreach ($k in @($InitialNodesOfTask.Keys)) {
+            foreach ($nid in @($InitialNodesOfTask[$k])) { $nodeToTask[[string]$nid] = [int]$k }
+        }
+    }
+    foreach ($p in @($Plan)) {
+        $taskId = [int]$p.task.id
+        $explicit = @($p['explicit_deps'] | ForEach-Object { [int]$_ })
+        $fromNodes = @()
+        if ($wake) {
+            $tp = $Bridge.tasks["$taskId"]
+            if ($null -ne $tp -and (Test-PropPresent $tp 'container') -and $tp.container) { $fromNodes = @([string]$tp.container) }
+        }
+        else { $fromNodes = @($InitialNodesOfTask[$taskId] | ForEach-Object { [string]$_ }) }
+        foreach ($from in $fromNodes) {
+            foreach ($on in @($p['grafted_dep_nodes'] | ForEach-Object { [string]$_ })) {
+                $key = "$from->$on"
+                if ($seen.ContainsKey($key)) { continue }
+                $onTask = 0
+                if ($nodeToTask.ContainsKey($on)) { $onTask = $nodeToTask[$on] }
+                $seen[$key] = $true
+                $edges += @{
+                    node      = $from
+                    on        = $on
+                    task_id   = $taskId
+                    on_task_id = $onTask
+                    source    = $(if ($explicit -contains $onTask) { 'override' } else { 'requirement' })
+                }
+            }
+        }
+    }
+    foreach ($d in @($DeferredEdges)) {
+        $key = "$([string]$d.node)->$([string]$d.on)"
+        if ($seen.ContainsKey($key)) { continue }
+        $seen[$key] = $true
+        $edges += @{ node = [string]$d.node; on = [string]$d.on; task_id = [int]$d.task_id; on_task_id = [int]$d.on_task_id; source = 'override' }
+    }
+    $doc = [ordered]@{
+        format_version = 1
+        run_id         = $RunId
+        updated_at     = (Get-UtcNowIso)
+        note           = "adjudicated requirement-level edges (requirement deps + review override + merge redirects). goal-tree deps remove on these edges requires -UserVerdict (DEP_ADJUDICATED); conflict-serialize edges are not listed (own audit)."
+        edges          = @($edges)
+    }
+    [System.IO.File]::WriteAllText((Join-Path (Join-Path $RunDir "state") "adjudicated-deps.json"), (ConvertTo-Json $doc -Depth 5), $script:Utf8NoBom)
+    return @($edges)
+}
+
 function Set-PromulgateRunState {
     # bridge state persistence + plan ledger tail + optional review report —
     # everything between the initial grafts and the initial push tail.
@@ -5604,6 +5697,9 @@ function Set-PromulgateRunState {
     }
     $Bridge = Set-BridgeOptionalSections $Bridge $ReviewInfo $reviewAppliedAt $AmSnapshot
     Write-BridgeFile $RunDir $Bridge
+    # adjudicated edge set lands WITH the run state (before any push): the deps
+    # remove hard gate + the status drift check both read it from here on.
+    $null = Write-AdjudicatedDeps $RunDir $RunIdText $Bridge $Plan $InitialNodesOfTask $deferredEdges
     # design_maps 只读派生缓存初扫(parallel-coordination):设计产物已在归档内时
     # 即刻机读,DESIGN_MAP_INVALID 警示早期可见(status 继续透出,不阻塞流转)。
     $null = Get-DesignMaps $RunDir $Bridge $Tasks
@@ -5623,6 +5719,9 @@ function Invoke-Promulgate {
     if ([string]::IsNullOrWhiteSpace($PlanFile)) {
         Write-ErrorResult "PLAN_MISSING" "promulgate requires -PlanFile <staged plan> (long-task-planning: 阶段目标/里程碑/集成验收点/任务依赖排序/可并行批次). Produce the PlanFile first — see planner-guide「长程规划与滚动追踪」." 1
     }
+    # NOTE: -Shape / -ReviewMode typos die at PARAM BINDING (ValidateSet on both
+    # params — zero residue, before this function runs). PS string comparison is
+    # case-insensitive, so '-Shape WAKE' is equivalent to wake end-to-end.
     # NOTE: the parsed plan is named $planParsed — PS names are case-INsensitive,
     # a $planFile local would silently clobber the bound $PlanFile path param.
     $planParsed = Read-PlanFile $PlanFile
@@ -6098,7 +6197,7 @@ function New-ClaimResult {
         node_id     = $NodeIdText
         task_id     = $(if ($Target.tree_level) { $null } else { $Target.task_id })
         stage       = $Stage
-        tree_claim  = @{ node = $Writes.tree.node; report_next = $Writes.tree.report_next; dep_note = $Writes.tree.dep_note }
+        tree_claim  = @{ node = $Writes.tree.node; report_next = $Writes.tree.report_next; dep_note = $Writes.tree.dep_note; callback_contract = $Writes.tree.callback_contract }
         flow_claim  = $(if ($null -ne $Writes.flow) { @{ claimed = $Writes.flow.claimed; currentWorker = $Writes.flow.currentWorker } } else { $null })
         task        = $(if ($null -ne $Writes.flow) { $Writes.flow.task } else { $null })
         report_hint = "goal-tree bridge run: on completion report back to the Planner instead of start-role-ing a downstream role — goal-tree-leaf.cmd -Command report -RunId $RunId -Worker $Stage -CallbackFile <cb.json>. Artifact locations ride the callback: citations = change list (real paths; settle checks every ref exists), full_report = main deliverable doc pointer (design doc / implementation notes; expected in bridge runs), extras.verification = verification result (settle requires citations + verification non-empty). DEV quality gate (dev-quality-prescan-gate): when the change set touches PowerShell (.ps1), extras.quality_scan = the code-metrics credential (full form: tool/base/files/thresholds/threshold_source/violation_count/exit_code, violation_count must be 0 and every cited .ps1 inside files; skip form: skip+reason only when no PowerShell file changed) — the settle handoff gate mechanically rejects a DEV delivery without it"
@@ -8348,6 +8447,28 @@ function New-StatusWarnings {
     return $warnings
 }
 
+function Get-AdjudicatedDepsDrift {
+    # tree-bridge dependency reconcile (silent-dep-disarm regression): compares
+    # state/adjudicated-deps.json against the LIVE tree. A missing adjudicated
+    # edge means the requirement-level ordering gate was stripped mid-run
+    # (deps remove with -UserVerdict, or manual tree surgery) and
+    # bridge.tasks[].dep_task_ids no longer holds on the tree. Status-only
+    # visibility: loud, never blocking.
+    param([string]$RunDir)
+    $p = Join-Path (Join-Path $RunDir "state") "adjudicated-deps.json"
+    if (-not (Test-Path -LiteralPath $p)) { return @{ missing = @() } }
+    try { $doc = [System.IO.File]::ReadAllText($p, [System.Text.Encoding]::UTF8) | ConvertFrom-Json } catch { return @{ missing = @() } }
+    if ($null -eq $doc -or $null -eq $doc.edges) { return @{ missing = @() } }
+    $missing = @()
+    foreach ($e in @($doc.edges)) {
+        $live = Read-TreeFullNode $RunDir ([string]$e.node)
+        $has = $false
+        if ($null -ne $live) { $has = (@(Convert-ToSafeArray $live.depends_on) -contains [string]$e.on) }
+        if (-not $has) { $missing += $e }
+    }
+    return @{ missing = @($missing) }
+}
+
 function Invoke-BridgeStatus {
     # joined view orchestrator (QA function-size gate decomposition: the row/
     # warning/touch builders live beside it).
@@ -8391,6 +8512,12 @@ function Invoke-BridgeStatus {
         }
     }
     $accOpen = ($null -ne $acc -and @('planned', 'grafted') -contains [string]$acc['status'] -and -not ([string]$acc['conclusion']))
+    # tree-bridge dependency reconcile (silent-dep-disarm): loud, never blocking.
+    $depDrift = Get-AdjudicatedDepsDrift $runDir
+    if (@($depDrift.missing).Count -gt 0) {
+        $depMiss = @($depDrift.missing | ForEach-Object { "$($_.node)->$($_.on) (task #$([int]$_.task_id) depends on task #$([int]$_.on_task_id), source '$($_.source)')" })
+        $warnings += "deps_integrity: adjudicated edge(s) missing from the live tree: $($depMiss -join '; ') — the requirement-level ordering gate is DISARMED for the dependent tasks; restore via 'goal-tree.cmd -Command deps -DepAction add -RunId $RunId -NodeId <n> -On <m>' or re-adjudicate via replan."
+    }
     $nextStep = $null
     if (@($view.flagged_deliveries).Count -gt 0) {
         $nextStep = "adjudicate unqualified delivery(ies) [$(@($view.flagged_deliveries | ForEach-Object { $_.node }) -join ', ')]: rollback -NodeId <id> -Reason <why> (one stage back) or reclaim -NodeId <id> (same-stage redo)"
@@ -8417,6 +8544,7 @@ function Invoke-BridgeStatus {
             tasks          = $view.task_rows
             tree_census    = $view.tree.nodes
             dependencies   = $view.dependencies
+            deps_integrity = @($depDrift.missing)
             claimable      = $view.claimable
             dead_claims    = $view.dead_claims
             flagged_deliveries = @($view.flagged_deliveries)

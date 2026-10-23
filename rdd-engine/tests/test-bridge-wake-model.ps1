@@ -333,6 +333,76 @@ try {
     Assert-True ($depPairs.Count -eq 3 -and $depPairs -contains "$c2->$c3") 'WK7g deps-log audited exactly 3 dep-adds (2 graft + 1 stitched, no duplicate)' ("pairs=[$($depPairs -join '; ')]")
     Assert-True ($null -ne $b3.review -and -not [string]::IsNullOrWhiteSpace([string]$b3.review.reviewed_at) -and @($b3.review.verdicts).Count -eq 3) 'WK7h review section persisted on the bridge (review gate applied)' ($b3.review | ConvertTo-Json -Depth 3 -Compress)
     Assert-True (Test-Path (Join-Path $Work '.rdd/goal-trees/deliver-wk-l3/report/review.md')) 'WK7i human-readable review report written'
+    # ============ WK8: silent-dep-disarm 防护 + push 折叠对称 + 回调契约 ============
+    # 回归锚（deliver-2026-10-23 实录）：①颁布落账的裁定边被 deps remove 静默拆除 →
+    # 需求级门失效、bridge.dep_task_ids 与活树脱钩（现须 -UserVerdict 硬门 + status
+    # 对账警示）；②push 门只看节点自身边，wake 折叠门（claim 侧 §3.3）没折进来 →
+    # 被 claim 拒的槽照推（worker 会话空转）。注：-Shape/-ReviewMode 拼错由参数绑定
+    # ValidateSet 零残留硬拒（原判「静默换链」不成立——PS 字符串比较大小写不敏感）。
+    $archDir4 = Join-Path $Work '.rdd/changes/archive/wk-l4'
+    New-Item -ItemType Directory -Path (Join-Path $archDir4 'requirements') -Force | Out-Null
+    Write-Utf8NoBom (Join-Path $archDir4 'requirements/overview.md') "# wk-l4`n`n## 整体验收判据`n`n无整体判据（理由：silent-dep-disarm 防护回归归档，显式声明）`n"
+    Write-Utf8NoBom (Join-Path $archDir4 'requirements/t1.md') "# wk-l4 需求 1`n`n- **描述**：基座需求`n- **验收标准**：见 overview.md`n"
+    Write-Utf8NoBom (Join-Path $archDir4 'requirements/t2.md') "# wk-l4 需求 2`n`n- **描述**：依赖需求（文档声明 #1）`n- **依赖关系**：依赖需求 1`n- **验收标准**：见 overview.md`n"
+    $tf4 = Join-Path $Work 'wk-l4-init.json'
+    Write-Utf8NoBom $tf4 '[{"title":"WK8-A","requirement":"requirements/t1.md","currentOwners":["CTO"]},{"title":"WK8-B","requirement":"requirements/t2.md","currentOwners":["CTO"]}]'
+    $r = Invoke-Flow @('-Command', 'init', '-Archive', '.rdd/changes/archive/wk-l4', '-TasksFile', 'wk-l4-init.json')
+    if ($r.json.success -ne $true) { throw "wk-l4 init failed: $($r.raw)" }
+    $plan4 = [ordered]@{ planned_at = '2026-10-23T00:00:00Z'; planner = 'test'; stages = @(
+        @{ id = 'S1'; goal = 'S1'; milestone = 'S1'; task_ids = @(1, 2); batches = @(@(1), @(2)); acceptance_point = @{ criteria_items = @('smoke'); slice = 'slice' } }
+    ); risks = @() }
+    $pf4 = Join-Path $Work 'wk-l4-plan.json'
+    Write-Utf8NoBom $pf4 ($plan4 | ConvertTo-Json -Depth 8)
+    $review4 = [ordered]@{
+        reviewed_at = '2026-10-23T17:00:00+08:00'
+        reviewer    = 'auditor'
+        verdicts    = @(
+            [ordered]@{ task_id = 1; verdict = 'pass'; reason = '四维无 gap' }
+            [ordered]@{ task_id = 2; verdict = 'pass'; reason = '四维无 gap' }
+        )
+    }
+    $rf4 = Join-Path $Work 'wk-l4-review.json'
+    Write-Utf8NoBom $rf4 ($review4 | ConvertTo-Json -Depth 6)
+    # 不带 -NoPush：推送门须用 claim 同源的折叠门拦下 #2 的槽（start-role 在测试环境
+    # 必失败入 failed 账——断言只钉确定性部分：#2 槽入 blocked、不入 pushed/failed）。
+    $r = Invoke-Bridge @('-Command', 'promulgate', '-TaskJson', '.rdd/changes/archive/wk-l4/task.json', '-PlanFile', $pf4, '-ReviewFile', $rf4)
+    Assert-True ($r.json.success -eq $true) 'WK8a wake promulgate (no -NoPush, dep-gated task) ok' ($r.raw)
+    $b4 = Read-BridgeJson 'deliver-wk-l4'
+    $s1b = [string]$b4.tasks.'1'.stages.CTO
+    $s2b = [string]$b4.tasks.'2'.stages.CTO
+    $c1b = [string]$b4.tasks.'1'.container
+    $c2b = [string]$b4.tasks.'2'.container
+    $blocked4 = @($r.json.data.auto_push.blocked)
+    $attempted4 = @(@($r.json.data.auto_push.pushed) + @($r.json.data.auto_push.failed) | ForEach-Object { if ($_ -is [string]) { $_ } else { [string]$_.node } })
+    Assert-True (@($blocked4) -contains $s2b) 'WK8b push gate folds the container dep gate (dep-task slot dep-blocked at push — claim-side §3.3 symmetry; the slot carries no own edge, only the folded gate can produce this)' ("blocked=[$($blocked4 -join ',')] s1=$s1b s2=$s2b")
+    Assert-True ($attempted4 -notcontains $s2b) 'WK8c no session spawned for the dep-gated slot' ("attempted=[$($attempted4 -join ',')] s2=$s2b")
+    $adjPath = Join-Path $Work '.rdd/goal-trees/deliver-wk-l4/state/adjudicated-deps.json'
+    Assert-True (Test-Path $adjPath) 'WK8d adjudicated-deps.json written at promulgate'
+    $adj = $null; if (Test-Path $adjPath) { $adj = Get-Content $adjPath -Raw -Encoding UTF8 | ConvertFrom-Json }
+    $adjE = @(); if ($null -ne $adj) { $adjE = @($adj.edges) }
+    Assert-True ($adjE.Count -eq 1 -and [string]$adjE[0].node -eq $c2b -and [string]$adjE[0].on -eq $c1b -and [int]$adjE[0].task_id -eq 2 -and [int]$adjE[0].on_task_id -eq 1 -and [string]$adjE[0].source -eq 'requirement') 'WK8e adjudicated edge recorded (task#2 -> task#1, source=requirement)' (($adjE | ConvertTo-Json -Compress))
+    # deps remove 硬门：无声拆除被拒（DEP_ADJUDICATED）；带用户裁决放行且落 deps-log
+    $r = Invoke-Tree @('-Command', 'deps', '-DepAction', 'remove', '-RunId', 'deliver-wk-l4', '-NodeId', $c2b, '-On', $c1b)
+    Assert-True ($r.json.success -ne $true -and $r.json.error.code -eq 'DEP_ADJUDICATED') 'WK8f silent deps remove of an adjudicated edge rejected (DEP_ADJUDICATED)' ($r.raw)
+    $r = Invoke-Tree @('-Command', 'deps', '-DepAction', 'remove', '-RunId', 'deliver-wk-l4', '-NodeId', $c2b, '-On', $c1b, '-UserVerdict', '用户裁决：#2 改为并行推进，不等 #1（测试注入）')
+    Assert-True ($r.json.success -eq $true) 'WK8g adjudicated remove WITH -UserVerdict passes (explicit user ruling)' ($r.raw)
+    $depLog4 = @(Get-Content (Join-Path $Work '.rdd/goal-trees/deliver-wk-l4/state/deps-log.jsonl') -Encoding UTF8 | Where-Object { $_.Trim() } | ForEach-Object { $_ | ConvertFrom-Json })
+    $lastDep = $depLog4[-1]
+    Assert-True ([string]$lastDep.event -eq 'dep-remove' -and -not [string]::IsNullOrWhiteSpace([string]$lastDep.verdict)) 'WK8h deps-log carries the verbatim verdict on the adjudicated remove' (($lastDep | ConvertTo-Json -Compress))
+    # status 对账：裁定边缺影 = 醒目警示（不阻断）；恢复边后自愈清零
+    $r = Invoke-Bridge @('-Command', 'status', '-RunId', 'deliver-wk-l4')
+    $driftMiss = @(); if ($r.json.success -eq $true) { $driftMiss = @($r.json.data.deps_integrity) }
+    $warnText4 = $(if ($r.json.success -eq $true) { @($r.json.data.warnings) -join ' | ' } else { $r.raw })
+    Assert-True ($driftMiss.Count -eq 1 -and [string]$driftMiss[0].node -eq $c2b) 'WK8i status surfaces deps_integrity (adjudicated edge missing from the live tree)' (($driftMiss | ConvertTo-Json -Compress))
+    Assert-True ($warnText4 -match 'deps_integrity') 'WK8j deps_integrity warning line present' ($warnText4)
+    $r = Invoke-Tree @('-Command', 'deps', '-DepAction', 'add', '-RunId', 'deliver-wk-l4', '-NodeId', $c2b, '-On', $c1b)
+    Assert-True ($r.json.success -eq $true) 'WK8k edge restored via public deps add' ($r.raw)
+    $r = Invoke-Bridge @('-Command', 'status', '-RunId', 'deliver-wk-l4')
+    Assert-True ($r.json.success -eq $true -and @($r.json.data.deps_integrity).Count -eq 0) 'WK8l deps_integrity self-heals to empty after restore' ($r.raw)
+    # 回调契约在认领点可见（worker 摩擦实录：verdict 枚举此前只活在 planner 手册里）
+    $r = Invoke-Bridge @('-Command', 'claim', '-RunId', 'deliver-wk-l4', '-NodeId', $s1b, '-Role', 'CTO')
+    $cc = $null; if ($r.json.success -eq $true) { $cc = $r.json.data.tree_claim.callback_contract }
+    Assert-True ($null -ne $cc -and ([string]$cc.verdict) -match 'done' -and ([string]$cc.verdict) -match 'inconclusive') 'WK8m claim response carries the callback contract (verdict enum at the point of use)' (($cc | ConvertTo-Json -Compress))
 
     $failed = @($Results | Where-Object { -not $_.ok })
     Write-Output ("=== wake-model bridge suite: {0}/{1} passed ===" -f ($Results.Count - $failed.Count), $Results.Count)

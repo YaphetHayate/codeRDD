@@ -10,7 +10,7 @@
 |------|------|
 | 审视对象 | 归档 `.rdd/changes/archive/<name>/` 下的需求集（`requirements/overview.md` + `requirements/*.md`）+ task.json 路由 |
 | 时机 | 归档后、建树前；规划者经 `promulgate -ReviewFile` 机械消费 |
-| 触发判据 | 归档含 ≥2 条非 deprecated 子需求（与 `rdd-flow next` longTask 信号同判据）→ 审视必经；单需求快速通道豁免 |
+| 触发判据 | 归档含 ≥2 条非 deprecated 子需求**且 ≥1 条 active**（与 `rdd-flow next` longTask 信号同判据）→ 审视必经；单需求快速通道豁免 |
 | 审视频率 | **每次审视覆盖重产**（后续 run / 驳回回流修订后必重审；不复用旧结论） |
 | 审视周期 | 一次性——一次审视产出整次 ReviewFile（`verdicts[]` 覆盖 task.json 中每条 active 任务；未列出的任务 = 隐式通过） |
 
@@ -44,16 +44,16 @@
 **判定动作**：
 - **粒度过粗**（一条需求包含多个独立可交付的功能）：备注 PM 应拆分；严重时 `reject_return`（不替 PM 拆）
 - **粒度过细**（一条需求拆出本可合一的子任务）：备注 PM 应合并；不强制驳回（细粒度未必是问题，留待规划者或后续 run 处理）
-- **`merge_candidate`**（多条子需求实为同一改动两个侧面）：记入 `verdicts[]` 的 `merged_into_task_id` 字段，规划者经 `rdd-flow deprecate -TaskId <被并入方>` 处置（与 planner-guide 硬约束 6 既有契约同构）
+- **`merge_candidate`**（多条子需求实为同一改动两个侧面）：记入 `verdicts[]` 的 `merged_into_task_id` 字段，规划者经 `rdd-flow deprecate -TaskId <被判合并的那条任务（verdict 自身的 task_id）>` 处置——并入方（`merged_into_task_id` 指向者）必须保持可交付，废弃并入方会被 `REVIEW_FILE_INVALID` 硬拒（与 planner-guide 硬约束 6 既有契约同构）
 
 ### 维度 3：依赖标注真实度（dependency）
 
 **目标**：需求文档 `**依赖关系**` 字段的机读标注与实际依赖关系一致（无错标 / 无漏标）。
 
 **判定动作**：
-- **错标**（声明依赖 #N，实际无依赖；或不声明依赖 #N，实际强依赖）：`tree_adjudicated` + `depends_on_override: []`（清空错依赖）或追加真实依赖（延后缝合由规划者经 `deps add` 处理）
-- **漏标**（实际强依赖某条需求但未声明）：同上 `tree_adjudicated` + `depends_on_override` 补依赖
-- **前向引用**（指向更大编号，按 `rdd-pm/references/requirement-item-template.md` 规范会静默丢边）：备注 + `depends_on_override` 后位补依赖
+- **错标**（声明依赖 #N，实际无依赖；或不声明依赖 #N，实际强依赖）：`tree_adjudicated` + `depends_on_override`——**整体替换机读依赖集**（`[]` = 清空全部；要保留的依赖必须一并写全，只写"追加项"会静默丢掉文档已声明的依赖）
+- **漏标**（实际强依赖某条需求但未声明）：同上 `tree_adjudicated` + `depends_on_override` 补依赖（同样写**全量** id）
+- **前向引用**（指向更大编号，按 `rdd-pm/references/requirement-item-template.md` 规范会静默丢边）：备注 + `depends_on_override` 后位补依赖（写全量）——后位依赖由引擎建树时**自动缝合**（`deps add` 延后缝合，只补缺失边），规划者无须手跑 `deps add`
 
 > **机读规则的边界**：括号备注内的编号不参与依赖推导（见 `requirement-item-template.md`「依赖关系标注规范」）。审计时只看字段值机械推导结果是否漏掉真实依赖。
 
@@ -133,6 +133,7 @@
 ### 字段约束（与 planner-guide 硬约束 6 既有契约一致）
 
 - `verdict` 枚举 `pass / tree_adjudicated / reject_return`；未列出的任务 = 隐式通过
+- 每条 verdict 的 `reason` **必须非空**（消费端 `REVIEW_FILE_INVALID`）；`verdicts` 必须为**非空数组**
 - `pass` 不得携带 `depends_on_override` / `merged_into_task_id`
 - `tree_adjudicated` 的 `depends_on_override` 与 `merged_into_task_id` 不得同现于一条 verdict（合并任务不建节点）
 - 同任务重复 verdict、指向不在归档的任务均拒（消费端 `REVIEW_FILE_INVALID` / `REVIEW_TASK_NOT_FOUND`）
@@ -244,7 +245,7 @@
 
 ## 七、与下游消费端的衔接
 
-> AUDITOR 本身不主动启动 PLANNER——本角色审视完成 + 产物落盘后，由 PM 推荐话术的用户侧确认触发规划者启动，规划者经 `delivery-bridge.cmd -Command promulgate -TaskJson <task.json> -ReviewFile <归档>/review/requirement-review.json` 机械消费。
+> AUDITOR 本身不主动启动 PLANNER——本角色审视完成 + 产物落盘后，由 PM 推荐话术的用户侧确认触发规划者启动，规划者经 `delivery-bridge.cmd -Command promulgate -TaskJson <task.json> -PlanFile <plan.json> -ReviewFile <归档>/review/requirement-review.json -ReviewMode subagent` 机械消费（`-PlanFile` 为硬门，缺省 `PLAN_MISSING`；命令规范形态见 `rdd-engine/references/planner-guide.md`「长程规划与滚动追踪」）。
 
 **消费端契约现成零改动**（设计保证）：
 - `delivery-bridge.ps1` 仅检查 ReviewFile 非空 + `verdicts[]` 字段合法性 + 字段约束

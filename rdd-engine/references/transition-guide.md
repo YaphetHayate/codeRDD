@@ -161,7 +161,7 @@ PM 归档完成后 `rdd-flow next` 输出 `longTask.triggered=true`（归档含 
 
 ```powershell
 # 单入口：PLANNER 接管（会话内派评审子代理，无需独立 AUDITOR 会话）
-$rdd = $null; $t = $null; try { $t = git rev-parse --show-toplevel } catch { }; foreach ($c in @($env:RDD_ENGINE_HOME; if ($t) { (Get-ChildItem $t -Recurse -Directory -Depth 3 -Filter 'rdd-engine').FullName }; "$HOME\.rdd\engine\current")) { if ($c -and (Test-Path "$c\scripts\rdd-flow.cmd")) { $rdd = $c; break } }; if (-not $rdd) { throw "rdd-engine 未定位" }; & "$rdd\scripts\start-role.cmd" -Role PLANNER -TaskJson <归档 task.json>
+$rdd = $null; $t = $null; try { $t = git rev-parse --show-toplevel } catch { }; foreach ($c in @($env:RDD_ENGINE_HOME; if ($t) { (Get-ChildItem $t -Recurse -Directory -Depth 3 -Filter 'rdd-engine').FullName }; "$HOME\.rdd\engine\current")) { if ($c -and (Test-Path "$c\scripts\rdd-flow.cmd")) { $rdd = $c; break } }; if (-not $rdd) { throw "rdd-engine 未定位（三级定位链：RDD_ENGINE_HOME → 项目内 rdd-engine → ~\.rdd\engine\current 全 miss）。安装/排障：GitHub Release 下载 rdd-engine.tgz 后运行 scripts/install-rdd-engine.ps1；协议详见 rdd-engine/references/engine-location.md" }; & "$rdd\scripts\start-role.cmd" -Role PLANNER -TaskJson <归档 task.json>
 ```
 
 - **单入口启动 PLANNER**：脚本投递的是**自举式指针消息**（"请以规划者（PLANNER）身份接管 … 先读 planner-guide.md，按 review-input-template.md 机械模板派需求审视子代理 … 随后执行 delivery-bridge promulgate **-ReviewMode subagent** …"——`-ReviewMode` 已内置在指针里，不可省：省略即 legacy 链，审查节点需 AUDITOR 会话结算，dsh 默认 preset 面不可派发）——规划者无角色卡，身份由消息 + `rdd-engine/references/planner-guide.md` 装载；三后端（CLI/Plus/dsh）一致。dsh 后端需 preset `rdd-planner`（部署前提见 planner-guide）。规划者经 `promulgate -ReviewFile <归档>/review/requirement-review.json` 机械消费（消费端契约零改动）。
@@ -221,7 +221,7 @@ $rdd = $null; $t = $null; try { $t = git rev-parse --show-toplevel } catch { }; 
 | CTO（DESIGN） | UX（阶段内串行/收窄）/ DEV（IMPL，整组汇聚后） | 设计文档归档完成：同组还有角色 → `set-route -To "UX"` 收窄；自己是最后一个 → `set-route -To "DEV" -Phase IMPL` | `/rdd-ux` `/rdd-dev` |
 | UX（DESIGN） | DEV（IMPL，整组汇聚后） | 同上：收窄或汇聚切换 | `/rdd-dev` |
 | QA（DESIGN 测试先行） | DEV（IMPL，整组汇聚后） | 测试用例归档完成，收窄或汇聚切换 | `/rdd-dev` |
-| QA（VERIFY 验收） | 已完成 / DEV（reopen 回 IMPL） | 功能+质量双通过 → 提交 → 标记已完成；任一硬性项不通过 → reopen 回 DEV（`-Phase IMPL`） | `/rdd-dev` |
+| QA（VERIFY 验收） | 已完成 / DEV（reopen 回 IMPL） | 功能+质量双通过 → 提交 → 标记已完成；任一硬性项不通过 → reopen 回 DEV（阶段由 `-To` 推导：`reopen -To DEV` 即回 IMPL；`reopen` 不接收 `-Phase`） | `/rdd-dev` |
 | DEV（IMPL） | QA（VERIFY） | 实现完成并自测通过，`set-route -To "QA" -Phase VERIFY`（DEV 不再自行提交） | `/rdd-qa` |
 
 > 进入下游优先用交接脚本（入口 B0，`start-role.cmd -Role <下游> -TaskId <n>`，脚本按 `RDD_RUNTIME` → `DSH_WEB_URL` → CLI 判据链自动选后端）；脚本不可用时手动 `/new` + 入口命令（B1）。

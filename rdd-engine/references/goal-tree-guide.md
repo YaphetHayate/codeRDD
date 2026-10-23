@@ -27,9 +27,9 @@
 
 **门禁**：claim 前置"依赖全满足"，满足判定 = 全部目标 `status ∈ {done, pruned}`。**pruned 视为满足 + 显式警告**（prune=义务解除，可见不静默）；未满足时 claim 报 `NODE_BLOCKED_BY_DEPS` 并附阻塞源清单。`next` 排除阻塞节点、单列 blocked 组。已 claimed 的在途节点不受后加依赖回溯影响。
 
-**机械校验（双入口，不静默接受）**：graft 与 `deps` 命令都跑全图 DAG 校验——环形（`DEP_CYCLE`）/ 自依（`DEP_SELF`）/ 目标不存在（`DEP_TARGET_NOT_FOUND`）一律原子拒绝。`deps` 变更限开放轮内（与 graft 纪律对齐）。
+**机械校验（双入口，不静默接受）**：graft 与 `deps` 命令都跑全图 DAG 校验——环形 / 自依 / 目标不存在 / 层级越界一律**原子拒绝**，统一错误码 `DEP_GRAPH_INVALID`（消息内以 环形 / 自依 / 目标不存在 等前缀区分具体判据；wake 形状边只落 WBS 容器层，槽位不存边——`DEP_LAYER_MISMATCH`）。`deps` 变更限开放轮内（与 graft 纪律对齐）；**remove 命中 promulgate 落账的裁定边（`state/adjudicated-deps.json`：需求依赖 / 审查 override / 合并重定向）须 `-UserVerdict <用户裁决原文>` 硬门**（`DEP_ADJUDICATED`——静默拆除会解除需求级排序门）。
 
-**审计**：`state/deps-log.jsonl` 只追加，每变更一行 `{event: dep-add|dep-remove, node, target, round, at}`（graft 声明的依赖同样入账）。
+**审计**：`state/deps-log.jsonl` 只追加，每变更一行 `{event: dep-add|dep-remove, node, target, round, at}`（graft 声明的依赖同样入账；裁定边的 remove 额外携带 `verdict` 字段 = 用户裁决原文）。桥接 run 的 `delivery-bridge status` 另有树-桥依赖对账（`deps_integrity`）：裁定边在活树缺影即警示。
 
 **渲染**：树形 outline 节点行阻塞标记（`⏸[阻塞源]`）；status / resume / 轮快照（round-NN.md）/ 结案报告（final-report.md）含「依赖关系」区，未满足依赖明显标记。
 
@@ -72,7 +72,7 @@
 
 | 面 | CLI | 使用者 | 能做什么 | 不能做什么 |
 |----|-----|--------|---------|-----------|
-| **管理面** | `goal-tree.cmd` | 规划者 会话（发起长程任务的角色） | start / graft / prune / settle / redo / conclude / round-start / round-end / deps / status / resume / **dispatch（为 pending 节点拉角色会话，见 §dispatch 派发命令）** | 不产生证据回调（不采证） |
+| **管理面** | `goal-tree.cmd` | 规划者 会话（发起长程任务的角色） | start / graft / prune / settle / redo / reset / conclude / round-start / round-end / deps / status / resume / **dispatch（为 pending 节点拉角色会话，见 §dispatch 派发命令）** | 不产生证据回调（不采证） |
 | **消费面** | `goal-tree-leaf.cmd` | 子代理 worker | next / claim / report / status（本节点） | 物理上无法改动树结构（CLI 硬编码字段白名单，只更新本节点 claim/status 字段） |
 
 > 调用约定与 rdd-flow 相同：`$rdd` 指向 rdd-engine 目录（见 `task-routing.md`），输出 UTF-8 JSON。
@@ -244,7 +244,7 @@ worker 的 `report` 必须提交固定核心 schema（引擎机械校验，领�
 
 **语义**：为**通用 run**（模块 / 运维任务——树后无 task.json 归档）的一个 pending 节点拉起角色会话。**角色 × 任务 × 节点三绑定**：`-Role` 与 `-NodeId` 显式指定，任务**不是参数**——取自节点本身（graft 写入的 title/task，单源）注入 worker 指针（`start-role -GoalTreeWorker` 模式，免归档解析；三后端一致）。worker label = 角色小写，派发指针规定新会话第一动作 = `goal-tree-leaf claim`，与消费面契约无缝衔接。
 
-**前置门（与 leaf claim 同源，提前确定性反馈）**：开放轮（`NO_OPEN_ROUND`）→ 节点存在（`NODE_NOT_FOUND`）→ 非 goal 根（`GOAL_NODE_NOT_DISPATCHABLE`——目标根是终局锚不是工作单元）→ 恰 pending（`NODE_NOT_DISPATCHABLE`——卡死 claimed 由下一 worker `claim -Steal` 回收；reported 等你 settle/prune）→ 依赖满足（`NODE_BLOCKED_BY_DEPS`——避免拉起一个第一动作必失败的会话）。
+**前置门（与 leaf claim 同源，提前确定性反馈）**：开放轮（`NO_OPEN_ROUND`）→ 节点存在（`NODE_NOT_FOUND`）→ 非 goal 根（`GOAL_NODE_NOT_DISPATCHABLE`——目标根是终局锚不是工作单元）→ 非 WBS 容器（`CONTAINER_NODE_NOT_DISPATCHABLE`——type=sub/accept 是需求分解层，不可派发，其角色槽才可）→ 恰 pending（`NODE_NOT_DISPATCHABLE`——卡死 claimed 由下一 worker `claim -Steal` 回收；reported 等你 settle/prune）→ 依赖满足（`NODE_BLOCKED_BY_DEPS`——避免拉起一个第一动作必失败的会话）。
 
 **工单文件通道（dispatch-brief-file）**：dispatch 在锁内把节点完整工单（title + task 全文）落盘 `state/briefs/<node-id>.md`，以 ASCII 路径经 `-TaskBriefFile` 传给 start-role——goal-tree → start-role 一跳跨 cmd.exe 参数重解析，富文本走 CLI 有静默损伤风险（同一纪律：graft `-TasksFile` / report `-CallbackFile` / start `-GoalFile`）。写入失败降级回 360 字符内联 brief（fail-soft，dispatch 不因运输失败而死）。claim 响应的 node 视图仍是全文正典读；指针消息中的预注入副本在 claim 被拒时作废（改领以 `next`/claim 返回为准）。`-DryRun` 亦写该文件（内容幂等，不动审计与节点状态）。
 
@@ -329,7 +329,7 @@ await pipeline(pendingNodes, [
 ### 消费面（goal-tree-leaf.cmd）
 
 ```powershell
-& "$rdd\scripts\goal-tree-leaf.cmd" -Command next   -RunId <id> [-Limit 5]
+& "$rdd\scripts\goal-tree-leaf.cmd" -Command next   -RunId <id> [-Limit <n>]   # -Limit 缺省 0 = 不限（截断只作用于 pending 组；blocked 组恒全量）
 & "$rdd\scripts\goal-tree-leaf.cmd" -Command claim  -RunId <id> -NodeId <nodeId> -Worker <label> [-Steal] [-OnBehalfOf <label>]
 & "$rdd\scripts\goal-tree-leaf.cmd" -Command report -RunId <id> -Worker <label> -CallbackFile <path>   # -Callback 仅建议纯 ASCII 短串
 & "$rdd\scripts\goal-tree-leaf.cmd" -Command status -RunId <id> [-NodeId <nodeId>]

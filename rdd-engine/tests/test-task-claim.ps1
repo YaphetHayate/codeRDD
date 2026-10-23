@@ -20,9 +20,17 @@ function Assert-True { param([bool]$Cond, [string]$Name, [string]$Detail = '')
 }
 
 function Invoke-Flow { param([string[]]$ArgList)
-    $all = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $FlowPs1) + $ArgList
-    $out = & powershell @all 2>&1 | Out-String
-    $code = $LASTEXITCODE
+    # rdd-flow writes [i]/[!] notices to stderr BY DESIGN (data JSON stays on stdout).
+    # Same harness pattern as test-session-reuse: suspend EAP, park stderr in a file,
+    # keep stdout pure for ConvertFrom-Json.
+    $prevEap = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    $errFile = Join-Path $Work ('flow-err-' + [guid]::NewGuid().ToString('N').Substring(0, 8) + '.txt')
+    try {
+        $all = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $FlowPs1) + $ArgList
+        $out = & powershell @all 2> $errFile | Out-String
+        $code = $LASTEXITCODE
+    } finally { $ErrorActionPreference = $prevEap }
     try { $json = ($out | ConvertFrom-Json) } catch { $json = $null }
     return @{ json = $json; exit = $code; raw = $out }
 }

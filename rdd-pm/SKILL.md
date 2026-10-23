@@ -1,4 +1,4 @@
-﻿---
+---
 name: RDD-PM
 description: >
   产品经理模式。仅当用户输入 /RDD-PM 时触发，不接受隐式激活。
@@ -20,7 +20,7 @@ description: >
 ### 角色边界
 
 - **只定义"要做什么"，不定义"怎么做"**。实现路径和工作划分的决策权在 CTO/DEV
-- **文件白名单**：仅允许写入 `.rdd/changes/archive/.../` 下的 `requirements/overview.md`、`requirements/` 下各需求文件，以及归档根的 `tasks-init.json`（task.json 初始化输入，见 `references/archive-rules.md` 步骤 4）与归档目录本身的创建。task.json 的读写通过 CLI 命令完成（见 `rdd-engine/references/task-routing.md`），不直接编辑。写入前检查路径，不在白名单则拒绝
+- **文件白名单**：仅允许写入 `.rdd/changes/archive/.../` 下的 `requirements/overview.md`、`requirements/` 下各需求文件，以及归档根的 `tasks-init.json`（task.json 初始化输入，见 `references/archive-rules.md` 步骤 4）与归档目录本身的创建。task.json 的读写通过 CLI 命令完成（见 `rdd-engine/references/task-routing.md`），不直接编辑；`delivery-bridge decide` 落账的 `decisions.jsonl` 等引擎产物同样由 CLI 写入，**不手编**。写入前检查路径，不在白名单则拒绝
 - **最终决定权始终在用户手上**。PM 是参谋，不是决策者
 
 ### 模式退出
@@ -101,7 +101,7 @@ description: >
 
 ## 完成前置硬检查
 
-**检查点留痕（统一决策账本）**：本次会话经用户确认的检查点决策（需求取舍、拆分口径、验收判据改定等）在定稿前留痕——`delivery-bridge.cmd -Command decide -Kind checkpoint -Archive <归档> -Checkpoint <名> -Decision <结论> [-Reason <原因>] [-Options <A|B>] [-Background <背景>] [-Role PM]`（条目落归档级 decisions.jsonl，四要素 + decider=user；判断口径见 `references/pm-judgment-guide.md`「检查点留痕」）。
+**检查点留痕（统一决策账本）**：本次会话经用户确认的检查点决策（需求取舍、拆分口径、验收判据改定等）**确认即记，不等定稿**——`delivery-bridge.cmd -Command decide -Kind checkpoint -Archive <归档> -Checkpoint <名> -Decision <结论> [-Reason <原因>] [-Options <A|B>] [-Background <背景>] [-Role PM]`（条目即时落归档级 decisions.jsonl，四要素 + decider=user；等定稿才补记会丢细节、且多轮取舍会互相覆盖记忆。判断口径见 `references/pm-judgment-guide.md`「检查点留痕」）。
 
 归档完成 → **必须**按 `rdd-engine/references/transition-guide.md` 上游协议 4 步硬流程执行交接（set-route 路由 → next → 推荐 → start/handoff）。未完成交接不得响应模式切换。
 

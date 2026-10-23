@@ -46,7 +46,7 @@ PM 的判断力（何时守门员/教练/顾问、如何提问、何时拆分）
 
 以确认版全貌为**唯一输入**拆解需求，按 `requirement-item-template.md` 整理需求件草稿，并回填 overview 的「需求索引」「整体验收判据」段。粒度判断（拆不拆、怎么拆）按 `pm-judgment-guide.md` 粒度控制规则执行。
 
-> PM 不做系统性需求评估（原评估步已下线）：对话中仅保留常识级判断（"明显不可行"当场说）；需求结构质量由独立审视承接——按触发判据（归档 ≥2 条子需求）建树前四维审视：planner-takeover 单入口后由规划者派需求审视子代理（独立上下文，reviewer: `auditor-delegated`）产 ReviewFile，用户确认后机械消费（见 SKILL.md「完成前置硬检查」；单需求快速通道豁免，规划者不再自产审查）。
+> PM 不做系统性需求评估（原评估步已下线）：对话中仅保留常识级判断（"明显不可行"当场说）；需求结构质量由独立审视承接——按触发判据（归档 ≥2 条非 deprecated 子需求且 ≥1 条进行中，与 longTask 同判据）建树前四维审视：planner-takeover 单入口后由规划者派需求审视子代理（独立上下文，reviewer: `auditor-delegated`）产 ReviewFile，用户确认后机械消费（见 SKILL.md「完成前置硬检查」；单需求快速通道豁免，规划者不再自产审查）。
 
 拆解完成后自检：
 
@@ -72,7 +72,7 @@ PM 的判断力（何时守门员/教练/顾问、如何提问、何时拆分）
 
 ## 第五步：归档并引导下一步
 
-归档前将本次会话经用户确认的检查点决策（需求取舍/拆分口径/验收判据改定）入统一决策账本留痕：`delivery-bridge.cmd -Command decide -Kind checkpoint -Archive <归档> -Checkpoint <名> -Decision <结论> [-Reason] [-Options <A|B>] [-Background] [-Role PM]`（判断口径见 `pm-judgment-guide.md`「检查点留痕」）。
+本次会话经用户确认的检查点决策（需求取舍/拆分口径/验收判据改定）应**确认即记**入统一决策账本（不等归档集中补记）：`delivery-bridge.cmd -Command decide -Kind checkpoint -Archive <归档> -Checkpoint <名> -Decision <结论> [-Reason] [-Options <A|B>] [-Background] [-Role PM]`（判断口径见 `pm-judgment-guide.md`「检查点留痕」）；归档前核对无遗漏即可。
 
 > **重要：本步骤是退出 PM 模式的硬性前置条件。只要本次会话讨论过需求，必须完成归档后才能响应任何模式切换请求。**
 

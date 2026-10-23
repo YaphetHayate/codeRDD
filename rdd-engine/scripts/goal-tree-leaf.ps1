@@ -1096,6 +1096,18 @@ function Invoke-Claim {
                 stolen  = $stole
                 node    = (Convert-NodeToPublicView $node)
                 dep_note = $(if ($pruneNote) { $pruneNote } else { $null })
+                # callback contract at the point of use (worker friction: verdict
+                # enums live only in planner-side docs — workers guessed 'pass'
+                # and burned 3 invalid report attempts. Mirror of the enforced
+                # schema in Test-CallbackStructure, claim-time visibility.)
+                callback_contract = @{
+                    verdict     = "done | failed | inconclusive (structural failures keep the node claimed — no transition)"
+                    confidence  = "number in [0,1] (out-of-range is clamped with a note)"
+                    summary     = "non-empty text: what was delivered"
+                    citations   = "@({ ref, locator }) — ref must be a real path under the run's RefRoots; out-of-range citations fail the range check (never silently dropped)"
+                    next_suggestion = "string, required (may be empty)"
+                    extras      = "optional domain fields, passed through unvalidated"
+                }
                 report_next = "goal-tree-leaf.cmd -Command report -RunId $RunId -Worker $Worker -CallbackFile <path-to-callback.json>"
                 lock    = $lockInfo
             }

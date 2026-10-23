@@ -197,7 +197,7 @@
 
 **`start`** — 建树。`-RunId`（自命名）+ `-Goal <一句话目标>` + `-RefRoots <引用根>` 必带；`-Title <标题>` 决定面板根行显示（缺省 goal-root 模式默认 "goal"、普通模式默认 "root"，建议始终传）；`-GoalRoot -GoalFile <path>` 成对使用时根节点升格为终局锚（承载原始目标全文，conclude 以它收口，见上方「根节点」）；预算三参 `-MaxRounds`（默认 5）/`-NodeWidth`（单节点子宽，默认 4）/`-MaxNodes`（默认 30）建树时声明，运行期可经 `budget` 命令**只增**扩展（硬门 `-UserVerdict`，见速查表）。
 
-**`graft`** — 生长主力。`-Parent <父 NodeId>` + `-TasksFile`；返回 `data.grafted[]`（新节点 id/title/depends_on 即在此拿）。条目级 `depends_on`/`ref` 优先于 CLI 级 `-DependsOn`/`-Ref` 默认；超预算（`NODE_LIMIT_EXCEEDED` 等）原子拒绝树不破坏。
+**`graft`** — 生长主力。`-Parent <父 NodeId>` + `-TasksFile`；返回 `data.grafted[]`（新节点 id/title/depends_on 即在此拿）。条目级 `depends_on`/`ref` 优先于 CLI 级 `-DependsOn`/`-Ref` 默认；超预算原子拒绝树不破坏（`NODES_EXCEEDED` / `WIDTH_EXCEEDED` / `ROUNDS_EXCEEDED`）。
 
 **`dispatch`** — 核心派发。`-NodeId <pending 节点>` + `-Role`；任务非参数——取自节点单源注入 worker 指针，一次派发完成「角色 × 任务 × 节点」三绑定。前置门与 claim 同源提前校验：开放轮（`NO_OPEN_ROUND`）/ 节点存在（`NODE_NOT_FOUND`）/ 非 goal 根（`GOAL_NODE_NOT_DISPATCHABLE`）/ 恰 pending（`NODE_NOT_DISPATCHABLE`）/ 依赖满足（`NODE_BLOCKED_BY_DEPS`）。`-DryRun` 只打印指针不落账；真实派发落 `state/dispatch-log.jsonl` 并经 `status.dispatches` 透出。新会话第一动作 = `goal-tree-leaf claim -Worker <角色小写>`。**效率要领：无依赖的 pending 节点并行派发**（连续多次 dispatch 各拉各的会话，一个回调周期推进多条线，如 CTO ∥ UX ∥ QA 齐发）；有依赖的等上游 settle 解锁再派——**依赖图就是你的并行计划表**。
 

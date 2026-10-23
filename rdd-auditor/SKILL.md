@@ -50,7 +50,7 @@ description: >
 1. **审视对象 = 归档需求集（需求侧）/ 阶段设计产物（设计侧，双调用点）。** 需求侧审视 overview + 各需求文档（建树前）；设计汇聚审查阶段全部落盘设计产物（DESIGN 全 settle 后 / IMPL 前，**阶段汇聚**——同视野并审，禁逐设计串行）。一对象一次审视（覆盖重产，不复用旧结论——驳回/重做波回流修订后必重审）
 2. **四维独立审视 = 完整审视面。** 每一维度都必须产出：覆盖完整性（overview 功能点 ↔ 子需求双向映射，空洞/孤儿显式列出）/ 独立性与粒度（一条需求 = 一个用户可感知完整成果）/ 依赖标注真实度（机读依赖 vs 实际依赖）/ 验收标准可测性（可观察输出或命令形态）。漏一维 = 审视不完整，不算完成
 3. **消费端契约零改动。** `-ReviewFile` 消费端（`delivery-bridge.ps1` promulgate）与设计审查入库（`design-review -Action submit`）契约不变——生产端迁移只改 reviewer 署名（`auditor-delegated` / `auditor`）与 production 留痕，值域已扩、存量只读不回溯
-4. **触发判据机械化。** 归档含 ≥2 条非 deprecated 子需求（与 longTask 同判据，`rdd-flow next` 现算）→ 审视必经（单需求快速通道豁免）；设计侧触发 = 阶段全部任务越过 DESIGN 且 ≥1 落盘设计产物（无设计产物/无 in-run 设计工作 → `exempt` 豁免）。派发/入库时序见 `rdd-engine/references/planner-scenarios.md` §设计汇聚审查
+4. **触发判据机械化。** 归档含 ≥2 条非 deprecated 子需求**且 ≥1 条 active**（与 longTask 同判据，`rdd-flow next` 现算；completed 计入总数不计入 active）→ 审视必经（单需求快速通道豁免）；设计侧触发 = 阶段全部任务越过 DESIGN 且 ≥1 落盘设计产物（无设计产物/无 in-run 设计工作 → `exempt` 豁免）。派发/入库时序见 `rdd-engine/references/planner-scenarios.md` §设计汇聚审查
 5. **记账回流 = 组织学习。** 每次审视入账（`.rdd/review-ledger.jsonl`）；同类 `gap_type` 累计 ≥3 次 → 审视结论中建议回流 PM 流程改进需求（只建议不代建）。审计追溯 + 组织学习第一例
 
 ### 模式退出（强形态会话）
@@ -138,10 +138,10 @@ description: >
 
 | 路径 | 加载 |
 |------|------|
-| 四维审视方法论（覆盖完整性 / 独立性与粒度 / 依赖标注真实度 / 验收标准可测性） → | `references/requirement-review.md#四维审视方法论` |
-| ReviewFile JSON schema → | `references/requirement-review.md#reviewfile-schema` |
-| 人读镜像 `requirement-review.md` 模板 → | `references/requirement-review.md#人读镜像模板` |
-| 记账规范（`.rdd/review-ledger.jsonl` schema / ≥3 次回流判定） → | `references/requirement-review.md#记账规范` |
+| 四维审视方法论（覆盖完整性 / 独立性与粒度 / 依赖标注真实度 / 验收标准可测性） → | `references/requirement-review.md`「二、四维审视方法论」 |
+| ReviewFile JSON schema → | `references/requirement-review.md`「三、ReviewFile Schema」 |
+| 人读镜像 `requirement-review.md` 模板 → | `references/requirement-review.md`「四、人读镜像模板」 |
+| 记账规范（`.rdd/review-ledger.jsonl` schema / ≥3 次回流判定） → | `references/requirement-review.md`「五、记账规范」 |
 | 驳回协议（`reject_return` 前置动作 / 驳回记录追加行） → | `references/requirement-review.md#驳回指引` + `rdd-engine/references/rejection-protocol.md`「评审方发起的驳回（双形态）」节 |
 | 设计汇聚审查（五查维度 / DesignReviewFile 契约 / 触发记账 / 需求侧分工 / 三条边界） → | `references/design-review.md` |
 | 评审子代理输入模板（机械清单 + 禁令段 + 常量表单源） → | `rdd-engine/references/review-input-template.md` |

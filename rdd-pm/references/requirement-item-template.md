@@ -14,7 +14,7 @@
 
 ## 依赖关系标注规范（机读）
 
-规划者（promulgate）从本字段**机械推导**任务级依赖：识别字段值（括号备注剥离后）中带 `需求` / `#` 前缀的编号（如 `#3`、`需求 3`），映射到归档内对应任务的初始节点。散文式描述推导为空依赖，将退回需求审视兜底（AUDITOR 已部署时由 AUDITOR 独立审视，标 `tree_adjudicated` + `depends_on_override`；PLANNER 自产审查时标 `tree_adjudicated` 同口径）。
+规划者（promulgate）从本字段**机械推导**任务级依赖：识别字段值（括号备注剥离后）中带 `需求` / `#` 前缀的编号（如 `#3`、`需求 3`），映射到归档内对应任务的初始节点。散文式描述推导为空依赖，将退回需求审视兜底（触发审视时由审视方标 `tree_adjudicated` + `depends_on_override` 修正——单入口子代理形态署名 `auditor-delegated`，强形态独立会话署名 `auditor`）。
 
 **格式**：
 

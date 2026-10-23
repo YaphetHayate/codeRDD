@@ -107,7 +107,7 @@ engine 通过 `exploration-guide.md` 管理全局可复用缓存。
 $rdd = $null; $t = $null; try { $t = git rev-parse --show-toplevel } catch { }; foreach ($c in @($env:RDD_ENGINE_HOME; if ($t) { (Get-ChildItem $t -Recurse -Directory -Depth 3 -Filter 'rdd-engine').FullName }; "$HOME\.rdd\engine\current")) { if ($c -and (Test-Path "$c\scripts\rdd-flow.cmd")) { $rdd = $c; break } }; if (-not $rdd) { throw "rdd-engine 未定位（三级定位链：RDD_ENGINE_HOME → 项目内 rdd-engine → ~\.rdd\engine\current 全 miss）。安装/排障：GitHub Release 下载 rdd-engine.tgz 后运行 scripts/install-rdd-engine.ps1；协议详见 rdd-engine/references/engine-location.md" }; & "$rdd\scripts\rdd-flow.cmd" -Command validate -Role DEV -Archive ".rdd/changes/archive/2026-06-04-engine-adapter-modularization"
 ```
 
-`validate` 只返回任务数量、忽略数量和 warning 数量，用于快速检查流转是否可执行。
+`validate` 返回 `archive`、`role`、任务数量、忽略数量、warning 数量与 **warnings 全文清单**（逐条可读，不只计数），用于快速检查流转是否可执行。
 
 ## 流转命令语义
 
@@ -116,7 +116,7 @@ $rdd = $null; $t = $null; try { $t = git rev-parse --show-toplevel } catch { }; 
 | `next` | 汇总 task.json 中各角色待处理任务 | 可流转角色、启动命令用法、各角色任务数 | 不支持 |
 | `start` | 为指定角色生成启动引导和 handoff packet | skill 路径、启动 prompt、最小交接包 | 支持，>=0 时只筛选单条 |
 | `handoff` | 只生成指定角色的最小交接包 | JSON / Markdown handoff | 支持，>=0 时只筛选单条 |
-| `validate` | 校验指定角色是否有可处理任务 | task/ignored/warning 计数 | 支持，>=0 时只校验单条 |
+| `validate` | 校验指定角色是否有可处理任务 | archive/role、task/ignored/warning 计数 + warnings 全文 | 支持，>=0 时只校验单条 |
 
 ## 角色引导规则
 

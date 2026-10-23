@@ -1,7 +1,7 @@
-# repo-root location chain acceptance tests (git-optional engine)
+﻿# repo-root location chain acceptance tests (git-optional engine)
 # Validates the frozen Resolve-RepoRoot mirror (five-level chain: env -> git ->
 # .git ancestor -> .rdd/install.json ancestor -> cwd) in three layers:
-#   1. mirror invariants   identical function text across the 8 data-plane
+#   1. mirror invariants   identical function text across the 9 data-plane
 #                          scripts + exactly one `git rev-parse` per script
 #   2. chain semantics     extracted function under controlled cwd / env / PATH
 #   3. end-to-end          rdd-flow / explore run under Windows PowerShell 5.1
@@ -20,7 +20,8 @@ $Work       = Join-Path $env:TEMP ('repo-root-test-' + [guid]::NewGuid().ToStrin
 
 $MirrorFiles = @(
     'rdd-flow.ps1', 'explore.ps1', 'explore-store.ps1', 'goal-tree.ps1',
-    'goal-tree-leaf.ps1', 'delivery-bridge.ps1', 'start-role.ps1', 'sync-ux-subagents.ps1'
+    'goal-tree-leaf.ps1', 'delivery-bridge.ps1', 'start-role.ps1', 'sync-ux-subagents.ps1',
+    'tips.ps1'
 )
 
 $Results = @()

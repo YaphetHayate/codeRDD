@@ -49,7 +49,7 @@ PM 归档（longTask 信号触发）→ start-role -Role PLANNER -TaskJson ...�
 
 **阶段链模型**：任务路由带 `phase`，全序 `REQ → DESIGN → IMPL → VERIFY → 完成`；阶段内角色白名单并行（DESIGN = CTO∥UX∥QA，QA 测试先行——尽量与 CTO 同期而非堆到 VERIFY，见速查 6）。多 owner 任务颁布时同需求各角色共享一个需求容器、每角色一个槽（wake 缺省形状，引擎 1.2.0 起；`-Shape legacy` 下仍为每角色一个链头节点）；settle 阶段感知：阶段内收窄不流转，最后一个 owner settle 才整组切换阶段并收敛 graft 下一阶段。rollback 显式 `-To <角色集> -Phase <REQ/DESIGN/IMPL/VERIFY>` 指定回退目标（回退 REQ 可达：`-To "PM" -Phase REQ`）；展示面用 `∥`（阶段内并行）/`→`（阶段间）渲染。旧归档（phase=null）保守降级为原线性链行为。阶段白名单真源 `references/phase-model.md`。
 
-**依赖**：promulgate 从各需求文档「依赖关系」字段机读推导（标注格式以 `rdd-pm/references/requirement-item-template.md` 为准；单遍建树只回连先建节点，前向引用需审查门 `depends_on_override` 兜底）；运行中调整走 `goal-tree deps add/remove`（DAG 校验 + 审计）。目标根（承载归档原始需求）不可认领、不参与依赖，是 conclude 的终局锚点。
+**依赖**：promulgate 从各需求文档「依赖关系」字段机读推导（标注格式以 `rdd-pm/references/requirement-item-template.md` 为准；单遍建树只回连先建节点，前向引用需审查门 `depends_on_override` 兜底，引擎自动缝合缺边）。运行中调整走 `goal-tree deps add/remove`（DAG 校验 + 审计）——**remove 命中颁布落账的裁定边（`state/adjudicated-deps.json`）须 `-UserVerdict <用户裁决原文>`**（`DEP_ADJUDICATED`）：这类边是需求级排序门，静默拆除会让依赖任务提前解锁且 `bridge.dep_task_ids` 与活树脱钩（status 的 `deps_integrity` 对账警示可查）；确需改序默认走 `replan`。目标根（承载归档原始需求）不可认领、不参与依赖，是 conclude 的终局锚点。
 
 ## 交付角色分工与裁定触点（裁定视角）
 
@@ -194,7 +194,7 @@ worker 完成即经 `goal-tree-leaf.cmd -Command report` 回调**你**（回调�
 ```
 
 - `verdict` 枚举 `pass / tree_adjudicated / reject_return`；未列出的任务 = 隐式通过。`pass` 不得携带 `depends_on_override`/`merged_into_task_id`；两者不得同现于一条 verdict（合并任务不建节点）；同任务重复 verdict、指向不在归档的任务均拒。
-- **前置动作**（脚本消费前审视方必须完成）：`reject_return` → 需求文档「## 驳回记录」追加行 + `rdd-flow reject -From <PLANNER/AUDITOR/AUDITOR-DELEGATED> -To PM`（见 `rejection-protocol.md`「PLANNER / AUDITOR 发起的驳回」——子代理形态驳回由规划者代递，署名 `auditor-delegated`）；`merged_into_task_id` → `rdd-flow deprecate -TaskId <被并入方>`（误判经 `reopen` 可恢复）。
+- **前置动作**（脚本消费前审视方必须完成）：`reject_return` → 需求文档「## 驳回记录」追加行 + `rdd-flow reject -From <PLANNER/AUDITOR/AUDITOR-DELEGATED> -To PM`（见 `rejection-protocol.md`「PLANNER / AUDITOR 发起的驳回」——子代理形态驳回由规划者代递，署名 `auditor-delegated`）；`merged_into_task_id` → `rdd-flow deprecate -TaskId <被判合并的那条任务（verdict 自身的 task_id）>`——并入方（`merged_into_task_id` 指向者）必须保持可交付，误把并入方废弃会在建树前 `REVIEW_FILE_INVALID` 硬拒（误判经 `reopen` 可恢复）。
 - **机械消费保证**：排除任务不建节点、不进 bridge.tasks、不被推送；依赖被合并排除的任务重定向到并入方；依赖悬空于驳回排除任务硬拒 `REVIEW_EXCLUDED_DEP`（**禁止静默丢弃依赖**——静默丢弃会让依赖方被过早推送，正是审查门要消灭的错序 bug 类）；审查显式依赖指向后位任务时经 `deps add` 延后缝合（DAG 校验 + 审计），缝合**只补缺失边**（已建边不重放：后向边由单遍建树表达，重放会撞 goal-tree `DEP_EXISTS` 并中止颁布）。
 - **错误码**：`REVIEW_FILE_INVALID`（解析/schema/字段一致性）/ `REVIEW_TASK_NOT_FOUND`（task_id/override/merge 指向不在归档）/ `REVIEW_EXCLUDED_DEP`（依赖悬空）。
 - **结论呈现**：`report/review.md`（人读逐条结论表）+ promulgate 返回值 `review` 段 + bridge.json `review` 段。用户可随时干预或推翻裁定（**最终裁决权在用户**）：建树前直接改 ReviewFile 重产出；run 已颁布 → 误合并 `rdd-flow reopen` 恢复 + `deps`/graft 补树内调整，误驳回 PM 按驳回协议辩解翻案或 `reopen`，会话内留痕说明。
@@ -273,7 +273,7 @@ worker 完成即经 `goal-tree-leaf.cmd -Command report` 回调**你**（回调�
 
 **感知面（新链 `ready` 待派审）**：plan-log `design_review_ready` progress 事件 + `status` 警示 + `resume` 步骤清单（含 submit 命令行）三面机械可感；**无自动会话推送**（设计 #8：删除 AutoDispatch 推送——派审是规划者动作）。规划者纪律：**settle 尾必查待审阶段**（planner-guide 硬约束 10）。
 
-**降级与兼容**：缺键 legacy run 的 `design-review` submit 报 `DESIGN_REVIEW_LEGACY_RUN`（照旧 settle 节点通道）；legacy 链 AUDITOR 部署判据（双探：引擎仓 `rdd-auditor/SKILL.md` + `.claude/skills/rdd-auditor/SKILL.md` / `$env:USERPROFILE` 同名 / 项目 `dsh/presets/rdd-auditor`）不变——未部署即不落段无门（旧 run 逐字节）。新链审查节点失败场景不存在；legacy 审查节点自身失败（会话死）走 reclaim dead-claim 通道。
+**降级与兼容**：缺键 legacy run 的 `design-review` submit 报 `DESIGN_REVIEW_LEGACY_RUN`（照旧 settle 节点通道）；legacy 链 AUDITOR 部署判据（双探：引擎仓旁挂 `rdd-auditor/SKILL.md` + 项目 `dsh/presets/rdd-auditor`，`Test-AuditorDeployed`）不变——未部署即不落段无门（旧 run 逐字节）。新链审查节点失败场景不存在；legacy 审查节点自身失败（会话死）走 reclaim dead-claim 通道。
 
 **触发记账**：裁定落盘时引擎自动追加 `.rdd/review-ledger.jsonl`（汇总 + fail 逐 blocking 条目，reviewer 署名 = 枚举；同 dimension 同 run ≥3 次 → 回流建议条目，只建议不代建）。
 

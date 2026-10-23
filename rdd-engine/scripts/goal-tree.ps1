@@ -159,7 +159,9 @@ goal-tree.cmd — 树管理面 CLI（仅规划者会话；worker 消费面是 go
   settle       -NodeId <n> -Verdict <useful|useless> [-Evidence]
   redo         -NodeId <n> -Worker <角色小写> -FailureRef <失败清单文件>   （打回原持有者原地重做）
   prune        -NodeId <n> [-Reason]                                        （级联剪枝）
-  deps         -Node <n> -DependsOn <n,n> | -List
+  deps         -DepAction add|remove|list -NodeId <n> -On <m> [-UserVerdict <用户裁决原文>]
+               （add/remove 走 DAG 校验 + deps-log 审计；remove 命中 promulgate 落账的裁定边
+                 （state/adjudicated-deps.json：需求依赖/审查 override/合并重定向）须 -UserVerdict 硬门）
   round-start  （开轮；status 触碰会兜底补推）
   round-end    [-Summary <本轮结论> -Decision <下轮方向>]
   status       [-View summary|dispatches]                                  （对齐态势）
@@ -901,16 +903,19 @@ function Get-RoundState {
 function Get-DepsLogPath { param([string]$RunDir); Join-Path (Get-StateDir $RunDir) "deps-log.jsonl" }
 
 function Add-DepsLogLine {
-    # one line per dependency change: {event: dep-add|dep-remove, node, target, round, at}
-    param([string]$RunDir, [string]$Event, [string]$Node, [string]$Target, [int]$Round)
+    # one line per dependency change: {event: dep-add|dep-remove, node, target, round, at};
+    # dep-remove of an adjudicated edge additionally carries the verbatim user verdict.
+    param([string]$RunDir, [string]$Event, [string]$Node, [string]$Target, [int]$Round, [string]$Verdict = '')
     $p = Get-DepsLogPath $RunDir
-    $line = ConvertTo-Json @{
+    $fields = [ordered]@{
         event  = $Event
         node   = $Node
         target = $Target
         round  = $Round
         at     = (Get-UtcNowIso)
-    } -Depth 4 -Compress
+    }
+    if ($Verdict -ne '') { $fields['verdict'] = $Verdict }
+    $line = ConvertTo-Json $fields -Depth 4 -Compress
     [System.IO.File]::AppendAllText($p, $line + "`n", $script:Utf8NoBom)
     # read-back finish: last non-empty line must parse (same contract as ledger/round-log)
     $all = @([System.IO.File]::ReadAllLines($p) | Where-Object { $_.Trim() -ne "" })
@@ -2948,6 +2953,22 @@ function Invoke-Resume {
 # silently accepted. Changes are limited to open rounds (same discipline as graft)
 # and audited to state/deps-log.jsonl (append-only, one line per change).
 
+function Read-AdjudicatedDeps {
+    # state/adjudicated-deps.json (written by delivery-bridge promulgate): the
+    # ADJUDICATED requirement-level edge set {node, on, task_id, on_task_id,
+    # source}. Absent on non-bridge runs (plain goal-tree runs) and on bridge
+    # runs promulgated before this file existed — both return $null (guard off).
+    param([string]$RunDir)
+    $p = Join-Path (Get-StateDir $RunDir) "adjudicated-deps.json"
+    if (-not (Test-Path -LiteralPath $p)) { return $null }
+    try {
+        $obj = [System.IO.File]::ReadAllText($p, [System.Text.Encoding]::UTF8) | ConvertFrom-Json
+        if ($null -eq $obj -or $null -eq $obj.edges) { return $null }
+        return @($obj.edges)
+    }
+    catch { return $null }
+}
+
 function Invoke-Deps {
     param([string]$RunDir)
 
@@ -3014,6 +3035,24 @@ function Invoke-Deps {
             if ($current -notcontains $On) {
                 Write-ErrorResult "DEP_NOT_FOUND" "Node $NodeId does not depend on $On (nothing to remove)" 1
             }
+            # adjudicated-edge hard gate (silent-dep-disarm regression): edges the
+            # delivery bridge established from the ADJUDICATED dependency set
+            # (requirement deps + review override + merge redirects — recorded by
+            # promulgate in state/adjudicated-deps.json) ARE the requirement-level
+            # ordering gate. A silent remove disarms every dependent claim behind
+            # the edge with zero decision trace (deliver-2026-10-23 incident: all
+            # three container edges stripped 26 minutes after promulgate — tasks
+            # #2/#3 unlocked ahead of their adjudicated order, bridge.dep_task_ids
+            # left inconsistent with the live tree). Route an intentional removal
+            # through replan, or record the user ruling verbatim.
+            $adjudicated = Read-AdjudicatedDeps $RunDir
+            if ($null -ne $adjudicated) {
+                $hit = @($adjudicated | Where-Object { ([string]$_.node) -eq $NodeId -and ([string]$_.on) -eq $On })
+                if ($hit.Count -gt 0 -and [string]::IsNullOrWhiteSpace($UserVerdict)) {
+                    $e = $hit[0]
+                    Write-ErrorResult "DEP_ADJUDICATED" "deps remove rejected (nothing written): edge $NodeId -> $On was adjudicated (task #$([int]$e.task_id) depends on task #$([int]$e.on_task_id), source '$($e.source)') — it IS the requirement-level ordering gate; removing it silently disarms every dependent claim (wake shape: the slot gate inherits the container edge). Use replan (re-adjudication) or record the user ruling verbatim with -UserVerdict <用户裁决原文> (written into deps-log)." 1
+                }
+            }
             $newDeps = @($current | Where-Object { $_ -ne $On })
         }
 
@@ -3027,7 +3066,7 @@ function Invoke-Deps {
 
         $node.depends_on = $newDeps
         Write-TreeFile $RunDir $tree
-        Add-DepsLogLine $RunDir $(if ($DepAction -eq "add") { "dep-add" } else { "dep-remove" }) $NodeId $On $round
+        Add-DepsLogLine $RunDir $(if ($DepAction -eq "add") { "dep-add" } else { "dep-remove" }) $NodeId $On $round $(if ($DepAction -eq "remove") { [string]$UserVerdict } else { '' })
 
         $depView = Get-TreeDependencyView $tree
         return @{

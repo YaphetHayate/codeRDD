@@ -71,7 +71,7 @@ if (-not $rdd) { throw "rdd-engine 未定位（……见单行版全文……）
 
 > **定位**：rdd-engine 数据面（`.rdd/changes|goal-trees|labs|exploration`）的项目根解析协议单源。与上文「三级定位链」正交：那条链回答"引擎在哪"，本链回答"数据落在哪"。
 
-数据面脚本（explore / explore-store / goal-tree / goal-tree-leaf / delivery-bridge / rdd-flow / start-role / sync-ux-subagents 共 8 个）统一以 `Resolve-RepoRoot` 定位项目根，链序固定：
+数据面脚本（explore / explore-store / goal-tree / goal-tree-leaf / delivery-bridge / rdd-flow / start-role / sync-ux-subagents / tips 共 9 个）统一以 `Resolve-RepoRoot` 定位项目根，链序固定：
 
 | 级 | 候选 | 说明 |
 |----|------|------|
@@ -83,7 +83,7 @@ if (-not $rdd) { throw "rdd-engine 未定位（……见单行版全文……）
 
 **链序约束**：②③ 在前，保证所有现存 git 项目的根解析**逐字节不变**（回归锚点，含"init 装进大仓子目录、数据落外层根"的历史形态——不迁移）；④⑤ 只救援 git 说"不是仓库"的树，那里此前是直接报错，不存在回归面。
 
-**维护规则**：`Resolve-RepoRoot` 为冻结镜像（与 hot-zone 常量同款约定），8 个脚本逐字复制；`tests/test-repo-root-fallback.ps1` 校验镜像一致性（全等 + 每脚本 `git rev-parse` 恰好出现一次）。链序 / 判据 / 失败语义任何变更只改本文 + 函数模板，再机械同步。
+**维护规则**：`Resolve-RepoRoot` 为冻结镜像（与 hot-zone 常量同款约定），9 个脚本逐字复制（新增数据面脚本时同步加入镜像清单与测试）；`tests/test-repo-root-fallback.ps1` 校验镜像一致性（全等 + 每脚本 `git rev-parse` 恰好出现一次）。链序 / 判据 / 失败语义任何变更只改本文 + 函数模板，再机械同步。
 
 ## 向后兼容声明
 
