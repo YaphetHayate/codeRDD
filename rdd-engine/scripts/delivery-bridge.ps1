@@ -2251,16 +2251,32 @@ function Get-DeferredEdgesForNode {
     # merge-redirect points at a task grafted LATER, the edge is re-added here
     # via the public deps CLI (DAG-validated, deps-log audited) instead of
     # silently vanishing. Returns the edges actually added.
+    #
+    # Idempotency (fail-closed, hard): the already-grafted edge set has TWO
+    # sources — the caller's bookkeeping (grafted_dep_nodes, one per shape
+    # branch) and the node's LIVE depends_on in state/tree.json. Stitching means
+    # "add the edges that are MISSING", so an edge present in either set is
+    # skipped. Reading the tree keeps this correct even if a shape branch forgets
+    # the bookkeeping: re-adding an existing edge fails the whole promulgation on
+    # goal-tree DEP_EXISTS (1.2.0 wake regression, where the empty bookkeeping
+    # re-added every backward container edge).
     param([string]$RunId, [int]$TaskId, [string]$NodeId, $ExplicitDeps, $GraftedDepNodes, $InitialNodesOfTask)
     $edges = @()
+    $have = @()
+    foreach ($g in @($GraftedDepNodes)) { if ($null -ne $g -and -not [string]::IsNullOrWhiteSpace([string]$g)) { $have += [string]$g } }
+    $liveNode = Read-TreeFullNode (Join-Path $script:GoalTreesRoot $RunId) $NodeId
+    if ($null -ne $liveNode) {
+        foreach ($d in @($liveNode.depends_on)) { if ($null -ne $d -and -not [string]::IsNullOrWhiteSpace([string]$d)) { $have += [string]$d } }
+    }
     foreach ($d in @($ExplicitDeps)) {
         if (-not $InitialNodesOfTask.ContainsKey([int]$d)) { continue }
         foreach ($on in @($InitialNodesOfTask[[int]$d])) {
-            if (@($GraftedDepNodes) -contains $on) { continue }
+            if ($have -contains [string]$on) { continue }
             $r = Invoke-GoalTree @("-Command", "deps", "-DepAction", "add", "-RunId", $RunId, "-NodeId", $NodeId, "-On", $on)
             if ($r.exit -ne 0 -or -not $r.json.success) {
                 Write-ErrorResult "PROMULGATE_DEP_FAILED" "deferred review dep stitch failed for task $TaskId -> task $d ($NodeId -> $on): $($r.text)" 3
             }
+            $have += [string]$on
             $edges += @{ task_id = $TaskId; on_task_id = [int]$d; node = $NodeId; on = $on }
         }
     }
@@ -5247,7 +5263,9 @@ function Invoke-InitialChainGrafts {
     #     at the goal root (deps at requirement level between containers) + one
     #     role SLOT per initial-group role under the container (duty = stage). No
     #     chain heads at the root; initial_nodes_of_task carries the CONTAINER ids
-    #     so deferred review edges also land container-level (layer rule).
+    #     so deferred review edges also land container-level (layer rule) — and
+    #     grafted_dep_nodes records the container edges the single pass already
+    #     expressed, which the deferred stitching must not re-express.
     if (Test-WakeShapeBridge $Bridge) {
         $initialContainersOfTask = @{}
         foreach ($p in $Plan) {
@@ -5256,6 +5274,13 @@ function Invoke-InitialChainGrafts {
             $reqRel = ([string]$t.requirement -replace '\\', '/')
             $depContainers = @()
             foreach ($d in $p.dep_ids) { if ($initialContainersOfTask.ContainsKey($d)) { $depContainers += $initialContainersOfTask[$d] } }
+            # bookkeeping for the deferred review-edge stitching — SAME key as the
+            # legacy branch below, carrying THIS shape's edge layer (containers,
+            # per the layer rule). Omitting it left Get-DeferredReviewEdges with an
+            # always-empty "already-grafted edge set", so an override naming an
+            # ALREADY-grafted dep re-added its existing container edge and the
+            # publication died on goal-tree DEP_EXISTS (1.2.0 wake branch only).
+            $p['grafted_dep_nodes'] = @($depContainers)
             $containerItem = @{
                 title = [string]$t.title
                 task  = "需求容器（WBS 层，不可认领）：task #$taskId —— $([string]$t.title)。判据与任务正文见 $reqRel；本容器聚合该需求的全部角色槽（goal-tree-wake-model）。"

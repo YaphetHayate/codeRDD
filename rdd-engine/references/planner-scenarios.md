@@ -195,7 +195,7 @@ worker 完成即经 `goal-tree-leaf.cmd -Command report` 回调**你**（回调�
 
 - `verdict` 枚举 `pass / tree_adjudicated / reject_return`；未列出的任务 = 隐式通过。`pass` 不得携带 `depends_on_override`/`merged_into_task_id`；两者不得同现于一条 verdict（合并任务不建节点）；同任务重复 verdict、指向不在归档的任务均拒。
 - **前置动作**（脚本消费前审视方必须完成）：`reject_return` → 需求文档「## 驳回记录」追加行 + `rdd-flow reject -From <PLANNER/AUDITOR/AUDITOR-DELEGATED> -To PM`（见 `rejection-protocol.md`「PLANNER / AUDITOR 发起的驳回」——子代理形态驳回由规划者代递，署名 `auditor-delegated`）；`merged_into_task_id` → `rdd-flow deprecate -TaskId <被并入方>`（误判经 `reopen` 可恢复）。
-- **机械消费保证**：排除任务不建节点、不进 bridge.tasks、不被推送；依赖被合并排除的任务重定向到并入方；依赖悬空于驳回排除任务硬拒 `REVIEW_EXCLUDED_DEP`（**禁止静默丢弃依赖**——静默丢弃会让依赖方被过早推送，正是审查门要消灭的错序 bug 类）；审查显式依赖指向后位任务时经 `deps add` 延后缝合（DAG 校验 + 审计）。
+- **机械消费保证**：排除任务不建节点、不进 bridge.tasks、不被推送；依赖被合并排除的任务重定向到并入方；依赖悬空于驳回排除任务硬拒 `REVIEW_EXCLUDED_DEP`（**禁止静默丢弃依赖**——静默丢弃会让依赖方被过早推送，正是审查门要消灭的错序 bug 类）；审查显式依赖指向后位任务时经 `deps add` 延后缝合（DAG 校验 + 审计），缝合**只补缺失边**（已建边不重放：后向边由单遍建树表达，重放会撞 goal-tree `DEP_EXISTS` 并中止颁布）。
 - **错误码**：`REVIEW_FILE_INVALID`（解析/schema/字段一致性）/ `REVIEW_TASK_NOT_FOUND`（task_id/override/merge 指向不在归档）/ `REVIEW_EXCLUDED_DEP`（依赖悬空）。
 - **结论呈现**：`report/review.md`（人读逐条结论表）+ promulgate 返回值 `review` 段 + bridge.json `review` 段。用户可随时干预或推翻裁定（**最终裁决权在用户**）：建树前直接改 ReviewFile 重产出；run 已颁布 → 误合并 `rdd-flow reopen` 恢复 + `deps`/graft 补树内调整，误驳回 PM 按驳回协议辩解翻案或 `reopen`，会话内留痕说明。
 - **结案如实呈现**：conclude 门禁豁免严格限定 `reject_return` 集；annex 根目标措辞：无未决驳回=「达成」，有=「部分达成（N 条驳回回流 PM）」；被合并任务标注「deprecated（树内合并至 #N，非放弃）」。

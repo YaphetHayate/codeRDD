@@ -276,6 +276,64 @@ try {
     $r2 = Invoke-Tree @('-Command', 'status', '-RunId', 'deliver-wk-l2')
     Assert-True ($r2.json.success -eq $true) 'WK6l goal-tree status still green on the wake run' ($r2.raw)
 
+    # ============ WK7: wake + ReviewFile depends_on_override（延后缝合对称性） ============
+    # 回归锚（引擎 1.2.0 wake 分支漏写 grafted_dep_nodes）：override 同时点名
+    # 「已建后向边」与「后位前向边」时，缝合必须只补缺失的那条前向边——把已存在
+    # 的容器后向边再 add 一次会被 goal-tree 判 DEP_EXISTS，颁布整体中止、run 停在
+    # 无 bridge.json 的半成品状态（真实事故：deliver-2026-10-23-enemy-debut-standard）。
+    $archDir3 = Join-Path $Work '.rdd/changes/archive/wk-l3'
+    New-Item -ItemType Directory -Path (Join-Path $archDir3 'requirements') -Force | Out-Null
+    Write-Utf8NoBom (Join-Path $archDir3 'requirements/overview.md') "# wk-l3`n`n## 整体验收判据`n`n无整体判据（理由：override 延后缝合回归归档，显式声明）`n"
+    Write-Utf8NoBom (Join-Path $archDir3 'requirements/t1.md') "# wk-l3 需求 1`n`n- **描述**：基座需求`n- **验收标准**：见 overview.md`n"
+    Write-Utf8NoBom (Join-Path $archDir3 'requirements/t2.md') "# wk-l3 需求 2`n`n- **描述**：override 需求（后向 #1 + 前向 #3）`n- **依赖关系**：#1`n- **验收标准**：见 overview.md`n"
+    Write-Utf8NoBom (Join-Path $archDir3 'requirements/t3.md') "# wk-l3 需求 3`n`n- **描述**：后位需求`n- **依赖关系**：#1`n- **验收标准**：见 overview.md`n"
+    $tf3 = Join-Path $Work 'wk-l3-init.json'
+    Write-Utf8NoBom $tf3 '[{"title":"WK7-A","requirement":"requirements/t1.md","currentOwners":["CTO"]},{"title":"WK7-B","requirement":"requirements/t2.md","currentOwners":["CTO"]},{"title":"WK7-C","requirement":"requirements/t3.md","currentOwners":["CTO"]}]'
+    $r = Invoke-Flow @('-Command', 'init', '-Archive', '.rdd/changes/archive/wk-l3', '-TasksFile', 'wk-l3-init.json')
+    if ($r.json.success -ne $true) { throw "wk-l3 init failed: $($r.raw)" }
+    # batches 依 DAG：#2 依赖 #3（前向引用补边后的真实顺序），故 [[1],[3],[2]]
+    $plan3 = [ordered]@{ planned_at = '2026-10-17T00:00:00Z'; planner = 'test'; stages = @(
+        @{ id = 'S1'; goal = 'S1'; milestone = 'S1'; task_ids = @(1, 2, 3); batches = @(@(1), @(3), @(2)); acceptance_point = @{ criteria_items = @('smoke'); slice = 'slice' } }
+    ); risks = @() }
+    $pf3 = Join-Path $Work 'wk-l3-plan.json'
+    Write-Utf8NoBom $pf3 ($plan3 | ConvertTo-Json -Depth 8)
+    # ReviewFile：#2 漏标对 #3 的依赖（前向引用）→ tree_adjudicated + override 全量
+    # [1,3]（override 整体替代正则推导，故后向 #1 必须列全）
+    $review3 = [ordered]@{
+        reviewed_at = '2026-10-23T16:05:12+08:00'
+        reviewer    = 'auditor'
+        verdicts    = @(
+            [ordered]@{ task_id = 1; verdict = 'pass'; reason = '四维无 gap' }
+            [ordered]@{ task_id = 2; verdict = 'tree_adjudicated'; reason = '漏标对 #3 的依赖（前向引用，单遍建树静默丢边）→ override 补边；override 整体替代推导，故列全量 [1,3]'; depends_on_override = @(1, 3) }
+            [ordered]@{ task_id = 3; verdict = 'pass'; reason = '四维无 gap' }
+        )
+    }
+    $rf3 = Join-Path $Work 'wk-l3-review.json'
+    Write-Utf8NoBom $rf3 ($review3 | ConvertTo-Json -Depth 6)
+    $r = Invoke-Bridge @('-Command', 'promulgate', '-TaskJson', '.rdd/changes/archive/wk-l3/task.json', '-PlanFile', $pf3, '-ReviewFile', $rf3, '-NoPush', '-Shape', 'wake')
+    Assert-True ($r.json.success -eq $true) 'WK7a wake promulgate with depends_on_override ok (back edge NOT re-added → no DEP_EXISTS abort)' ($r.raw)
+    $b3 = $null
+    if (Test-Path (Join-Path $Work '.rdd/goal-trees/deliver-wk-l3/bridge.json')) { $b3 = Read-BridgeJson 'deliver-wk-l3' }
+    Assert-True ($null -ne $b3) 'WK7b bridge.json written (publication completed, not a half-built run)' ($r.raw)
+    $c1 = [string]$b3.tasks.'1'.container
+    $c2 = [string]$b3.tasks.'2'.container
+    $c3 = [string]$b3.tasks.'3'.container
+    $cont2 = Find-TreeNode 'deliver-wk-l3' $c2
+    $cont3 = Find-TreeNode 'deliver-wk-l3' $c3
+    $deps2 = @(@($cont2.depends_on) | ForEach-Object { [string]$_ })
+    $deps3 = @(@($cont3.depends_on) | ForEach-Object { [string]$_ })
+    Assert-True ($deps2.Count -eq 2 -and ($deps2 -contains $c1) -and ($deps2 -contains $c3)) 'WK7c override container carries BOTH edges (backward #1 + forward #3), each once' ("deps2=$($deps2 -join ',') c1=$c1 c3=$c3")
+    Assert-True ($null -ne $cont3 -and -not [string]::IsNullOrWhiteSpace($c1) -and $deps3.Count -eq 1 -and ($deps3 -contains $c1)) 'WK7d untouched container keeps its single inferred edge' ("deps3=$($deps3 -join ',')")
+    Assert-True ($null -ne $cont2 -and [string]$cont2.type -eq 'sub' -and [string]$cont2.parent -eq 'n1') 'WK7e stitched edge lands container-level (layer rule), container stays a goal-root sub' ($cont2 | ConvertTo-Json -Compress)
+    $deferred3 = @($r.json.data.review.deferred_dep_edges)
+    Assert-True ($deferred3.Count -eq 1 -and $deferred3[0] -eq "task#2->task#3 ($c2->$c3)") 'WK7f exactly ONE deferred edge stitched (task#2->task#3), back edge not replayed' ("deferred=[$($deferred3 -join '; ')]")
+    $depsLogPath = Join-Path $Work '.rdd/goal-trees/deliver-wk-l3/state/deps-log.jsonl'
+    $depEvents = @(); foreach ($ln in (Get-Content $depsLogPath -Encoding UTF8)) { if ($ln.Trim()) { try { $depEvents += ($ln | ConvertFrom-Json) } catch { } } }
+    $depPairs = @($depEvents | ForEach-Object { "$($_.node)->$($_.target)" })
+    Assert-True ($depPairs.Count -eq 3 -and $depPairs -contains "$c2->$c3") 'WK7g deps-log audited exactly 3 dep-adds (2 graft + 1 stitched, no duplicate)' ("pairs=[$($depPairs -join '; ')]")
+    Assert-True ($null -ne $b3.review -and -not [string]::IsNullOrWhiteSpace([string]$b3.review.reviewed_at) -and @($b3.review.verdicts).Count -eq 3) 'WK7h review section persisted on the bridge (review gate applied)' ($b3.review | ConvertTo-Json -Depth 3 -Compress)
+    Assert-True (Test-Path (Join-Path $Work '.rdd/goal-trees/deliver-wk-l3/report/review.md')) 'WK7i human-readable review report written'
+
     $failed = @($Results | Where-Object { -not $_.ok })
     Write-Output ("=== wake-model bridge suite: {0}/{1} passed ===" -f ($Results.Count - $failed.Count), $Results.Count)
     if ($failed.Count -gt 0) { exit 1 }
