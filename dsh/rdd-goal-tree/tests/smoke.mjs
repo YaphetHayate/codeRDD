@@ -259,6 +259,74 @@ import { aggregateGoalTrees, artifactLine, collectReportEntries } from '../lib/g
   console.log('[smoke] goal-root aggregation (type passthrough + counts exclusion) OK')
 }
 
+// --- 2f. wake-rotation: two-tier fields + withered lineage + report digest ----
+{
+  const tmpRoot = join(tmpdir(), `rdgt-smoke-rot-${Date.now()}`)
+  const runDir = join(tmpRoot, 'deliver-rot-run')
+  const stateDir = join(runDir, 'state')
+  mkdirSync(stateDir, { recursive: true })
+  writeFileSync(join(runDir, 'manifest.json'), JSON.stringify({
+    run_id: 'deliver-rot-run', state: 'running', goal: 'rotation goal',
+    budget: { max_rounds: 4, max_nodes: 12, wake_max: 3, wake_total_max: 6 },
+  }))
+  writeFileSync(join(stateDir, 'tree.json'), JSON.stringify({
+    format_version: 1, run_id: 'deliver-rot-run', updated_at: '2026-10-24T00:10:00Z',
+    nodes: [
+      { id: 'n1', parent: null, title: 'root', task: 'root task', status: 'pending', depends_on: [] },
+      // rotated slot: s2 serving, 3 wakes burned across 2 segments
+      { id: 'n2', parent: 'n1', title: 'cto slot', task: 'cto task', status: 'done', claimed_by: 'CTO', wake_count: 0, wake_max: 3, segment: 2, wake_total: 3, ledger_refs: ['L1', 'L3'], depends_on: [] },
+      // legacy slot: no segment fields -> 1 / null
+      { id: 'n3', parent: 'n1', title: 'legacy slot', task: 'legacy', status: 'pending', wake_count: 2, depends_on: [] },
+    ],
+  }))
+  writeFileSync(join(stateDir, 'ledger.jsonl'), [
+    JSON.stringify({ entry_id: 'L1', node_id: 'n2', worker: 'CTO', reported_at: '2026-10-24T00:01:00Z', callback: {
+      verdict: 'done', confidence: 0.8, summary: 'first segment delivery', full_report: 'report/dev-design.md',
+      citations: [{ ref: 'rdd-engine/scripts/goal-tree.ps1', locator: 'schema' }],
+      extras: { verification: 'smoke ok', rework_round3_report: 'report/rework-3.md', rework_round1_report: 'report/rework-1.md' },
+    } }),
+    JSON.stringify({ entry_id: 'L2', type: 'rotate', node_id: 'n2', at: '2026-10-24T00:02:00Z', from_segment: 1, to_segment: 2, wake_total: 3, reason: 'wake-rotation: segment s1 burned its quota [3/3]' }),
+    JSON.stringify({ entry_id: 'L3', node_id: 'n2', worker: 'CTO', reported_at: '2026-10-24T00:03:00Z', callback: {
+      verdict: 'done', confidence: 0.9, summary: 'second segment delivery — the tail ref wins', full_report: 'report/dev-final.md',
+      citations: [], extras: { verification: 'lint pass', rework_round3_report: 'report/rework-3.md', rework_round1_report: 'report/rework-1.md' },
+    } }),
+    '',
+  ].join('\n'))
+
+  const { runs } = await aggregateGoalTrees(tmpRoot)
+  const run = runs[0]
+  const n2 = run.nodes.find(node => node.id === 'n2')
+  // two-tier fields passthrough
+  assert.equal(n2.segment, 2, 'segment passthrough')
+  assert.equal(n2.wakeTotal, 3, 'wake_total passthrough')
+  assert.equal(n2.wakeCount, 0, 'post-rotation segment counter is zero')
+  // withered lineage: s1 dead (with rotate note) + s2 serving
+  assert.deepEqual(n2.lineage, [
+    { segment: 1, active: false, note: 'wake-rotation: segment s1 burned its quota [3/3]' },
+    { segment: 2, active: true, note: null },
+  ], 'lineage rows: withered s1 with rotate reason + active s2')
+  // legacy node: no lineage, segment reads 1
+  const n3 = run.nodes.find(node => node.id === 'n3')
+  assert.equal(n3.segment, 1, 'legacy node segment defaults to 1')
+  assert.equal(n3.wakeTotal, null, 'legacy node wake_total stays null (engine interprets)')
+  assert.deepEqual(n3.lineage, [], 'legacy node carries no lineage rows')
+  // report digest joins on the TAIL ref (L3), not the first
+  assert.ok(n2.report !== null, 'report digest attached')
+  assert.equal(n2.report.entryId, 'L3', 'digest joins ledger_refs[-1]')
+  assert.equal(n2.report.summary, 'second segment delivery — the tail ref wins')
+  assert.equal(n2.report.verdict, 'done')
+  assert.equal(n2.report.confidence, 0.9)
+  assert.equal(n2.report.verification, 'lint pass')
+  assert.equal(n2.report.fullReport?.rel, 'report/dev-final.md', 'full report chip resolved')
+  // rework chips surface sorted by round
+  assert.equal(n2.report.reworkReports.length, 2, 'rework reports extracted')
+  assert.deepEqual(n2.report.reworkReports.map(d => d.rel), ['report/rework-1.md', 'report/rework-3.md'], 'rework chips round-sorted')
+  // nodes without a report ref keep the digest null
+  assert.equal(run.nodes.find(node => node.id === 'n1')?.report ?? null, null, 'unreported node: null digest')
+  rmSync(tmpRoot, { recursive: true, force: true })
+  console.log('[smoke] wake-rotation two-tier fields + lineage + report digest OK')
+}
+
 // --- 2h. structured doc rows (node-doc-links) + UX mockups (ux-mockup-links) --
 // The bridge task template (delivery-bridge New-NodeTaskText) decomposes into
 // goal/stage/duty + archive-relative doc pointers; the aggregate resolves
@@ -978,10 +1046,11 @@ import { aggregateGoalTrees, artifactLine, collectReportEntries } from '../lib/g
   assert.equal(slim.plannerSessionId, null)
   // slim nodes carry EXACTLY the census fields (view gating needs
   // claimSessionId; the tree list needs id/title/status/owner/depth/blockedBy;
-  // wake-model badge needs wakeCount/wakeMax/duty — goal-tree-wake-model §4)
+  // wake-model badge needs wakeCount/wakeMax/duty; wake-rotation adds the
+  // light joins segment/wakeTotal/lineage — report stays detail-only)
   const slimN2 = slim.nodes.find(n => n.id === 'n2')
   assert.deepEqual(Object.keys(slimN2).sort(),
-    ['blockedBy', 'claimSessionId', 'claimedBy', 'depth', 'duty', 'id', 'parent', 'status', 'title', 'type', 'wakeCount', 'wakeMax'])
+    ['blockedBy', 'claimSessionId', 'claimedBy', 'depth', 'duty', 'id', 'lineage', 'parent', 'segment', 'status', 'title', 'type', 'wakeCount', 'wakeMax', 'wakeTotal'])
   assert.equal(slimN2.claimSessionId, 'session-live-2', 'claimSessionId kept on slim nodes (view gating)')
   assert.equal(slimN2.claimedBy, 'DEV', 'owner kept for the tree list')
   const slimN1 = slim.nodes.find(n => n.id === 'n1')

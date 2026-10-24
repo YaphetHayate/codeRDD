@@ -82,6 +82,18 @@ const zh = {
   'planner.hint': '个节点已回报，等待你的裁定 → settle / prune',
   'fulltree': '查看整棵树',
   'fulltree.hide': '收起整棵树',
+  'report.digest': '回报成果',
+  'report.expand': '展开回报明细',
+  'report.collapse': '收起回报明细',
+  'report.verdict': '裁定',
+  'report.confidence': '置信',
+  'report.verified': '核验',
+  'report.citations': '引用',
+  'report.rework': '返工报告',
+  'report.none': '（无摘要）',
+  'lineage.withered': '枯萎',
+  'lineage.active': '在役',
+  'lineage.rotatedOut': '轮换出',
 } as const
 
 const en = {
@@ -115,6 +127,18 @@ const en = {
   'planner.hint': 'node(s) reported, awaiting your verdict → settle / prune',
   'fulltree': 'show full tree',
   'fulltree.hide': 'hide full tree',
+  'report.digest': 'report outcome',
+  'report.expand': 'expand report detail',
+  'report.collapse': 'collapse report detail',
+  'report.verdict': 'verdict',
+  'report.confidence': 'confidence',
+  'report.verified': 'verified',
+  'report.citations': 'citations',
+  'report.rework': 'rework reports',
+  'report.none': '(no summary)',
+  'lineage.withered': 'withered',
+  'lineage.active': 'serving',
+  'lineage.rotatedOut': 'rotated out',
 } as const
 
 export type GoalTreeKey = keyof typeof zh
@@ -181,8 +205,40 @@ interface GoalTreeNodeView {
    */
   wakeCount?: number
   wakeMax?: number | null
+  /**
+   * Wake-rotation two-tier fields (goal-tree-wake-model §4.2 v2): the node's
+   * current session generation (segment; 1/absent on legacy runs) and the
+   * cross-segment monotonic total. Optional like the wake fields above — an
+   * old host half serves neither, and the render degrades to no segment mark.
+   */
+  segment?: number
+  wakeTotal?: number | null
+  /** Honest segment lineage: past generations render withered (枯萎). */
+  lineage?: SegmentRowView[] | null
+  /** The node's latest accepted report digest; detail payloads only. */
+  report?: ReportDigestView | null
   duty?: string | null
   depth: number
+}
+
+/** One segment-generation row (withered rendering of rotated-out segments). */
+interface SegmentRowView {
+  segment: number
+  active: boolean
+  note: string | null
+}
+
+/** The click-expandable digest of the node's latest worker report. */
+interface ReportDigestView {
+  entryId: string
+  worker: string | null
+  verdict: string | null
+  confidence: number | null
+  summary: string | null
+  verification: string | null
+  fullReport: DocLinkView | null
+  citations: DocLinkView[]
+  reworkReports: DocLinkView[]
 }
 
 interface GoalTreeRunView {
@@ -350,6 +406,14 @@ const CSS = `
 .rdgt-st-reported{color:var(--dsw-alias-state-warning-primary,#e0a23a)}
 .rdgt-st-done{color:var(--dsw-alias-state-success-primary,#3fb96f)}
 .rdgt-st-pruned{color:var(--dsw-alias-label-tertiary,#666);text-decoration:line-through}
+.rdgt-lineage{font-size:11px;line-height:16px}
+.rdgt-lineageNote{color:var(--dsw-alias-label-tertiary,#666);font-size:10px;min-width:0;text-overflow:ellipsis;white-space:nowrap;overflow:hidden;flex:1}
+.rdgt-lineageDead{color:var(--dsw-alias-label-tertiary,#777);opacity:.85}
+.rdgt-lineageDead .rdgt-itemTitle{text-decoration:line-through;text-decoration-color:rgba(127,127,127,.5)}
+.rdgt-report{border:1px solid var(--dsw-alias-border-l2,rgba(127,127,127,.3));border-radius:8px;margin:4px 0;padding:2px 8px}
+.rdgt-reportHead{display:flex;align-items:center;gap:8px;background:none;border:none;cursor:pointer;padding:2px 0;font:inherit;min-width:0;width:100%;text-align:left}
+.rdgt-reportSummary{color:var(--dsw-alias-label-secondary,#bbb);font-size:11px;line-height:18px;min-width:0;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.rdgt-reportBody{display:flex;flex-direction:column;gap:1px;padding:2px 0 4px 22px}
 `
 
 let cssInjected = false
@@ -440,10 +504,19 @@ function NodeList({ run, t }: { run: GoalTreeRunView; t: (key: GoalTreeKey) => s
         const wakeCount = node.wakeCount ?? 0
         const wakeMax = node.wakeMax ?? null
         const duty = node.duty ?? null
-        const wakeBadge = !isGoal && !isContainer && (wakeCount > 0 || wakeMax !== null)
-          ? ` [${wakeCount}${wakeMax !== null ? `/${wakeMax}` : ''}]`
+        const segment = node.segment ?? 1
+        // wake-rotation: the segment generation rides the SAME badge suffix
+        // the engine outline uses — [k/K]·s<N> — so the bar and the planner's
+        // outline never disagree about which generation is serving.
+        const segMark = segment > 1 ? `·s${segment}` : ''
+        const wakeBadge = !isGoal && !isContainer && (wakeCount > 0 || wakeMax !== null || segment > 1)
+          ? ` [${wakeCount}${wakeMax !== null ? `/${wakeMax}` : ''}]${segMark}`
           : ''
-        return (
+        // honest growth (诚实呈现): rotated-out generations stay on the tree
+        // as withered sub-rows — dead branches are decision archaeology, not
+        // noise; the active topology is unchanged (same node id).
+        const lineage = node.lineage ?? null
+        return [
           <li
             key={node.id}
             className={`rdgt-item ${isGoal ? 'rdgt-st-goal' : status.className}`}
@@ -458,8 +531,26 @@ function NodeList({ run, t }: { run: GoalTreeRunView; t: (key: GoalTreeKey) => s
             {wakeBadge !== '' && <span className="rdgt-wake" data-duty={duty ?? undefined}>{wakeBadge}{duty !== null ? `·${duty}` : ''}</span>}
             {node.claimedBy !== null && <span className="rdgt-itemWorker">@{node.claimedBy}</span>}
             {node.blockedBy.length > 0 && <span className="rdgt-blocked">{t('blocked')} ← {node.blockedBy.join('+')}</span>}
-          </li>
-        )
+          </li>,
+          // withered lineage sub-rows (wake-rotation): ✂ for retired segments
+          // with their rotate note, ◉ for the serving generation.
+          ...(lineage !== null && lineage.length > 1
+            ? lineage.map(row => (
+              <li
+                key={`${node.id}-s${row.segment}`}
+                className={`rdgt-item rdgt-lineage${row.active ? '' : ' rdgt-lineageDead'}`}
+                style={{ paddingLeft: `${4 + (node.depth + 1) * 16}px` }}
+                title={row.note ?? undefined}
+              >
+                <span aria-hidden>{row.active ? '◉' : '✂'}</span>
+                <span className="rdgt-itemTitle">s{row.segment} · {row.active ? t('lineage.active') : t('lineage.withered')}{!row.active ? `（${t('lineage.rotatedOut')}）` : ''}</span>
+                {!row.active && row.note !== null && row.note !== '' && (
+                  <span className="rdgt-lineageNote">{row.note.length > 64 ? `${row.note.slice(0, 64)}…` : row.note}</span>
+                )}
+              </li>
+            ))
+            : []),
+        ]
       })}
     </ul>
   )
@@ -485,6 +576,72 @@ function DocChip({ doc, open, t }: { doc: DocLinkView; open: (abs: string) => vo
     >
       {doc.rel}
     </button>
+  )
+}
+
+/**
+ * The click-expandable report digest (report-成果): the collapsed row shows
+ * the worker's one-line summary; expanding reveals verdict/confidence/
+ * verification plus the artifact chips (full report, citations, rework-round
+ * reports) — every chip opens through the SAME workspaces opener as the task
+ * doc chips. Tolerates every absent field (legacy payloads, slim runs).
+ */
+function ReportDigestBlock({ report, t, openDoc = () => {} }: {
+  report: ReportDigestView
+  t: (key: GoalTreeKey) => string
+  openDoc?: (abs: string) => void
+}) {
+  const [expanded, setExpanded] = useState(false)
+  const summary = report.summary ?? ''
+  return (
+    <div className="rdgt-report" data-expanded={expanded ? '1' : undefined}>
+      <button
+        type="button"
+        className="rdgt-reportHead"
+        aria-expanded={expanded}
+        onClick={() => { setExpanded(v => !v) }}
+      >
+        <span className="rdgt-chevron" aria-hidden>
+          {expanded ? <IconChevronDownOutline14 /> : <IconChevronUpOutline14 />}
+        </span>
+        <span className="rdgt-rowLabel">{t('report.digest')}</span>
+        <span className="rdgt-reportSummary" title={summary}>
+          {summary !== '' ? (summary.length > 96 ? `${summary.slice(0, 96)}…` : summary) : t('report.none')}
+        </span>
+      </button>
+      {expanded && (
+        <div className="rdgt-reportBody">
+          <div className="rdgt-row">
+            <span className="rdgt-rowLabel">{t('report.verdict')}</span>
+            <span className="rdgt-rowText">{report.verdict ?? '—'}{report.confidence !== null ? ` · ${t('report.confidence')} ${report.confidence}` : ''}</span>
+          </div>
+          {report.verification !== null && (
+            <div className="rdgt-row" title={report.verification}>
+              <span className="rdgt-rowLabel">{t('report.verified')}</span>
+              <span className="rdgt-rowText">{report.verification}</span>
+            </div>
+          )}
+          {report.fullReport !== null && (
+            <div className="rdgt-row">
+              <span className="rdgt-rowLabel">{t('mine.design')}</span>
+              <DocChip doc={report.fullReport} open={openDoc} t={t} />
+            </div>
+          )}
+          {report.citations.length > 0 && (
+            <div className="rdgt-row rdgt-rowWrap">
+              <span className="rdgt-rowLabel">{t('report.citations')}</span>
+              {report.citations.map(doc => <DocChip key={doc.abs} doc={doc} open={openDoc} t={t} />)}
+            </div>
+          )}
+          {report.reworkReports.length > 0 && (
+            <div className="rdgt-row rdgt-rowWrap">
+              <span className="rdgt-rowLabel">{t('report.rework')}</span>
+              {report.reworkReports.map(doc => <DocChip key={doc.abs} doc={doc} open={openDoc} t={t} />)}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
   )
 }
 
@@ -562,7 +719,10 @@ export function WorkerNodeBar({ run, node, t, openDoc = () => {} }: {
             <div className="rdgt-task" title={node.task ?? ''}>{t('task')}: {node.task ?? node.title}</div>
           )}
           {node.status === 'reported' || node.status === 'done' ? (
-            <div className="rdgt-hint" data-kind="reported">{t('task.reportedHint')}</div>
+            <>
+              <div className="rdgt-hint" data-kind="reported">{t('task.reportedHint')}</div>
+              {node.report != null && <ReportDigestBlock report={node.report} t={t} openDoc={openDoc} />}
+            </>
           ) : (
             <div className="rdgt-hint" title={reportNext}>{reportNext}</div>
           )}

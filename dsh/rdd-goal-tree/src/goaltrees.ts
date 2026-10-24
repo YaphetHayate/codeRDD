@@ -97,9 +97,62 @@ export interface GoalTreeNodeView {
    */
   wakeCount: number
   wakeMax: number | null
+  /**
+   * Wake-rotation two-tier fields (goal-tree-wake-model §4.2 v2): the node's
+   * current session GENERATION (segment; 1 on legacy/absent) and the
+   * cross-segment monotonic wake total (null when never stamped — legacy
+   * nodes read their wake_count at the engine side, the client badge then
+   * shows the segment alone).
+   */
+  segment: number
+  wakeTotal: number | null
+  /**
+   * Honest segment lineage (withered rendering): one row per generation this
+   * node has lived through — every past segment carries its rotate reason
+   * (枯萎), the current one is active (在役). Derived from the ledger's
+   * type=rotate entries; empty ([]) when the node never rotated. The tree
+   * presentation keeps dead branches visible for decision archaeology — the
+   * ACTIVE topology is unchanged (same node id).
+   */
+  lineage: GoalTreeSegmentRow[]
+  /**
+   * The node's latest worker report digest (report-成果 click-expand): joined
+   * from the ledger entry the node's last ledger_ref points at. Null when the
+   * node has no accepted report yet (or the ledger entry is legacy-shaped).
+   */
+  report: GoalTreeReportDigest | null
   /** Current duty segment label (e.g. 'cto' / 'design-review'); null when unset. */
   duty: string | null
   depth: number
+}
+
+/** One segment-generation row of a node's lineage (withered rendering). */
+export interface GoalTreeSegmentRow {
+  segment: number
+  /** true = the serving generation; false = rotated out (枯萎). */
+  active: boolean
+  /** The rotate/retire reason captured from the ledger; null when unrecorded. */
+  note: string | null
+}
+
+/**
+ * The click-expandable digest of a node's latest accepted worker report
+ * (report-成果): the summary line renders collapsed; the detail rows
+ * (verdict / confidence / verification digest) and the doc chips
+ * (full_report, citations, rework-round reports) expand on click. Doc paths
+ * are resolved host-side into clickable links exactly like the task chips.
+ */
+export interface GoalTreeReportDigest {
+  entryId: string
+  worker: string | null
+  verdict: string | null
+  confidence: number | null
+  summary: string | null
+  verification: string | null
+  fullReport: GoalTreeDocLink | null
+  citations: GoalTreeDocLink[]
+  /** extras.rework_round<k>_report artifacts (rework rounds keep their own trail). */
+  reworkReports: GoalTreeDocLink[]
 }
 
 /** One run's whole status as the bar consumes it. */
@@ -607,12 +660,13 @@ async function fingerprintRun(runDir: string): Promise<string> {
 async function aggregateOneRun(rootDir: string, dirName: string, repoRoot: string): Promise<GoalTreeRunView | null> {
   const runDir = join(rootDir, dirName)
   const stateDir = join(runDir, 'state')
-  const [manifest, tree, roundText, planner, claimDirents] = await Promise.all([
+  const [manifest, tree, roundText, planner, claimDirents, ledgerText] = await Promise.all([
     readJson(join(runDir, 'manifest.json')),
     readJson(join(stateDir, 'tree.json')),
     readFile(join(stateDir, 'round-log.jsonl'), 'utf8').catch(() => ''), // no rounds started yet
     readJson(join(stateDir, 'planner.json')),
     readdir(join(stateDir, 'claims'), { withFileTypes: true }).catch(() => null),
+    readFile(join(stateDir, 'ledger.jsonl'), 'utf8').catch(() => null), // report digest + lineage join
   ])
   if (manifest === undefined) return null // not a run directory
   const runId = str(manifest.run_id) ?? dirName
@@ -639,6 +693,103 @@ async function aggregateOneRun(rootDir: string, dirName: string, repoRoot: strin
     known.add(id)
     parentOf.set(id, typeof node.parent === 'string' ? node.parent : null)
   }
+
+  // --- ledger joins (wake-rotation lineage + report digests) -----------------
+  // One pass over the run's ledger builds two joins: per-node rotate reasons
+  // (the honest withered rendering) and per-node latest REPORT callbacks (the
+  // click-expandable 成果 digest). Both degrade to empty on a missing/legacy
+  // ledger — the rendering then shows no lineage rows and no report block.
+  const ledgerRotateNote = new Map<string, Map<number, string>>() // node -> from_segment -> reason
+  const reportByRef = new Map<string, Record<string, unknown>>() // entry_id -> entry
+  if (ledgerText !== null) {
+    for (const line of ledgerText.split('\n')) {
+      const trimmed = line.trim()
+      if (trimmed === '') continue
+      let entry: Record<string, unknown>
+      try {
+        entry = JSON.parse(trimmed) as Record<string, unknown>
+      } catch {
+        continue // quarantined-shaped line: the engine isolates corruption
+      }
+      const entryId = str(entry.entry_id)
+      if (entryId !== null) reportByRef.set(entryId, entry)
+      if (str(entry.type) === 'rotate') {
+        const nodeId = str(entry.node_id)
+        const fromSeg = entry.from_segment
+        const reason = str(entry.reason)
+        if (nodeId !== null && typeof fromSeg === 'number' && reason !== null) {
+          let bySeg = ledgerRotateNote.get(nodeId)
+          if (bySeg === undefined) {
+            bySeg = new Map<number, string>()
+            ledgerRotateNote.set(nodeId, bySeg)
+          }
+          bySeg.set(fromSeg, reason)
+        }
+      }
+    }
+  }
+  /** Resolve one report artifact pointer (absolute / .rdd-rooted / archive-relative). */
+  const resolveReportDoc = async (archiveRoot: string, rel: string): Promise<GoalTreeDocLink> => {
+    const abs = isAbsolute(rel)
+      ? rel
+      : rel.startsWith('.rdd/') || rel.startsWith('.rdd\\')
+        ? join(repoRoot, ...rel.split(/[\\/]+/))
+        : join(archiveRoot, ...rel.split(/[\\/]+/))
+    const exists = await stat(abs).then(() => true, () => false)
+    return { rel, abs, exists }
+  }
+  const buildReportDigest = async (
+    archiveRoot: string, refId: string | null,
+  ): Promise<GoalTreeReportDigest | null> => {
+    if (refId === null) return null
+    const entry = reportByRef.get(refId)
+    if (entry === undefined || str(entry.type) !== null) return null // audit rows carry no callback
+    const callback = (entry.callback ?? {}) as Record<string, unknown>
+    const citations = Array.isArray(callback.citations)
+      ? (callback.citations as Record<string, unknown>[])
+      : []
+    const citationRels = citations
+      .map(c => (typeof c?.ref === 'string' && c.ref !== '' ? c.ref : null))
+      .filter((r): r is string => r !== null)
+      .slice(0, 8) // chip budget: the ledger is authoritative, the UI shows the head
+    const extras = (callback.extras ?? {}) as Record<string, unknown>
+    const reworkRels: { round: number; rel: string }[] = []
+    for (const [key, value] of Object.entries(extras)) {
+      const m = /^rework_round(\d+)_report$/.exec(key)
+      if (m === null) continue
+      const rel = typeof value === 'string' && value !== '' ? value : null
+      if (rel !== null) reworkRels.push({ round: Number.parseInt(m[1] ?? '0', 10), rel })
+    }
+    reworkRels.sort((a, b) => a.round - b.round)
+    const fullReportRel = str(callback.full_report)
+    const [fullReport, citationLinks, reworkLinks] = await Promise.all([
+      fullReportRel === null ? Promise.resolve(null) : resolveReportDoc(archiveRoot, fullReportRel),
+      Promise.all(citationRels.map(rel => resolveReportDoc(archiveRoot, rel))),
+      Promise.all(reworkRels.map(r => resolveReportDoc(archiveRoot, r.rel))),
+    ])
+    const verificationRaw = typeof extras.verification === 'string' ? extras.verification.replace(/\s+/g, ' ').trim() : ''
+    return {
+      entryId: refId,
+      worker: str(entry.worker),
+      verdict: str(callback.verdict),
+      confidence: typeof callback.confidence === 'number' && Number.isFinite(callback.confidence) ? callback.confidence : null,
+      summary: str(callback.summary),
+      verification: verificationRaw === '' ? null : verificationRaw.slice(0, MESSAGE_LINE_CAP),
+      fullReport,
+      citations: citationLinks,
+      reworkReports: reworkLinks,
+    }
+  }
+  const buildLineage = (nodeId: string, segment: number): GoalTreeSegmentRow[] => {
+    if (segment <= 1) return []
+    const bySeg = ledgerRotateNote.get(nodeId)
+    const rows: GoalTreeSegmentRow[] = []
+    for (let i = 1; i <= segment; i++) {
+      rows.push({ segment: i, active: i === segment, note: i === segment ? null : bySeg?.get(i) ?? null })
+    }
+    return rows
+  }
+
   const nodes: GoalTreeNodeView[] = []
   // ux-mockup-links: one enumeration per archive per aggregate call — a
   // task's whole stage chain (UX→DEV→QA nodes) shares one archiveRoot, so
@@ -659,6 +810,8 @@ async function aggregateOneRun(rootDir: string, dirName: string, repoRoot: strin
   // returns — the node view must be created first so the job has a stable
   // slot to write into.
   const docJobs: Promise<void>[] = []
+  // report-digest resolutions run alongside the doc jobs (same L1 discipline)
+  const reportJobs: Promise<void>[] = []
   for (const node of rawNodes) {
     const id = typeof node.id === 'string' ? node.id : null
     if (id === null) continue
@@ -681,7 +834,15 @@ async function aggregateOneRun(rootDir: string, dirName: string, repoRoot: strin
     const confidenceRaw = node.last_confidence
     const wakeCountRaw = node.wake_count
     const wakeMaxRaw = node.wake_max
+    const segmentRaw = node.segment
+    const wakeTotalRaw = node.wake_total
     const task = str(node.task)
+    // latest report ref = node.ledger_refs[-1] (the engine's accepted-entry
+    // pointer chain; report digests join on exactly that tail ref)
+    const ledgerRefs = Array.isArray(node.ledger_refs)
+      ? (node.ledger_refs as unknown[]).filter((r): r is string => typeof r === 'string' && r !== '')
+      : []
+    const lastReportRef = ledgerRefs.length > 0 ? ledgerRefs[ledgerRefs.length - 1] ?? null : null
     const nodeView: GoalTreeNodeView = {
       id,
       parent: parentOf.get(id) ?? null,
@@ -697,10 +858,27 @@ async function aggregateOneRun(rootDir: string, dirName: string, repoRoot: strin
       blockedBy: dependsOn,
       wakeCount: typeof wakeCountRaw === 'number' && Number.isFinite(wakeCountRaw) ? wakeCountRaw : 0,
       wakeMax: typeof wakeMaxRaw === 'number' && Number.isFinite(wakeMaxRaw) ? wakeMaxRaw : null,
+      segment: typeof segmentRaw === 'number' && Number.isFinite(segmentRaw) && segmentRaw > 0 ? segmentRaw : 1,
+      wakeTotal: typeof wakeTotalRaw === 'number' && Number.isFinite(wakeTotalRaw) ? wakeTotalRaw : null,
+      lineage: [],
+      report: null,
       duty: str(node.duty),
       depth: depthOf(id, parentOf),
     }
     nodes.push(nodeView)
+    // wake-rotation lineage (honest withered rows) — pure tree/ledger join
+    nodeView.lineage = buildLineage(id, nodeView.segment)
+    // report digest join (click-expandable 成果): resolved against the same
+    // archive root the task's doc pointers use; bridge-shaped tasks name it,
+    // otherwise the deliver-<archive> run-id convention (null digest on plain
+    // runs with no matching ledger entry)
+    const parsedEarly = parseNodeTask(task)
+    const archiveNameEarly = parsedEarly?.archiveName ?? runId.replace(/^deliver-/, '')
+    const archiveRootEarly = join(repoRoot, '.rdd', 'changes', 'archive', archiveNameEarly)
+    reportJobs.push(buildReportDigest(archiveRootEarly, lastReportRef).then(digest => {
+      nodeView.report = digest
+      return undefined
+    }))
     // node-doc-links: decompose a bridge-shaped task into structured slots
     // (goal sentence + doc pointers). Archive root resolution prefers the
     // template's own 归档 segment, falling back to the frozen deliver-<archive>
@@ -727,6 +905,7 @@ async function aggregateOneRun(rootDir: string, dirName: string, repoRoot: strin
     }
   }
   if (docJobs.length > 0) await Promise.all(docJobs)
+  if (reportJobs.length > 0) await Promise.all(reportJobs)
 
   let updatedAt = str(tree?.updated_at)
   if (updatedAt === null) {
@@ -847,8 +1026,8 @@ export async function readClaimSession(rootDir: string, runId: string, nodeId: s
 // slim run they expand.
 
 /** The wire node shape: every heavy field optional (absent on slim runs). */
-export type GoalTreeWireNode = Omit<GoalTreeNodeView, 'task' | 'docs' | 'verdict' | 'confidence'> &
-  Partial<Pick<GoalTreeNodeView, 'task' | 'docs' | 'verdict' | 'confidence'>>
+export type GoalTreeWireNode = Omit<GoalTreeNodeView, 'task' | 'docs' | 'verdict' | 'confidence' | 'report'> &
+  Partial<Pick<GoalTreeNodeView, 'task' | 'docs' | 'verdict' | 'confidence' | 'report'>>
 
 /** The wire run shape: same run-level scalars, nodes possibly slim, detail marker. */
 export interface GoalTreeWireRun extends Omit<GoalTreeRunView, 'nodes'> {
@@ -885,6 +1064,12 @@ export function projectRunView(run: GoalTreeRunView, detail?: boolean): GoalTree
       blockedBy: node.blockedBy,
       wakeCount: node.wakeCount,
       wakeMax: node.wakeMax,
+      segment: node.segment,
+      wakeTotal: node.wakeTotal,
+      // lineage rows are light too (tree+ledger join, no stats) — the honest
+      // withered rendering stays visible on slim runs; the report digest and
+      // doc links remain detail-only (they carry absolute paths + stats).
+      lineage: node.lineage,
       duty: node.duty,
       depth: node.depth,
     })),
