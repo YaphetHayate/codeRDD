@@ -404,6 +404,102 @@ try {
     $cc = $null; if ($r.json.success -eq $true) { $cc = $r.json.data.tree_claim.callback_contract }
     Assert-True ($null -ne $cc -and ([string]$cc.verdict) -match 'done' -and ([string]$cc.verdict) -match 'inconclusive') 'WK8m claim response carries the callback contract (verdict enum at the point of use)' (($cc | ConvertTo-Json -Compress))
 
+    # ================= WK9: wake-rotation 两层配额（引擎 1.3.0） =================
+    # 钉死 1024 事故的自愈路径：段配额触顶不再是死点——push 门自动轮换（同节点
+    # 换新会话承接，附交接包，零人工）；跨段总量触顶才是真裁定点（四路由）。
+    $archRot = Join-Path $Work '.rdd/changes/archive/wk-rot'
+    New-Item -ItemType Directory -Path (Join-Path $archRot 'requirements') -Force | Out-Null
+    Write-Utf8NoBom (Join-Path $archRot 'requirements/overview.md') "# wk-rot`n`n## 整体验收判据`n`n无整体判据（理由：轮换回归归档，显式声明）`n"
+    Write-Utf8NoBom (Join-Path $archRot 'requirements/t1.md') "# wk-rot 需求 1`n`n- **描述**：轮换回归需求`n- **验收标准**：见 overview.md`n"
+    $tfRot = Join-Path $Work 'wk-rot-init.json'
+    Write-Utf8NoBom $tfRot '[{"title":"WKROT","requirement":"requirements/t1.md","currentOwners":["CTO"]}]'
+    $r = Invoke-Flow @('-Command', 'init', '-Archive', '.rdd/changes/archive/wk-rot', '-TasksFile', 'wk-rot-init.json')
+    if ($r.json.success -ne $true) { throw "wk-rot init failed: $($r.raw)" }
+    $planRot = [ordered]@{ planned_at = '2026-10-24T00:00:00Z'; planner = 'test'; stages = @(
+        @{ id = 'S1'; goal = 'S1'; milestone = 'S1'; task_ids = @(1); batches = @(,@(1)); acceptance_point = @{ criteria_items = @('smoke'); slice = 'slice' } }
+    ); risks = @() }
+    $pfRot = Join-Path $Work 'wk-rot-plan.json'
+    Write-Utf8NoBom $pfRot ($planRot | ConvertTo-Json -Depth 8)
+    $r = Invoke-Bridge @('-Command', 'promulgate', '-TaskJson', '.rdd/changes/archive/wk-rot/task.json', '-PlanFile', $pfRot, '-Shape', 'wake')
+    Assert-True ($r.json.success -eq $true) 'WK9a wake promulgate ok (pushes live — no -NoPush)' ($r.raw)
+    $bRot = Read-BridgeJson 'deliver-wk-rot'
+    $ctoRot = [string]$bRot.tasks.'1'.stages.CTO
+    Assert-True (-not [string]::IsNullOrWhiteSpace($ctoRot)) 'WK9b CTO slot mapped' ($bRot | ConvertTo-Json -Depth 3 -Compress)
+
+    # 烧段：3 次（claim→report→reset，不 settle——stage 所有权不动、无审查机枢），
+    # 第 3 次后 pending 3/3、total 3/6
+    for ($i = 1; $i -le 3; $i++) {
+        $r = Invoke-Bridge @('-Command', 'claim', '-RunId', 'deliver-wk-rot', '-NodeId', $ctoRot, '-Role', 'CTO')
+        Assert-True ($r.json.success -eq $true) "WK9c.$i claim (wake $i/3) ok" ($r.raw)
+        $r = Invoke-Leaf @('-Command', 'report', '-RunId', 'deliver-wk-rot', '-Worker', 'CTO', '-CallbackFile', (New-Cb $ctoRot @('.rdd/changes/archive/wk-rot/requirements/t1.md')))
+        Assert-True ($r.json.success -eq $true) "WK9c.$i report ok" ($r.raw)
+        $r = Invoke-Tree @('-Command', 'reset', '-RunId', 'deliver-wk-rot', '-NodeId', $ctoRot, '-Reason', 'wk9 segment burn fixture')
+        Assert-True ($r.json.success -eq $true) "WK9c.$i reset ok" ($r.raw)
+    }
+    $t9 = Find-TreeNode 'deliver-wk-rot' $ctoRot
+    Assert-True ($null -ne $t9 -and [string]$t9.status -eq 'pending' -and [int]$t9.wake_count -eq 3) 'WK9d CTO pending 3/3 (segment burned)' ($t9 | ConvertTo-Json -Compress)
+
+    # 触发 auto-dispatch：push 门识别 rotate 标记 → 段+1、计数清零、ledger/plan-log 留痕
+    $r = Invoke-Bridge @('-Command', 'status', '-RunId', 'deliver-wk-rot')
+    Assert-True ($r.json.success -eq $true) 'WK9e status trigger ok (auto-dispatch runs)' ($r.raw)
+    $t9 = Find-TreeNode 'deliver-wk-rot' $ctoRot
+    Assert-True ($null -ne $t9 -and [string]$t9.status -eq 'pending' -and [int]$t9.segment -eq 2 -and [int]$t9.wake_count -eq 0 -and [int]$t9.wake_total -eq 3) 'WK9f slot ROTATED: segment=2, wake_count=0, wake_total preserved (3)' ($t9 | ConvertTo-Json -Compress)
+    $ledRot = @(); foreach ($ln in (Get-Content (Join-Path $Work '.rdd/goal-trees/deliver-wk-rot/state/ledger.jsonl') -Encoding UTF8)) { if ($ln.Trim()) { try { $ledRot += ($ln | ConvertFrom-Json) } catch {} } }
+    $rot9 = @($ledRot | Where-Object { [string]$_.type -eq 'rotate' -and [string]$_.node_id -eq $ctoRot })
+    Assert-True ($rot9.Count -eq 1 -and [int]$rot9[0].from_segment -eq 1 -and [int]$rot9[0].to_segment -eq 2 -and [int]$rot9[0].wake_total -eq 3) 'WK9g ledger type=rotate entry (s1→s2, wake_total=3)' (($rot9 | ConvertTo-Json -Compress))
+    $plan9 = @(); foreach ($ln in (Get-Content (Join-Path $Work '.rdd/goal-trees/deliver-wk-rot/plan-log.jsonl') -Encoding UTF8)) { if ($ln.Trim()) { try { $plan9 += ($ln | ConvertFrom-Json) } catch {} } }
+    $ev9 = @($plan9 | Where-Object { [string]$_.event -eq 'wake_rotation' -and [string]$_.node -eq $ctoRot })
+    Assert-True ($ev9.Count -eq 1 -and [int]$ev9[0].detail.from_segment -eq 1 -and [int]$ev9[0].detail.to_segment -eq 2) 'WK9h plan-log progress/wake_rotation event with segment lineage'
+
+    # 1024 事故核心断言：轮换后不是死点——同节点可继续 claim（新段 1/3，总量 4/6）
+    $r = Invoke-Bridge @('-Command', 'claim', '-RunId', 'deliver-wk-rot', '-NodeId', $ctoRot, '-Role', 'CTO')
+    Assert-True ($r.json.success -eq $true) 'WK9i claim on segment 2 ok (rotation is a continuation, not a stop)' ($r.raw)
+    # 轮换只发生在交接点：claimed 中拒绝
+    $r = Invoke-Tree @('-Command', 'rotate', '-RunId', 'deliver-wk-rot', '-NodeId', $ctoRot, '-Reason', 'wk9 mid-claim rotation attempt')
+    Assert-True ($r.json.success -eq $false -and ($r.raw -match 'ROTATE_NOT_AT_HANDOFF')) 'WK9j rotate refused mid-claim (ROTATE_NOT_AT_HANDOFF)' ($r.raw)
+
+    # 烧穿第二段（total 6/6）→ 总量门：claim/rotate 双拒，dispatch 不再自动轮换
+    # （WK9i 已 claim：本轮 s2 wake 1/3、total 4/6；此后每轮 claim +1）
+    for ($j = 1; $j -le 2; $j++) {
+        $r = Invoke-Leaf @('-Command', 'report', '-RunId', 'deliver-wk-rot', '-Worker', 'CTO', '-CallbackFile', (New-Cb $ctoRot @('.rdd/changes/archive/wk-rot/requirements/t1.md')))
+        Assert-True ($r.json.success -eq $true) "WK9k report j=$j ok" ($r.raw)
+        $r = Invoke-Tree @('-Command', 'reset', '-RunId', 'deliver-wk-rot', '-NodeId', $ctoRot, '-Reason', 'wk9 s2 burn fixture')
+        Assert-True ($r.json.success -eq $true) "WK9k reset j=$j ok" ($r.raw)
+        $r = Invoke-Bridge @('-Command', 'claim', '-RunId', 'deliver-wk-rot', '-NodeId', $ctoRot, '-Role', 'CTO')
+        Assert-True ($r.json.success -eq $true) "WK9k claim j=$j ok (s2 wake $($j + 1)/3)" ($r.raw)
+    }
+    $r = Invoke-Leaf @('-Command', 'report', '-RunId', 'deliver-wk-rot', '-Worker', 'CTO', '-CallbackFile', (New-Cb $ctoRot @('.rdd/changes/archive/wk-rot/requirements/t1.md')))
+    Assert-True ($r.json.success -eq $true) 'WK9k final report ok' ($r.raw)
+    $r = Invoke-Tree @('-Command', 'reset', '-RunId', 'deliver-wk-rot', '-NodeId', $ctoRot, '-Reason', 'wk9 s2 burn fixture final')
+    Assert-True ($r.json.success -eq $true) 'WK9k final reset ok (s2 3/3, total 6/6)' ($r.raw)
+    $t9 = Find-TreeNode 'deliver-wk-rot' $ctoRot
+    Assert-True ($null -ne $t9 -and [int]$t9.segment -eq 2 -and [int]$t9.wake_count -eq 3 -and [int]$t9.wake_total -eq 6) 'WK9l s2 burned 3/3 with wake_total 6/6' ($t9 | ConvertTo-Json -Compress)
+    $r = Invoke-Bridge @('-Command', 'claim', '-RunId', 'deliver-wk-rot', '-NodeId', $ctoRot, '-Role', 'CTO')
+    Assert-True ($r.json.success -eq $false -and ($r.raw -match 'WAKE_TOTAL_EXCEEDED')) 'WK9m claim refused at total 6/6 (WAKE_TOTAL_EXCEEDED — adjudication point)' ($r.raw)
+    $r = Invoke-Tree @('-Command', 'rotate', '-RunId', 'deliver-wk-rot', '-NodeId', $ctoRot, '-Reason', 'wk9 rotate at total cap')
+    Assert-True ($r.json.success -eq $false -and ($r.raw -match 'WAKE_TOTAL_EXCEEDED')) 'WK9n rotate refused at total cap too' ($r.raw)
+    $r = Invoke-Bridge @('-Command', 'status', '-RunId', 'deliver-wk-rot')
+    Assert-True ($r.json.success -eq $true) 'WK9o status trigger at total cap ok' ($r.raw)
+    $t9 = Find-TreeNode 'deliver-wk-rot' $ctoRot
+    Assert-True ($null -ne $t9 -and [int]$t9.segment -eq 2 -and [int]$t9.wake_count -eq 3) 'WK9p dispatch at total cap does NOT rotate (skip + adjudication)' ($t9 | ConvertTo-Json -Compress)
+
+    # 四路由之一：budget -SetWakeTotalMax（用户裁决，只增不减）解锁
+    $r = Invoke-Tree @('-Command', 'budget', '-RunId', 'deliver-wk-rot', '-SetWakeTotalMax', '7', '-UserVerdict', 'user: allow one more total wake')
+    Assert-True ($r.json.success -eq $true) 'WK9q budget -SetWakeTotalMax raise accepted' ($r.raw)
+    $r = Invoke-Tree @('-Command', 'rotate', '-RunId', 'deliver-wk-rot', '-NodeId', $ctoRot, '-Reason', 'wk9 rotate after total raise')
+    Assert-True ($r.json.success -eq $true -and [int]$r.json.data.segment -eq 3) 'WK9r rotate after raise ok (segment 3)' ($r.raw)
+
+    # ROTATED_OUT：服务过旧段（s1）的会话不得进入后续段（claim 门退役闸）
+    $env:DSH_SESSION_ID = 'wk9-sess-s1'
+    $rosterRot = Join-Path $Work '.rdd/goal-trees/deliver-wk-rot/sessions.json'
+    $rosterRotJson = '{"format_version":1,"sessions":[{"session_id":"wk9-sess-s1","role":"CTO","node":"' + $ctoRot + '","segment":1,"source":"bridge-dispatch","created_at":"2026-10-24T00:00:00Z","updated_at":"2026-10-24T00:00:00Z"}]}'
+    Write-Utf8NoBom $rosterRot $rosterRotJson
+    $r = Invoke-Leaf @('-Command', 'claim', '-RunId', 'deliver-wk-rot', '-NodeId', $ctoRot, '-Worker', 'CTO')
+    Assert-True ($r.json.success -eq $false -and ($r.raw -match 'ROTATED_OUT')) 'WK9s stale s1 session refused re-entry (ROTATED_OUT)' ($r.raw)
+    Remove-Item Env:\DSH_SESSION_ID -ErrorAction SilentlyContinue
+    $r = Invoke-Bridge @('-Command', 'claim', '-RunId', 'deliver-wk-rot', '-NodeId', $ctoRot, '-Role', 'CTO')
+    Assert-True ($r.json.success -eq $true) 'WK9t fresh session claim ok on segment 3 (7/7 total headroom)' ($r.raw)
+
     $failed = @($Results | Where-Object { -not $_.ok })
     Write-Output ("=== wake-model bridge suite: {0}/{1} passed ===" -f ($Results.Count - $failed.Count), $Results.Count)
     if ($failed.Count -gt 0) { exit 1 }

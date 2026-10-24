@@ -271,6 +271,8 @@ worker 完成即经 `goal-tree-leaf.cmd -Command report` 回调**你**（回调�
 
 **重做波**（fail 自动，rollback 原语语义复用）：逐 blocking 归属任务（按 involved docs 后缀映射 `-cto`→CTO / `-ux`→UX / `-qa`→QA，无后缀取任务 in-run DESIGN 角色，兜底 CTO）→ prune 活跃 post-DESIGN 节点 → set-route 回 DESIGN → 兄弟挂接重建 DESIGN 组（blocking 清单注入重做上下文）→ 自动重推；重做收敛后再审（覆盖重产重审）。新链波零节点回收（审查无节点），legacy 波回收审查节点槽位。任一步失败停在 `failed`，下一触发点自愈重入（幂等）。失效波联动：rollback/reclaim/replan 波及已审查阶段 → design_review 重置 `planned` + 旧审查节点（legacy）失效回收。
 
+**唤醒两层与段轮换（wake-rotation，引擎 1.3.0）**：重做波/reset 后的重推不再有配额死点——段配额（`wake_max`，默认 3）触顶时 push 门自动 `rotate`（同节点、段+1、强制新同角色会话、附交接包），零人工（1024 事故的结构性修复：v1 的段满=裁定点会被 `WAKE_QUOTA_EXCEEDED` 卡住等提额）。规划者只在两种情形需要出手：① **提前换会话**（判断当前会话理解已固化，不必等段满）——`goal-tree rotate`（仅交接点 pending/done 可用）；② **跨段总量触顶**（`WAKE_TOTAL_EXCEEDED`，默认 6）——真裁定点，四路由：升级用户 / 拆分需求回 PM / 带债放行 / `budget -SetWakeTotalMax -UserVerdict`。服务过旧段的会话被 claim 门（`ROTATED_OUT`）与复用解析双重退役；树徽章 `[k/K]·s<N>` 呈现世代，枯萎段留在树上供决策考古。
+
 **感知面（新链 `ready` 待派审）**：plan-log `design_review_ready` progress 事件 + `status` 警示 + `resume` 步骤清单（含 submit 命令行）三面机械可感；**无自动会话推送**（设计 #8：删除 AutoDispatch 推送——派审是规划者动作）。规划者纪律：**settle 尾必查待审阶段**（planner-guide 硬约束 10）。
 
 **降级与兼容**：缺键 legacy run 的 `design-review` submit 报 `DESIGN_REVIEW_LEGACY_RUN`（照旧 settle 节点通道）；legacy 链 AUDITOR 部署判据（双探：引擎仓旁挂 `rdd-auditor/SKILL.md` + 项目 `dsh/presets/rdd-auditor`，`Test-AuditorDeployed`）不变——未部署即不落段无门（旧 run 逐字节）。新链审查节点失败场景不存在；legacy 审查节点自身失败（会话死）走 reclaim dead-claim 通道。

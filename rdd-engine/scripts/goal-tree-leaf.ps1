@@ -585,6 +585,7 @@ function Read-Manifest {
             node_width = [int]$m.budget.node_width
             max_nodes  = [int]$m.budget.max_nodes
             wake_max   = if ($null -ne $m.budget.PSObject.Properties['wake_max'] -and $null -ne $m.budget.wake_max) { [int]$m.budget.wake_max } else { 3 }
+            wake_total_max = if ($null -ne $m.budget.PSObject.Properties['wake_total_max'] -and $null -ne $m.budget.wake_total_max) { [int]$m.budget.wake_total_max } else { 6 }
         }
         shape     = if ($null -ne $m.PSObject.Properties['shape'] -and $m.shape) { [string]$m.shape } else { "legacy" }
         ref_roots = @(Convert-ToSafeArray $m.ref_roots)
@@ -619,6 +620,10 @@ function Convert-NodeToHashtable {
         last_confidence = if ($null -ne $Node.last_confidence) { [double]$Node.last_confidence } else { $null }
         wake_count      = if ($null -ne $Node.wake_count) { [int]$Node.wake_count } else { 0 }
         wake_max        = if ($null -ne $Node.wake_max) { [int]$Node.wake_max } else { $null }
+        # wake-rotation 两层配额字段（1.3.0）——与 goal-tree.ps1 的白名单硬同步。
+        segment         = if ($null -ne $Node.segment) { [int]$Node.segment } else { $null }
+        wake_total      = if ($null -ne $Node.wake_total) { [int]$Node.wake_total } else { $null }
+        wake_total_max  = if ($null -ne $Node.wake_total_max) { [int]$Node.wake_total_max } else { $null }
         duty            = if ($Node.duty) { [string]$Node.duty } else { $null }
         ledger_refs     = @(Convert-ToSafeArray $Node.ledger_refs)
         note            = if ($Node.note) { [string]$Node.note } else { $null }
@@ -938,6 +943,10 @@ function Convert-NodeToPublicView {
         last_confidence = $Node.last_confidence
         wake_count      = if ($null -ne $Node.wake_count) { [int]$Node.wake_count } else { 0 }
         wake_max        = if ($null -ne $Node.wake_max) { [int]$Node.wake_max } else { $null }
+        # wake-rotation two-tier fields (absent on legacy nodes -> 1 / wake_count)
+        segment         = if ($null -ne $Node.segment) { [int]$Node.segment } else { 1 }
+        wake_total      = if ($null -ne $Node.wake_total) { [int]$Node.wake_total } elseif ($null -ne $Node.wake_count) { [int]$Node.wake_count } else { 0 }
+        wake_total_max  = if ($null -ne $Node.wake_total_max) { [int]$Node.wake_total_max } else { $null }
         duty            = $Node.duty
         ledger_refs     = @($Node.ledger_refs)
         note            = $Node.note
@@ -1018,6 +1027,34 @@ function Invoke-Claim {
         $tree = $readBack.tree
         $node = Find-Node $tree $NodeId
         if ($null -eq $node) { Write-ErrorResult "NODE_NOT_FOUND" "Node not found: $NodeId" 2 }
+
+        # --- ROTATED_OUT gate (wake-rotation): a session that served an OLD
+        #     segment of this node may never re-enter a LATER segment — the
+        #     rotation exists precisely to retire its stale context. Sessions
+        #     of the CURRENT segment and brand-new sessions pass untouched.
+        #     Fail-open on missing roster (generic non-bridge runs, CLI shells).
+        $mySession = if ([string]::IsNullOrWhiteSpace($env:DSH_SESSION_ID)) { $null } else { [string]$env:DSH_SESSION_ID }
+        if ($null -ne $mySession) {
+            $curSegment = 1
+            if ($null -ne $node.segment) { $curSegment = [int]$node.segment }
+            $rosterPath = Join-Path $RunDir "sessions.json"
+            if (Test-Path -LiteralPath $rosterPath -PathType Leaf) {
+                try {
+                    $rosterObj = [System.IO.File]::ReadAllText($rosterPath, [System.Text.Encoding]::UTF8) | ConvertFrom-Json
+                    foreach ($row in @($rosterObj.sessions)) {
+                        if ($null -eq $row) { continue }
+                        if ([string]$row.node -ne [string]$node.id) { continue }
+                        if ([string]$row.session_id -ne $mySession) { continue }
+                        $rowSeg = 1
+                        if ($null -ne $row.segment) { $rowSeg = [int]$row.segment }
+                        if ($rowSeg -lt $curSegment) {
+                            Write-ErrorResult "ROTATED_OUT" "Session $mySession served segment $rowSeg of node $($node.id) and was rotated out (segment now $curSegment) — stale-context sessions never re-enter a later segment. The node's next handoff goes to a fresh same-role session (wake-rotation)." 1
+                        }
+                    }
+                } catch {}
+            }
+        }
+
         if ([string]$node.type -eq 'goal') {
             # goal root (goal-tree-goal-root): the original requirement's final objective —
             # an unclaimable conclude anchor, never a work unit, on both claim paths (-Steal included).
@@ -1051,16 +1088,30 @@ function Invoke-Claim {
                 # pruned targets satisfy the gate but are surfaced loudly, never silently
                 $pruneNote = "deps satisfied via pruned targets: [$($depState.via_prune -join ', ')] (prune discharges the obligation — visible, not silent)"
             }
+            # --- two-tier wake gates (wake-rotation, goal-tree-wake-model §4.2 v2):
+            #     this claim IS a wake. The SEGMENT ceiling rotates at handoff
+            #     (auto-dispatch opens a fresh same-role session); the
+            #     cross-segment TOTAL is the adjudication point and gates every entry.
+            $wakeTotal = 0
+            if ($null -ne $node.wake_total) { $wakeTotal = [int]$node.wake_total }
+            elseif ($null -ne $node.wake_count) { $wakeTotal = [int]$node.wake_count }
+            $totalMax = if ($null -ne $node.wake_total_max) { [int]$node.wake_total_max } elseif ($null -ne $manifest.budget.wake_total_max) { [int]$manifest.budget.wake_total_max } else { 6 }
+            if (($wakeTotal + 1) -gt $totalMax) {
+                $dutyTextT = if ($node.duty) { " (duty=$($node.duty))" } else { "" }
+                Write-ErrorResult "WAKE_TOTAL_EXCEEDED" "Node $NodeId$dutyTextT has burned its cross-segment wake TOTAL [$wakeTotal/$totalMax] — multiple independent sessions failed here, which is hard evidence the REQUIREMENT (not the worker) is the problem. This is the adjudication point: (a) escalate to the user with the wake trail, (b) split the requirement and re-plan via PM, (c) explicit debt-pass waiver with user consent, or raise the total with 'goal-tree budget -SetWakeTotalMax <n> -UserVerdict <ruling>' (raise-only, user-approved)." 1
+            }
             # --- wake quota gate (goal-tree-wake-model §4.2): this claim IS a wake ---
             $wakeMax = if ($null -ne $node.wake_max) { [int]$node.wake_max } elseif ($null -ne $manifest.budget.wake_max) { [int]$manifest.budget.wake_max } else { 3 }
             if (([int]$node.wake_count + 1) -gt $wakeMax) {
                 $dutyText = if ($node.duty) { " (duty=$($node.duty))" } else { "" }
-                Write-ErrorResult "WAKE_QUOTA_EXCEEDED" "Node $NodeId$dutyText has burned its wake quota [$([int]$node.wake_count)/$wakeMax] — every wake counts against the segment, regardless of mode. This is an adjudication point for the Planner, not a stop: (a) escalate to the user with the wake trail, (b) split the requirement and re-plan via PM, (c) explicit debt-pass waiver with user consent, or raise the budget via 'goal-tree budget -SetWakeMax <n> -UserVerdict <ruling>'." 1
+                Write-ErrorResult "WAKE_QUOTA_EXCEEDED" "Node $NodeId$dutyText has burned its segment wake quota [$([int]$node.wake_count)/$wakeMax] — every wake counts against the segment, regardless of mode. Segment exhaustion is a ROTATION point, not a stop: the next handoff auto-dispatches a fresh same-role session (wake-rotation). For a manual continuation use 'goal-tree rotate' (reopen the segment) or redo/reset -Duty <new> (new duty segment); raising the ceiling needs 'goal-tree budget -SetWakeMax <n> -UserVerdict <ruling>'." 1
             }
             $node.status = "claimed"
             $node.claimed_by = $Worker
             $node.claimed_at = Get-UtcNowIso
             $node.wake_count = [int]$node.wake_count + 1
+            $node.wake_total = $wakeTotal + 1
+            if ($null -eq $node.segment) { $node.segment = 1 }
             $stole = $false
         }
 

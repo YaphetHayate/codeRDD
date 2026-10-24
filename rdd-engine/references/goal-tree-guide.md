@@ -145,9 +145,18 @@
 - `max_rounds`：轮数上限，超出时 `round-start` 报 `ROUNDS_EXCEEDED`
 - `node_width`：单父节点子节点数上限，超出时 graft 报 `WIDTH_EXCEEDED`
 - `max_nodes`：全树节点数上限，超出时 graft 报 `NODES_EXCEEDED`
+- `wake_max`：**段唤醒上限**（默认 3；节点级 `wake_max` > run 级 budget > 3）。段满不是死点——push 门自动轮换（见下节）。
+- `wake_total_max`：**跨段唤醒总量上限**（默认 6；节点级 > run 级 > 6）。触顶 = 真裁定点（升级用户 / 拆分回 PM / 带债放行 / 提额），claim/rotate/push 三门同拒 `WAKE_TOTAL_EXCEEDED`。
 - "达标即停"类智能判定**留给 规划者**——引擎只管机械终局前置
 
-**运行期预算扩展（planner-budget-extend）**：预算耗尽且工作未完时，可经 `budget` 命令**只增**扩展——`goal-tree.cmd -Command budget -RunId <id> -SetMaxRounds <n> [-SetNodeWidth <n>] [-SetMaxNodes <n>] -UserVerdict <用户裁决原文>`。硬门与纪律：
+**唤醒两层模型与段轮换（wake-rotation，引擎 1.3.0）**：
+
+- 节点携带 `segment`（会话世代，默认 1）/ `wake_count`（段内）/ `wake_total`（跨段单调；存量节点按现有 wake_count 起算）。徽章 `[k/K]·s<N>`。
+- **段满轮换（自动、零人工）**：push 门（delivery-bridge auto-dispatch）识别段满且总量有余量 → `goal-tree rotate`（段+1、段计数清零、wake_total 保留、ledger `type=rotate`、plan-log `progress/wake_rotation`）→ 强制新同角色会话（禁复用）+ 交接包（上一段轨迹尾 3 条 + 报告摘要 + 新会话契约）。重做波内 redo 撞段配额自动落 reset 走同一路径。
+- **手工轮换**：`goal-tree.cmd -Command rotate -RunId <id> -NodeId <n> -Reason <原因>`（planner 提前换会话用——不必等段满；仅交接点可用：claimed/reported 拒 `ROTATE_NOT_AT_HANDOFF`；总量触顶拒 `WAKE_TOTAL_EXCEEDED`）。
+- **旧会话退役**：服务过旧段的会话（roster 行 segment < 节点当前段）claim 拒 `ROTATED_OUT`，复用解析同判排除——上下文新鲜度就是轮换的全部意义。
+
+**运行期预算扩展（planner-budget-extend）**：预算耗尽且工作未完时，可经 `budget` 命令**只增**扩展——`goal-tree.cmd -Command budget -RunId <id> -SetMaxRounds <n> [-SetNodeWidth <n>] [-SetMaxNodes <n>] [-SetWakeMax <n>] [-SetWakeTotalMax <n>] -UserVerdict <用户裁决原文>`。硬门与纪律：
 
 - **人工审批硬门**：`-UserVerdict`（用户裁决原文逐字）就是批准记录本体——无记录不执行（缺省报 `BUDGET_VERDICT_MISSING`；与桥接派生 confirm 同形）。裁决逐字落 `state/budget-log.jsonl`（append-only 审计）。
 - **只增不减**：每个目标值必须**严格大于**现天花板（`BUDGET_RAISE_ONLY`）——mid-run 下调会让在途状态压线、闸门失效。

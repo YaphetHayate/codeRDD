@@ -24,7 +24,7 @@
 
 [CmdletBinding()]
 param(
-    [ValidateSet("start", "graft", "prune", "redo", "reset", "settle", "conclude", "round-start", "round-end", "status", "resume", "deps", "dispatch", "budget")]
+    [ValidateSet("start", "graft", "prune", "redo", "reset", "rotate", "settle", "conclude", "round-start", "round-end", "status", "resume", "deps", "dispatch", "budget")]
     [string]$Command = "status",
 
     [string]$RunId,
@@ -105,6 +105,12 @@ param(
     [int]$SetMaxNodes = 0,
     [ValidateRange(0, 1000)]
     [int]$SetWakeMax = 0,
+    # budget (wake-rotation): the node-level cross-segment total ceiling. A
+    # segment burn (wake_max) rotates the handoff to a fresh same-role session
+    # automatically; the TOTAL burn is the true adjudication point (four
+    # routes) — rotation never crosses it. Same raise-only + -UserVerdict gate.
+    [ValidateRange(0, 10000)]
+    [int]$SetWakeTotalMax = 0,
     [string]$UserVerdict,
 
     # start (wake-model shape — goal-tree-wake-model): 'wake' builds the run in
@@ -121,6 +127,12 @@ param(
     # (wake-model). Graft payloads may override per node; 0 = engine default (3).
     [ValidateRange(0, 1000)]
     [int]$WakeMax = 0,
+
+    # start / budget (wake-rotation): default cross-segment wake TOTAL per node
+    # (two-tier cap, goal-tree-wake-model §4.2 v2). Segment burn → rotation;
+    # total burn → adjudication. 0 = engine default (6).
+    [ValidateRange(0, 10000)]
+    [int]$WakeTotalMax = 0,
 
     # redo / reset (wake-model): switch the node onto a NEW duty segment —
     # quota accounting restarts for the segment (the per-duty budget the
@@ -167,6 +179,8 @@ goal-tree.cmd — 树管理面 CLI（仅规划者会话；worker 消费面是 go
   status       [-View summary|dispatches]                                  （对齐态势）
   resume       （断点续跑）· conclude -Outcome <achieved|budget_exhausted|space_exhausted> [-Summary]
   budget       -SetMaxRounds/-SetNodeWidth/-SetMaxNodes <n> -UserVerdict <用户裁决原文>   （只增不减；人工审批硬门）
+budget       -SetWakeMax/-SetWakeTotalMax <n> -UserVerdict <用户裁决原文>   （段/总量唤醒上限，只增不减；人工审批硬门）
+rotate       -NodeId <n> -Reason <轮换原因>   （段满轮换：切新段+新同角色会话承接；总量触顶时拒）
 worker 侧: goal-tree-leaf.cmd -Command next|claim|report ...
 "@ 
 }
@@ -667,6 +681,7 @@ function Read-ManifestEditable {
             node_width = [int]$m.budget.node_width
             max_nodes  = [int]$m.budget.max_nodes
             wake_max   = if ((Test-PropPresent $m.budget 'wake_max') -and $null -ne $m.budget.wake_max) { [int]$m.budget.wake_max } else { 3 }
+            wake_total_max = if ((Test-PropPresent $m.budget 'wake_total_max') -and $null -ne $m.budget.wake_total_max) { [int]$m.budget.wake_total_max } else { 6 }
         }
         ref_roots      = @(Convert-ToSafeArray $m.ref_roots)
         state          = [string]$m.state
@@ -720,6 +735,11 @@ function Convert-NodeToHashtable {
         last_confidence = if ($null -ne $Node.last_confidence) { [double]$Node.last_confidence } else { $null }
         wake_count      = if ($null -ne $Node.wake_count) { [int]$Node.wake_count } else { 0 }
         wake_max        = if ($null -ne $Node.wake_max) { [int]$Node.wake_max } else { $null }
+        # wake-rotation 两层配额字段（1.3.0）：段号 + 跨段累计（缺失=存量节点，
+        # 读取侧按 1/wake_count 迁移语义解释；此处原样透传，不做洗写）。
+        segment         = if ($null -ne $Node.segment) { [int]$Node.segment } else { $null }
+        wake_total      = if ($null -ne $Node.wake_total) { [int]$Node.wake_total } else { $null }
+        wake_total_max  = if ($null -ne $Node.wake_total_max) { [int]$Node.wake_total_max } else { $null }
         duty            = if ($Node.duty) { [string]$Node.duty } else { $null }
         ledger_refs     = @(Convert-ToSafeArray $Node.ledger_refs)
         note            = if ($Node.note) { [string]$Node.note } else { $null }
@@ -1265,7 +1285,10 @@ function Render-TreeOutline {
             # [status k/K] when a quota is stamped on the node.
             $typeMark = if (@('sub', 'accept') -contains [string]$n.type) { "{$($n.type)} " } else { "" }
             $effWakeMax = if ($null -ne $n.wake_max) { [int]$n.wake_max } else { $defWakeMax }
-            $wakeBadge = if (([string]$n.type -ne 'goal') -and $effWakeMax -gt 0) { " $([int]$n.wake_count)/$effWakeMax" } else { "" }
+            # wake-rotation: segment>1 carries the ·s<N> suffix — the planner
+            # sees at a glance that this slot is on its Nth session generation.
+            $segMark = if ((Get-NodeSegment $n) -gt 1) { "·s$(Get-NodeSegment $n)" } else { "" }
+            $wakeBadge = if (([string]$n.type -ne 'goal') -and $effWakeMax -gt 0) { " $([int]$n.wake_count)/$effWakeMax$segMark" } else { "" }
             $lines += (("  " * $cur.depth) + "- $($n.id) $($typeMark)[$($n.status)$wakeBadge]$mark $($n.title)")
             $kids = @(Convert-ToSafeArray $childrenOf[$cur.id])
             if ($kids.Count -eq 0) { continue }
@@ -1571,7 +1594,7 @@ function Invoke-Start {
         goal           = $Goal
         created_at     = $now
         created_by     = if ([string]::IsNullOrWhiteSpace($CreatedBy)) { "unknown" } else { $CreatedBy }
-        budget         = @{ max_rounds = $MaxRounds; node_width = $NodeWidth; max_nodes = $MaxNodes; wake_max = $(if ($WakeMax -gt 0) { $WakeMax } else { 3 }) }
+        budget         = @{ max_rounds = $MaxRounds; node_width = $NodeWidth; max_nodes = $MaxNodes; wake_max = $(if ($WakeMax -gt 0) { $WakeMax } else { 3 }); wake_total_max = $(if ($WakeTotalMax -gt 0) { $WakeTotalMax } else { 6 }) }
         ref_roots      = $roots
         state          = "running"
         concluded      = $null
@@ -2156,12 +2179,51 @@ function Get-EffectiveWakeMax {
     return 3
 }
 
+function Get-NodeSegment {
+    # 段号（wake-rotation）：显式 segment 优先，缺失（存量 run）按 1。
+    # 段 = 同一 duty 下的一个会话世代；rotate/-Duty 换段时 +1。
+    param($Node)
+    if ($null -ne $Node -and $null -ne $Node.segment) { return [int]$Node.segment }
+    return 1
+}
+
+function Get-NodeWakeTotal {
+    # 跨段累计唤醒（wake-rotation 二层配额）：单调不减，永不随换段清零。
+    # 存量 run 迁移语义：缺失时以现有 wake_count 起算（不洗历史）。
+    param($Node)
+    if ($null -ne $Node -and $null -ne $Node.wake_total) { return [int]$Node.wake_total }
+    if ($null -ne $Node -and $null -ne $Node.wake_count) { return [int]$Node.wake_count }
+    return 0
+}
+
+function Get-EffectiveWakeTotalMax {
+    # 二层配额解析（wake-rotation）：节点显式 wake_total_max 优先，
+    # 其次 run 级 budget.wake_total_max，最后引擎默认 6（两段余量）。
+    param($Manifest, $Node)
+    if ($null -ne $Node -and $null -ne $Node.wake_total_max) { return [int]$Node.wake_total_max }
+    if ($null -ne $Manifest -and (Test-PropPresent $Manifest 'budget') -and $null -ne $Manifest.budget -and (Test-PropPresent $Manifest.budget 'wake_total_max') -and $null -ne $Manifest.budget.wake_total_max) { return [int]$Manifest.budget.wake_total_max }
+    return 6
+}
+
+function Get-WakeAdjudicationRefusal {
+    # 二层触顶的拒绝文本（wake-rotation）：段满轮换（自动、零人工），
+    # 总量触顶才是真裁定点——两个独立会话先后失败是需求有问题的硬证据。
+    param($Manifest, $Node)
+    $dutyText = if ($Node.duty) { " (duty=$($Node.duty))" } else { "" }
+    $total = Get-NodeWakeTotal $Node
+    $totalMax = Get-EffectiveWakeTotalMax $Manifest $Node
+    return "Node $($Node.id)$dutyText has burned its cross-segment wake TOTAL [$total/$totalMax] across " +`
+        "$(Get-NodeSegment $Node) segment(s) — multiple independent sessions failed here, which is hard evidence the REQUIREMENT (not the worker) is the problem. " +`
+        "This is the adjudication point: (a) escalate to the user with the wake trail, (b) split the requirement and re-plan via PM, " +`
+        "(c) explicit debt-pass waiver with user consent, or raise the total with 'goal-tree budget -SetWakeTotalMax <n> -UserVerdict <ruling>' (raise-only, user-approved)."
+}
+
 function Get-WakeQuotaRefusal {
-    # 配额耗尽的拒绝文本：耗尽不是"停止"，是强制进入三路由裁定
-    # （goal-tree-wake-model §4.2）：升级用户 / 拆分需求回 PM / 带债放行。
+    # 段配额拒绝文本（wake-rotation v2）：段满不再是裁决点——下次交接自动
+    # 轮换到新同角色会话（上下文新鲜度）。这里只拦"在段外强行进入"。
     param($Node, [int]$WakeMax)
     $dutyText = if ($Node.duty) { " (duty=$($Node.duty))" } else { "" }
-    return "Node $($Node.id)$dutyText has burned its wake quota [$([int]$Node.wake_count)/$WakeMax] — every wake counts against the segment, regardless of mode. Quota exhaustion is an adjudication point, not a stop: (a) escalate to the user with the wake trail (verdicts + failure refs), (b) split the requirement and re-plan via PM, (c) explicit debt-pass waiver with user consent, or raise the run budget with 'budget -SetWakeMax <n> -UserVerdict <ruling>' (raise-only, user-approved)."
+    return "Node $($Node.id)$dutyText has burned its segment wake quota [$([int]$Node.wake_count)/$WakeMax] — every wake counts against the segment, regardless of mode. Segment exhaustion is a ROTATION point, not a stop: the next handoff auto-dispatches a fresh same-role session (wake-rotation). For a manual continuation use 'rotate' (reopen the segment, fresh session) or redo/reset -Duty <new> (new duty segment); raising the ceiling needs 'budget -SetWakeMax <n> -UserVerdict <ruling>' (raise-only, user-approved)."
 }
 
 function Invoke-Redo {
@@ -2199,14 +2261,31 @@ function Invoke-Redo {
         # --- duty segment switch FIRST (§4.2): a NEW duty restarts segment
         #     accounting, so the quota gate below judges the FRESH segment —
         #     switching onto a new duty is the model's intended continuation,
-        #     not a violation of the exhausted one.
+        #     not a violation of the exhausted one (wake-rotation: the switch
+        #     bumps the segment counter; wake_total stays monotonic).
         $dutySwitched = $false
         if (-not [string]::IsNullOrWhiteSpace($Duty)) {
             if ([string]$target.duty -ne $Duty.Trim()) {
                 $target.duty = $Duty.Trim()
+                $target.segment = (Get-NodeSegment $target) + 1
                 $target.wake_count = 0
+                $target.wake_total = Get-NodeWakeTotal $target
                 $dutySwitched = $true
             }
+        }
+        else {
+            # 物化迁移（wake-rotation）：旧节点首次触碰时补齐段字段。
+            $target.segment = Get-NodeSegment $target
+            $target.wake_total = Get-NodeWakeTotal $target
+        }
+        # --- two-tier wake gate (wake-rotation): redo IS a wake. The segment
+        #     ceiling rotates at handoff (push gate / rotate cmd); the
+        #     cross-segment TOTAL is the adjudication point and gates EVERY
+        #     entry — including this one.
+        $target.wake_total = Get-NodeWakeTotal $target
+        $totalMax = Get-EffectiveWakeTotalMax $manifest $target
+        if ((([int]$target.wake_total) + 1) -gt $totalMax) {
+            Write-ErrorResult "WAKE_TOTAL_EXCEEDED" (Get-WakeAdjudicationRefusal $manifest $target) 1
         }
         # --- wake quota gate (goal-tree-wake-model §4.2): this redo IS a wake ---
         $wakeMax = Get-EffectiveWakeMax $manifest $target
@@ -2214,6 +2293,7 @@ function Invoke-Redo {
             Write-ErrorResult "WAKE_QUOTA_EXCEEDED" (Get-WakeQuotaRefusal $target $wakeMax) 1
         }
         $target.wake_count = [int]$target.wake_count + 1
+        $target.wake_total = [int]$target.wake_total + 1
         $newWake = [int]$target.wake_count
 
         # --- migration: reported -> claimed, same holder, fresh clock ---
@@ -2286,11 +2366,14 @@ function Invoke-Reset {
         $prevStatus = [string]$target.status
         $prevWorker = [string]$target.claimed_by
 
-        # duty segment switch: new duty => segment accounting restarts (§4.2)
+        # duty segment switch: new duty => segment accounting restarts (§4.2;
+        # wake-rotation: segment++ keeps the lineage honest, wake_total monotonic)
         $dutySwitched = $false
         if (-not [string]::IsNullOrWhiteSpace($Duty) -and [string]$target.duty -ne $Duty.Trim()) {
             $target.duty = $Duty.Trim()
+            $target.segment = (Get-NodeSegment $target) + 1
             $target.wake_count = 0
+            $target.wake_total = Get-NodeWakeTotal $target
             $dutySwitched = $true
         }
 
@@ -2327,6 +2410,117 @@ function Invoke-Reset {
         return @{
             success = $true
             data    = @{ run_id = $RunId; node_id = $NodeId; status = "pending"; from = $prevStatus; worker = $prevWorker; reason = $Reason; wake = [int]$target.wake_count; wake_max = (Get-EffectiveWakeMax $manifest $target); duty = $target.duty; duty_switched = $dutySwitched; lock = $lockInfo }
+        }
+    }
+    finally {
+        Exit-RunLock
+    }
+}
+
+function Invoke-Rotate {
+    # === wake-rotation（goal-tree-wake-model §4.2 v2）===
+    # 段满轮换：把节点切到新段（segment+1、wake_count 清零、wake_total 保留），
+    # 语义 = "换一个新同角色会话承接"——上下文新鲜度轮换，不是需求裁决。
+    # 只在交接时刻发生（pending / done）；claimed/reported 是在役/待裁，
+    # 绝不强抢（settle 或 reset 先行）。二层总量门在这里强制：总量触顶时
+    # 轮换被拒（WAKE_TOTAL_EXCEEDED）——轮换永远不得绕过真裁定点。
+    # 自动触发：delivery-bridge push 门在段满时调用（自动派遣零人工）；
+    # 手动触发：规划者判定旧会话上下文已毒化时可提前 rotate，不等段满。
+    param([string]$RunDir)
+
+    if ([string]::IsNullOrWhiteSpace($NodeId)) { Write-ErrorResult "MISSING_NODE_ID" "-NodeId is required" 1 }
+    if ([string]::IsNullOrWhiteSpace($Reason)) { Write-ErrorResult "MISSING_REASON" "-Reason is required (audit trail: why the session rotates)" 1 }
+
+    $lockInfo = Enter-RunLock $RunDir
+    try {
+        $manifest = Read-ManifestEditable $RunDir
+        Assert-Running $manifest
+        $roundState = Get-RoundState $RunDir
+        $round = [int]$roundState.open_round
+        $readBack = Read-TreeEditable $RunDir
+        $tree = $readBack.tree
+
+        $target = Find-Node $tree $NodeId
+        if ($null -eq $target) { Write-ErrorResult "NODE_NOT_FOUND" "Node not found: $NodeId" 2 }
+        if (@('goal', 'sub', 'accept') -contains [string]$target.type) {
+            Write-ErrorResult "CONTAINER_NODE_NOT_ROTATABLE" "Node $NodeId (type=$($target.type)) is structure, not work — containers and the goal root are never rotated; rotation targets the role-slot layer." 1
+        }
+        if ($target.status -eq "pruned") {
+            Write-ErrorResult "ALREADY_PRUNED" "Node $NodeId is pruned (terminal); a pruned slot is re-planned, not rotated." 1
+        }
+        if (@('claimed', 'reported') -contains [string]$target.status) {
+            Write-ErrorResult "ROTATE_NOT_AT_HANDOFF" "Node $NodeId is '$($target.status)' — rotation happens at handoff only (never mid-claim): settle the report or reset the claim first, then rotate." 1
+        }
+        # pending 是幂等重入（已是交接态）；done 需要按 reset 语义先重开。
+        # 二层总量门（权威判定在锁内）：+1 预留新段首唤，触顶即拒。
+        $wakeTotal = Get-NodeWakeTotal $target
+        $totalMax = Get-EffectiveWakeTotalMax $manifest $target
+        if (($wakeTotal + 1) -gt $totalMax) {
+            Write-ErrorResult "WAKE_TOTAL_EXCEEDED" (Get-WakeAdjudicationRefusal $manifest $target) 1
+        }
+
+        $now = Get-UtcNowIso
+        $prevStatus = [string]$target.status
+        $prevWorker = [string]$target.claimed_by
+        $prevSegment = Get-NodeSegment $target
+
+        if ($prevStatus -eq "done") {
+            # done → pending 重开（同 reset 的字段清理；段史与计数按轮换语义走）
+            $target.status = "pending"
+            $target.claimed_by = $null
+            $target.claimed_at = $null
+            $target.reported_at = $null
+            $target.settled_at = $null
+            $target.settled_note = $null
+            $target.last_verdict = $null
+            $target.last_confidence = $null
+        }
+        # 段切换：新世代会话，段内计数重开，跨段总量与 steal_count/ledger_refs 保留。
+        $target.segment = $prevSegment + 1
+        $target.wake_count = 0
+        $target.wake_total = $wakeTotal
+
+        Write-TreeFile $RunDir $tree
+
+        # --- ledger audit entry (type=rotate — not a worker report) ---
+        $entryId = "L$((@(Read-Ledger $RunDir).entries).Count + 1)"
+        $entry = [ordered]@{
+            entry_id     = $entryId
+            type         = "rotate"
+            round        = $round
+            node_id      = [string]$target.id
+            role         = if ($target.role) { [string]$target.role } else { $null }
+            worker       = if ($prevWorker) { $prevWorker } else { $null }
+            at           = $now
+            reason       = $Reason
+            wake         = [int]$target.wake_count
+            wake_total   = $wakeTotal
+            duty         = if ($target.duty) { [string]$target.duty } else { $null }
+            from_segment = $prevSegment
+            to_segment   = [int]$target.segment
+            from         = $prevStatus
+        }
+        $line = ConvertTo-Json $entry -Depth 8 -Compress
+        [System.IO.File]::AppendAllText((Get-LedgerPath $RunDir), $line + "`n", $script:Utf8NoBom)
+
+        return @{
+            success = $true
+            data    = @{
+                run_id       = $RunId
+                node_id      = $NodeId
+                status       = "pending"
+                from         = $prevStatus
+                worker       = $prevWorker
+                reason       = $Reason
+                segment      = [int]$target.segment
+                from_segment = $prevSegment
+                wake         = [int]$target.wake_count
+                wake_total   = $wakeTotal
+                wake_max     = (Get-EffectiveWakeMax $manifest $target)
+                wake_total_max = (Get-EffectiveWakeTotalMax $manifest $target)
+                duty         = $target.duty
+                lock         = $lockInfo
+            }
         }
     }
     finally {
@@ -2607,6 +2801,7 @@ function Invoke-Budget {
     if ($SetNodeWidth -gt 0) { $provided += 'node_width' }
     if ($SetMaxNodes -gt 0) { $provided += 'max_nodes' }
     if ($SetWakeMax -gt 0) { $provided += 'wake_max' }
+    if ($SetWakeTotalMax -gt 0) { $provided += 'wake_total_max' }
     if ($provided.Count -eq 0) {
         Write-ErrorResult "BUDGET_TARGET_MISSING" "nothing to extend: pass at least one of -SetMaxRounds / -SetNodeWidth / -SetMaxNodes / -SetWakeMax (raise-only: each value must EXCEED the current ceiling)" 1
     }
@@ -2616,12 +2811,13 @@ function Invoke-Budget {
         $manifest = Read-ManifestEditable $RunDir
         Assert-Running $manifest
         $old = @{
-            max_rounds = [int]$manifest.budget.max_rounds
-            node_width = [int]$manifest.budget.node_width
-            max_nodes  = [int]$manifest.budget.max_nodes
-            wake_max   = if ($null -ne $manifest.budget.wake_max) { [int]$manifest.budget.wake_max } else { 3 }
+            max_rounds    = [int]$manifest.budget.max_rounds
+            node_width    = [int]$manifest.budget.node_width
+            max_nodes     = [int]$manifest.budget.max_nodes
+            wake_max      = if ($null -ne $manifest.budget.wake_max) { [int]$manifest.budget.wake_max } else { 3 }
+            wake_total_max = if ($null -ne $manifest.budget.wake_total_max) { [int]$manifest.budget.wake_total_max } else { 6 }
         }
-        foreach ($pair in @(@('max_rounds', $SetMaxRounds), @('node_width', $SetNodeWidth), @('max_nodes', $SetMaxNodes), @('wake_max', $SetWakeMax))) {
+        foreach ($pair in @(@('max_rounds', $SetMaxRounds), @('node_width', $SetNodeWidth), @('max_nodes', $SetMaxNodes), @('wake_max', $SetWakeMax), @('wake_total_max', $SetWakeTotalMax))) {
             $field = [string]$pair[0]
             $val = [int]$pair[1]
             if ($val -le 0) { continue }
@@ -2632,7 +2828,7 @@ function Invoke-Budget {
         }
         Write-ManifestFile $RunDir $manifest
         $roundState = Get-RoundState $RunDir
-        $newBudget = @{ max_rounds = [int]$manifest.budget.max_rounds; node_width = [int]$manifest.budget.node_width; max_nodes = [int]$manifest.budget.max_nodes; wake_max = if ($null -ne $manifest.budget.wake_max) { [int]$manifest.budget.wake_max } else { 3 } }
+        $newBudget = @{ max_rounds = [int]$manifest.budget.max_rounds; node_width = [int]$manifest.budget.node_width; max_nodes = [int]$manifest.budget.max_nodes; wake_max = if ($null -ne $manifest.budget.wake_max) { [int]$manifest.budget.wake_max } else { 3 }; wake_total_max = if ($null -ne $manifest.budget.wake_total_max) { [int]$manifest.budget.wake_total_max } else { 6 } }
         Add-BudgetLogLine $RunDir @{
             event   = "budget-extend"
             round   = [int]$roundState.last_round
@@ -2751,6 +2947,29 @@ function Invoke-Status {
             $inFlight += @{ id = $n.id; title = $n.title; type = $n.type; role = $n.role; claimed_by = $n.claimed_by; claimed_at = $n.claimed_at; steal_count = $n.steal_count; age_seconds = $ageSec; depends_on = @(ConvertTo-NodeIdList $n.depends_on) }
         }
         if ($unsettled.Count -gt 0) { $warnings += "$($unsettled.Count) reported node(s) awaiting settle: $(($unsettled | ForEach-Object { $_.id }) -join ', ')" }
+        # wake-rotation visibility: pending slots split by two-tier state —
+        # segment-burned = rotation queued at the next handoff (self-healing,
+        # zero human); total-burned = the true adjudication point (four routes).
+        $rotationQueued = @()
+        $adjudicationDue = @()
+        foreach ($n in @($tree.nodes)) {
+            if ([string]$n.status -ne 'pending' -or @('goal', 'sub', 'accept') -contains [string]$n.type) { continue }
+            $segMax = Get-EffectiveWakeMax $manifest $n
+            $totalMax = Get-EffectiveWakeTotalMax $manifest $n
+            $total = Get-NodeWakeTotal $n
+            if ($total -ge $totalMax) {
+                $adjudicationDue += @{ id = [string]$n.id; title = $n.title; wake_total = $total; wake_total_max = $totalMax; segment = (Get-NodeSegment $n) }
+            }
+            elseif ($segMax -gt 0 -and ([int]$n.wake_count) -ge $segMax) {
+                $rotationQueued += @{ id = [string]$n.id; title = $n.title; wake = [int]$n.wake_count; wake_max = $segMax; segment = (Get-NodeSegment $n) }
+            }
+        }
+        if ($adjudicationDue.Count -gt 0 -and $manifest.state -eq 'running') {
+            $warnings += "wake TOTAL exhausted (adjudication due — escalate/split/debt-pass/raise): $(($adjudicationDue | ForEach-Object { "$($_.id)[$($_.wake_total)/$($_.wake_total_max)·s$($_.segment)]" }) -join ', ')"
+        }
+        if ($rotationQueued.Count -gt 0 -and $manifest.state -eq 'running') {
+            $warnings += "segment quota burned (rotation queued at next handoff — fresh session auto-dispatches): $(($rotationQueued | ForEach-Object { "$($_.id)[$($_.wake)/$($_.wake_max)·s$($_.segment)]" }) -join ', ')"
+        }
         if ($hangingRound) { $warnings += "round $hangingRound open since $($roundState.open_started_at) (round-start without round-end)" }
         if ($manifest.state -eq "running" -and $census.pending.Count -eq 0 -and $census.claimed.Count -eq 0 -and $census.reported.Count -eq 0) {
             $warnings += "no pending/claimed/reported nodes left — consider conclude (space_exhausted or achieved)"
@@ -2800,6 +3019,13 @@ function Invoke-Status {
                     reported = $unsettled
                     done     = @($census.done)
                     pruned   = @($census.pruned)
+                }
+                # wake-rotation two-tier state (status self-healing visibility):
+                # segment-burned pending slots rotate at the next handoff;
+                # total-burned ones await the four-route adjudication.
+                wake_rotation  = [ordered]@{
+                    rotation_queued   = $rotationQueued
+                    adjudication_due  = $adjudicationDue
                 }
                 ledger         = [ordered]@{
                     entries     = $stats.total
@@ -3264,6 +3490,7 @@ switch ($Command) {
     "prune"       { $runDir = Resolve-RunDir $RunId; $result = Invoke-Prune $runDir }
     "redo"        { $runDir = Resolve-RunDir $RunId; $result = Invoke-Redo $runDir }
     "reset"       { $runDir = Resolve-RunDir $RunId; $result = Invoke-Reset $runDir }
+"rotate"      { $runDir = Resolve-RunDir $RunId; $result = Invoke-Rotate $runDir }
     "settle"      { $runDir = Resolve-RunDir $RunId; $result = Invoke-Settle $runDir }
     "round-start" { $runDir = Resolve-RunDir $RunId; $result = Invoke-RoundStart $runDir }
     "round-end"   { $runDir = Resolve-RunDir $RunId; $result = Invoke-RoundEnd $runDir }

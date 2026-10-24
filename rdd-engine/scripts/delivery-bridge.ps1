@@ -1142,7 +1142,7 @@ function Add-RosterEntry {
     # same-session re-push) refreshes role/node/label/source/title and stamps
     # updated_at while preserving the first created_at. Returns
     # @{ ok; entry; error } — advisory, never throws.
-    param([string]$RunDir, [string]$RunIdText, [string]$SessionId, [string]$Role, [string]$Node, [string]$Label, [string]$Source, [string]$Title)
+    param([string]$RunDir, [string]$RunIdText, [string]$SessionId, [string]$Role, [string]$Node, [string]$Label, [string]$Source, [string]$Title, [int]$Segment = 0)
     if ([string]::IsNullOrWhiteSpace($SessionId)) { return @{ ok = $false; entry = $null; error = "empty session id" } }
     $roster = Read-Roster $RunDir
     $now = Get-UtcNowIso
@@ -1159,6 +1159,9 @@ function Add-RosterEntry {
     $entry['label'] = $(if ([string]::IsNullOrWhiteSpace($Label)) { $null } else { $Label })
     $entry['source'] = $Source
     $entry['title'] = $Title
+    # wake-rotation: the serving generation of this session for its bound node
+    # (0 = unstamped legacy row; reuse resolution treats stampless as segment 1).
+    if ($Segment -gt 0) { $entry['segment'] = $Segment }
     $entry['updated_at'] = $now
     $w = Write-RosterFile -RunDir $RunDir -RunIdText $RunIdText -Sessions $roster.sessions
     return @{ ok = $w.ok; entry = $entry; error = $w.error }
@@ -1184,7 +1187,11 @@ function Register-PushedSession {
         if (-not [string]::IsNullOrWhiteSpace($NodeId)) { $parts += $NodeId }
         $title = "[{0}] {1}" -f $short, ($parts -join '·')
     }
-    $r = Add-RosterEntry -RunDir $RunDir -RunIdText $RunIdText -SessionId $sid -Role $Stage -Node $NodeId -Label $null -Source "bridge-dispatch" -Title $title
+    # wake-rotation: stamp the node's CURRENT segment so later reuse resolution
+    # (and the claim-side ROTATED_OUT gate) can tell serving generations apart.
+    $seg = 0
+    if (-not [string]::IsNullOrWhiteSpace($NodeId)) { $seg = Get-TreeNodeSegment $RunDir $NodeId }
+    $r = Add-RosterEntry -RunDir $RunDir -RunIdText $RunIdText -SessionId $sid -Role $Stage -Node $NodeId -Label $null -Source "bridge-dispatch" -Title $title -Segment $seg
     if ($r.ok) { return $r.entry }
     return $null
 }
@@ -1370,6 +1377,24 @@ function Find-LiveSessionForNode {
     return $null
 }
 
+function Get-TreeNodeSegment {
+    # wake-rotation: the node's CURRENT segment from the authoritative tree
+    # snapshot (read-tolerant; missing node/file/field -> 1).
+    param([string]$RunDir, [string]$NodeId)
+    $tp = Join-Path (Join-Path $RunDir "state") "tree.json"
+    if (-not (Test-Path -LiteralPath $tp -PathType Leaf)) { return 1 }
+    try {
+        $t = [System.IO.File]::ReadAllText($tp, [System.Text.Encoding]::UTF8) | ConvertFrom-Json
+        foreach ($n in @($t.nodes)) {
+            if (([string]$n.id) -eq $NodeId) {
+                if ($null -ne $n.segment) { return [int]$n.segment }
+                return 1
+            }
+        }
+    } catch {}
+    return 1
+}
+
 function Find-ReusableSession {
     # reuse resolution for auto/manual dispatch (inplace-redo-session-reuse):
     # scan the run's session roster for the newest ALIVE session bound to the
@@ -1379,16 +1404,26 @@ function Find-ReusableSession {
     # key and never match (v1 boundary). Roster blindness, non-dsh shells and
     # dead candidates degrade to $null = current behavior (session.create).
     # Returns @{ session_id; liveness } or $null.
-    param([string]$RunDir, $Bridge, [int]$TaskId, [string]$Stage)
+    param([string]$RunDir, $Bridge, [int]$TaskId, [string]$Stage, [string]$NodeId = "")
     if ([string]::IsNullOrWhiteSpace($env:DSH_WEB_URL)) { return $null }
     $roster = Read-Roster $RunDir
     if (-not $roster.exists -or $roster.corrupt) { return $null }
+    # wake-rotation: rows bound to THIS node from an OLD segment are retired —
+    # stale-context sessions never receive the node's later handoffs (they are
+    # also ROTATED_OUT at the claim gate; this is the dispatch-side mirror).
+    $curSeg = 0
+    if (-not [string]::IsNullOrWhiteSpace($NodeId)) { $curSeg = Get-TreeNodeSegment $RunDir $NodeId }
     $candidates = @()
     foreach ($s in @($roster.sessions)) {
         if ($null -eq $s -or $s -isnot [System.Collections.IDictionary]) { continue }
         if ([string]$s['role'] -ne $Stage) { continue }
         $rowNode = $(if ($s.Contains('node') -and $null -ne $s['node']) { [string]$s['node'] } else { "" })
         if ([string]::IsNullOrWhiteSpace($rowNode)) { continue }
+        if ($curSeg -gt 1 -and $rowNode -eq $NodeId) {
+            $rowSeg = 1
+            if ($s.Contains('segment') -and $null -ne $s['segment']) { $rowSeg = [int]$s['segment'] }
+            if ($rowSeg -lt $curSeg) { continue }
+        }
         $mapping = Get-NodeTaskStage $Bridge $rowNode
         if ($null -eq $mapping -or [int]$mapping.task_id -ne $TaskId) { continue }
         if ([string]::IsNullOrWhiteSpace([string]$s['session_id'])) { continue }
@@ -1573,6 +1608,45 @@ function Add-LeafPendingToMap {
     }
 }
 
+function Get-WakeQuotaState {
+    # wake-rotation two-tier resolution for the push gate. The candidate's
+    # node view here is BARE for pending slots (Get-PushStatusMap keeps
+    # pending as id strings), so this reads the AUTHORITATIVE node record
+    # from state/tree.json and normalizes legacy fields (segment=1,
+    # wake_total=wake_count). Manifest budget supplies the ceilings.
+    # Returns @{ seg; seg_max; total; total_max } or $null when the node (or
+    # its wake fields) cannot be resolved — fail-open: the claim gate remains
+    # the enforcement backstop.
+    param([string]$RunDir, [string]$NodeId)
+    if ([string]::IsNullOrWhiteSpace($RunDir) -or [string]::IsNullOrWhiteSpace($NodeId)) { return $null }
+    $tp = Join-Path (Join-Path $RunDir "state") "tree.json"
+    if (-not (Test-Path -LiteralPath $tp -PathType Leaf)) { return $null }
+    $node = $null
+    try {
+        $t = [System.IO.File]::ReadAllText($tp, [System.Text.Encoding]::UTF8) | ConvertFrom-Json
+        foreach ($n in @($t.nodes)) { if (([string]$n.id) -eq $NodeId) { $node = $n; break } }
+    } catch { return $null }
+    if ($null -eq $node) { return $null }
+    if ($null -eq $node.wake_count) { return $null }
+    $budget = $null
+    $mp = Join-Path $RunDir "manifest.json"
+    if (Test-Path -LiteralPath $mp -PathType Leaf) {
+        try { $mo = [System.IO.File]::ReadAllText($mp, [System.Text.Encoding]::UTF8) | ConvertFrom-Json; $budget = $mo.budget } catch { $budget = $null }
+    }
+    $segMax = 3
+    if ($null -ne $node.wake_max) { $segMax = [int]$node.wake_max }
+    elseif ($null -ne $budget -and $null -ne $budget.wake_max) { $segMax = [int]$budget.wake_max }
+    $totalMax = 6
+    if ($null -ne $node.wake_total_max) { $totalMax = [int]$node.wake_total_max }
+    elseif ($null -ne $budget -and $null -ne $budget.wake_total_max) { $totalMax = [int]$budget.wake_total_max }
+    $seg = 1
+    if ($null -ne $node.segment) { $seg = [int]$node.segment }
+    $total = 0
+    if ($null -ne $node.wake_total) { $total = [int]$node.wake_total }
+    elseif ($null -ne $node.wake_count) { $total = [int]$node.wake_count }
+    return @{ seg = $seg; seg_max = $segMax; total = $total; total_max = $totalMax; wake_count = [int]$node.wake_count }
+}
+
 function Test-PushCandidate {
     # Per-node push gate (state filter + unlock + push-ledger rules). Returns
     # $null = push it, or the skip record consumed by the caller's ledger.
@@ -1625,6 +1699,28 @@ function Test-PushCandidate {
         }
     }
     $pushState = Get-NodePushState $Bridge $NodeId
+    # --- wake-quota gates (wake-rotation): NEVER push a claim the claim gate
+    #     would refuse — that is a dead-end delivery (the 1024 incident: veto
+    #     wave reset → re-push to the stale session → WAKE_QUOTA_EXCEEDED at
+    #     claim → 2h42m stall waiting for a human). Two tiers:
+    #     · total burned  → skip (the four-route adjudication point)
+    #     · segment burned → ROTATE marker (the caller reopens the segment and
+    #       hands the node to a FRESH same-role session — zero human touch)
+    #     ORDER MATTERS: quota state outranks the already-pushed short-circuit —
+    #     the recorded pointer points at the STALE session the rotation retires.
+    #     ($Node is a BARE id for pending slots; Get-WakeQuotaState reads the
+    #     authoritative tree record itself.)
+    if (-not [string]::IsNullOrWhiteSpace($RunDir)) {
+        $q = Get-WakeQuotaState $RunDir $NodeId
+        if ($null -ne $q) {
+            if ($q.total -ge $q.total_max) {
+                return @{ node = $NodeId; reason = "wake_total_exhausted"; wake_total = $q.total; wake_total_max = $q.total_max; segment = $q.seg; detail = "cross-segment wake TOTAL burned — adjudication due (escalate / split via PM / debt-pass / budget -SetWakeTotalMax -UserVerdict)" }
+            }
+            if ($q.seg_max -gt 0 -and [int]$q.wake_count -ge $q.seg_max) {
+                return @{ node = $NodeId; rotate = $true; reason = "wake_segment_rotation"; wake = [int]$q.wake_count; wake_max = $q.seg_max; segment = $q.seg; wake_total = $q.total }
+            }
+        }
+    }
     $pushedOk = ($null -ne $pushState -and $pushState.Contains('last_ok_at') -and $null -ne $pushState['last_ok_at'])
     $needsRepush = ($null -ne $pushState -and $pushState.Contains('needs_repush') -and [bool]$pushState['needs_repush'])
     if ($pushedOk -and -not $needsRepush) {
@@ -1681,8 +1777,11 @@ function Invoke-StartRolePush {
         if ($summary) { $startArgs += @("-TaskSummary", $summary) }
         if ($reused) {
             $startArgs += @("-ExistingSessionId", $ExistingSessionId)
-            if (-not [string]::IsNullOrWhiteSpace($Appendix)) { $startArgs += @("-Appendix", $Appendix) }
         }
+        # wake-rotation: the handoff packet rides the SAME appendix channel for
+        # fresh sessions (start-role composes it into the pointer tail either
+        # way) — a rotated-in session starts from the segment history, not zero.
+        if (-not [string]::IsNullOrWhiteSpace($Appendix)) { $startArgs += @("-Appendix", $Appendix) }
         $r = Invoke-StartRole $startArgs
     }
     catch {
@@ -1716,9 +1815,10 @@ function Invoke-NodePush {
     # reclaim re-pushes benefit. Exclusions keep the legacy fresh-session path:
     # rollback-triggered batches (v1 boundary — cross-stage rebuild keeps
     # rebuild semantics), tree-level nodes (task_id=0 degrades the same-task
-    # key into a global match) and -NoReuse. Returns
-    # @{ ok; error; retry_class; bridge; session_id; reused; reused_session }.
-    param($Cand, [string]$RunDir, $Bridge, $Nx, [bool]$AllowReuse = $true)
+    # key into a global match), -NoReuse and wake-rotation pushes (a rotated
+    # handoff ALWAYS takes a fresh session — context freshness is the point).
+    # Returns @{ ok; error; retry_class; bridge; session_id; reused; reused_session }.
+    param($Cand, [string]$RunDir, $Bridge, $Nx, [bool]$AllowReuse = $true, [string]$Appendix = "", [bool]$ForceFresh = $false)
     $nodeId = [string]$Cand.node
     # task brief (dispatch-task-goal-anchoring): goal-first statement derived
     # from the PERSISTED node.task — in-place from the leaf next view first
@@ -1731,12 +1831,12 @@ function Invoke-NodePush {
     }
     if (-not $taskText) { $taskText = Get-NodeTaskText -RunId ([string]$Bridge.run_id) -NodeId $nodeId }
     $reuseSession = $null
-    if ($AllowReuse -and -not $Cand.tree_level) {
-        $reuseSession = Find-ReusableSession -RunDir $RunDir -Bridge $Bridge -TaskId ([int]$Cand.task_id) -Stage ([string]$Cand.stage)
+    if ($AllowReuse -and -not $ForceFresh -and -not $Cand.tree_level) {
+        $reuseSession = Find-ReusableSession -RunDir $RunDir -Bridge $Bridge -TaskId ([int]$Cand.task_id) -Stage ([string]$Cand.stage) -NodeId $nodeId
     }
     $existingId = $null
     if ($null -ne $reuseSession) { $existingId = [string]$reuseSession.session_id }
-    $push = Invoke-StartRolePush -Cand $Cand -RunDir $RunDir -Bridge $Bridge -TaskText $taskText -ExistingSessionId $existingId
+    $push = Invoke-StartRolePush -Cand $Cand -RunDir $RunDir -Bridge $Bridge -TaskText $taskText -ExistingSessionId $existingId -Appendix $Appendix
     $push['reused_session'] = $reuseSession
     return $push
 }
@@ -1795,7 +1895,7 @@ function Invoke-AutoDispatch {
     if (Test-PropPresent $Bridge 'no_push' -and $Bridge['no_push'] -eq $true) {
         return @{ trigger = "$Trigger (no_push)"; considered = 0; pushed = @(); skipped = @(); failed = @(); bridge = $Bridge; no_push = $true; acceptance_grafted = $grafted; chain_error = @($chainErrors) }
     }
-    $result = @{ trigger = $Trigger; considered = 0; pushed = @(); skipped = @(); failed = @(); acceptance_grafted = $grafted; chain_error = @($chainErrors) }
+    $result = @{ trigger = $Trigger; considered = 0; pushed = @(); rotated = @(); skipped = @(); failed = @(); acceptance_grafted = $grafted; chain_error = @($chainErrors) }
     $maps = Get-PushStatusMap ([string]$Bridge.run_id)
     $nx = Get-LeafNextView ([string]$Bridge.run_id)
     Add-LeafPendingToMap $maps.status $maps.depends $nx
@@ -1817,6 +1917,36 @@ function Invoke-AutoDispatch {
         $parked = ($status -eq "claimed" -and [string]$node.claimed_by -eq "planner-reclaim")
         $skip = Test-PushCandidate -NodeId ([string]$cand.node) -Node $node -Status $status -Parked $parked -StatusOf $maps.status -DependsOf $maps.depends -Bridge $Bridge -RunDir $RunDir -BlockedNext $blockedNext
         if ($null -ne $skip) {
+            # --- wake-rotation branch (segment burned, total has headroom):
+            #     reopen the segment via the tree authority (rotate cmd: locks,
+            #     stamps the ledger, checks the total gate under the lock) and
+            #     hand the node to a FRESH same-role session with the handoff
+            #     packet — the rotation is a resource decision (context
+            #     freshness), zero human touch by design.
+            if ($skip -is [System.Collections.IDictionary] -and $skip.Contains('rotate') -and $skip['rotate']) {
+                $oldSeg = [int]$skip['segment']
+                $rotReason = "wake-rotation: segment s$oldSeg burned its quota [$([int]$skip['wake'])/$([int]$skip['wake_max'])] — auto-dispatch hands the node to a fresh same-role session"
+                $rot = Invoke-GoalTree @("-Command", "rotate", "-RunId", ([string]$Bridge.run_id), "-NodeId", ([string]$cand.node), "-Reason", $rotReason)
+                if ($rot.exit -ne 0 -or -not $rot.json.success) {
+                    $result.failed += @{ node = [string]$cand.node; error = "rotate failed: $($rot.text)"; retry_class = "rotate" }
+                    continue
+                }
+                $newSeg = [int]$rot.json.data.segment
+                $result.rotated += [string]$cand.node
+                $null = Add-PlanEvent -RunDir $RunDir -Kind "progress" -EventName "wake_rotation" -Node ([string]$cand.node) -TaskId $(if ($cand.tree_level) { $null } else { [int]$cand.task_id }) -Stage ([string]$cand.stage) -Detail @{
+                    from_segment = $oldSeg; to_segment = $newSeg
+                    wake_total   = [int]$rot.json.data.wake_total
+                    reason       = $rotReason
+                }
+                # fresh-session push with the handoff appendix (the node view in
+                # $maps is pre-rotation; the push keys off $Cand/Nx, not the node)
+                $appendix = Get-RotationHandoff -RunDir $RunDir -NodeId ([string]$cand.node) -NewSegment $newSeg -OldSegment $oldSeg -WakeTotal ([int]$rot.json.data.wake_total)
+                $push = Invoke-NodePush $cand $RunDir $Bridge $nx $false $appendix $true
+                $Bridge = $push.bridge
+                if ($push.ok) { $result.pushed += [string]$cand.node }
+                else { $result.failed += @{ node = [string]$cand.node; error = $push.error; retry_class = $push.retry_class } }
+                continue
+            }
             $result.skipped += $skip
             continue
         }
@@ -2241,6 +2371,42 @@ function Find-AcceptedCallback {
         if ([string]$e.entry_id -eq $want) { return $e }
     }
     return $null
+}
+
+function Get-RotationHandoff {
+    # wake-rotation 交接包：the fresh session's starting context — why the
+    # previous segment retired, what it delivered (artifact pointers), and the
+    # "you are a NEW session" contract. Composed from the ledger's tail for
+    # this node (redo/reset/rotate reasons + report summaries), capped to the
+    # last 3 events (pointer-message budget; older history stays in the ledger).
+    param([string]$RunDir, [string]$NodeId, [int]$NewSegment, [int]$OldSegment, [int]$WakeTotal)
+    $events = @()
+    foreach ($e in (Read-LedgerEntries $RunDir)) {
+        if ([string]$e.node_id -ne $NodeId) { continue }
+        $t = [string]$e.type
+        if ($t -eq 'redo' -or $t -eq 'reset' -or $t -eq 'rotate') {
+            $why = [string]$e.reason
+            if (-not $why -and $e.failure_ref) { $why = [string]$e.failure_ref }
+            $events += "[$($e.entry_id) $t] $why"
+        }
+        elseif ($t -ne 'rotate' -and $null -ne $e.callback -and $e.callback) {
+            $sum = [string]$e.callback.summary
+            if ($sum.Length -gt 120) { $sum = $sum.Substring(0, 120) + "…" }
+            $fr = [string]$e.callback.full_report
+            $events += "[$($e.entry_id) report verdict=$($e.callback.verdict)] $sum$(if ($fr) { " | 产物: $fr" })"
+        }
+    }
+    $tail = @($events | Select-Object -Last 3)
+    $lines = @(
+        "[轮换交接·s$NewSegment] 你是本节点第 $NewSegment 段的新会话——上一段（s$OldSegment，累计唤醒 $WakeTotal 次）已因段配额轮换退役。",
+        "上一段轨迹（尾3条，全史见 run ledger）："
+    )
+    if ($tail.Count -gt 0) { $lines += @($tail | ForEach-Object { "- $_" }) }
+    else { $lines += "- （无留痕事件）" }
+    $lines += @(
+        "- 要求：你不继承旧会话上下文；以上一轮已落盘产物为起点、按当前任务前提与引用文档继续，完成后照常 goal-tree-leaf report 回报。"
+    )
+    return ($lines -join "`n")
 }
 
 function Write-TempTasksFile {
@@ -5238,12 +5404,20 @@ function Invoke-WakeReopenSlot {
             return @{ ok = $true; node = $NodeId; mode = "redo(wake $($r.json.data.wake))" }
         }
         $code = if ($null -ne $r.json -and $null -ne $r.json.error) { [string]$r.json.error.code } else { "" }
-        if ($code -eq 'WAKE_QUOTA_EXCEEDED') {
-            # quota exhaustion is an adjudication point (§4.2): surface it loudly,
-            # leave the node as-is — the planner/user must pick a route.
-            return @{ ok = $false; node = $NodeId; mode = "quota-exhausted"; warning = "slot $NodeId wake quota exhausted — adjudicate: escalate / split / waive / budget -SetWakeMax. $($r.text)" }
+        if ($code -eq 'WAKE_QUOTA_EXCEEDED' -or $code -eq 'WAKE_TOTAL_EXCEEDED') {
+            if ($code -eq 'WAKE_TOTAL_EXCEEDED') {
+                # 跨段总量触顶（wake-rotation 二层）：真裁定点——loudly surfaced，
+                # 节点原样保留，规划者/用户四路由处置。
+                return @{ ok = $false; node = $NodeId; mode = "quota-total-exhausted"; warning = "slot $NodeId cross-segment wake TOTAL exhausted — adjudicate: escalate / split / waive / budget -SetWakeTotalMax. $($r.text)" }
+            }
+            # 段配额触顶（wake-rotation）：重做波本身就是交接决策——不打断波，
+            # 落到 reset 分支（reported→pending），push 门的 rotate 标记随即把节点
+            # 交给新同角色会话（附交接包），零人工。
+            $null = $r
         }
-        return @{ ok = $false; node = $NodeId; mode = "redo-failed"; warning = "wake redo of $NodeId failed: $($r.text)" }
+        else {
+            return @{ ok = $false; node = $NodeId; mode = "redo-failed"; warning = "wake redo of $NodeId failed: $($r.text)" }
+        }
     }
     # claimed 节点的 reset 活性门（n49→n52 双跑事故的同族修复）：reset 不打断
     # worker——活会话持有中 reset = 下一 claim 双跑。alive → 拒（defer 等 report，
@@ -8307,6 +8481,7 @@ function Invoke-StatusTouch {
     $push = Invoke-AutoDispatch $RunDir $Bridge "status"
     if (-not $leaseTry.was_mine) { $null = Invoke-LeaseRelease $RunDir }
     $touch['pushed'] = @($push.pushed)
+    $touch['rotated'] = @($push.rotated)
     $touch['skipped'] = @($push.skipped)
     $touch['failed'] = @($push.failed)
     return @{ touch = $touch; bridge = $push.bridge }
