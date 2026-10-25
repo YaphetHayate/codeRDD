@@ -1,4 +1,4 @@
-# 规划者场景细则（planner-scenarios）
+﻿# 规划者场景细则（planner-scenarios）
 
 > `planner-guide.md` 的场景下沉层：交付编排生命周期 / 交付角色分工 / 长程规划 / 交付回调四查 / 运行产物 / 需求审查门 / 收尾验收 / 并行冲突 / 设计审查 / 纯自动模式 / DEV 质量凭据 / 范围缺口派生。核心命令与硬约束见 planner-guide.md；本文各节仅在对应场景触发时阅读。
 
@@ -256,16 +256,22 @@ worker 完成即经 `goal-tree-leaf.cmd -Command report` 回调**你**（回调�
 
 > **新颁布一律带 `-ReviewMode subagent`（dsh 下硬性）**。legacy 链的 graft 判据 `Test-AuditorDeployed` 是双探（引擎旁 `rdd-auditor/SKILL.md` 角色卡目录 or repo `dsh/presets/rdd-auditor` 任一在场即 true）——**角色卡在场 ≠ dsh preset 在场**：按 `.rdd/skills/` 布局安装角色的项目恒使探测为真，legacy 链随之落审查节点；节点需真实 AUDITOR 会话 claim+report 才能 settle，而 dsh 产品面默认 8 组 preset 不含 `rdd-auditor` → 节点不可派发、审查卡死（规划者派子代理产的 DesignReviewFile 也进不了链——submit 对缺键 run 报 `DESIGN_REVIEW_LEGACY_RUN`）。卡死处置：删除 run 目录 → task.json 复位 → 带 `-ReviewMode subagent` 重建（评审产物可直接复用 submit）；**禁止手工装配 rdd-auditor preset 进 DSH_HOME 自救**——用户域部署面规划者不得代装配，且 preset 缺席非根因（legacy 节点形态才是）。
 
+**范围与计数豁免（design-scope-gate，引擎 1.4.0 / 2026-10-25）**：汇聚审查的方法论存在理由是**跨文档一致性**——审查只在「≥2 份 in-scope 设计文档并行」时才有汇聚视野需求。`promulgate -ReviewExcludeRoles <角色表>`（**缺省 `UX`**，过渡政策：UX 角色卡优化期间暂离语义审查，回归 = 颁布时传 `NONE`）落 `review_excluded_roles` 键；**非空**键 = 范围语义：被排除角色文档（按 `-cto/-ux/-qa` 后缀归属）离开审查对象面（docs/doc_tasks），**in-scope 文档 <2 → 阶段 exempt 计数豁免**（单文档或全被排除时快速通道，basis 记入 plan-log exempt 事件）。缺键 / **`NONE`（规范化为空数组——空串会被 powershell.exe -File 吞参，NONE 是 CLI 安全哨兵）** = 完整旧行为（全量审查面、≥1 即审——既不排除也不计数豁免，是本特性的整体还原开关）。**边界：范围排除只作用于语义审查面**——机械链（变更地图解析/推送门文件冲突检测/settle design_map 门/回执一致性核对）直读 task designDocs **永不过滤**；UX 的变更地图义务不随审查范围排除而豁免。规划者纪律不变：exempt 不是漏审，status 审查窗口期显式呈现范围配置。
+
+**机械前置：design-map settle 门（fail-fast）**：CTO/UX 设计文档的变更地图格式契约前移到 settle 四查第 4 查（角色交接门）——`Read-DesignChangeMap` 现解析判定：段缺失 / 行不可解析 / 计数行与文件数不一致 / 段在但零文件行且无计数声明 → **settle 直接拒**（`SETTLE_EVIDENCE_REJECTED`，问题清单带修复指引，格式级秒拒不再等审查波）；旧格式（legacy 地图）保持警示降级不拒。语义维度（错位/失真/遗漏）不在此门——仍归汇聚审查/角色自查/QA 测试先行。QA 测试先行文档不受变更地图契约约束。角色卡侧配套：CTO/UX SKILL.md 出报前自检项 + UX spec-template §8 契约段（此前 UX 模板完全无变更地图契约——exploration-cache-ux S1 两份 UX 文档静默失明的根因）。
+
+**僵滞预警（S4-lite）**：`design_review` 处于 `ready`/`failed` 且其最后一次 plan-log 状态事件超过 24h（`DesignReviewStaleHours`）→ status 警示「疑弃置」（2026-10-13 launcher run 先例：fail 波后重审未提交，run 静默滞留 12 天无人感知）——派审 / replan 收口 / 呈用户裁决，勿静默搁置。watcher digest 会接住 status 警示面。
+
 **状态机**（`plan.stages[k].design_review`，无段 = 无门零成本）：
 
 | 状态 | 新链语义（review_mode） | legacy 语义（缺键） | 进入 |
 |------|------------------------|--------------------|------|
 | `planned` | 槽位已落（新链恒落，无部署判据/零降级）待触发 | 槽位已落（promulgate 时 AUDITOR 已部署）待触发 | promulgate / 失效重置 / fail 波完成重置 |
-| `ready` | **待派审**：触发达成但产物未入库（plan-log `design_review_ready` + status/next 提示双感知面，无自动会话） | —（不存在） | 全部任务越过 DESIGN + ≥1 落盘产物 + 阶段有 DESIGN 节点 |
+| `ready` | **待派审**：触发达成但产物未入库（plan-log `design_review_ready` + status/next 提示双感知面，无自动会话） | —（不存在） | 全部任务越过 DESIGN + 阶段有 DESIGN 节点 + 落盘产物判据：范围键在场 → in-scope 文档 ≥2；缺键 → ≥1 落盘产物（存量语义） |
 | `grafted` | —（不存在，新链零节点） | `[设计审查·S<k>]` 已挂树待审（role=AUDITOR、无 TaskId、推送/认领/settle 走树级分支；claim 响应附 design_review 上下文：docs 清单 + design_maps + 架构约定引用 + 判据 ref） | 同上触发 |
 | `passed` | `design-review -Action submit` 契约校验通过 + 总裁定推导 pass | 审查节点 settle + 契约校验通过 + 推导 pass | 裁定入库 |
 | `failed` | submit 裁定 fail → 重做波进行中（波可重入；零节点回收，状态重置后覆盖重产） | 文件缺/不可解析或存在 blocking → 波进行中 | 总裁定 fail |
-| `exempt` | 快速通道豁免（共享语义，无门） | 同左 | 全阶段无落盘设计产物 / 无 in-run 设计工作 |
+| `exempt` | 快速通道豁免（共享语义，无门）：无落盘设计产物 / 无 in-run 设计工作 / **in-scope 文档 <2（范围键在场，计数豁免）** | 同左（无计数豁免分支） | 见上行判据 |
 
 **总裁定引擎推导**（pass ⇔ DesignReviewFile 全文档 pass 且全局零 blocking，**不采信声明值**）；契约校验与节点 settle 门**同一核心**（`Test-DesignReviewFileCore`：docs 全覆盖 / verdict-findings 一致 / finding 四字段 / 枚举值域 / reviewer 枚举 `auditor-delegated|auditor` / production 留痕形态，违规 `SETTLE_EVIDENCE_REJECTED` 带问题清单——修复重报）。
 
@@ -284,6 +290,7 @@ worker 完成即经 `goal-tree-leaf.cmd -Command report` 回调**你**（回调�
 | 信号 | 去向 |
 |------|------|
 | DesignReviewFile 环境类错误（文件缺/不可解析/契约违规） | 新链 `submit` 门拒 / legacy settle 门拒（`SETTLE_EVIDENCE_REJECTED` 带问题清单）→ 修复重报（新链由规划者重派子代理核验或复核文件后重 submit；legacy 同会话 redo）；legacy 会话死走 reclaim |
+| settle design_map 门拒（`design_map gate:` 前缀问题：段缺失/行不可解析/计数不一致/零声明） | **设计侧自查修复即可**（格式级，无需重派审查）：CTO/UX 按 rdd-cto/design-template.md / rdd-ux/references/spec-template.md §8 行格式补段/修行，settle 重报；机械问题不进语义审查波 |
 | 审查发现需求本体空缺（验收不可测/覆盖洞/依赖错标——设计侧无法承接） | finding 呈现用户建议回流 PM（`rdd-flow reject -From <AUDITOR/AUDITOR-DELEGATED> -To PM` 按驳回协议——子代理形态驳回由规划者代递），不阻塞其余设计维度裁定 |
 | 同任务/同因驳回 ≥2 次（重做波后再 fail 同因） | 建议走 RCA：升级用户裁决（conflict escalated 或规划者上报），必要时 replan 重划阶段 |
 | 设计类问题（错位/失真/遗漏/跨设计不一致/DESIGN_MAP_INVALID 实锤） | 走设计审查 fail 波自动重做，不回流 PM |

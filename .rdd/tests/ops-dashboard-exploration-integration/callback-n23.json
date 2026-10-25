@@ -1,0 +1,19 @@
+{
+  "node_id": "n23",
+  "verdict": "done",
+  "confidence": 0.9,
+  "summary": "[集成/联调] DEV 阶段完成：三子交付真实串联端到端验收。新增零依赖 E2E 探针（真实服务进程 + 真实仓只读链 34 断言 + 沙箱破坏性链 47 断言 + 引擎冻结 1 断言 = 82/82 PASS，两轮复跑一致，exit 0）。场景 1 完整闭环（KPI 展开→条目详情→产物对五状态面→时间双轨→取消零变更→确认删除热区/持久层对→三处一致消失→错误契约 405/400×3/404/422）与场景 2 只读基线（全部读交互零 .rdd 变更、无 JS 可见、引擎 SHA256 恒定 + git diff 零输出）全部达成；真实数据零触碰（删除仅落在自清理沙箱副本）。详见 tests/integration-acceptance.md §1–§3。",
+  "citations": [
+    { "ref": ".rdd/tests/ops-dashboard-exploration-integration/exploration-integration-e2e.mjs", "locator": "L1" },
+    { "ref": ".rdd/changes/archive/2026-10-20-exploration-cache-ux/tests/integration-acceptance.md", "locator": "L1" }
+  ],
+  "next_suggestion": "",
+  "full_report": ".rdd/changes/archive/2026-10-20-exploration-cache-ux/tests/integration-acceptance.md",
+  "extras": {
+    "verification": "E2E 集成联调 node .rdd/tests/ops-dashboard-exploration-integration/exploration-integration-e2e.mjs → total=82 pass=82 fail=0 exit=0（两轮复跑一致）；node --check exit 0；会话级 git diff -- explore.ps1/explore-store.ps1 零输出（冻结契约）；真实仓 .rdd/exploration 读后零漂移（size+mtime+SHA256）；沙箱副本运行后自清理零残留",
+    "quality_scan": {
+      "skip": true,
+      "reason": "本节点变更集仅含 .mjs（E2E 探针）与 .md（验收报告），无 PowerShell 文件改动，PowerShell 度量门不适用"
+    }
+  }
+}

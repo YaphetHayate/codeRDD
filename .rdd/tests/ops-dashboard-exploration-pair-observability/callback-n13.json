@@ -1,0 +1,26 @@
+{
+  "verdict": "done",
+  "node_id": "n13",
+  "confidence": 0.93,
+  "next_suggestion": "验证轮复跑双探针（本需求 27/27 + #1 探针 v2 24/24 互检）与 test-dashboard/page-contract/config 四套件；git diff 复核 explore.ps1/explore-store.ps1 冻结契约零改动（已预检零 diff）；UX 视觉验收建议对照 design/mockups/final-pairs.html 实操合并卡/产物对行展开/四态 badge/≈标注。",
+  "summary": "DEV n13 完成「artifact/summary 合并产物条目与状态可观测」（验收 1–7 全覆盖）：KPI 5→4 合并（产物记录卡 N 条 + hint M 对已配对，口径不变）；exp-pairs 第 4 展开区（产物对 5 列表 + PairDetail 行展开：四态新鲜度看板侧现算（语义对齐引擎 Test-EntryFresh，fail-soft）+ 双轨生成时间（热区 registeredAt / 持久与孤儿 mtime+「文件时间（近似）」）+ 相关产物路径双落点复制 + 240px 文件清单区内滚）；页底无 JS 平铺基线。引擎脚本与 envelope 冻结面零改动；与 #1（n12 先行交付）按变更地图段落级归属在共享文件上增量实现，零行级交叠。一处受控偏差：设计「entry 增透 files」改挂 pairs[]（#1 探针 TC-015 冻结 entry 字段集，现算 map 留 reader 内部），设计意图完整保留，报告留痕。",
+  "full_report": ".rdd/changes/archive/2026-10-20-exploration-cache-ux/dev/implementation-notes-pair-observability.md",
+  "citations": [
+    { "ref": "rdd-engine/dashboard/lib/readers/exploration.mjs", "locator": "#2 独占：pairs[] 聚合 + 现算新鲜度（Test-EntryFresh 同语义 fail-soft）+ mtime + >2000 文件护栏 note；entry 冻结面 7 字段原样" },
+    { "ref": "rdd-engine/dashboard/lib/components.mjs", "locator": "纯追加：pairStatusBadge/pairEntryBadge/pairTimeCell/pairFilesBlock/pairDetail/pairTable（data-pair 词汇行展开表，不动 #1 函数体）" },
+    { "ref": "rdd-engine/dashboard/lib/views/exploration.mjs", "locator": "KPI 5→4 合并产物记录卡 + exp-pairs 展开区 + pairs-flat 无 JS 平铺 + 副标题「或产物对清单」" },
+    { "ref": "rdd-engine/dashboard/static/app.js", "locator": "值域扩展三处：行委托 closest('tr[data-entry]')||closest('tr[data-pair]')、平铺隐藏加 #pairs-flat、copyText 无 hint 时 ✓/× 闪变降级（零新增监听器）" },
+    { "ref": "rdd-engine/dashboard/static/style.css", "locator": "追加 §5.21：badge-pair/dot/pair-verdict/pair-files(240px 内滚)/btn-copy-mini/time-approx/#pairs-flat[hidden] 负向锚；零新建 Token" },
+    { "ref": ".rdd/changes/archive/2026-10-20-exploration-cache-ux/dev/implementation-notes-pair-observability.md", "locator": "实现说明（主产物）：改动清单/受控偏差/验收对照/验证矩阵/实现取舍/遗留" }
+  ],
+  "extras": {
+    "verification": "本需求探针 27/27（交付守卫全激活 fail=0 skip=0）；#1 探针 v2 互检 24/24；test-dashboard 134/134；page-contract 82/82（首轮 stub 逗号选择器 4 失败已修复并沉淀 tips）；config 75/75；真实仓库 SSR 冒烟 13/13 + livecheck 详情片段逐字对齐设计；node --check 5 文件全过；git diff explore.ps1/explore-store.ps1 零输出（冻结契约零改动）",
+    "quality_scan": {
+      "skip": true,
+      "reason": "本任务改动面为 dashboard .mjs/.js/.css 五文件，无任何 .ps1 文件变更（dev-quality-prescan-gate skip 形态）"
+    },
+    "mode": "design-guided（桥接并行：#1 基线 n12 先行交付后按段落级归属增量实现；共享 4 文件与 n12 交付零行级交叠，双方探针互检全绿）",
+    "problems": [],
+    "notes": "①探针时序备注：#1 探针曾在 21:33 被修订为 v2（区域模型锚点改 zone 标题 + 新增 TC-070），修订前 v1 对交付结构有 7 个误报 FAIL，v2 下双方交付互检全绿。②ux 套件 test-dashboard-ux.mjs 基线即失败（n12 已留痕的 schema v1 夹具环境漂移），与本改动无关，建议另行开单。③真实仓库现状 65 对产物中 64 对孤儿（条目已淘汰，D2 口径不追溯）、1 对无清单（livecheck），页面如实标注。④tips 沉淀两枚：20261020T134209Z-DEV-8c5c（stub 简单选择器约束）、20261020T134210Z-DEV-9b83（双探针冻结面冲突→数据挂新对象）"
+  }
+}

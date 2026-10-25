@@ -22,5 +22,5 @@ if errorlevel 1 (
     echo [rdd-dashboard] itself needs no npm packages.
     exit /b 1
 )
-node "%~dp0..\dashboard\server.mjs" %*
+node "%~dp0server.mjs" %*
 exit /b %ERRORLEVEL%

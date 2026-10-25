@@ -1,0 +1,27 @@
+{
+  "verdict": "done",
+  "node_id": "n21",
+  "confidence": 0.94,
+  "next_suggestion": "验证轮复跑本需求探针（期望 22/22 守卫全激活）+ #1/#2 探针互检（24/24、27/27）+ test-dashboard/page-contract/config 三套件；git diff 复核 explore.ps1/explore-store.ps1 冻结契约零改动（已预检零 diff）；人工协议项两枚：浏览器会话点一次确认弹窗的取消（AC-5 行为级）与删除成功后页面换页实操；孤儿口径可加验：直接 POST 孤儿 slug 应 422 且零写盘（真实仓冒烟已实测）。",
+  "summary": "DEV n21 完成「探索缓存产物删除能力（写路径）」，验收 1–5 全覆盖，设计「删除一致性执行序」8 步逐条落地（2026-10-20 编码+验证）。关键发现：① 看板首个数据面写端点 POST /api/exploration/pair/delete 落地——错误契约 400/404/422/500 全实现，成对删除 + 失败回滚实测零半删，孤儿产物对双层守卫（入口不渲染 + 端点 422）；② 前端删除入口挂 #2 交付的 pairDetail 动作行（window.confirm 二次确认在前、取消零请求、全局单飞、成功换页重算计数），引擎脚本与 GET envelope 冻结面零改动；③ 两处受控等效实现留痕（仅写有变更 zone 保 TC-200 字节冻结基线；zone 序列化取引擎紧凑形状往返兼容），质量门连带修复 server.mjs 既有行数欠账。",
+  "full_report": ".rdd/changes/archive/2026-10-20-exploration-cache-ux/dev/implementation-notes-artifact-deletion.md",
+  "citations": [
+    { "ref": "rdd-engine/dashboard/lib/readers/exploration.mjs", "locator": "写面新增：deletePair 导出（一致性执行序编排）+ DeletePairRejected 错误契约载体 + pathIdentity（Get-PathIdentity 语义）/readZoneForWrite（fail-loud）/writeZoneAtomic（tmp+rename 自清残留）/prepareZonePlans/stageSummaryFile/rollbackPairDeletion/unlinkStaged/commitPairDeletion；读面函数零改动" },
+    { "ref": "rdd-engine/dashboard/server.mjs", "locator": "POST /api/exploration/pair/delete：handlePairDelete 三段式（形状 400/413 → deletePair 委托 → DeletePairRejected status+code 映射 / 500 delete-failed 附回滚说明）+ POST_ENDPOINTS 表派发收拢（405 单点化）+ handleConfigSave 的 422 拒绝体抽 searchConfigRejectBody（质量门行数要求，行为等价）" },
+    { "ref": "rdd-engine/dashboard/lib/components.mjs", "locator": "pairDetail 动作行纯追加删除按钮 data-delete-pair（btn-ghost btn-danger），仅 pair.entry 非空渲染（D10：孤儿产物对无删除入口）；既有按钮/字段行为零改动" },
+    { "ref": "rdd-engine/dashboard/static/app.js", "locator": "document 委托新增 [data-delete-pair] 拦截（a 排除后、行展开前）：window.confirm 二次确认在前取消即零请求（AC-5）→ fetch POST 字面量 URL（探针通道可发现）→ 成功 swapRefreshedContent 换页 / 失败行内 note-bar；isDeleteBusy 全局单飞 + 在途禁用全部删除按钮" },
+    { "ref": "rdd-engine/dashboard/static/style.css", "locator": "btn-danger/btn-danger:hover 两行：--ops-error 仅作边框（1.4.11 组件界），文字保持 --ops-text-primary（#2 §1.2 语义色不作文字）；悬停 --ops-error-tint；零新建 Token；禁用态复用 .btn:disabled" },
+    { "ref": "docs/ops-dashboard.md", "locator": "「写面 API」节改为「配置域 + 受控删除」：补 /api/exploration/pair/delete 行（成对删除/二次确认/全删或全留/孤儿 422/引擎零改动）+ 导语留痕只读原则例外与设计文档指针；页首概览句同步（需求「影响范围」留痕要求）" },
+    { "ref": ".rdd/changes/archive/2026-10-20-exploration-cache-ux/dev/implementation-notes-artifact-deletion.md", "locator": "实现说明（主产物）：改动清单/一致性执行序 8 步落地对照/受控等效实现 2 项/验收对照/验证矩阵/实现取舍/遗留边界" }
+  ],
+  "extras": {
+    "verification": "本需求探针 22/22 PASS（fail=0 skip=0 交付守卫全激活：delivered-probe html-controls=4/4 + appjs-channel=yes，通道经 app.js fetch 模板发现，TC-190..TC-225 全链含 TC-200 index 字节不动 / TC-215 EPERM 注入零半删 / TC-220 ghost 404 零变更）；#1 探针 24/24 + #2 探针 27/27 回归互检；test-dashboard 134/134、page-contract 82/82、config 75/75；js-quality-metrics 4 触碰 JS 文件 violations:0（首轮抓出 serveApi 58/handleConfigSave 51，按 uxGateProblem 先例抽取修复后复验全绿）；真实仓安全冒烟 10/10（65 对=1 entry-bearing+64 orphan 与 n16 基线一致，SSR 按钮数精确、孤儿零按钮、405/400×3/404/422 拒绝路径全对、真实 .rdd 树 size+mtime+SHA256 逐文件零漂移；正路径删除仅由夹具探针覆盖未触真实数据）；node --check 4 文件全过；git diff explore.ps1/explore-store.ps1 零输出（冻结契约零改动）",
+    "quality_scan": {
+      "skip": true,
+      "reason": "change set touches only dashboard .mjs/.js/.css plus docs/ops-dashboard.md — no PowerShell file changed (dev-quality-prescan-gate skip form); JS-side quality gate covered by js-quality-metrics violations:0"
+    },
+    "mode": "design-guided（goal-tree 桥接 run，node n21；QA 测试先行探针已就位，交付后同命令复跑守卫全激活）",
+    "problems": [],
+    "notes": "①受控等效实现两处均在「实现可等效替代，一致性契约不可变」授权内并留痕：仅写移除条数>0 的 zone（确定性满足 TC-200 字节冻结基线且收缩失败面）；zone 序列化取引擎 ConvertTo-Json -Compress 同款紧凑形状（写入方对齐对象是引擎而非看板 config 先例），顶层非 entries 键原样保留。②质量门连带修复既有欠账：server.mjs 引用入闸后 handleConfigSave 51 净行（HEAD 即如此，非本次引入）一并抽取为 searchConfigRejectBody；POST 路由 if 链收拢为 POST_ENDPOINTS 表（settled 面结构重构，六套件复跑全绿证行为等价，循 tips 20261020T140747Z 口径）。③未跑 test-dashboard-ux.mjs：基线即失败（n12 起留痕的 schema v1 夹具环境漂移，与本改动无关）。④tips 沉淀两枚：20261020T155949Z-DEV-c0e5（UI 写通道 fetch URL 须字面量内联——探针通道发现形态约束）、20261020T155950Z-DEV-3451（多文件写路径只写有变更的面——字节冻结基线）。⑤验证轮人工协议项：AC-5 行为级取消（浏览器点一次确认弹窗取消）与文件占用型失败注入（QA 报告既定口径）。"
+  }
+}

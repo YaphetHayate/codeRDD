@@ -1,0 +1,26 @@
+{
+  "verdict": "failed",
+  "node_id": "n15",
+  "confidence": 0.92,
+  "next_suggestion": "规划者二选一：delivery-bridge reclaim（同阶段重做，QA 失败清单已随本回调入库）或将 n13 交付退回 DEV 重做（rollback，问题清单自动进入重做节点任务文本）；DEV 修复 #4/#6 后重跑回归基线三件套（本需求探针 27 + #1 探针 v2 24 + test-dashboard 134，当前全绿不得击穿）再入 QA 验证轮",
+  "summary": "QA n15 验证轮：功能 27/27 全绿（delivered-probe 命中，9 条守卫全激活，零仪表修正），互检 #1 探针 v2 24/24、test-dashboard 134/134，冻结契约 explore.ps1/explore-store.ps1 零 diff 独立确认。但代码质量硬性项不通过：§1#4 readArtifacts（readers/exploration.mjs:113）52 净行>50（HEAD 12 行，本次重写）；§1#6 absoluteFilePath↔absoluteEntryPath 逐字同构未抽取 + renderPairRow↔renderRow 单元格映射同构。按提交门禁未执行 git commit，verdict=failed 回规划者裁定。",
+  "full_report": ".rdd/changes/archive/2026-10-20-exploration-cache-ux/tests/qa-report-pair-observability.md",
+  "citations": [
+    { "ref": ".rdd/changes/archive/2026-10-20-exploration-cache-ux/tests/qa-report-pair-observability.md", "locator": "验证轮报告（#验证轮报告 n15 段：功能结果/质量检查表/驳回理由/互检/处置）" },
+    { "ref": ".rdd/tests/ops-dashboard-exploration-pair-observability/exploration-pair-observability-qa-verify.mjs", "locator": "探针（27 断言，本轮 27/27 全绿，回归基线之一）" },
+    { "ref": ".rdd/tests/ops-dashboard-exploration-pair-observability/cases.json", "locator": "功能用例库 15 用例（codeRef 行号未漂移，无需增量修订）" }
+  ],
+  "extras": {
+    "verification": "本需求探针 27/27（delivered-probe markers=42 tile-wiring=yes，skip 守卫全激活 fail=0 skip=0，零仪表修正）；#1 探针 v2 互检 24/24；test-dashboard 134/134（均为 QA 独立复跑）；git diff --name-only 独立确认不含 explore-store.ps1/explore.ps1（冻结契约零改动）；node --check 4/4",
+    "quality_scan": { "skip": true, "reason": "QA 验证轮自身零 .ps1 变更（本轮写入仅 tests/ 自有报告与回调）；DEV 交付的 quality_scan skip 凭证见其 L9 回调（改动面无 .ps1）" },
+    "problems": [
+      { "rule": "code-quality.md §1 #4 函数行数", "file": "rdd-engine/dashboard/lib/readers/exploration.mjs:113", "function": "readArtifacts", "current": "52 净行（注释空行已扣）", "baseline": "HEAD 12 行", "expectation": "≤50 行", "fix_hint": "单函数四职责（配对+note/entry 查找表/产物对构建+新鲜度分派/哈希护栏），按职责拆子函数即可" },
+      { "rule": "code-quality.md §1 #6 重复逻辑", "file": "rdd-engine/dashboard/lib/components.mjs:279 + rdd-engine/dashboard/lib/views/exploration.mjs:65", "function": "absoluteFilePath ↔ absoluteEntryPath", "current": "函数体语义逐字相同（同注释+同三步归一化+同拼接），均本次新增未抽取", "expectation": "抽至共享模块单点维护" },
+      { "rule": "code-quality.md §1 #6 重复逻辑", "file": "rdd-engine/dashboard/lib/components.mjs:391 ↔ :139", "function": "renderPairRow ↔ renderRow", "current": "单元格映射逻辑同构（差异仅 attrs 与 detailRow 来源）；与 #1 并行交付的段落级归属策略相关，交 DEV 裁量", "expectation": "抽取共享 renderCells（修复不触对外行为）" }
+    ],
+    "commit": "未执行——质量硬性项触发提交门禁（qa-workflow 第六步：任一硬性项未通过不提交）",
+    "sibling_note": "n14（#1 QA 验证）claimed 活跃中未 report；本轮 QA 写入全部限于本功能自有文件（报告+回调），零共享文件写入（增量快照/功能清单无需变更），规避踩踏（tip 20261009T052614Z-QA-c43a 协议）",
+    "regression_baseline": "修复不得击穿当前全绿三件套：本需求探针 27 + #1 探针 v2 24 + test-dashboard 134",
+    "mode": "verification (时机二)：DEV n13 交付后进入；功能守门全过 + 质量守门拦截"
+  }
+}

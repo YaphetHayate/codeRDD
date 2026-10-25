@@ -202,6 +202,30 @@ param(
                                    # chain: dual probe / review nodes / +K
                                    # budget / AUDITOR push) — the compat path
                                    # for already-promulgated runs.
+    [string]$ReviewExcludeRoles = 'UX', # design-scope-gate: design-review scope
+                                    # exclusion (comma list of role names, e.g. 'UX'
+                                    # or 'CTO,UX'). DEFAULT 'UX' — the standing
+                                    # interim policy (user ruling 2026-10-25): UX
+                                    # stays out of the convergence review until its
+                                    # role card is optimized, then re-enters by
+                                    # promulgating with -ReviewExcludeRoles NONE.
+                                    # Persisted as bridge.json `review_excluded_roles`
+                                    # — non-empty list = scoped semantics (docs of
+                                    # excluded roles leave the review object list;
+                                    # in-scope docs < 2 -> exempt fast path). Key
+                                    # absent (legacy runs / promulgates without
+                                    # -ReviewMode) OR normalized-empty value
+                                    # ('NONE' — powershell.exe -File swallows ''
+                                    # args, so NONE is the CLI-safe sentinel) =
+                                    # byte-identical full-scope behavior (>= 1 doc
+                                    # -> review; the complete restore switch: no
+                                    # exclusions AND no count exemption).
+                                    # NOTE: this narrows the SEMANTIC review only.
+                                    # The mechanical change-map chain (design_maps
+                                    # parse / push-gate conflict detection / settle
+                                    # design_map gate / citation deviation check)
+                                    # reads task designDocs directly and is NEVER
+                                    # filtered by this list.
     [string]$ConventionsFile,     # 架构/风格约定载体 (parallel-coordination): review
                                    # 步产出的约定文档;DESIGN 并行链头 ≥2 时必填
                                    # (CONVENTIONS_MISSING,零残留),DESIGN 链头 node.task
@@ -1514,6 +1538,71 @@ function Get-PushFailureClass {
     return "session-create"
 }
 
+function New-WakeRedoAppendix {
+    # wake-reopen-context-delivery: the wake branch of Invoke-GraftNextStage
+    # reopens an EXISTING slot in place — the tree never grows, so
+    # New-NodeTaskText never re-runs and node.task keeps its GENERIC text; the
+    # redo worker would see "do your stage again" with no failure list
+    # (2026-10-24 scrollable-room incident: two zero-diff re-reports, the DEV
+    # session literally reported 无新失败事由随行). Compose the failure context
+    # here — mirroring New-NodeTaskText's redo section so fresh-graft and
+    # in-place-reopen shapes present the same information.
+    param($RedoContext)
+    if ($null -eq $RedoContext) { return "" }
+    $fromStage = [string]$RedoContext.from_stage
+    if ([string]::IsNullOrWhiteSpace($fromStage)) { $fromStage = "上一" }
+    $problems = @()
+    foreach ($p in @(Convert-ToSafeArray $RedoContext.problems)) { $problems += [string]$p }
+    $text = "【返工指令】本节点因 $fromStage 阶段交付不合格被退回重做。回退理由：$([string]$RedoContext.reason)。"
+    if ($problems.Count -gt 0) { $text += "证据问题清单：$($problems -join '；')。" }
+    $text += "本轮唯一任务=针对上述问题实修后重新出报；与被驳回版本零差异的原样重报不构成整改。"
+    if ($text.Length -gt 2000) { $text = $text.Substring(0, 1999) + "…" }
+    return $text
+}
+
+function Set-WakeRedoAppendix {
+    # stash the wake-rework failure context on the node's push-ledger entry and
+    # arm the re-push: the reopened slot is pushable again, and the NEXT
+    # pointer must carry the appendix (Invoke-AutoDispatch reads it, delivers
+    # once via -Appendix, clears on success — a redo pointer is only
+    # meaningful for the first delivery after the reopen).
+    param([string]$RunDir, $Bridge, [string]$NodeId, [string]$Appendix)
+    if ([string]::IsNullOrWhiteSpace($Appendix)) { return $Bridge }
+    if (-not (Test-PropPresent $Bridge 'pushes') -or $null -eq $Bridge.pushes) { $Bridge['pushes'] = @{} }
+    if (-not $Bridge.pushes.Contains($NodeId)) { $Bridge.pushes[$NodeId] = @{ last_ok_at = $null; needs_repush = $false; attempts = @() } }
+    $Bridge.pushes[$NodeId]['redo_appendix'] = $Appendix
+    $Bridge.pushes[$NodeId]['needs_repush'] = $true
+    Write-BridgeFile $RunDir $Bridge
+    return $Bridge
+}
+
+function Clear-WakeRedoAppendix {
+    # one-shot semantics: drop the stashed redo appendix after its FIRST
+    # successful delivery (failed deliveries keep it — the retry still needs
+    # it). Additive field on the push entry, so older readers ignore it.
+    param([string]$RunDir, $Bridge, [string]$NodeId)
+    $entry = Get-NodePushState $Bridge $NodeId
+    if ($null -eq $entry -or -not $entry.Contains('redo_appendix')) { return $Bridge }
+    $null = $entry.Remove('redo_appendix')
+    Write-BridgeFile $RunDir $Bridge
+    return $Bridge
+}
+
+function Invoke-PushWithRedoAppendix {
+    # auto-dispatch main-push carrier (wake-reopen-context-delivery): read the
+    # node's stashed redo appendix, deliver it via -Appendix, clear on FIRST
+    # successful delivery (failures keep it for the retry). Same return shape
+    # as Invoke-NodePush, so the call site stays shape-identical to the legacy
+    # plain push.
+    param($Cand, [string]$RunDir, $Bridge, $TaskText, [bool]$AllowReuse)
+    $redoAppendix = ""
+    $stashedState = Get-NodePushState $Bridge ([string]$Cand.node)
+    if ($null -ne $stashedState -and $stashedState.Contains('redo_appendix')) { $redoAppendix = [string]$stashedState['redo_appendix'] }
+    $push = Invoke-NodePush $Cand $RunDir $Bridge $TaskText $AllowReuse $redoAppendix
+    if ($push.ok -and $redoAppendix) { $push.bridge = Clear-WakeRedoAppendix $RunDir $push.bridge ([string]$Cand.node) }
+    return $push
+}
+
 function Get-PushCandidates {
     # Pushable node descriptors: bridge-mapped delivery nodes + tree-level
     # acceptance nodes (overall-delivery chain, no TaskId). One unified
@@ -1950,7 +2039,9 @@ function Invoke-AutoDispatch {
             $result.skipped += $skip
             continue
         }
-        $push = Invoke-NodePush $cand $RunDir $Bridge $nx $AllowReuse
+        # wake-reopen-context-delivery: a reopened slot's pointer carries the
+        # stashed failure list (one-shot, see Invoke-PushWithRedoAppendix).
+        $push = Invoke-PushWithRedoAppendix $cand $RunDir $Bridge $nx $AllowReuse
         $Bridge = $push.bridge
         if ($push.ok) { $result.pushed += [string]$cand.node }
         else { $result.failed += @{ node = [string]$cand.node; error = $push.error; retry_class = $push.retry_class } }
@@ -3478,6 +3569,13 @@ $script:DesignReviewReportFmt = "review/design-review-{0}.json"   # 归档相对
 $script:DesignReviewReviewers = @('auditor-delegated', 'auditor')
 $script:ReviewModeValues = @('subagent', 'session')          # review_mode 值域（无 off）
 $script:ReviewInputTemplateRel = "rdd-engine/references/review-input-template.md"
+# design-review zombie threshold (design-scope-gate S4-lite, 2026-10-13 launcher
+# incident: a fail wave's re-review was never submitted and the run sat silent for
+# 12 days — tasks still active@IMPL, no conclusion): a design_review state in
+# ready/failed whose last plan-log transition is older than this many hours gets
+# an explicit status warning (the watcher digest surfaces status warnings, so an
+# abandoned review chain becomes visible instead of silent).
+$script:DesignReviewStaleHours = 24
 
 function Get-BridgeReviewMode {
     # review_mode 配置载体（auditor-subagent-review 决策 #4/#7）：bridge.json 有键
@@ -3488,6 +3586,31 @@ function Get-BridgeReviewMode {
     if ($null -eq $Bridge -or -not (Test-PropPresent $Bridge 'review_mode')) { return $null }
     $modeText = [string]$Bridge['review_mode']
     if ($script:ReviewModeValues -contains $modeText) { return $modeText }
+    return $null
+}
+
+function Get-BridgeReviewExcludedRoles {
+    # design-scope-gate: 汇聚审查范围排除集（bridge.json `review_excluded_roles`）。
+    # 有键 = 范围语义（in-scope 文档 <2 → exempt 计数豁免；被排除角色文档离开审查
+    # 对象面）；缺键 = 存量全量语义（≥1 即审，逐字节兼容）。返回大写角色数组。
+    param($Bridge)
+    if ($null -eq $Bridge -or -not (Test-PropPresent $Bridge 'review_excluded_roles')) { return $null }
+    $out = @()
+    foreach ($r in @(Convert-ToSafeArray $Bridge['review_excluded_roles'])) {
+        $t = ([string]$r).Trim().ToUpper()
+        if (-not [string]::IsNullOrWhiteSpace($t) -and $out -notcontains $t) { $out += $t }
+    }
+    return ,@($out)
+}
+
+function Get-DesignDocRole {
+    # design-scope-gate / design-map gate 共用：设计文档 → 生产角色归属（文件名后缀
+    # 约定，与 fail 波 blocking 归属映射同源：-cto→CTO / -ux→UX / -qa→QA）。无法归属
+    # （无角色后缀）返回 $null——保守语义：无归属文档不被范围过滤排除（仍属审查面）。
+    param([string]$DocRel)
+    if ([string]::IsNullOrWhiteSpace($DocRel)) { return $null }
+    $leaf = [System.IO.Path]::GetFileName(($DocRel -replace '\\', '/'))
+    if ($leaf -match '-(cto|ux|qa)\.md$') { return $Matches[1].ToUpper() }
     return $null
 }
 
@@ -3565,9 +3688,15 @@ function Convert-DesignDocRelPath {
 
 function Get-StageDesignDocs {
     # 阶段全部落盘设计产物（审查对象面）：阶内在册任务的 designDocs 中真实存在的
-    # 文档（归档相对路径，'/' 规整）。返回 @{ docs; doc_tasks }（doc -> @([int] task)）。
+    # 文档（归档相对路径，'/' 规整）。design-scope-gate：bridge 带
+    # `review_excluded_roles` 键时，被排除角色（按 -cto/-ux/-qa 后缀归属）的文档
+    # 离开审查对象面——docs/doc_tasks 只含 in-scope 文档；all_docs/excluded_docs
+    # 透出全量与被排除清单（exempt 理由/status 呈现用）。缺键 = 全量（逐字节存量）。
+    # 注意：本过滤只作用于**语义审查面**；机械链（design_maps 解析 / 推送门冲突
+    # 检测 / settle design_map 门 / 回执一致性核对）直读 task designDocs，永不过滤。
+    # 返回 @{ docs; doc_tasks; all_docs; excluded_docs }（doc -> @([int] task)）。
     param($Bridge, $Stage, $FlowTasks)
-    $docs = @()
+    $allDocs = @()
     $docTasks = @{}
     foreach ($tid in @($Stage['task_ids'])) {
         if (-not $Bridge.tasks.Contains("$tid")) { continue }
@@ -3577,12 +3706,39 @@ function Get-StageDesignDocs {
             $np = Convert-DesignDocRelPath $Bridge ([string]$d.path)
             $rel = $np.rel
             if ([string]::IsNullOrWhiteSpace($rel) -or -not $np.abs) { continue }
-            if ($docs -notcontains $rel) { $docs += $rel }
+            if ($allDocs -notcontains $rel) { $allDocs += $rel }
             if (-not $docTasks.Contains($rel)) { $docTasks[$rel] = @() }
             if ($docTasks[$rel] -notcontains [int]$tid) { $docTasks[$rel] += [int]$tid }
         }
     }
-    return @{ docs = @($docs); doc_tasks = $docTasks }
+    $docs = @($allDocs)
+    $excludedDocs = @()
+    $exclSet = Get-BridgeReviewExcludedRoles $Bridge
+    if ($null -ne $exclSet) {
+        $kept = @()
+        foreach ($rel in @($allDocs)) {
+            $role = Get-DesignDocRole $rel
+            if ($null -ne $role -and $exclSet -contains $role) { $excludedDocs += $rel; continue }
+            $kept += $rel
+        }
+        $docs = @($kept)
+        $docTasks = @{}
+        foreach ($rel in @($docs)) { $docTasks[$rel] = @() }
+        # doc_tasks 重建：从全量映射中取 in-scope 文档的任务归属
+        foreach ($tid in @($Stage['task_ids'])) {
+            if (-not $Bridge.tasks.Contains("$tid")) { continue }
+            $task = Find-ArchiveTask $FlowTasks ([int]$tid)
+            if ($null -eq $task) { continue }
+            foreach ($d in @(Convert-ToSafeArray $task.designDocs)) {
+                $np = Convert-DesignDocRelPath $Bridge ([string]$d.path)
+                $rel = $np.rel
+                if ([string]::IsNullOrWhiteSpace($rel) -or -not $np.abs) { continue }
+                if ($docs -notcontains $rel) { continue }
+                if ($docTasks[$rel] -notcontains [int]$tid) { $docTasks[$rel] += [int]$tid }
+            }
+        }
+    }
+    return @{ docs = @($docs); doc_tasks = $docTasks; all_docs = @($allDocs); excluded_docs = @($excludedDocs) }
 }
 
 function Test-StageTaskPastDesign {
@@ -3620,7 +3776,7 @@ function Test-StageDesignTrigger {
     if (-not $hasDesignWork) {
         return @{ mode = "exempt"; reason = "no design-stage nodes in this run (no in-run design work to review)"; docs = @(); doc_tasks = $dd.doc_tasks }
     }
-    if (@($dd.docs).Count -eq 0) {
+    if (@($dd.all_docs).Count -eq 0) {
         # 无产物快速通道只在**本段设计工作已经结束**时成立。派生并入的阶段（planner-
         # midrun-derive × 本机制集成面）在 replan 触发那一刻必然尚无产物：CTO 还没跑、
         # task.json 也还没有 designDocs 条目（设计文档路径由 CTO 产出并经 add-design
@@ -3646,6 +3802,23 @@ function Test-StageDesignTrigger {
         if ($Bridge.tasks.Contains("$tid")) { $bTask = $Bridge.tasks["$tid"] }
         if (-not (Test-StageTaskPastDesign $task $bTask)) {
             return @{ mode = "wait"; reason = "task #$tid still inside DESIGN"; docs = @(); doc_tasks = $dd.doc_tasks }
+        }
+    }
+    # design-scope-gate（范围语义：bridge 带**非空** review_excluded_roles）：汇聚审查
+    # 的方法论存在理由是**跨文档一致性**（"并行设计间的跨设计一致性只有汇聚在同一
+    # 视野内才可查"）——in-scope 文档 <2 时无汇聚视野需求 → exempt 计数豁免，单文档
+    # 阶段的机械正确性由 settle design_map 门 + 角色自查 + QA 测试先行承接。缺键 /
+    # 显式空数组（-ReviewExcludeRoles ''）= 存量语义（≥1 即审，逐字节兼容——空串是
+    # 完整还原开关：既不排除任何角色，也关闭计数豁免）。被排除角色的文档
+    # （excluded_docs）仍走全部机械链。
+    $scopeExcl = Get-BridgeReviewExcludedRoles $Bridge
+    if ($null -ne $scopeExcl -and @($scopeExcl).Count -gt 0) {
+        $keptDocs = @($dd.docs)
+        if ($keptDocs.Count -eq 0) {
+            return @{ mode = "exempt"; reason = "all on-disk design artifacts belong to review-excluded roles — semantic convergence review skipped by scope config; mechanical chains unaffected (design-map settle gate / push-gate conflict detection / citation deviation / QA test-first)"; docs = @(); doc_tasks = $dd.doc_tasks; excluded_docs = @($dd.excluded_docs) }
+        }
+        if ($keptDocs.Count -eq 1) {
+            return @{ mode = "exempt"; reason = "single in-scope design artifact — convergence review answers cross-document consistency and needs >=2 in-scope docs; the single doc is covered by the mechanical design-map settle gate + role self-check + QA test-first"; docs = @(); doc_tasks = $dd.doc_tasks; kept_docs = @($keptDocs) }
         }
     }
     return @{ mode = "graft"; reason = "all stage tasks past DESIGN with on-disk design artifacts"; docs = @($dd.docs); doc_tasks = $dd.doc_tasks }
@@ -5362,6 +5535,22 @@ function New-BridgeSkeleton {
     # auditor-subagent-review: review_mode 落桥（决策 #4 配置项载体）——有键 = 新链
     # （纯契约）；缺键 = 存量 run 旧链逐字节（决策 #7 缺键兼容判据）。
     if (-not [string]::IsNullOrWhiteSpace($ReviewMode)) { $skel['review_mode'] = [string]$ReviewMode }
+    # design-scope-gate: review_excluded_roles 落桥——与 review_mode 同批（新链才有范围语义）。
+    # 规范化：逗号表 → 去空格大写角色数组；'NONE'（不区分大小写）或显式空串 → 空数组。
+    # 非空数组 = 范围语义（被排除角色文档离开审查对象面 + in-scope 文档 <2 → exempt 计数
+    # 豁免）；空数组 = 完整还原开关（全量审查面、≥1 即审——既不排除也不计数豁免；用
+    # 'NONE' 而非空串是因为 powershell.exe -File 会吞空串参数，CLI 面传不进来）。默认
+    # 'UX'（用户裁决 2026-10-25 过渡政策：UX 暂离汇聚审查，角色卡优化后以 'NONE' 回归）。
+    # 缺键 = 存量语义（逐字节兼容）。
+    if (-not [string]::IsNullOrWhiteSpace($ReviewMode)) {
+        $exclRoles = @()
+        foreach ($xr in @(($ReviewExcludeRoles -split ',') | ForEach-Object { ([string]$_).Trim() })) {
+            if ([string]::IsNullOrWhiteSpace($xr)) { continue }
+            if ($xr.ToUpper() -eq 'NONE') { continue }
+            $exclRoles += $xr.ToUpper()
+        }
+        $skel['review_excluded_roles'] = @($exclRoles)
+    }
     # goal-tree-wake-model: shape 落桥（缺键 = 旧链 chain-head 形状，逐字节兼容）
     if ($Shape -eq 'wake') { $skel['shape'] = 'wake' }
     return $skel
@@ -5382,6 +5571,18 @@ function Get-TaskContainerNode {
     $bTask = $Bridge.tasks["$TaskId"]
     if ($bTask.Contains('container') -and $bTask['container']) { return [string]$bTask['container'] }
     return $null
+}
+
+function Get-WakeReopenTexts {
+    # wake-reopen audit texts (reason/failure-ref/trigger/duty) shared by every
+    # rework path funneled through Invoke-WakeReopenSlot — one shape, no drift.
+    param($RedoContext, [string]$NextStage)
+    return @{
+        reason  = if ($RedoContext) { "rework: $([string]$RedoContext['reason'])" } else { "stage re-entry: $NextStage" }
+        failure = if ($RedoContext) { "redo-context: $([string]$RedoContext['from_stage'])" } else { "stage-transition" }
+        trigger = if ($RedoContext) { "wake-rework:$([string]$RedoContext['from_stage'])" } else { "wake-stage:$NextStage" }
+        duty    = $NextStage.ToLower()
+    }
 }
 
 function Invoke-WakeReopenSlot {
@@ -7402,6 +7603,75 @@ function Get-SettleGateRoles {
 # { scenario; run_id; node_id }.
 $script:RoleHandoffValidators["AUDITOR"] = ${function:Test-DesignReviewFile}
 
+# design-map-gate (fail-fast, S1 lesson): CTO/UX validators join the registry
+# OUTSIDE the verbatim-synced block — same pattern as AUDITOR above with the same
+# class of justification: the validator needs bridge context (run_id →
+# bridge.json → task designDocs) which only the bridge scenario carries; the
+# rdd-flow.ps1 copy of the gate (chain scenario / set-route re-check) has no
+# bridge context and legitimately dispatches DEV only, so the two synced copies
+# stay byte-identical. Bridge-side settle 4th check is the single enforcement
+# point: mechanical, format-level, deterministic, zero LLM. Semantic dimensions
+# (alignment/completeness/…) are NOT here — they stay with the convergence
+# review (when in scope), role self-check and QA test-first. Disposal paths need
+# no skip form (unlike DEV quality_scan): cross-stage rollback routes chain-side
+# and never hits these validators.
+function Test-RoleDesignMapGate {
+    # design-map-gate core（fail-fast）：变更地图机读契约的 settle 时点门。格式级四判据：
+    #   F1 段缺失   —— 无「## 变更地图」标题                                -> 拒
+    #   F2 零声明   —— 段在、零文件行、无计数行、非 legacy                  -> 拒
+    #   F3 行不可解析 —— DESIGN_MAP_INVALID 非 legacy                        -> 拒
+    #   F4 计数不一致 —— 计数行声明 ≠ 实际解析                              -> 拒
+    # legacy 降级（旧格式地图）保持警示级不拒（既有语义逐字节）。作用域 = 出场角色
+    # 自己的在盘设计文档（-cto/-ux 后缀归属）；角色尚无在盘文档 → 静默通过（空产物
+    # 归四查其余三项管），文档在册但段缺失 → 拒并给出修复指引。
+    param($GatePayload, [string]$Role)
+    if ($null -eq $GatePayload -or ([string]$GatePayload['scenario']) -ne 'bridge') { return @() }
+    $runId = [string]$GatePayload['run_id']
+    $nodeId = [string]$GatePayload['node_id']
+    if ([string]::IsNullOrWhiteSpace($runId) -or [string]::IsNullOrWhiteSpace($nodeId)) { return @() }
+    $runDir = Get-BridgeRunDir $runId
+    $bridge = Read-Bridge $runDir
+    if ($null -eq $bridge) { return @() }
+    $map = Get-NodeTaskStage $bridge $nodeId
+    if ($null -eq $map) { return @() }
+    $flow = Read-ArchiveTasks $bridge.archive
+    $task = Find-ArchiveTask $flow.tasks ([int]$map.task_id)
+    if ($null -eq $task) { return @() }
+    $suffix = '-' + $Role.ToLower() + '.md'
+    $problems = @()
+    foreach ($d in @(Convert-ToSafeArray $task.designDocs)) {
+        $np = Convert-DesignDocRelPath $bridge ([string]$d.path)
+        if ([string]::IsNullOrWhiteSpace($np.rel) -or -not $np.abs) { continue }
+        if (-not (([string]$np.rel).ToLower().EndsWith($suffix))) { continue }
+        # 直接现解析（不走 design_maps 缓存）：缓存条目可能早于 section_seen 字段落盘，
+        # 且 settle 时点低频，重解析成本可忽略——门永远拿最新事实。
+        $parsed = Read-DesignChangeMap $np.abs $np.rel
+        if (-not [bool]$parsed['section_seen']) {
+            $problems += "design_map gate: $($np.rel) 缺「## 变更地图」段——机读契约见 rdd-cto/design-template.md / rdd-ux/references/spec-template.md（行格式：完整路径 + [新增|修改|删除] + 说明，另附计数行）；格式级缺失使文件重叠检测/DEV 蓝图/回执核对对该文档失明，补段后重报"
+            continue
+        }
+        if (@(Convert-ToSafeArray $parsed['files']).Count -eq 0 -and $null -eq $parsed['counts'] -and -not [bool]$parsed['legacy']) {
+            $problems += "design_map gate: $($np.rel) 变更地图段零文件行且无计数行——确无文件变更需以计数行「[新增] 0 | [修改] 0 | [删除] 0」显式声明，修复后重报"
+        }
+        foreach ($w in @(Convert-ToSafeArray $parsed['warnings'])) {
+            $wt = [string]$w
+            if ($wt -like 'DESIGN_MAP_INVALID:*' -and $wt -notlike '*旧格式*' -and $wt -notlike '*存量*') {
+                $problems += "design_map gate: $($np.rel) $wt"
+            }
+            elseif ($wt -like '计数行机械核对不一致*') {
+                $problems += "design_map gate: $($np.rel) $wt"
+            }
+        }
+    }
+    return $problems
+}
+
+function Test-RoleDesignMapGateCto { param($GatePayload) return @(Test-RoleDesignMapGate -GatePayload $GatePayload -Role 'CTO') }
+function Test-RoleDesignMapGateUx  { param($GatePayload) return @(Test-RoleDesignMapGate -GatePayload $GatePayload -Role 'UX') }
+
+$script:RoleHandoffValidators["CTO"] = ${function:Test-RoleDesignMapGateCto}
+$script:RoleHandoffValidators["UX"] = ${function:Test-RoleDesignMapGateUx}
+
 function Write-QualityScanTempFile {
     # Materialize the accepted callback's quality_scan credential as a temp
     # JSON file for flow-tail set-route calls (dev-quality-prescan-gate): the
@@ -7768,7 +8038,9 @@ function Invoke-SettleFlowTransition {
 
 function New-SettleResult {
     # settle response assembly (shared by mapped and tree-level targets).
-    param($Target, $Tail, $Push, $Bridge, $Warnings)
+    # Notes (wake-stakeholder-note): claimed same-task slots that received an
+    # informational pointer because their holders may be waiting on this settle.
+    param($Target, $Tail, $Push, $Bridge, $Warnings, [string[]]$Notes = @())
     $taskIdOut = $(if ($Target.tree_level) { $null } else { $Target.task_id })
     return @{
         success = $true
@@ -7785,6 +8057,7 @@ function New-SettleResult {
             task_lifecycle  = [string]$Tail.taskLifecycle
             acceptance      = Get-AcceptanceSection $Bridge
             auto_push       = @{ trigger = $Push.trigger; pushed = @($Push.pushed); failed = @($Push.failed); skipped = @($Push.skipped | ForEach-Object { "$($_.node):$($_.reason)" }) }
+            stakeholder_notes = @($Notes)
             warnings        = $Warnings
             next_step       = $(if (@($Push.failed).Count -gt 0) { "repair failed pushes: session-create class auto-retries via status; pointer class → dispatch -NodeId <id> manually" } elseif ([string]$Tail.taskLifecycle -eq "completed") { "task $($Target.task_id) reached terminal state" } else { "unlocked nodes pushed automatically (see auto_push); failures retry via status touch" })
         }
@@ -7815,6 +8088,41 @@ function Invoke-SettleDerivationTail {
         bridge = $Bridge; warnings = @("derivation registration incomplete — the status patrol retries it (derivation stays confirmed): $($reg.error)"); graftedNext = $null; graftedNextNodes = @()
         flowOperation = "derivation settle landed, registration pending patrol"; taskLifecycle = "registration pending"
     }
+}
+
+function Send-SettleStakeholderNotes {
+    # wake-stakeholder-note (2026-10-24 scrollable-room incident): a settle
+    # changes the inputs of the task's OTHER claimed slots, but the push gate
+    # skips claimed nodes (reason=claimed) and the ledger reads healthy — a
+    # holder waiting on this delivery waits forever (engine waiting for its
+    # report, session waiting for a wake). Fix: informational pointer to each
+    # live holder — pointer-only by design (the node stays claimed; the note
+    # rides the ordinary start-role reuse carrier so the attempt lands in the
+    # push ledger). Failures are isolated data (warnings), never settle failures.
+    param([string]$RunDir, $Bridge, [int]$TaskId, [string]$SettledNode, [string]$SettledStage)
+    $notes = @()
+    $warnings = @()
+    $slots = @()
+    if ($Bridge.tasks.Contains("$TaskId") -and $Bridge.tasks["$TaskId"].Contains('stages') -and $null -ne $Bridge.tasks["$TaskId"]['stages']) {
+        foreach ($roleKey in @($Bridge.tasks["$TaskId"]['stages'].Keys)) { $slots += [string]$Bridge.tasks["$TaskId"]['stages'][$roleKey] }
+    }
+    $view = Get-TreeStatusView ([string]$Bridge.run_id)
+    foreach ($slot in $slots) {
+        if ($slot -eq $SettledNode) { continue }
+        $slotView = Get-NodeViewState $view $slot
+        if ($null -eq $slotView -or [string]$slotView.status -ne 'claimed') { continue }
+        $live = Get-ClaimLiveness ([string]$Bridge.run_id) $slot
+        if ($live.liveness -ne 'alive' -or [string]::IsNullOrWhiteSpace([string]$live.session_id)) { continue }
+        $slotMap = Get-NodeTaskStage $Bridge $slot
+        if ($null -eq $slotMap) { continue }
+        $appendix = "【上游交付通知】任务 #$TaskId 的 $SettledStage 阶段节点 $SettledNode 已通过 settle。若你的在途工作在等待该交付（如重做后的复验），请基于最新产物继续并出报；本节点仍由你持有（claimed），无需重新 claim。"
+        $cand = @{ node = $slot; stage = [string]$slotMap.stage; task_id = $TaskId; tree_level = $false }
+        $push = Invoke-StartRolePush -Cand $cand -RunDir $RunDir -Bridge $Bridge -TaskText (Get-NodeTaskText -RunId ([string]$Bridge.run_id) -NodeId $slot) -ExistingSessionId ([string]$live.session_id) -Appendix $appendix
+        $Bridge = $push.bridge
+        if ($push.ok) { $notes += "$slot/$([string]$slotMap.stage)" }
+        else { $warnings += "stakeholder note to claimed slot $slot (holder $($live.session_id)) failed: $($push.error)" }
+    }
+    return @{ bridge = $Bridge; notes = $notes; warnings = $warnings }
 }
 
 function Invoke-BridgeSettle {
@@ -7871,7 +8179,18 @@ function Invoke-BridgeSettle {
         $warnings += "auto-push failed for node $($f.node) (retry_class=$($f.retry_class)): session-create class auto-retries on the next trigger; pointer class needs manual dispatch. $($f.error)"
     }
 
-    return New-SettleResult -Target $target -Tail $tail -Push $push -Bridge $bridge -Warnings $warnings
+    # wake-stakeholder-note: same-task claimed slots whose live holders may be
+    # waiting on the settled delivery get an informational pointer (see
+    # Send-SettleStakeholderNotes — the claimed-node blind spot of the push gate).
+    $stakeNotes = @()
+    if (-not [bool]$target.tree_level -and $null -eq $target.derivation) {
+        $noteRes = Send-SettleStakeholderNotes -RunDir $runDir -Bridge $bridge -TaskId ([int]$target.task_id) -SettledNode $NodeId -SettledStage ([string]$target.stage)
+        $bridge = $noteRes.bridge
+        $stakeNotes = @($noteRes.notes)
+        $warnings += @($noteRes.warnings)
+    }
+
+    return New-SettleResult -Target $target -Tail $tail -Push $push -Bridge $bridge -Warnings $warnings -Notes $stakeNotes
 }
 
 function Add-PendingSync {
@@ -8080,12 +8399,10 @@ function Invoke-GraftNextStage {
             $existing = [string]$Bridge.tasks["$taskId"]['stages'][$NextStage]
         }
         if ($null -ne $existing) {
-            $wakeReason = if ($RedoContext) { "rework: $([string]$RedoContext['reason'])" } else { "stage re-entry: $NextStage" }
-            $failureRef = if ($RedoContext) { "redo-context: $([string]$RedoContext['from_stage'])" } else { "stage-transition" }
-            $triggerText = if ($RedoContext) { "wake-rework:$([string]$RedoContext['from_stage'])" } else { "wake-stage:$NextStage" }
-            $dutyText = $NextStage.ToLower()
-            $ro = Invoke-WakeReopenSlot ([string]$Bridge.run_id) $existing $wakeReason $failureRef $triggerText $dutyText
+            $wt = Get-WakeReopenTexts $RedoContext $NextStage
+            $ro = Invoke-WakeReopenSlot ([string]$Bridge.run_id) $existing $wt.reason $wt.failure $wt.trigger $wt.duty
             if (-not $ro.ok) { return @{ success = $false; error = "WAKE_REOPEN_FAILED: task #$taskId $NextStage slot $existing — $($ro.warning)" } }
+            if ($null -ne $RedoContext) { $Bridge = Set-WakeRedoAppendix $RunDir $Bridge $existing (New-WakeRedoAppendix $RedoContext) } # wake-reopen-context-delivery: failure list rides the next pointer
             return @{ success = $true; bridge = $Bridge; node_id = $existing; wake_mode = $ro.mode }
         }
         $container = Get-TaskContainerNode $Bridge $taskId
@@ -8547,6 +8864,20 @@ function Add-PlanStatusWarnings {
     param($PlanView, $Bridge)
     $w = @()
     if ($null -eq $PlanView) { return $w }
+    # design-review zombie clock (S4-lite): last design_review_* plan-log event per
+    # stage — ready/failed states older than $script:DesignReviewStaleHours warn.
+    $drLastAt = @{}
+    try {
+        $zDir = Get-BridgeRunDir ([string]$Bridge['run_id'])
+        $zLog = Read-PlanLogEntries $zDir
+        foreach ($e in @($zLog.entries)) {
+            $ev = [string]$e['event']
+            if ($ev -like 'design_review_*' -and $null -ne $e['stage']) {
+                $drLastAt[[string]$e['stage']] = [string]$e['at']
+            }
+        }
+    } catch { }
+    $drStaleHours = [double]$script:DesignReviewStaleHours
     foreach ($st in @($PlanView.stages)) {
         if (([string]$st.acceptance.status) -eq 'grafted') {
             $w += "stage $($st.id) acceptance point node $($st.acceptance.node) awaiting settle — downstream stage gates stay closed until it passes"
@@ -8554,6 +8885,13 @@ function Add-PlanStatusWarnings {
         # auditor-design-stage-review: 审查节点待 settle / 审查未过提示（无段视图零增）
         if ($null -ne $st.design_review) {
             $drs = [string]$st.design_review.status
+            $staleH = $null
+            if ($drs -in @('ready', 'failed') -and $drLastAt.ContainsKey([string]$st.id)) {
+                $zAt = $null
+                $zParsed = $false
+                try { $zAt = [datetime]::Parse($drLastAt[[string]$st.id], [System.Globalization.CultureInfo]::InvariantCulture, [System.Globalization.DateTimeStyles]::RoundtripKind); $zParsed = $true } catch { }
+                if ($zParsed) { $staleH = [Math]::Floor(((Get-Date).ToUniversalTime() - $zAt.ToUniversalTime()).TotalHours) }
+            }
             if ($drs -eq 'grafted') {
                 $w += "stage $($st.id) design review node $($st.design_review.node) awaiting settle — IMPL 节点闸门关闭至 DesignReviewFile verdict 落地（pass 放行 / fail 触发重做波）"
             }
@@ -8561,10 +8899,30 @@ function Add-PlanStatusWarnings {
                 # auditor-subagent-review: 新链派审提示（plan-log progress 事件 + 本视图
                 # 双感知面，无自动会话）——planner-guide 硬约束「settle 尾必查待审阶段」。
                 $w += "stage $($st.id) design review is READY (design_review_due) — 派五查评审子代理（机械输入模板 rdd-engine/references/review-input-template.md，独立上下文）产出 DesignReviewFile 后 'delivery-bridge.cmd -Command design-review -Action submit -RunId $($Bridge['run_id']) -Stage $($st.id)'；IMPL 闸门关闭至 submit 落地"
+                if ($null -ne $staleH -and $staleH -ge $drStaleHours) {
+                    $w += "stage $($st.id) design review READY for $staleH h without submit — 疑弃置（2026-10-13 launcher run 先例：fail 波后重审未提交，run 静默滞留 12 天）：派审 / replan 收口 / 呈用户裁决，勿静默搁置"
+                }
             }
             elseif (@('planned', 'failed') -contains $drs) {
                 $w += "stage $($st.id) design review is '$drs' — 有设计产物在册任务的 IMPL 节点被闸（NODE_BLOCKED_BY_DESIGN_REVIEW 同族）"
+                if ($drs -eq 'failed' -and $null -ne $staleH -and $staleH -ge $drStaleHours) {
+                    $w += "stage $($st.id) design review FAILED wave stalled for $staleH h without re-entry — 疑弃置（重做波未收敛或重审未触发）：核对重做槽位状态，卡死走裁定/回流，勿静默搁置"
+                }
             }
+        }
+    }
+    # design-scope-gate transparency: while any stage's review window is still open,
+    # state the scope config so exempt stages are legible (exempt-by-count vs
+    # exempt-by-exclusion) instead of looking like a miss. Empty array = full old
+    # semantics (restore switch) — nothing to surface.
+    $exclRoles = Get-BridgeReviewExcludedRoles $Bridge
+    if ($null -ne $exclRoles -and @($exclRoles).Count -gt 0) {
+        $openWindow = $false
+        foreach ($st in @($PlanView.stages)) {
+            if ($null -ne $st.design_review -and @('passed', 'exempt') -notcontains ([string]$st.design_review.status)) { $openWindow = $true }
+        }
+        if ($openWindow) {
+            $w += "design review scope: roles [$(@($exclRoles) -join ', ')] excluded — in-scope docs < 2 -> stage exempt（豁免阶段 basis 见 plan-log design_review_exempt 事件）；被排除角色文档仍走全部机械链（design-map settle 门 / 冲突检测 / 回执核对）"
         }
     }
     foreach ($key in @($Bridge.tasks.Keys)) {
@@ -10560,6 +10918,7 @@ function Read-DesignChangeMap {
         warnings             = @()
         invalid_lines        = @()
         legacy               = $false
+        section_seen         = $false
         fingerprint          = $null
         tasks                = @()
         citation_deviations  = @()
@@ -10572,7 +10931,7 @@ function Read-DesignChangeMap {
     $opSeen = 0
     $fileSeen = 0
     foreach ($line in ($content -split "`r?`n")) {
-        if ($line -match '^\s*##\s*变更地图') { $inMap = $true; continue }
+        if ($line -match '^\s*##\s*变更地图') { $inMap = $true; $res['section_seen'] = $true; continue }
         if ($inMap -and $line -match '^\s*##\s') { break }
         if (-not $inMap) { continue }
         if ($line -match '^\s*\[新增\]\s*(\d+)\s*\|\s*\[修改\]\s*(\d+)\s*\|\s*\[删除\]\s*(\d+)') {
@@ -10601,6 +10960,16 @@ function Read-DesignChangeMap {
     }
     elseif ($opSeen -gt 0) {
         $res.warnings += "DESIGN_MAP_INVALID:$opSeen 行带 [op] 标注但路径不可解析——按行格式契约('完整路径' [op] 说明)修正后可机读;不阻塞流转"
+    }
+    # design-map-gate 盲点修复：文档完全没有变更地图段时此前零信号（files=[] 且
+    # warnings=[]——exploration-cache-ux S1 实录：两份 UX 文档静默失明，机械链全盲
+    # 直到汇聚审查才发现）。段缺失仅对机读契约适用的角色文档（-cto/-ux 后缀归属）
+    # 显式警示；QA 测试先行文档与无角色归属文档不受该契约约束，保持静默通过。
+    if (-not $res['section_seen']) {
+        $docRole = Get-DesignDocRole $DocRelPath
+        if ($docRole -eq 'CTO' -or $docRole -eq 'UX') {
+            $res.warnings += "DESIGN_MAP_INVALID:无「## 变更地图」段($DocRelPath)——机读契约缺失(rdd-cto/design-template.md / rdd-ux/references/spec-template.md 行格式契约)；文件重叠机械检测与 DEV 蓝图对该文档失明，settle design_map 门将拒绝该角色交付"
+        }
     }
     if ($null -ne $res.counts) {
         foreach ($k in @('add', 'modify', 'delete')) {

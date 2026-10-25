@@ -1,0 +1,22 @@
+{
+  "verdict": "done",
+  "node_id": "n17",
+  "confidence": 0.94,
+  "next_suggestion": "本需求（#2）QA 闭环完成（提交 ab694c8）；n6/n7（需求 #3 删除能力的 CTO/QA 节点）由规划者按树推进；.rdd/tests/index.json 与归档 tests/ 尚未随提交入库（沿 n14 先例），建议后续规划者安排一次 housekeeping 提交收口。",
+  "summary": "QA n17 重验轮（n16 质量重做后）：n15 驳回三项逐项核销——readArtifacts 拆分（metrics 241 函数 violations=0）、format.mjs 共享 absoluteFilePath 抽取（双本地副本删除+import 接线核实）、renderCells/detailRowHtml/expandRowAttrs 三 helper（renderRow/renderPairRow 薄壳化，经 n15 授权裁量）。回归基线三件套独立复跑全绿（27+24+134），冻结契约零 diff。经用户确认执行提交 ab694c8（4 文件 +1023/−28，沿 n14 范围先例）。verdict=done，本需求 QA 闭环。",
+  "full_report": ".rdd/changes/archive/2026-10-20-exploration-cache-ux/tests/qa-report-pair-observability.md",
+  "citations": [
+    { "ref": ".rdd/changes/archive/2026-10-20-exploration-cache-ux/tests/qa-report-pair-observability.md", "locator": "重验轮报告（#重验轮报告 n17 段：驳回项核销表/回归三件套/提交处置/闭环状态）" },
+    { "ref": ".rdd/tests/ops-dashboard-exploration-pair-observability/exploration-pair-observability-qa-verify.mjs", "locator": "探针 27 断言（本轮 27/27，已随 ab694c8 入库）" },
+    { "ref": "rdd-engine/dashboard/lib/format.mjs", "locator": "+14：导出共享 absoluteFilePath（#6 修复①，随 ab694c8 入库）" },
+    { "ref": "rdd-engine/dashboard/lib/readers/exploration.mjs", "locator": "readArtifacts 拆分（#4 修复，随 ab694c8 入库）" }
+  ],
+  "extras": {
+    "verification": "n15 三驳回项逐项核销；js-quality-metrics 241 函数 violations=0；回归三件套独立复跑 27/27 + 24/24 + 134/134 全绿；冻结契约 explore.ps1/explore-store.ps1 零 diff（NONE）；node --check 5/5",
+    "commit": "ab694c8（master，经用户提交门禁确认）：format.mjs + readers/exploration.mjs + 本功能 cases.json/探针，4 文件 +1023/−28；排除 server.mjs（他工作流注释改动）与回调文件/index.json（沿 n14 先例）",
+    "quality_scan": { "skip": true, "reason": "QA 重验轮自身零 .ps1 变更（本轮写入仅 tests/ 报告与回调）；被验交付面同样无 .ps1" },
+    "problems": [],
+    "mode": "verification-recheck (时机二重验)：n15 驳回 → n16 质量重做 → n17 双过提交",
+    "notes": "①components/views/app.js/style.css 的 #2 段落已随 n14 共享文件提交（a9e338a）入库，本次提交为收尾面；②.n14 先例未提交 .rdd/tests/index.json（含两功能条目）与归档 tests/，留待 housekeeping；③n14/n16/n17 无同角色兄弟活跃冲突（n14 已 done 并提交 a9e338a）"
+  }
+}

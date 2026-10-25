@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // RDD operations dashboard — zero-dependency local read-only service.
 //
-// One command starts it (rdd-engine/scripts/dashboard.cmd → this file), every
+// One command starts it (rdd-engine/dashboard/dashboard.cmd → this file), every
 // request re-reads .rdd/ from disk with no cache layer (AC 4), and each page is
 // rendered server-side so the numbers are present in the served HTML even
 // without JavaScript. /api/* exposes the same data as the CTO-contracted

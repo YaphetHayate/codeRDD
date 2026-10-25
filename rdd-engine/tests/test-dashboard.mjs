@@ -31,7 +31,7 @@ import { trendMode } from '../dashboard/lib/charts.mjs'
 import { startServer } from '../dashboard/server.mjs'
 
 const engineDir = resolve(dirname(fileURLToPath(import.meta.url)), '..')
-const launcher = join(engineDir, 'scripts', 'dashboard.cmd')
+const launcher = join(engineDir, 'dashboard', 'dashboard.cmd')
 const results = []
 const cleanups = []
 
@@ -567,7 +567,7 @@ await postJson(base, '/api/project/switch', { path: richRoot })
 
 // ── launcher + port conflict (AC 1 / AC 6) ─────────────────────────────
 const rootLauncher = join(engineDir, '..', 'ops-dashboard.cmd')
-for (const [label, launcherPath] of [['rdd-engine/scripts/dashboard.cmd', launcher], ['ops-dashboard.cmd', rootLauncher]]) {
+for (const [label, launcherPath] of [['rdd-engine/dashboard/dashboard.cmd', launcher], ['ops-dashboard.cmd', rootLauncher]]) {
   const launcherBytes = readFileSync(launcherPath)
   assertTrue([...launcherBytes].every((byte) => byte < 0x80), `launcher: ${label} is pure ASCII (cmd codepage safety)`)
   const bareLf = launcherBytes.reduce(

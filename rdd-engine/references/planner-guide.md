@@ -1,4 +1,4 @@
-# 规划者树维护协议（planner-guide）
+﻿# 规划者树维护协议（planner-guide）
 
 > **定位**：规划者（PLANNER）是 rdd-engine 的**引擎编排形态**，不是第六张角色卡——你是**树的维护者**。本文件是规划者行为载荷的唯一事实源（随引擎版本分发），身份经 `start-role -Role PLANNER` 自举式指针消息装载。
 >
@@ -229,7 +229,7 @@
 
 | 命令 | 关键参数 | 作用 | 详见 |
 |------|----------|------|------|
-| 颁布 promulgate | `-TaskJson <path> -PlanFile <plan.json> [-ReviewFile …] [-ReviewMode subagent\|session] [-Shape wake\|legacy] [-AutoMode [-RiskPolicy …]] [-ConventionsFile …] [-NoPush] [-MaxRounds/-NodeWidth/-MaxNodes/-MaxDerivations]` | 颁布建树（目标根 + 需求容器 + 角色槽 + 阶段链 + 依赖推导 + plan 落盘）→ 自动推送全部无前置依赖节点；RunId 固定 `deliver-<归档名>`；建树前需求审查门为前置。**`-ReviewMode subagent` 推荐，dsh 下不可省**——缺省颁布 legacy 审查链（审查节点需 AUDITOR 会话结算，dsh 默认 preset 面不可派发）。**树形状自引擎 1.2.0 起缺省 `wake`**（每条需求一个 type=sub 容器挂目标根、角色槽挂容器、返工波 redo/reset 不增树、醒配额徽章 `[k/K]`）；`-Shape legacy` 为存量兼容路径（旧链头形状）；形状颁布时钉进 bridge.json——存量 run 不受新默认影响 | scenarios §需求审查门 / §长程规划 |
+| 颁布 promulgate | `-TaskJson <path> -PlanFile <plan.json> [-ReviewFile …] [-ReviewMode subagent\|session] [-ReviewExcludeRoles <角色表，缺省 UX>] [-Shape wake\|legacy] [-AutoMode [-RiskPolicy …]] [-ConventionsFile …] [-NoPush] [-MaxRounds/-NodeWidth/-MaxNodes/-MaxDerivations]` | 颁布建树（目标根 + 需求容器 + 角色槽 + 阶段链 + 依赖推导 + plan 落盘）→ 自动推送全部无前置依赖节点；RunId 固定 `deliver-<归档名>`；建树前需求审查门为前置。**`-ReviewMode subagent` 推荐，dsh 下不可省**——缺省颁布 legacy 审查链（审查节点需 AUDITOR 会话结算，dsh 默认 preset 面不可派发）。**树形状自引擎 1.2.0 起缺省 `wake`**（每条需求一个 type=sub 容器挂目标根、角色槽挂容器、返工波 redo/reset 不增树、醒配额徽章 `[k/K]`）；`-Shape legacy` 为存量兼容路径（旧链头形状）；形状颁布时钉进 bridge.json——存量 run 不受新默认影响。**`-ReviewExcludeRoles`（design-scope-gate）**：汇聚审查范围排除，落 `review_excluded_roles` 键——**缺省 UX**（过渡政策：UX 角色卡优化期间暂离语义审查，回归 = 颁布时传 `NONE`）；非空范围下被排除角色文档离开审查面，且 in-scope 文档 <2 → 阶段 exempt 计数豁免；**`NONE` = 完整还原开关**（全量审查面 + ≥1 即审，既不排除也不计数豁免——空串会被 powershell.exe -File 吞参，故用 NONE 哨兵）；**机械链永不过滤**（变更地图 settle 门 / 冲突检测 / 回执核对照常吃全部 designDocs）；缺键 = 存量全量审查 | scenarios §需求审查门 / §长程规划 / §设计汇聚审查 |
 | 流转 settle | `-NodeId <n> [-Note]` | task.json 流转唯一通道（四查门禁；阶段感知收窄/汇聚/切阶段） | scenarios §交付回调与四查 |
 | 回收 reclaim | `-NodeId <n> [-FailureRef …] [-NoReuse] [-UserVerdict <用户裁决原文>]` | dead-claim 回收 / rejected-delivery 重做（存活会话 in-place 优先；**存活不可证实且已过 60min 需 `-UserVerdict` 用户裁决原文**，见硬约束 16） | scenarios §异常处置速查 |
 | 回退 rollback | `-NodeId <失败节点> -To "<角色集>" -Phase <REQ/DESIGN/IMPL/VERIFY> -Reason` | 跨阶段单命令回退（剪枝+重建+路由回退+自动重推；仅活跃任务 report 未过四查的交付） | scenarios §异常处置速查 |

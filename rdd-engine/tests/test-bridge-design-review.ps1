@@ -26,6 +26,15 @@
 #       derivation lands — in the review_mode chain it gets a fresh planned slot
 #       (mandatory review, no off value) and runs the SAME contract chain; a 缺键 run
 #       stays slot-less (byte-identical).
+#   SG1-SG5 design-scope-gate (2026-10-25): default UX exclusion lands in bridge.json;
+#       single in-scope doc -> exempt count-based fast lane (basis in plan-log); kept>=2
+#       -> ready with the -ux doc OFF the authoritative docs face (submit contract only
+#       knows in-scope docs); design-map settle gate fail-fast (F1 missing section /
+#       F2 zero-undeclared / F3 unparseable lines / F4 count mismatch rejected at settle
+#       with fix-and-rereport loop; legacy degrade stays warning-level) + the parser
+#       blind-spot warning for suffix-named docs without a section; stale ready (30h)
+#       surfaces the 疑弃置 status warning. NR cases append -ReviewExcludeRoles NONE
+#       (the complete restore switch — empty string is swallowed by powershell.exe -File).
 # Self-isolation note: every promulgate runs -NoPush (bridge isolation discipline — no real
 # session creation); the design-review state machines (graft/verdict/wave) run even under
 # no_push by design (they are state, not pushes). The promulgate DEGRADE path (AUDITOR not
@@ -422,13 +431,14 @@ try {
     Assert-True ([string]$r.json.data.design_review.mode -eq 'subagent') 'NR1 echo design_review.mode (部署判据=配置项)' ($r.raw)
     $b = Read-BridgeJson 'deliver-nr-l1'
     Assert-True ([string]$b.review_mode -eq 'subagent') 'NR1 review_mode persisted in bridge.json' ($b | ConvertTo-Json -Depth 6)
+    Assert-True (@($b.review_excluded_roles).Count -eq 1 -and [string]@($b.review_excluded_roles)[0] -eq 'UX') 'NR1 review_excluded_roles persisted with DEFAULT UX (design-scope-gate 过渡政策)' ($b | ConvertTo-Json -Depth 6)
     Assert-True (@($b.plan.stages | Where-Object { $null -ne $_.design_review }).Count -eq 1) 'NR1 design_review slots land unconditionally (无部署判据/零降级)' ($b | ConvertTo-Json -Depth 6)
     Assert-True ([string]$b.plan.stages[0].design_review.status -eq 'exempt') 'NR1 no-docs stage -> exempt fast lane (shared semantics)' ($b | ConvertTo-Json -Depth 6)
 
     # ================= NR2: trigger -> ready（无节点）+ 闸门 =================
     $archN2 = New-Archive 'nr-l2' '[{"title":"NR2","requirement":"requirements/t1.md","currentOwners":["CTO"],"designDocs":[{"path":"design/d1.md","status":"ready"}]}]'
     $pfN2 = Write-TestPlan (Join-Path $Work 'nr-l2-plan.json') @(@{ id = 'S1'; tasks = @(1) })
-    $r = Invoke-Bridge @('-Command', 'promulgate', '-TaskJson', ($archN2 + '/task.json'), '-PlanFile', $pfN2, '-ReviewMode', 'subagent', '-NoPush')
+    $r = Invoke-Bridge @('-Command', 'promulgate', '-TaskJson', ($archN2 + '/task.json'), '-PlanFile', $pfN2, '-ReviewMode', 'subagent', '-ReviewExcludeRoles', 'NONE', '-NoPush')
     Assert-True ($r.json.success -eq $true) 'NR2 promulgate ok' ($r.raw)
     $b = Read-BridgeJson 'deliver-nr-l2'
     $ctoN2 = [string]$b.tasks.'1'.stages.CTO
@@ -485,7 +495,7 @@ try {
     # ================= NR6: fail submit → 重做波（无节点可回收）+ 账本署名 =================
     $archN6 = New-Archive 'nr-l6' '[{"title":"NR6","requirement":"requirements/t1.md","currentOwners":["CTO"],"designDocs":[{"path":"design/d1.md","status":"ready"}]}]'
     $pfN6 = Write-TestPlan (Join-Path $Work 'nr-l6-plan.json') @(@{ id = 'S1'; tasks = @(1) })
-    $r = Invoke-Bridge @('-Command', 'promulgate', '-TaskJson', ($archN6 + '/task.json'), '-PlanFile', $pfN6, '-ReviewMode', 'subagent', '-NoPush')
+    $r = Invoke-Bridge @('-Command', 'promulgate', '-TaskJson', ($archN6 + '/task.json'), '-PlanFile', $pfN6, '-ReviewMode', 'subagent', '-ReviewExcludeRoles', 'NONE', '-NoPush')
     Assert-True ($r.json.success -eq $true) 'NR6 promulgate ok' ($r.raw)
     $b = Read-BridgeJson 'deliver-nr-l6'
     $ctoN6 = [string]$b.tasks.'1'.stages.CTO
@@ -511,7 +521,7 @@ try {
     # ================= NR7: session 强形态（review_mode=session → reviewer=auditor） =================
     $archN7 = New-Archive 'nr-l7' '[{"title":"NR7","requirement":"requirements/t1.md","currentOwners":["CTO"],"designDocs":[{"path":"design/d1.md","status":"ready"}]}]'
     $pfN7 = Write-TestPlan (Join-Path $Work 'nr-l7-plan.json') @(@{ id = 'S1'; tasks = @(1) })
-    $r = Invoke-Bridge @('-Command', 'promulgate', '-TaskJson', ($archN7 + '/task.json'), '-PlanFile', $pfN7, '-ReviewMode', 'session', '-NoPush')
+    $r = Invoke-Bridge @('-Command', 'promulgate', '-TaskJson', ($archN7 + '/task.json'), '-PlanFile', $pfN7, '-ReviewMode', 'session', '-ReviewExcludeRoles', 'NONE', '-NoPush')
     Assert-True ($r.json.success -eq $true -and [string]$r.json.data.design_review.mode -eq 'session') 'NR7 promulgate -ReviewMode session' ($r.raw)
     $b = Read-BridgeJson 'deliver-nr-l7'
     Assert-True ([string]$b.review_mode -eq 'session') 'NR7 review_mode=session persisted' ($b | ConvertTo-Json -Depth 6)
@@ -540,7 +550,7 @@ try {
     # 段同构）；缺键 legacy run 不落段（部署双探只在 promulgate 生效，逐字节不回改）。
     $archN9 = New-Archive 'nr-l9' '[{"title":"NR9a","requirement":"requirements/t1.md","currentOwners":["DEV"],"designDocs":[]},{"title":"NR9b","requirement":"requirements/t2.md","currentOwners":["CTO"],"designDocs":[{"path":"design/d2.md","status":"ready"}]}]' $Script:DeclaredBlock
     $pfN9 = Write-TestPlan (Join-Path $Work 'nr-l9-plan.json') @(@{ id = 'S1'; tasks = @(1, 2) })
-    $r = Invoke-Bridge @('-Command', 'promulgate', '-TaskJson', ($archN9 + '/task.json'), '-PlanFile', $pfN9, '-ReviewMode', 'subagent', '-NoPush')
+    $r = Invoke-Bridge @('-Command', 'promulgate', '-TaskJson', ($archN9 + '/task.json'), '-PlanFile', $pfN9, '-ReviewMode', 'subagent', '-ReviewExcludeRoles', 'NONE', '-NoPush')
     Assert-True ($r.json.success -eq $true) 'NR9 promulgate ok (single stage, subagent)' ($r.raw)
     $pfN9b = Write-TestPlan (Join-Path $Work 'nr-l9-plan2.json') @(@{ id = 'S1'; tasks = @(1) }, @{ id = 'S2'; tasks = @(2) })
     $r = Invoke-Bridge @('-Command', 'replan', '-RunId', 'deliver-nr-l9', '-PlanFile', $pfN9b, '-Reason', 'NR9: stage expansion (derive-like new stage)')
@@ -593,7 +603,7 @@ try {
     # 追平当前文件 + 新文档入册），杜绝「文档已修、缓存滞后、重审必现 blocking」死循环。
     $arch8 = New-Archive 'dr-l8' '[{"title":"DR8","requirement":"requirements/t1.md","currentOwners":["CTO"],"designDocs":[{"path":"design/d8.md","status":"ready"}]}]'
     $pf8 = Write-TestPlan (Join-Path $Work 'dr-l8-plan.json') @(@{ id = 'S1'; tasks = @(1) })
-    $r = Invoke-Bridge @('-Command', 'promulgate', '-TaskJson', ($arch8 + '/task.json'), '-PlanFile', $pf8, '-NoPush', '-ReviewMode', 'subagent')
+    $r = Invoke-Bridge @('-Command', 'promulgate', '-TaskJson', ($arch8 + '/task.json'), '-PlanFile', $pf8, '-NoPush', '-ReviewMode', 'subagent', '-ReviewExcludeRoles', 'NONE')
     Assert-True ($r.json.success -eq $true) 'DR8 promulgate ok (new chain)' ($r.raw)
     $b8 = Read-BridgeJson 'deliver-dr-l8'
     $fpBefore = [string]$b8.design_maps.'design/d8.md'.fingerprint
@@ -635,7 +645,7 @@ try {
     $tj9.tasks[0].designDocs[0].path = ((Join-Path $Work '.rdd/changes/archive/dr-l9/design/d9.md') -replace '\\', '/')
     Write-Utf8NoBom $tj9p ($tj9 | ConvertTo-Json -Depth 8)
     $pf9 = Write-TestPlan (Join-Path $Work 'dr-l9-plan.json') @(@{ id = 'S1'; tasks = @(1) })
-    $r = Invoke-Bridge @('-Command', 'promulgate', '-TaskJson', ($arch9 + '/task.json'), '-PlanFile', $pf9, '-NoPush', '-ReviewMode', 'subagent')
+    $r = Invoke-Bridge @('-Command', 'promulgate', '-TaskJson', ($arch9 + '/task.json'), '-PlanFile', $pf9, '-NoPush', '-ReviewMode', 'subagent', '-ReviewExcludeRoles', 'NONE')
     Assert-True ($r.json.success -eq $true) 'DR9 promulgate ok' ($r.raw)
     $b9f = Read-BridgeJson 'deliver-dr-l9'
     Assert-True ($null -ne $b9f.design_maps.'design/d9.md') 'DR9 full-path designDoc lands in design_maps under the REL key' ($b9f | ConvertTo-Json -Depth 6)
@@ -656,7 +666,7 @@ try {
     $pfX = Write-TestPlan (Join-Path $Work 'dr-lx-plan.json') @(@{ id = 'S1'; tasks = @(1, 2) })
     $convX = Join-Path $Work 'dr-lx-conventions.md'
     Write-Utf8NoBom $convX "# 架构约定（DR10 测试）`n`n- 分层一致；命名沿用现有风格。`n"
-    $r = Invoke-Bridge @('-Command', 'promulgate', '-TaskJson', ($archX + '/task.json'), '-PlanFile', $pfX, '-ConventionsFile', $convX, '-NoPush', '-ReviewMode', 'subagent')
+    $r = Invoke-Bridge @('-Command', 'promulgate', '-TaskJson', ($archX + '/task.json'), '-PlanFile', $pfX, '-ConventionsFile', $convX, '-NoPush', '-ReviewMode', 'subagent', '-ReviewExcludeRoles', 'NONE')
     Assert-True ($r.json.success -eq $true) 'DR10 promulgate ok' ($r.raw)
     $bX = Read-BridgeJson 'deliver-dr-lx'
     Do-Deliver 'deliver-dr-lx' ([string]$bX.tasks.'1'.stages.CTO) 'CTO' @('.rdd/changes/archive/dr-lx/design/d10a.md') | Out-Null
@@ -673,6 +683,128 @@ try {
     Assert-True (@(@($p1.problems) -match 'cross_design').Count -gt 0) 'DR10 redo pointer carries the cross_design problem' ($r.raw)
     $bX = Read-BridgeJson 'deliver-dr-lx'
     Assert-True ([string]$bX.plan.stages[0].design_review.status -eq 'planned') 'DR10 fail wave resets planned (re-review on next convergence)' ($bX | ConvertTo-Json -Depth 6)
+
+    # ================= SG1..SG5: design-scope-gate（范围豁免 + design-map settle 门 + 僵滞预警） =================
+    # SG 用例使用带角色后缀的文档名（-cto/-ux）——Get-DesignDocRole 归属判据；中性名
+    # 文档（d1.md 类）不受范围过滤与 map 门约束（存量语义）。New-MapDoc 写真机读段
+    # （## 变更地图 + 反引号完整路径行 + 计数行）——解析器只认段内行。
+
+    function New-MapDoc { param([string]$ArchRel, [string]$DocRel, [string[]]$FileLines, [string]$CountsLine)
+        $abs = Join-Path $Work (($ArchRel + '/' + $DocRel) -replace '/', '\')
+        $body = @("# 设计文档 $DocRel", "", "## 变更地图", "")
+        foreach ($l in @($FileLines)) { $body += $l }
+        if (-not [string]::IsNullOrWhiteSpace($CountsLine)) { $body += ""; $body += $CountsLine }
+        Write-Utf8NoBom $abs (($body -join "`n") + "`n")
+    }
+
+    # ================= SG1: 默认 UX 排除落桥 + 单 in-scope 文档计数豁免 =================
+    $archSG1 = New-Archive 'sg-l1' '[{"title":"SG1","requirement":"requirements/t1.md","currentOwners":["CTO"],"designDocs":[{"path":"design/spec-cto.md","status":"ready"},{"path":"design/spec-ux.md","status":"ready"}]}]'
+    New-MapDoc $archSG1 'design/spec-cto.md' @('`src/mod-a.py` [新增] 模块 A') '[新增] 1 | [修改] 0 | [删除] 0'
+    New-MapDoc $archSG1 'design/spec-ux.md' @('`src/mod-b.py` [修改] 模块 B') '[新增] 0 | [修改] 1 | [删除] 0'
+    $pfSG1 = Write-TestPlan (Join-Path $Work 'sg-l1-plan.json') @(@{ id = 'S1'; tasks = @(1) })
+    $r = Invoke-Bridge @('-Command', 'promulgate', '-TaskJson', ($archSG1 + '/task.json'), '-PlanFile', $pfSG1, '-ReviewMode', 'subagent', '-NoPush')
+    Assert-True ($r.json.success -eq $true) 'SG1 promulgate ok (default scope = UX excluded)' ($r.raw)
+    $b = Read-BridgeJson 'deliver-sg-l1'
+    Assert-True (@($b.review_excluded_roles).Count -eq 1 -and [string]@($b.review_excluded_roles)[0] -eq 'UX') 'SG1 default review_excluded_roles=[UX] persisted' ($b | ConvertTo-Json -Depth 6)
+    $ctoSG1 = [string]$b.tasks.'1'.stages.CTO
+    Do-Deliver 'deliver-sg-l1' $ctoSG1 'CTO' @('.rdd/changes/archive/sg-l1/design/spec-cto.md') | Out-Null
+    $r = Do-Settle 'deliver-sg-l1' $ctoSG1
+    Assert-True ($r.json.success -eq $true) 'SG1 CTO settle ok (valid map on the -cto doc passes the design-map gate)' ($r.raw)
+    $drSG1 = (Read-BridgeJson 'deliver-sg-l1').plan.stages[0].design_review
+    Assert-True ([string]$drSG1.status -eq 'exempt') 'SG1 single in-scope doc (ux excluded) -> exempt 计数豁免' ($drSG1 | ConvertTo-Json -Depth 4)
+    $evSG1 = @(Read-PlanLog 'deliver-sg-l1' | Where-Object { [string]$_.event -eq 'design_review_exempt' })
+    Assert-True ($evSG1.Count -ge 1 -and ((@($evSG1)[0]) | ConvertTo-Json -Depth 6) -match 'single in-scope') 'SG1 exempt basis = single in-scope design artifact（豁免理由留痕）' ((@($evSG1)[0]) | ConvertTo-Json -Depth 6)
+
+    # ================= SG2: kept ≥2 → ready + 审查面收窄（-ux 文档离开 docs 清单） =================
+    $archSG2 = New-Archive 'sg-l2' '[{"title":"SG2a","requirement":"requirements/t1.md","currentOwners":["CTO"],"designDocs":[{"path":"design/a-cto.md","status":"ready"},{"path":"design/a-ux.md","status":"ready"}]},{"title":"SG2b","requirement":"requirements/t2.md","currentOwners":["CTO"],"designDocs":[{"path":"design/b-cto.md","status":"ready"}]}]' $Script:DeclaredBlock
+    New-MapDoc $archSG2 'design/a-cto.md' @('`src/mod-a.py` [新增] 模块 A') '[新增] 1 | [修改] 0 | [删除] 0'
+    New-MapDoc $archSG2 'design/a-ux.md' @('`src/mod-b.py` [修改] 模块 B') '[新增] 0 | [修改] 1 | [删除] 0'
+    New-MapDoc $archSG2 'design/b-cto.md' @('`src/mod-c.py` [新增] 模块 C') '[新增] 1 | [修改] 0 | [删除] 0'
+    $pfSG2 = Write-TestPlan (Join-Path $Work 'sg-l2-plan.json') @(@{ id = 'S1'; tasks = @(1, 2) })
+    $convSG2 = Join-Path $Work 'sg-l2-conventions.md'
+    Write-Utf8NoBom $convSG2 "# 架构约定（SG2 测试）`n`n- 分层一致；命名沿用现有风格。`n"
+    $r = Invoke-Bridge @('-Command', 'promulgate', '-TaskJson', ($archSG2 + '/task.json'), '-PlanFile', $pfSG2, '-ConventionsFile', $convSG2, '-ReviewMode', 'subagent', '-NoPush')
+    Assert-True ($r.json.success -eq $true) 'SG2 promulgate ok（多 CTO 并行 + 新链 → 带约定文件）' ($r.raw)
+    $b = Read-BridgeJson 'deliver-sg-l2'
+    Do-Deliver 'deliver-sg-l2' ([string]$b.tasks.'1'.stages.CTO) 'CTO' @('.rdd/changes/archive/sg-l2/design/a-cto.md') | Out-Null
+    Do-Settle 'deliver-sg-l2' ([string]$b.tasks.'1'.stages.CTO) | Out-Null
+    Do-Deliver 'deliver-sg-l2' ([string]$b.tasks.'2'.stages.CTO) 'CTO' @('.rdd/changes/archive/sg-l2/design/b-cto.md') | Out-Null
+    $r = Do-Settle 'deliver-sg-l2' ([string]$b.tasks.'2'.stages.CTO)
+    Assert-True ($r.json.success -eq $true -and [string](Read-BridgeJson 'deliver-sg-l2').plan.stages[0].design_review.status -eq 'ready') 'SG2 two in-scope CTO docs -> ready（范围语义下照常审）' ($r.raw)
+    $r = Invoke-Bridge @('-Command', 'design-review', '-Action', 'status', '-RunId', 'deliver-sg-l2')
+    $stSG2 = @($r.json.data.stages | Where-Object { [string]$_.stage -eq 'S1' })[0]
+    Assert-True (@($stSG2.docs) -contains 'design/a-cto.md' -and @($stSG2.docs) -contains 'design/b-cto.md') 'SG2 status docs 清单含两份 in-scope 文档' ($r.raw)
+    Assert-True (@($stSG2.docs) -notcontains 'design/a-ux.md') 'SG2 审查面收窄：-ux 文档离开 docs 权威清单（评审子代理不审）' ($r.raw)
+    Write-ReviewFile -ArchiveRel $archSG2 -StageId 'S1' -DocRels @('design/a-cto.md', 'design/b-cto.md') -Verdict 'pass' -Reviewer 'auditor-delegated' -WithProduction $true | Out-Null
+    $r = Invoke-Bridge @('-Command', 'design-review', '-Action', 'submit', '-RunId', 'deliver-sg-l2', '-Stage', 'S1')
+    Assert-True ($r.json.success -eq $true -and [string]$r.json.data.verdict -eq 'pass') 'SG2 submit over the narrowed face passes（契约只认清单内文档）' ($r.raw)
+
+    # ================= SG3: design-map 门 F1（段缺失秒拒）+ 修复重报 + 解析器盲点警示 =================
+    $archSG3 = New-Archive 'sg-l3' '[{"title":"SG3","requirement":"requirements/t1.md","currentOwners":["CTO"],"designDocs":[{"path":"design/c-cto.md","status":"ready"}]}]'
+    # New-Archive 的通用 fixture 无「## 变更地图」段——保持原样（F1 场景本体）
+    $pfSG3 = Write-TestPlan (Join-Path $Work 'sg-l3-plan.json') @(@{ id = 'S1'; tasks = @(1) })
+    $r = Invoke-Bridge @('-Command', 'promulgate', '-TaskJson', ($archSG3 + '/task.json'), '-PlanFile', $pfSG3, '-ReviewMode', 'subagent', '-ReviewExcludeRoles', 'NONE', '-NoPush')
+    Assert-True ($r.json.success -eq $true) 'SG3 promulgate ok (NONE = 完整还原开关)' ($r.raw)
+    $b = Read-BridgeJson 'deliver-sg-l3'
+    Assert-True (@($b.review_excluded_roles).Count -eq 0) 'SG3 NONE normalizes to empty scope array（CLI 安全哨兵）' ($b | ConvertTo-Json -Depth 6)
+    $mapWarnSG3 = @($b.design_maps.'design/c-cto.md'.warnings)
+    Assert-True (($mapWarnSG3 -join ' ') -match '无「## 变更地图」段') 'SG3 解析器盲点修复：-cto 文档无段 → design_maps 显式警示（此前零信号）' ($b | ConvertTo-Json -Depth 6)
+    $ctoSG3 = [string]$b.tasks.'1'.stages.CTO
+    Do-Deliver 'deliver-sg-l3' $ctoSG3 'CTO' @('.rdd/changes/archive/sg-l3/design/c-cto.md') | Out-Null
+    $r = Do-Settle 'deliver-sg-l3' $ctoSG3
+    Assert-True ($r.json.success -eq $false -and [string]$r.json.error.code -eq 'SETTLE_EVIDENCE_REJECTED' -and ($r.raw -match 'design_map gate:') -and ($r.raw -match '缺「## 变更地图」段')) 'SG3 settle 拒：F1 段缺失（fail-fast，不再等审查波）' ($r.raw)
+    New-MapDoc $archSG3 'design/c-cto.md' @('`src/mod-c.py` [新增] 模块 C') '[新增] 1 | [修改] 0 | [删除] 0'
+    $r = Do-Settle 'deliver-sg-l3' $ctoSG3
+    Assert-True ($r.json.success -eq $true -and [string](Read-BridgeJson 'deliver-sg-l3').plan.stages[0].design_review.status -eq 'ready') 'SG3 补段后直接重 settle 通过（门现解析文档，无需重报）' ($r.raw)
+
+    # ================= SG4: F2 零声明 / F3 行不可解析 / F4 计数不一致 + legacy 放行 =================
+    $archSG4 = New-Archive 'sg-l4' '[{"title":"SG4","requirement":"requirements/t1.md","currentOwners":["CTO"],"designDocs":[{"path":"design/d1-cto.md","status":"ready"},{"path":"design/d2-cto.md","status":"ready"},{"path":"design/d3-cto.md","status":"ready"},{"path":"design/d4-cto.md","status":"ready"}]}]'
+    New-MapDoc $archSG4 'design/d1-cto.md' @('`src/mod-d1.py` [新增] 模块 D1') '[新增] 2 | [修改] 0 | [删除] 0'
+    New-MapDoc $archSG4 'design/d2-cto.md' @() $null
+    New-MapDoc $archSG4 'design/d3-cto.md' @('`src/mod-d3.py` [新增] 模块 D3', 'src/mod-d3-extra.py [新增] 反引号缺失行') '[新增] 2 | [修改] 0 | [删除] 0'
+    New-MapDoc $archSG4 'design/d4-cto.md' @('src/legacy-mod.py [修改] 旧格式行（无反引号完整路径）') $null
+    $pfSG4 = Write-TestPlan (Join-Path $Work 'sg-l4-plan.json') @(@{ id = 'S1'; tasks = @(1) })
+    $r = Invoke-Bridge @('-Command', 'promulgate', '-TaskJson', ($archSG4 + '/task.json'), '-PlanFile', $pfSG4, '-ReviewMode', 'subagent', '-ReviewExcludeRoles', 'NONE', '-NoPush')
+    Assert-True ($r.json.success -eq $true) 'SG4 promulgate ok' ($r.raw)
+    $b = Read-BridgeJson 'deliver-sg-l4'
+    $ctoSG4 = [string]$b.tasks.'1'.stages.CTO
+    Do-Deliver 'deliver-sg-l4' $ctoSG4 'CTO' @('.rdd/changes/archive/sg-l4/design/d1-cto.md', '.rdd/changes/archive/sg-l4/design/d2-cto.md', '.rdd/changes/archive/sg-l4/design/d3-cto.md', '.rdd/changes/archive/sg-l4/design/d4-cto.md') | Out-Null
+    $r = Do-Settle 'deliver-sg-l4' $ctoSG4
+    Assert-True ($r.json.success -eq $false -and ($r.raw -match '计数行机械核对不一致')) 'SG4 settle 拒：F4 计数行声明 2/解析 1' ($r.raw)
+    Assert-True ($r.json.success -eq $false -and ($r.raw -match '零文件行且无计数行')) 'SG4 settle 拒：F2 段在但零文件行且无计数声明' ($r.raw)
+    Assert-True ($r.json.success -eq $false -and ($r.raw -match '路径不可解析')) 'SG4 settle 拒：F3 非 legacy 行不可解析' ($r.raw)
+    Assert-True (-not ($r.raw -match 'design_map gate: design/d4-cto\.md')) 'SG4 legacy 旧格式警示降级不拒（d4 无 gate 问题）' ($r.raw)
+    New-MapDoc $archSG4 'design/d1-cto.md' @('`src/mod-d1.py` [新增] 模块 D1') '[新增] 1 | [修改] 0 | [删除] 0'
+    New-MapDoc $archSG4 'design/d2-cto.md' @() '[新增] 0 | [修改] 0 | [删除] 0'
+    New-MapDoc $archSG4 'design/d3-cto.md' @('`src/mod-d3.py` [新增] 模块 D3') '[新增] 1 | [修改] 0 | [删除] 0'
+    $r = Do-Settle 'deliver-sg-l4' $ctoSG4
+    Assert-True ($r.json.success -eq $true) 'SG4 修复后直接重 settle 通过（零声明补计数行 / legacy 行保持警示级）' ($r.raw)
+
+    # ================= SG5: 僵滞预警（ready 超 24h 无 submit → status 警示） =================
+    $archSG5 = New-Archive 'sg-l5' '[{"title":"SG5","requirement":"requirements/t1.md","currentOwners":["CTO"],"designDocs":[{"path":"design/e-cto.md","status":"ready"}]}]'
+    New-MapDoc $archSG5 'design/e-cto.md' @('`src/mod-e.py` [新增] 模块 E') '[新增] 1 | [修改] 0 | [删除] 0'
+    $pfSG5 = Write-TestPlan (Join-Path $Work 'sg-l5-plan.json') @(@{ id = 'S1'; tasks = @(1) })
+    $r = Invoke-Bridge @('-Command', 'promulgate', '-TaskJson', ($archSG5 + '/task.json'), '-PlanFile', $pfSG5, '-ReviewMode', 'subagent', '-ReviewExcludeRoles', 'NONE', '-NoPush')
+    Assert-True ($r.json.success -eq $true) 'SG5 promulgate ok' ($r.raw)
+    $b = Read-BridgeJson 'deliver-sg-l5'
+    $ctoSG5 = [string]$b.tasks.'1'.stages.CTO
+    Do-Deliver 'deliver-sg-l5' $ctoSG5 'CTO' @('.rdd/changes/archive/sg-l5/design/e-cto.md') | Out-Null
+    $r = Do-Settle 'deliver-sg-l5' $ctoSG5
+    Assert-True ($r.json.success -eq $true -and [string](Read-BridgeJson 'deliver-sg-l5').plan.stages[0].design_review.status -eq 'ready') 'SG5 settle -> ready' ($r.raw)
+    $r = Invoke-Bridge @('-Command', 'status', '-RunId', 'deliver-sg-l5')
+    Assert-True (-not ($r.raw -match '疑弃置')) 'SG5 新鲜 ready 无僵滞警示' ($r.raw)
+    $logPathSG5 = Join-Path $Work '.rdd/goal-trees/deliver-sg-l5/plan-log.jsonl'
+    $oldAtSG5 = ((Get-Date).ToUniversalTime().AddHours(-30)).ToString("yyyy-MM-dd'T'HH:mm:ss'Z'")
+    $newLinesSG5 = @()
+    foreach ($line in (Get-Content -LiteralPath $logPathSG5 -Encoding UTF8)) {
+        if ([string]::IsNullOrWhiteSpace($line)) { continue }
+        $e = $line | ConvertFrom-Json
+        if (([string]$e.event) -like 'design_review_*') { $e.at = $oldAtSG5 }
+        $newLinesSG5 += ($e | ConvertTo-Json -Depth 6 -Compress)
+    }
+    Write-Utf8NoBom $logPathSG5 (($newLinesSG5 -join "`n") + "`n")
+    $r = Invoke-Bridge @('-Command', 'status', '-RunId', 'deliver-sg-l5')
+    Assert-True ($r.json.success -eq $true -and ($r.raw -match '疑弃置') -and ($r.raw -match '30 h without submit')) 'SG5 ready 僵滞 30h → status 警示（launcher 弃置先例的可见性修复）' ($r.raw)
 }
 finally {
     Pop-Location

@@ -5,12 +5,12 @@
 ## 启动
 
 ```powershell
-# 仓库根的便捷别名（委托 rdd-engine\scripts\dashboard.cmd，参数透传）
+# 仓库根的便捷别名（委托 rdd-engine\dashboard\dashboard.cmd，参数透传）
 .\ops-dashboard.cmd            # 默认 http://127.0.0.1:8787
 .\ops-dashboard.cmd -Port 9000 # 自定义端口
 
 # 或引擎入口（用户级安装形态）
-& "$HOME\.rdd\engine\current\scripts\dashboard.cmd"
+& "$HOME\.rdd\engine\current\dashboard\dashboard.cmd"
 ```
 
 实现要点：**零 npm 依赖**的 Node 本地只读服务；每请求重读 `.rdd/`、无缓存层（正确性优先的设计决策）；SSR 渲染（无 JS 也有数字）+ `/api/*` 同数据 JSON 面（envelope `{domain,available,meta,data}`，单域故障降级 `available:false` 不倒页）。

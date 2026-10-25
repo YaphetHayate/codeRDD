@@ -1,4 +1,4 @@
-# 设计汇聚审查方法论与 DesignReviewFile 生产流程
+﻿# 设计汇聚审查方法论与 DesignReviewFile 生产流程
 
 > **定位**：DESIGN→IMPL 阶段边界的独立设计审查（auditor-design-stage-review）。与需求侧审视（[requirement-review.md](requirement-review.md)）构成两个事前把关位：**需求集进规划建树前查需求 / 设计汇聚进实现前查设计**；与 QA 阶段解禁（已交付）构成完整独立审查链——**实现前查设计本身质量 / 实现后查符合性（QA）**：两者读同一份设计但回答不同问题，互不污染（审视者不写测试，QA 验收基线先冻结）。本文件兼具**评审子代理提示词素材**定位：`rdd-engine/references/review-input-template.md` §3 提示词骨架直指本方法论（子代理直读）。
 
@@ -9,6 +9,7 @@
 - **触发**（引擎自动，无人工判断）：桥接 run 中某阶段全部在册任务越过 DESIGN（phase ∈ {IMPL, VERIFY} 或 lifecycle 终态）且 ≥1 落盘设计产物。**新链**（bridge.json `review_mode`）：状态置 `ready`（plan-log `design_review_ready` + status/resume 提示，无自动会话）→ 规划者派评审子代理（或强形态会话）产 DesignReviewFile → `delivery-bridge.cmd -Command design-review -Action submit -RunId <RunId> -Stage <S<k>>` 入库；**缺键 legacy**：引擎 graft 树级节点 `[设计审查·S<k>]`（role=AUDITOR）推送会话 → `settle` 结算。全阶段无设计产物 / 无 in-run 设计工作 → `exempt` 快速通道（无门）。
 - **阶段汇聚**（原「一批一会话」，现为方法论级语义）：**汇聚审查本阶段全部设计产物**，禁止逐设计节点串行审查——并行设计间的跨设计一致性只有汇聚在同一视野内才可查。引擎侧「一批一会话」机制（节点 + 会话推送）已删（设计 #8），汇聚语义保留为方法论硬纪律。
 - **审查对象** = 阶段内在册任务的**全部落盘设计产物**（`design-review -Action status` 输出的 docs 清单 / legacy claim 输出 `acceptance.docs` 是权威清单）：CTO 技术方向文档、UX 交互/体验设计、QA 测试先行设计。**UX 纯视觉稿类产物：审查对象为变更地图与交互说明，缺产物即该文档 fail（产物契约不满足）。**
+- **范围与计数豁免（design-scope-gate，2026-10-25）**：bridge.json 带非空 `review_excluded_roles` 键时（新链缺省 `['UX']`——过渡政策，UX 角色卡优化期间暂离汇聚审查），被排除角色文档**不在 docs 权威清单内**（评审子代理不审它们，DesignReviewFile 的 docs[] 也只列清单内文档）；**in-scope 文档 <2 的阶段直接 `exempt`**（引擎判定，无需评审）。豁免与排除**只缩语义审查面**：变更地图机械链（design_maps 解析 / 冲突检测 / settle design_map 门 / 回执核对）吃全部 designDocs，永不过滤——被排除角色文档的 `DESIGN_MAP_INVALID` 仍会在 settle 时点拦截，评审侧对此无需行动。评审子代理收到 docs 清单即按清单审，**不要主动追补清单外文档**。
 - **审查完成后**：产出 DesignReviewFile（见「三、契约」）→ 新链由规划者 `design-review -Action submit` 入库 / legacy `settle -NodeId <审查节点id>`。契约校验与节点 settle 门**同一核心**；总裁定**由引擎推导**（wake 形状（默认）下：pass ⇔ 全文档 pass 且 `internal_consistency / cross_design / alignment` 三维零 blocking）——不采信任何声明值，文档级 `verdict:"fail"` 声明也不采信：
   - **pass** → `design_review=passed` → IMPL 闸门开（被闸节点下一触发点自动放行）
   - **fail** → 引擎自动触发**重做波**：受影响任务（blocking 归属）rollback 原语语义回 DESIGN（blocking 清单注入重做上下文，目标角色按文档后缀精确映射 `-cto`→CTO / `-ux`→UX / `-qa`→QA）→ 重做收敛后再审（覆盖重产重审）

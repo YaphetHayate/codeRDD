@@ -1,0 +1,23 @@
+{
+  "verdict": "done",
+  "node_id": "n18",
+  "confidence": 0.96,
+  "next_suggestion": "S1 读路径集成验收闭环（判据 1 #1+#2 读路径段 + 判据 2 #1+#2 双过）。判据 1 的 #3 删除段待 n6/n7（需求 #3 写路径）推进后进入下阶段集成验收；QA 测试资产已随 b5f7ac0 入库，index.json 旧账已收口，无遗留 housekeeping。",
+  "summary": "QA n18 S1 集成验收（读路径交付）：真实仓根动态真值切片走通 L1 计数→L2 zone 面板→L3 条目详情（vscode+data-copy 双载体）→L4 产物对（孤儿「无条目」/关联条目「无清单」状态机同源 + D3 近似口径）全层级，信息与 .rdd/exploration 实数据逐项一致（当轮真值 1/0/1 + 65/65，files 为空条目如实渲染「无清单」而非伪新鲜）；判据 2 只读不变量真实树零回写（size+mtime+SHA256）+ 冻结契约 explore.ps1/explore-store.ps1 零 diff + 无 JS 平铺基线在场。回归四套件独立复跑 24/24+27/27+134/134+82/82，S1 探针 12/12。功能+质量双过，经用户提交门禁确认 b5f7ac0 收口测试资产（含 n14 起 index.json 旧账）。verdict=done。",
+  "full_report": ".rdd/changes/archive/2026-10-20-exploration-cache-ux/tests/qa-report-stage-s1.md",
+  "citations": [
+    { "ref": ".rdd/changes/archive/2026-10-20-exploration-cache-ux/tests/qa-report-stage-s1.md", "locator": "S1 集成验收报告（验收链路/回归四套件/S1 探针 12 断言表/判据2 核验/质量检查/用例库更新/结论与遗留）" },
+    { "ref": ".rdd/tests/ops-dashboard-exploration-expansion/stage-acceptance-s1-verify.mjs", "locator": "S1 实数据探针 TC-080..TC-087（动态真值+判据2 只读不变量，12/12 PASS，随 b5f7ac0 入库）" },
+    { "ref": ".rdd/tests/ops-dashboard-exploration-expansion/cases.json", "locator": "功能用例库 22 用例全 active（[S1] TC-080..087 追加，随 b5f7ac0 入库）" },
+    { "ref": ".rdd/tests/index.json", "locator": "expansion 功能条目 activeCount 14→22 + testCode 双探针（随 b5f7ac0 入库，n14 起旧账收口）" },
+    { "ref": ".rdd/changes/archive/2026-10-20-exploration-cache-ux/tests/cases.json", "locator": "归档增量快照 added×8（round=stage-s1-n18；.rdd/changes/ 为 gitignored 运行时数据，落盘持久）" }
+  ],
+  "extras": {
+    "verification": "回归四套件独立复跑全绿（exit 0×4）：expansion-kpi-expansion-qa-verify 24/24 + exploration-pair-observability-qa-verify 27/27 + test-dashboard 134/134 + test-dashboard-page-contract 82/82。S1 实数据探针 12/12（真实仓根动态真值：条目 1/热区 0/持久 1/产物记录 65/配对 65/md 130；L1 计数↔真值、L2 zone 面板并集/空区/零泄漏、L3 条目详情+双载体、L4 产物对状态机词汇+D3 时间口径、无 JS 平铺面、真实 .rdd/exploration 读电池零回写）。冻结契约：git diff 工作树零 diff + a9e338a/ab694c8 两笔交付未触及。功能+质量双通过，S1 verdict=done。",
+    "commit": "b5f7ac0（master，经用户提交门禁确认「提交全部 QA 资产」）：stage-acceptance-s1-verify.mjs + expansion cases.json + .rdd/tests/index.json（含 n14 起旧账收口），3 文件 +875/−342；归档 tests/ 报告与 tips 为 gitignored 运行时数据（落盘持久，不入 git）；他工作流未提交改动（session-reuse 流 + server.mjs 注释）未触碰",
+    "quality_scan": { "skip": true, "reason": "本阶段 QA 变更集零 .ps1（探针为 .mjs，node --check 通过）；被验交付面（a9e338a/ab694c8）无 .ps1，质量门禁已在 n14/n17 完成（metrics 241 函数 violations=0）" },
+    "problems": [],
+    "mode": "stage-acceptance (S1 集成验收 · 时机二)：n3 先行 → n12/n14（a9e338a）→ n15-n17（ab694c8）→ n18 S1 双过提交",
+    "notes": "①判据 1 的 #3 删除段不在 S1 范围（需求 #3 写路径，后续阶段集成验收）；②TC-083 跳转完整行为（编辑器打开并定位）沿 n14 人工协议项，建议桌面会话点验一次（vscode://file/ 机读载体已在 SSR 实证，不阻塞）；③tips 双向：新记录 20261020T144437Z-QA-1893（沙箱内 node 探针 spawn git EPERM），与 20261008T121801Z-QA-009e 同根因碰撞后 009e 升级 active（count=2）；④S1 探针首版把 git 复核写进运行时断言被沙箱 EPERM 拒——按 TC-020 先例迁至 shell 证据层后全绿，分层口径已写入 cases.json TC-087 precondition 与探针头注"
+  }
+}

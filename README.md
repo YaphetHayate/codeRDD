@@ -101,8 +101,8 @@ rdd-flow set-route（推进 task.json 路由到下游角色：阶段内收窄不
 ```
 codeRDD/
 ├── rdd-engine/        能力总线:PowerShell CLI 家族(goal-tree / delivery-bridge / explore /
-│                      rdd-flow / start-role / tips / code-metrics / dashboard)+ 运营看板
-│                      (dashboard/)+ 协议文档唯一权威源(references/)
+│                      rdd-flow / start-role / tips / code-metrics)+ 运营看板(dashboard/,
+│                      自含启动入口 dashboard.cmd)+ 协议文档唯一权威源(references/)
 ├── rdd-<role>/ ×8     角色技能卡(pm/cto/ux/dev/qa/eval/auditor/pse),SKILL.md 单一事实源
 ├── dsh/               DSH 适配:dsh-rdd-explore 插件 / rdd-goal-tree 状态条插件 / presets 生成物
 ├── src/               coderdd 安装器 CLI(TypeScript:init / update / uninstall)

@@ -1,0 +1,22 @@
+{
+  "verdict": "done",
+  "node_id": "n5",
+  "confidence": 0.93,
+  "next_suggestion": "n4(UX) 交付设计后派发本需求 DEV 节点；DEV 完成后进入验证轮复跑探针（期望 total=18 pass=18 fail=0 skip=0）并以 git diff 复核 rdd-engine/scripts 冻结契约零改动",
+  "summary": "QA n5 完成（时机一测试先行）：树上无本需求 DEV 节点，按需求独立设计 15 用例（P0×9/P1×4/P2×2，7 条 AC+3 边界全覆盖、无孤立用例）。探针出厂数据 total=18 pass=9 fail=0 skip=9 exit=0——基线 9 项全绿，TC-135..175 为交付守卫 SKIP，DEV 交付后同命令复跑自动激活（期望 18/18）。新鲜度语义锚定引擎 Test-EntryFresh（files 逐文件 sha256+path 存在性）；双写归档三处自检全过。未执行质量守门与提交（无业务代码可查，符合测试先行形态）。",
+  "full_report": ".rdd/changes/archive/2026-10-20-exploration-cache-ux/tests/qa-report-pair-observability.md",
+  "citations": [
+    { "ref": ".rdd/tests/ops-dashboard-exploration-pair-observability/exploration-pair-observability-qa-verify.mjs", "locator": "探针全文件：基线 9 项 + 交付守卫 9 条（skip 守卫）" },
+    { "ref": ".rdd/tests/ops-dashboard-exploration-pair-observability/cases.json", "locator": "功能用例库 15 用例（长期资产，AC 全覆盖）" },
+    { "ref": ".rdd/tests/index.json", "locator": "追加 ops-dashboard-exploration-pair-observability 功能条目（第 19 个 feature）" },
+    { "ref": ".rdd/changes/archive/2026-10-20-exploration-cache-ux/tests/cases.json", "locator": "归档测试增量 added×15（与 n3 的 added×13 并存）" },
+    { "ref": ".rdd/changes/archive/2026-10-20-exploration-cache-ux/tests/qa-report-pair-observability.md", "locator": "QA 测试设计报告（独立新增，未改写 n3 的 qa-report.md）" }
+  ],
+  "extras": {
+    "verification": "node 探针干跑：total=18 pass=9 fail=0 skip=9 exit=0；node --check exit 0；用例库/index/归档增量三处自检全过（枚举合法、无重复 id、codeRef 15/15 存在、探针 TC id 集 15/15 对齐）",
+    "mode": "test-first (时机一)：树上无本需求 DEV 节点（n8 为需求 #1 的 DEV 且 pending），无业务代码可查 → 未执行质量守门与 git 提交",
+    "problems": [],
+    "notes": "边界自检提示：TC-125（孤儿 summary 不进计数）与 TC-130（无 artifacts 目录 0/0）基线即绿，现行为已容忍；性能口径（每请求逐文件 SHA-256）仅 INFO 留痕，真实仓大 files 清单为验证轮观察项",
+    "next": "n4(UX) 交付设计后由规划者派发本需求 DEV 节点；DEV 完成后验证轮复跑 node .rdd/tests/ops-dashboard-exploration-pair-observability/exploration-pair-observability-qa-verify.mjs，期望 total=18 pass=18 fail=0 skip=0，并以 git diff 复核 rdd-engine/scripts 冻结契约零改动"
+  }
+}

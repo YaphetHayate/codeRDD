@@ -1,0 +1,18 @@
+{
+  "node_id": "n24",
+  "verdict": "done",
+  "confidence": 0.95,
+  "summary": "[整体验收] QA 阶段完成：对照 requirements/overview.md#整体验收判据 两场景逐条独立核验真实链路，全部达成、0 失败点。三通道独立证据：① E2E 探针全新进程两轮复跑均 82/82 PASS exit=0（R 段真实仓只读 34 + S 段沙箱破坏性闭环 47 + P0 引擎冻结 1）；② QA 自建 PS 独立 oracle 14/14——PowerShell 直算磁盘真值（hot=0/index=1/记录 65/配对 65/孤儿 64）与独立真实服务进程（node server.mjs -Port 3939）的 API/SSR 四卡 KPI 交叉相等，无 JS 双平铺可见，读交互后 zone+artifacts 132 文件 size+mtime 零漂移；③ 引擎零改动三重核验（porcelain 空 + 运行期 SHA256 恒定 ×2 + git log 双脚本最近触达均为他流早期提交，冻结契约与 dsh 插件侧零触达）。删除按口径仅落自清理沙箱副本（真实服务+真实写路径），两轮后零残留。详见 tests/integration-acceptance.md §2–§3（总结论：通过）。",
+  "citations": [
+    { "ref": ".rdd/changes/archive/2026-10-20-exploration-cache-ux/tests/integration-acceptance.md", "locator": "§2 判据逐条核验表 + §3 总结论（n24 QA 独立复验；§1 保留 n23 DEV 集成记录）" }
+  ],
+  "next_suggestion": "整体验收通过（两判据全达成、0 失败点），run 交付目标闭环——规划者可裁定 settle 收口整个 deliver-2026-10-20-exploration-cache-ux run",
+  "full_report": ".rdd/changes/archive/2026-10-20-exploration-cache-ux/tests/integration-acceptance.md",
+  "extras": {
+    "verification": "通道 A：node .rdd/tests/ops-dashboard-exploration-integration/exploration-integration-e2e.mjs 两轮均 total=82 pass=82 fail=0 exit=0；通道 B：PS 独立 oracle Q1–Q14 全 PASS（磁盘真值↔API/SSR 交叉比对 + 132 产物文件 mtime 零漂移）；通道 C：git status --porcelain -- explore.ps1/explore-store.ps1 空输出、P0 SHA256 恒定 ×2、git log 最近触达均为他流（4a8440d/b43dc85/51882cd）；沙箱两轮后自清理零残留（Test-Path .sandbox-live=False）",
+    "quality_scan": {
+      "skip": true,
+      "reason": "本节点（QA 验收）变更集仅一份 .md 验收记录，无 PowerShell 文件改动，PowerShell 度量门不适用"
+    }
+  }
+}

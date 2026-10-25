@@ -9,7 +9,7 @@
 # 用例规约:TC-B01 ~ TC-B37(映射 BR-AC-1 ~ BR-AC-7 + GR-AC-2~6 + CB-AC + RR-AC-1~4 + PU-AC + TGA-AC-1~4)
 #
 # 用法:
-#   pwsh -File .rdd/tests/delivery-bridge/delivery-bridge-verify.ps1 [-Suite all|promulgate|claim|settle|recover|conclude|regression|compat|autopush|callback|review] [-KeepRuns] [-Json]
+#   pwsh -File .rdd/tests/delivery-bridge/delivery-bridge-verify.ps1 [-Suite all|promulgate|claim|settle|recover|conclude|regression|compat|autopush|callback|review|uniqueness|payload|roster|rollback|automode|wakefix] [-KeepRuns] [-Json]
 #   (Windows PowerShell 5.1 亦可运行;建议 pwsh 7+)
 #
 # 套件说明:
@@ -52,7 +52,7 @@
 # (alive/dead/unknown,TC-B17 切规则覆盖);原环境变量在退出时恢复。
 
 param(
-    [ValidateSet("all", "promulgate", "claim", "settle", "recover", "conclude", "regression", "compat", "autopush", "callback", "review", "uniqueness", "payload", "roster", "rollback", "automode")]
+    [ValidateSet("all", "promulgate", "claim", "settle", "recover", "conclude", "regression", "compat", "autopush", "callback", "review", "uniqueness", "payload", "roster", "rollback", "automode", "wakefix")]
     [string]$Suite = "all",
     [switch]$KeepRuns,
     [switch]$Json
@@ -306,11 +306,18 @@ function New-CallbackFile {
     param([string]$NodeId, [string]$Verdict, [bool]$WithCitations, [bool]$WithVerification, [bool]$RealPaths)
     $cits = @()
     if ($WithCitations) {
-        $ref = if ($RealPaths) { "rdd-engine/scripts/goal-tree.ps1" } else { "no/such/path/anywhere.ts" }
+        # 引用非 .ps1 真实路径：DEV 质量门 R5 拒绝「引 .ps1 却声明 skip」——夹具
+        # 交付并不真改 PowerShell，诚实口径 = 非 .ps1 引用 + skip 凭据（见 extras）。
+        $ref = if ($RealPaths) { "README.md" } else { "no/such/path/anywhere.ts" }
         $cits = @(@{ ref = $ref; locator = "schema" })
     }
     $extras = @{}
-    if ($WithVerification) { $extras = @{ verification = "lint+tests pass" } }
+    if ($WithVerification) {
+        # DEV 结算四查第 4 项（dev-quality-prescan-gate）：夹具变更集零 .ps1 触碰，
+        # 统一携带 skip 形凭据（skip+reason）——缺失则所有含 DEV settle 的用例在
+        # 引擎门禁处确定性失败（2026-10-24 基线 rollback 0/5 的根因）。
+        $extras = @{ verification = "lint+tests pass"; quality_scan = @{ skip = $true; reason = "fixture delivery: no PowerShell file changed (harness fixture contract)" } }
+    }
     $cb = @{
         node_id = $NodeId; verdict = $Verdict; confidence = 0.9
         summary = "delivery summary for $NodeId"; citations = $cits
@@ -2516,6 +2523,101 @@ function Suite-AutoMode {
 }
 
 # ============================================================
+# 套件:wakefix — TC-B58 / TC-B59(2026-10-24 scrollable-room 事故回归)
+#   缺口①:wake 形态原位返工不携带失败上下文 → DEV 零差异重报死循环
+#   缺口②:settle 后 claimed-live 槽位零通知 → VERIFY-3 永不启动双向死等
+# ============================================================
+function Suite-WakeFix {
+    Run-Tc "TC-B58" "wake 返工上下文投递:QA 判不合格 → rollback 原位重开 DEV 槽(id 不变回 pending) → 失败清单随重推指针投递(【返工指令】+回退理由+零差异重报无效) → 投递成功后一次性清除(needs_repush 复位)" "P0" "WR-AC-1" {
+        param($c)
+        $fx = New-FixtureArchive "wr58"
+        $null = TB @("-Command", "promulgate", "-Shape", "wake", "-TaskJson", (Join-Path $fx.dir "task.json"))
+        $bridge = Read-BridgeJson $fx.run_id
+        $devNode = [string]$bridge.tasks.'1'.stages.DEV
+        Assert $c ($devNode -ne "") "wake 形态 DEV 槽未建"
+        $null = Complete-Stage $fx.run_id $devNode "DEV"
+        $bridge = Read-BridgeJson $fx.run_id
+        $qaNode = [string]$bridge.tasks.'1'.stages.QA
+        Assert $c ($qaNode -ne "") "QA 槽未建(DEV settle 后)"
+        # QA 判不合格(failed verdict = rollback 证据问题)→ 单命令回退 DEV@IMPL
+        $null = TB @("-Command", "claim", "-RunId", $fx.run_id, "-NodeId", $qaNode, "-Role", "QA")
+        $cb = New-CallbackFile $qaNode "failed" $true $true $true
+        $null = TLeaf @("-Command", "report", "-RunId", $fx.run_id, "-Worker", "QA", "-CallbackFile", $cb)
+        $r = TB @("-Command", "rollback", "-RunId", $fx.run_id, "-NodeId", $qaNode, "-To", "DEV", "-Phase", "IMPL", "-Reason", "质量门4项函数超长")
+        Assert $c ($r.exit -eq 0 -and $r.json.success) "rollback 失败: $($r.text)"
+        # 原位重开:DEV 槽 id 不变回 pending(树不增长);QA 槽 redo 留 claimed
+        $t = Read-RunTree $fx.run_id
+        $devAfter = $t.nodes | Where-Object id -eq $devNode
+        $qaAfter = $t.nodes | Where-Object id -eq $qaNode
+        Assert $c ([string]$devAfter.status -eq "pending") "DEV 槽未原位重开: $($devAfter.status)"
+        Assert $c ([string]$qaAfter.status -eq "claimed") "QA 槽重做态异常: $($qaAfter.status)"
+        # 重开槽自动重推 + 指针携带失败清单(返工指令/回退理由/零差异重报无效)
+        Assert $c (@($r.json.data.auto_push.pushed) -contains $devNode) "重开 DEV 槽未被自动重推"
+        $hit = $false
+        foreach ($p in @(Read-DshMockLog | Where-Object { $_.method -eq "session.prompt" })) {
+            $pj = ($p.payload | ConvertTo-Json -Depth 8 -Compress)
+            if ($pj.Contains("【返工指令】") -and $pj.Contains("质量门4项函数超长") -and $pj.Contains("零差异")) { $hit = $true }
+        }
+        Assert $c $hit "指针消息未携带返工指令/回退理由(事故形态:信使丢信)"
+        # 一次性语义:投递成功后暂存清除 + needs_repush 复位
+        $bridge = Read-BridgeJson $fx.run_id
+        $devPush = $bridge.pushes.$devNode
+        Assert $c ($null -ne $devPush) "DEV 槽推送账缺失"
+        Assert $c (-not ($devPush.PSObject.Properties['redo_appendix'])) "redo_appendix 未一次性清除"
+        Assert $c ([bool]$devPush.needs_repush -eq $false) "投递成功后 needs_repush 应复位"
+    }
+
+    Run-Tc "TC-B59" "settle 利益相关方通知(VERIFY-3 死锁回归):QA 槽 claimed-live 重做等待中,DEV 重交 settle → QA 持有会话收到【上游交付通知】指针(stakeholder_notes 可见/推送账记录 reused 会话/无需重新 claim)" "P0" "WR-AC-2" {
+        param($c)
+        $fx = New-FixtureArchive "wr59"
+        $null = TB @("-Command", "promulgate", "-Shape", "wake", "-TaskJson", (Join-Path $fx.dir "task.json"))
+        $bridge = Read-BridgeJson $fx.run_id
+        $devNode = [string]$bridge.tasks.'1'.stages.DEV
+        $null = Complete-Stage $fx.run_id $devNode "DEV"
+        $bridge = Read-BridgeJson $fx.run_id
+        $qaNode = [string]$bridge.tasks.'1'.stages.QA
+        Assert $c ($qaNode -ne "") "QA 槽未建"
+        # QA 以独立会话认领(sidecar 绑 qa-holder-59)+ mock 活性 alive → 判不合格 → rollback
+        Set-DshMockRule -Liveness '{"run":"x","node":"n","session_id":"qa-holder-59","liveness":"alive","reason":"mock alive"}'
+        $prevWorker = $script:WorkerSessionId
+        $script:WorkerSessionId = "qa-holder-59"
+        try {
+            $null = TB @("-Command", "claim", "-RunId", $fx.run_id, "-NodeId", $qaNode, "-Role", "QA")
+            $cb = New-CallbackFile $qaNode "failed" $true $true $true
+            $null = TLeaf @("-Command", "report", "-RunId", $fx.run_id, "-Worker", "QA", "-CallbackFile", $cb)
+            $r = TB @("-Command", "rollback", "-RunId", $fx.run_id, "-NodeId", $qaNode, "-To", "DEV", "-Phase", "IMPL", "-Reason", "质量门复验失败")
+            Assert $c ($r.exit -eq 0 -and $r.json.success) "rollback 失败: $($r.text)"
+        }
+        finally {
+            $script:WorkerSessionId = $prevWorker
+        }
+        # 事故形态:QA 槽 claimed(重做等待);修复后的 DEV 重交 settle
+        $t = Read-RunTree $fx.run_id
+        $qaSlot = $t.nodes | Where-Object id -eq $qaNode
+        Assert $c ([string]$qaSlot.status -eq "claimed") "QA 槽重做态异常: $($qaSlot.status)"
+        $null = TB @("-Command", "claim", "-RunId", $fx.run_id, "-NodeId", $devNode, "-Role", "DEV")
+        $cb2 = New-CallbackFile $devNode "done" $true $true $true
+        $null = TLeaf @("-Command", "report", "-RunId", $fx.run_id, "-Worker", "DEV", "-CallbackFile", $cb2)
+        $s = TB @("-Command", "settle", "-RunId", $fx.run_id, "-NodeId", $devNode)
+        Assert $c ($s.exit -eq 0 -and $s.json.success) "DEV 重交 settle 失败: $($s.text)"
+        # 三面断言:结果可见 / 指针送达持有会话 / 推送账留痕(修复前:推送门跳过 claimed+账面健康=死等)
+        Assert $c (@($s.json.data.stakeholder_notes) -contains "$qaNode/QA") "stakeholder_notes 缺 QA 槽: $(@($s.json.data.stakeholder_notes) -join ',')"
+        $noteHit = $false
+        foreach ($p in @(Read-DshMockLog | Where-Object { $_.method -eq "session.prompt" })) {
+            $pj = ($p.payload | ConvertTo-Json -Depth 8 -Compress)
+            if ($pj.Contains("【上游交付通知】") -and $pj.Contains($devNode)) { $noteHit = $true }
+        }
+        Assert $c $noteHit "QA 持有会话未收到上游交付通知指针"
+        $bridge = Read-BridgeJson $fx.run_id
+        $qaPush = $bridge.pushes.$qaNode
+        Assert $c ($null -ne $qaPush) "QA 槽推送账缺失"
+        $lastQaAttempt = @($qaPush.attempts)[-1]
+        Assert $c ([string]$lastQaAttempt.reused_session_id -eq "qa-holder-59") "推送账未记录复用会话投递: $(($lastQaAttempt | ConvertTo-Json -Compress))"
+        Set-DshMockRule
+    }
+}
+
+# ============================================================
 # 主流程
 # ============================================================
 
@@ -2532,7 +2634,7 @@ $env:DSH_SESSION_ID = "qa-bridge-mock"
 $script:WorkerSessionId = "qa-bridge-worker"
 Write-Host "dsh-mock carrier: $script:DshMockUrl"
 
-$selected = if ($Suite -eq "all") { @("promulgate", "claim", "settle", "recover", "conclude", "regression", "compat", "autopush", "callback", "review", "uniqueness", "payload", "roster", "rollback", "automode") } else { @($Suite) }
+$selected = if ($Suite -eq "all") { @("promulgate", "claim", "settle", "recover", "conclude", "regression", "compat", "autopush", "callback", "review", "uniqueness", "payload", "roster", "rollback", "automode", "wakefix") } else { @($Suite) }
 foreach ($s in $selected) {
     switch ($s) {
         "promulgate" { Suite-Promulgate }
@@ -2550,6 +2652,7 @@ foreach ($s in $selected) {
         "roster"     { Suite-Roster }
         "rollback"   { Suite-Rollback }
         "automode"   { Suite-AutoMode }
+        "wakefix"    { Suite-WakeFix }
     }
 }
 

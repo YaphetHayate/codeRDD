@@ -1,6 +1,6 @@
 {
   "name": "@coderrdd/rdd-engine",
-  "version": "1.3.0",
+  "version": "1.4.0",
   "description": "RDD workflow engine CLI (rdd-flow / goal-tree (rdd-goal-tree) / explore family / ops dashboard) — pure PowerShell + zero-dependency Node dashboard, zero npm dependency at runtime; distributed standalone as a GitHub Release tarball",
   "keywords": [
     "rdd",
