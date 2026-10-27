@@ -510,15 +510,22 @@ function ConvertTo-PortableJson {
 }
 
 function Write-ErrorResult {
+    # PS 5.1 quirk (serialize-silent-exit fix, 2026-10-26): `exit` discards pipeline
+    # output still held by an in-flight @() subexpression — a WER fired inside
+    # $x = @(fn ...) killed the process with exit 1 and ZERO bytes on both streams
+    # (conflict resolve -Serialize died exactly there). Harden: emit the JSON
+    # straight to process stdout via [Console]::Out (bypasses the pipeline
+    # collector), then exit. Byte-equivalent output on every healthy path.
     param(
         [string]$Code,
         [string]$Message,
         [int]$ExitCode = 1
     )
-    ConvertTo-PortableJson @{
+    $json = ConvertTo-PortableJson @{
         success = $false
         error   = @{ code = $Code; message = $Message }
     } -Depth 3
+    [Console]::Out.WriteLine($json)
     exit $ExitCode
 }
 
@@ -1736,6 +1743,29 @@ function Get-WakeQuotaState {
     return @{ seg = $seg; seg_max = $segMax; total = $total; total_max = $totalMax; wake_count = [int]$node.wake_count }
 }
 
+function Get-NodeResetAt {
+    # rearm-repush (fix b)：本节点最近一次「回到 pending」的权威树面时间戳——
+    # goal-tree reset / rotate 的 done→pending 重开在真实转移时落盘 reset_at
+    # （pending 幂等 no-op 不刷新，语义恒为「当前 pending 世代的起点」）。
+    # 直接读 state/tree.json（与 Get-WakeQuotaState / Get-NodePruneReason 同款
+    # 先例，bridge 不写引擎态）。字段缺失（存量 run / 从未重臂的槽）返回 $null，
+    # 调用方按旧语义处理。返回时间戳字符串或 $null。
+    param([string]$RunDir, [string]$NodeId)
+    if ([string]::IsNullOrWhiteSpace($RunDir) -or [string]::IsNullOrWhiteSpace($NodeId)) { return $null }
+    $tp = Join-Path (Join-Path $RunDir "state") "tree.json"
+    if (-not (Test-Path -LiteralPath $tp -PathType Leaf)) { return $null }
+    try {
+        $t = [System.IO.File]::ReadAllText($tp, [System.Text.Encoding]::UTF8) | ConvertFrom-Json
+        foreach ($n in @($t.nodes)) {
+            if (([string]$n.id) -eq $NodeId) {
+                if ($null -ne $n.PSObject.Properties['reset_at'] -and $n.reset_at) { return [string]$n.reset_at }
+                return $null
+            }
+        }
+    } catch { return $null }
+    return $null
+}
+
 function Test-PushCandidate {
     # Per-node push gate (state filter + unlock + push-ledger rules). Returns
     # $null = push it, or the skip record consumed by the caller's ledger.
@@ -1813,7 +1843,27 @@ function Test-PushCandidate {
     $pushedOk = ($null -ne $pushState -and $pushState.Contains('last_ok_at') -and $null -ne $pushState['last_ok_at'])
     $needsRepush = ($null -ne $pushState -and $pushState.Contains('needs_repush') -and [bool]$pushState['needs_repush'])
     if ($pushedOk -and -not $needsRepush) {
-        return @{ node = $NodeId; reason = "already_pushed" }
+        # rearm-repush (fix b)：already_pushed 只适用于「ok 推送属于当前世代」的
+        # 节点。pending 槽若在最后一次 ok 推送之后被重臂（goal-tree reset/rotate
+        # 打下 reset_at——阶段推进、人工回滚、或 needs_repush 标记因崩溃窗口
+        # 丢失的路径），台账里的 last_ok_at 已过期：旧指针投给的是上一轮会话，
+        # 重臂轮会静默搁置。对照树上 reset_at：last_ok_at 严格早于重臂时间 →
+        # 视作待推；晚于（含相等，秒级精度下保守防风暴）/无时间戳（存量 run、
+        # 从未重臂）→ 维持 already_pushed 跳过。claimed（真在途）不经此分支
+        # 语义（视图桶对象无 status 字段，沿既有路径跳过）。
+        if ($Status -eq "pending" -and -not [string]::IsNullOrWhiteSpace($RunDir)) {
+            $resetAtText = Get-NodeResetAt $RunDir $NodeId
+            if (-not [string]::IsNullOrWhiteSpace($resetAtText)) {
+                $staleLedger = $false
+                try {
+                    $lastOk = [datetime]::Parse([string]$pushState['last_ok_at'], $null, [System.Globalization.DateTimeStyles]::RoundtripKind)
+                    $resetAt = [datetime]::Parse($resetAtText, $null, [System.Globalization.DateTimeStyles]::RoundtripKind)
+                    $staleLedger = ($lastOk -lt $resetAt)
+                } catch { $staleLedger = $false }
+                if ($staleLedger) { $pushedOk = $false }
+            }
+        }
+        if ($pushedOk) { return @{ node = $NodeId; reason = "already_pushed" } }
     }
     # pointer-class failures (session created, pointer message failed) are MANUAL
     # re-push only — an auto retry would stack a duplicate session (decision 5).
@@ -1975,8 +2025,13 @@ function Invoke-AutoDispatch {
     # whose task registration did not land (crash window between the tree settle
     # and the add-task/bridge write) re-runs the idempotent registration here.
     # Registration is state, not a push: it runs even under no_push isolation.
+    # Failures surface in chain_error (loud, non-blocking) — a dropped error text
+    # is how the 2026-10-26 incident replayed invisibly forever.
     $derMoves = Update-DerivationRegistrations $RunDir $Bridge
     $Bridge = $derMoves.bridge
+    foreach ($df in @($derMoves.failed)) {
+        $chainErrors += "derivation $([string]$df.derivation) registration failed (idempotent re-run on every trigger; completed steps are persisted): $([string]$df.error)"
+    }
     # Run-level isolation gate (bridge.json no_push, set by promulgate -NoPush):
     # one upfront check makes an isolated run provably zero-backend for its
     # whole lifetime (0923 incident, QA F1). The manual dispatch command stays
@@ -8067,8 +8122,9 @@ function New-SettleResult {
 function Invoke-SettleDerivationTail {
     # settle 派生分支（planner-midrun-derive）：mid-run derivation PM node，
     # 四查已过 → 确认记录硬门复核 → tree settle（irreversible）→ 受控入册
-    # （add-task 代写 + bridge.tasks mapping + DESIGN chain heads under this
-    # node）。Registration failure degrades to a warning — the patrol state
+    # （add-task 代写 + bridge.tasks mapping + 链头预挂：wake 形状容器先物化 +
+    # 槽挂容器下，legacy 形状挂本 PM 节点下）。Registration failure degrades to
+    # a warning — the patrol state
     # machine (Update-DerivationRegistrations) re-runs it idempotently on the
     # next trigger (pending_sync philosophy, the derivations section IS the
     # record). Returns the settle tail (same shape as the other two branches).
@@ -8403,6 +8459,14 @@ function Invoke-GraftNextStage {
             $ro = Invoke-WakeReopenSlot ([string]$Bridge.run_id) $existing $wt.reason $wt.failure $wt.trigger $wt.duty
             if (-not $ro.ok) { return @{ success = $false; error = "WAKE_REOPEN_FAILED: task #$taskId $NextStage slot $existing — $($ro.warning)" } }
             if ($null -ne $RedoContext) { $Bridge = Set-WakeRedoAppendix $RunDir $Bridge $existing (New-WakeRedoAppendix $RedoContext) } # wake-reopen-context-delivery: failure list rides the next pointer
+            elseif (-not ([string]$ro.mode).StartsWith('live(')) {
+                # rearm-repush (fix a)：重臂给槽位开启了新一轮工作，但推送台账仍持有
+                # 上一轮的 ok——auto_push 扫描会以 already_pushed 跳过它，重臂槽就此
+                # pending 无人认领（无报错无 warning 的静默停摆）。重臂同尾对齐
+                # reclaim 路径置 needs_repush（含 stage 推进与 stage re-entry；
+                # live(x) 模式未改树态，不置以免推送风暴）。
+                $Bridge = Set-NodeRepushFlag $RunDir $Bridge $existing
+            }
             return @{ success = $true; bridge = $Bridge; node_id = $existing; wake_mode = $ro.mode }
         }
         $container = Get-TaskContainerNode $Bridge $taskId
@@ -8801,6 +8865,9 @@ function Invoke-StatusTouch {
     $touch['rotated'] = @($push.rotated)
     $touch['skipped'] = @($push.skipped)
     $touch['failed'] = @($push.failed)
+    # chain_error rides the touch view too (patrol failures must be visible in
+    # status — a dropped error text is how the 2026-10-26 incident looped blind)
+    $touch['chain_error'] = @($push.chain_error)
     return @{ touch = $touch; bridge = $push.bridge }
 }
 
@@ -9225,7 +9292,7 @@ function Invoke-BridgeResume {
     # 按 kind 续处(调和/上报/挂起),无冲突任务不被阻塞。
     $cv = $view.conflicts
     foreach ($e in @($cv.open)) {
-        $steps += "Unresolved conflict $($e['id']) (kind=$($e['kind']), status=$($e['status']), nodes [$($e['nodes'] -join ', ')], files [$($e['files'] -join ', ')]) — 处置:调和产出一致结论后 'delivery-bridge.cmd -Command conflict -RunId $RunId -Action resolve -ConflictId $($e['id']) -Ruling <结论>'(文件冲突可 -Serialize <早者节点> 串行化);无法调和 → -Action open -ConflictId $($e['id']) -ConflictStatus escalated -Escalation '<呈用户的问题>' 上报用户裁决;用户不在场 → -ConflictStatus suspended 挂起涉事链并上报(不阻塞无冲突任务)。硬约束:不得默默二选一。"
+        $steps += "Unresolved conflict $($e['id']) (kind=$($e['kind']), status=$($e['status']), nodes [$($e['nodes'] -join ', ')], files [$($e['files'] -join ', ')]) — 处置:调和产出一致结论后 'delivery-bridge.cmd -Command conflict -RunId $RunId -Action resolve -ConflictId $($e['id']) -Ruling <结论>'(文件冲突可 -Serialize <早者节点> 串行化$(if ((Get-BridgeRunShape $runDir) -eq 'wake') { ';wake 形状=任务级依赖(容器边),晚者整链(含QA)待早者任务 settle' }));无法调和 → -Action open -ConflictId $($e['id']) -ConflictStatus escalated -Escalation '<呈用户的问题>' 上报用户裁决;用户不在场 → -ConflictStatus suspended 挂起涉事链并上报(不阻塞无冲突任务)。硬约束:不得默默二选一。"
     }
     foreach ($dv in @($cv.citation_deviations)) {
         $steps += "回执偏差(软核对): $($dv['node']) @ $($dv['doc']) citations 超出变更地图文件集 [$($dv['refs'] -join ', ')] — 核对变更地图是否漏报/写错。"
@@ -10329,12 +10396,93 @@ function Get-DeriveRequirementFromCitations {
 }
 
 function Invoke-DeriveChainGraft {
-    # 派生任务链头预挂（与 promulgate「链头预挂、闸门把守」模型同构）：每 owner
-    # 一个链头节点挂 PM 节点下，depends_on 多锚缝合到各依赖任务的活跃节点
-    # （阶段闸门 hold 至 replan 吸收——NODE_BLOCKED_BY_GATE 出路只有 replan）。
-    # 返回 @{ bridge; nodes = @() }。
-    param([string]$RunDir, $Bridge, $Derivation, [string]$ParentNode, [int]$TaskId, [string]$ReqRel)
+    # 派生任务链头预挂（与 promulgate「链头预挂、闸门把守」模型同构）：
+    # - wake 形状（goal-tree-wake-model §3.2，引擎 1.2.0 缺省）：先物化派生任务
+    #   的需求容器（type=sub 挂 goal 根，与既有任务容器同级；依赖边按
+    #   serialize-container-edges 同款语义落 WBS 容器层——depends_on = 各依赖
+    #   任务的容器，容器目标终态 = 子树全终态：已终态依赖即时满足、在途依赖
+    #   自然 hold）；owners 的 DESIGN 槽挂容器下（duty=stage），bridge.tasks 落
+    #   container 映射——与 promulgate 产物同构。链头挂 PM 节点下的旧语义在
+    #   wake 形状撞 ROLE_LAYER_LOCKED（PM 节点是角色槽非容器）。
+    # - legacy 形状：每 owner 一个链头节点挂 PM 节点下，depends_on 多锚缝合到
+    #   各依赖任务的活跃节点（原语义逐字节保留）。
+    # 幂等（-Roles 只补缺失角色，Repair-DeriveChainHeads 传入）；分段落盘
+    # （pending_sync 同族哲学）：容器锚点先落 bridge.json 再挂槽、每槽一写——
+    # 任一步失败，已完成步骤已持久化，巡检重入从断点续跑不重建。
+    # 返回 @{ bridge; nodes = @(); container; error }。
+    param([string]$RunDir, $Bridge, $Derivation, [string]$ParentNode, [int]$TaskId, [string]$ReqRel, [string[]]$Roles = @())
     $treeData = Get-TreeStatusView ([string]$Bridge.run_id)
+    $acceptanceRef = $null
+    $a = Get-AcceptanceSection $Bridge
+    if ($null -ne $a -and ([string]$a['status']) -eq 'planned') { $acceptanceRef = [string]$a['criteria_ref'] }
+    $archiveName = Split-Path $Bridge.archive -Leaf
+    $roles = @(@($Roles | Where-Object { $null -ne $_ -and $_.Trim() -ne '' }))
+    if ($roles.Count -eq 0) { $roles = @($Derivation['owners']) }
+    $nodes = @()
+    if (Test-WakeShapeBridge $Bridge) {
+        # (i) 需求容器先物化（幂等：bridge container 映射 + 树活性双判——映射
+        #     缺失/节点 pruned 才重挂）。防御性补齐 tasks 条目（正常路径步骤
+        #     (4) 已落盘注册，此处仅容忍手修中间态）。
+        if (-not $Bridge.tasks.Contains("$TaskId")) {
+            $Bridge.tasks["$TaskId"] = @{
+                title = [string]$Derivation['title']; requirement = $ReqRel
+                initial_group = @($Derivation['owners']); dep_task_ids = @($Derivation['depends_on']); stages = @{}
+            }
+        }
+        $container = Get-TaskContainerNode $Bridge $TaskId
+        $containerLive = $false
+        if (-not [string]::IsNullOrWhiteSpace($container)) {
+            # 容器探活必须走 state/tree.json 全量读（Read-TreeFullNode）：sub/accept
+            # 容器从不进 status view 的 work buckets（goal-tree-wake-model §3.4），
+            # Get-NodeViewState 对容器恒 $null（2026-10-26 缺陷根因：探活误判
+            # → 已录容器被重复物化）。
+            $cv = Read-TreeFullNode $RunDir $container
+            if ($null -ne $cv -and [string]$cv.status -ne 'pruned') { $containerLive = $true }
+        }
+        if (-not $containerLive) {
+            $depContainers = @()
+            foreach ($dt in @($Derivation['depends_on'])) {
+                $depId = [int]$dt
+                if (-not $Bridge.tasks.Contains("$depId")) { continue }
+                $dc = Get-TaskContainerNode $Bridge $depId
+                if ([string]::IsNullOrWhiteSpace($dc)) { continue }
+                $dv = Read-TreeFullNode $RunDir $dc
+                if ($null -eq $dv -or [string]$dv.status -eq 'pruned') { continue }
+                if ($depContainers -notcontains $dc) { $depContainers += $dc }
+            }
+            $containerItem = @{
+                title = [string]$Derivation['title']
+                task  = "需求容器（WBS 层，不可认领）：task #$TaskId —— $([string]$Derivation['title'])。判据与任务正文见 $ReqRel；本容器聚合该需求的全部角色槽（goal-tree-wake-model）。"
+                type  = "sub"
+            }
+            if ($depContainers.Count -gt 0) { $containerItem['depends_on'] = @($depContainers) }
+            $gc = Invoke-GraftOne ([string]$Bridge.run_id) ([string]$Bridge.goal_root) $containerItem
+            if (-not $gc.ok) { return @{ bridge = $Bridge; nodes = @(); container = $null; error = "wake container graft failed for derived task ${TaskId}: $($gc.text)" } }
+            $container = $gc.node_id
+            $Bridge.tasks["$TaskId"]['container'] = $container
+            Write-BridgeFile $RunDir $Bridge
+        }
+        # (ii) DESIGN 槽挂容器下（duty=stage；槽级不带依赖边——容器边经折叠门
+        #      （§3.3）把依赖语义传导到槽，与 promulgate 缺省产物同构）。
+        foreach ($role in @($roles)) {
+            $taskText = New-NodeTaskText -Title ([string]$Derivation['title']) -Stage $role -ReqRel $ReqRel -DesignRels @() -RunId ([string]$Bridge.run_id) -AcceptanceRef $acceptanceRef
+            $graftItem = @{
+                title = [string]$Derivation['title']
+                task  = $taskText
+                role  = $role.ToLower()
+                ref   = "$archiveName/$ReqRel"
+                duty  = $role.ToLower()
+            }
+            $g = Invoke-GraftOne ([string]$Bridge.run_id) $container $graftItem
+            if (-not $g.ok) { return @{ bridge = $Bridge; nodes = @($nodes); container = $container; error = "graft failed for derived task $TaskId ($role): $($g.text)" } }
+            Set-NodeTaskStage $Bridge $g.node_id $TaskId $role
+            Write-BridgeFile $RunDir $Bridge
+            $nodes += $g.node_id
+        }
+        return @{ bridge = $Bridge; nodes = @($nodes); container = $container; error = $null }
+    }
+    # legacy 形状：链头挂 PM 节点下 + depends_on 多锚缝合到各依赖任务的活跃
+    # 节点（阶段闸门 hold 至 replan 吸收——NODE_BLOCKED_BY_GATE 出路只有 replan）。
     $depNodes = @()
     foreach ($dt in @($Derivation['depends_on'])) {
         $depId = [int]$dt
@@ -10347,12 +10495,7 @@ function Invoke-DeriveChainGraft {
             if ($null -ne $st -and @('pending', 'claimed', 'reported') -contains [string]$st['status'] -and $depNodes -notcontains $dn) { $depNodes += $dn }
         }
     }
-    $acceptanceRef = $null
-    $a = Get-AcceptanceSection $Bridge
-    if ($null -ne $a -and ([string]$a['status']) -eq 'planned') { $acceptanceRef = [string]$a['criteria_ref'] }
-    $archiveName = Split-Path $Bridge.archive -Leaf
-    $nodes = @()
-    foreach ($role in @($Derivation['owners'])) {
+    foreach ($role in @($roles)) {
         $taskText = New-NodeTaskText -Title ([string]$Derivation['title']) -Stage $role -ReqRel $ReqRel -DesignRels @() -RunId ([string]$Bridge.run_id) -AcceptanceRef $acceptanceRef
         $graftItem = @{
             title = [string]$Derivation['title']
@@ -10364,6 +10507,7 @@ function Invoke-DeriveChainGraft {
         $g = Invoke-GraftOne ([string]$Bridge.run_id) $ParentNode $graftItem
         if (-not $g.ok) { return @{ bridge = $Bridge; nodes = @(); error = "graft failed for derived task $TaskId ($role): $($g.text)" } }
         Set-NodeTaskStage $Bridge $g.node_id $TaskId $role
+        Write-BridgeFile $RunDir $Bridge
         $nodes += $g.node_id
     }
     return @{ bridge = $Bridge; nodes = @($nodes); error = $null }
@@ -10422,8 +10566,10 @@ function Update-DeriveAcceptanceOnRegister {
 }
 
 function Repair-DeriveChainHeads {
-    # 受控入册步骤 (5b)：DESIGN 链头挂 PM 节点下（幂等——只补缺失角色的
-    # 链头，已有活跃链头不重挂）。返回 @{ bridge; error }。
+    # 受控入册步骤 (5b)：wake 形状容器先物化 + owners 的 DESIGN 槽挂容器下；
+    # legacy 形状链头挂 PM 节点下（幂等——只补缺失角色的链头/槽，已有活跃
+    # 链头不重挂；容器以 bridge container 映射 + 树活性判重）。返回
+    # @{ bridge; error }。
     param([string]$RunDir, $Bridge, $Der, [string]$ParentNode, [int]$TaskId, [string]$ReqRel)
     $treeData = Get-TreeStatusView ([string]$Bridge.run_id)
     $missingRoles = @()
@@ -10437,7 +10583,7 @@ function Repair-DeriveChainHeads {
         if (-not $has) { $missingRoles += $role }
     }
     if ($missingRoles.Count -eq 0) { return @{ bridge = $Bridge; error = $null } }
-    $graft = Invoke-DeriveChainGraft -RunDir $RunDir -Bridge $Bridge -Derivation $Der -ParentNode $ParentNode -TaskId $TaskId -ReqRel $ReqRel
+    $graft = Invoke-DeriveChainGraft -RunDir $RunDir -Bridge $Bridge -Derivation $Der -ParentNode $ParentNode -TaskId $TaskId -ReqRel $ReqRel -Roles $missingRoles
     return @{ bridge = $graft.bridge; error = $graft.error }
 }
 
@@ -10446,10 +10592,13 @@ function Invoke-DeriveRegisterTask {
     # settle → (1) 确认记录防御性复核（无记录拒绝执行——硬门）→ (2) 新需求
     # 文档定位（citations / 已有任务 remark 锚点）→ (3) 桥代写 rdd-flow
     # add-task（-BridgeRun 受控标记 + remark 幂等锚点，task.json 单一写入方
-    # 不破）→ (4) bridge.tasks 映射登记 → (5) 切 DESIGN 相位链头挂 PM 节点下
-    # → (6) acceptance 段 live 刷新（派生判据自然进验收门）→ (7) plan-log
-    # progress 事件。失败返回 @{ ok=$false; error } 不退出（settle 降级警告 +
-    # 巡检重入，pending_sync 同族哲学）。
+    # 不破）→ (4) bridge.tasks 映射登记（即时落盘）→ (5) 切 DESIGN 相位链头
+    # 预挂（wake 形状：需求容器先物化 + 槽挂容器下；legacy 形状：链头挂 PM
+    # 节点下；每步分段落盘）→ (6) acceptance 段 live 刷新（派生判据自然进
+    # 验收门）→ (7) 派生簿记 + 落盘 + plan-log progress 事件（现行 plan 已
+    # 覆盖即同步 absorbed）。失败返回 @{ ok=$false; error } 不退出（settle
+    # 降级警告 + 巡检重入，pending_sync 同族哲学——已完成步骤已持久化，
+    # 重入从断点续跑不重建）。
     param([string]$RunDir, $Bridge, [string]$DerId, [string]$NodeText)
     $der = $null
     foreach ($x in @(Get-DerivationSection $Bridge)) { if ([string]$x['id'] -eq $DerId) { $der = $x; break } }
@@ -10464,7 +10613,10 @@ function Invoke-DeriveRegisterTask {
     if ($null -ne $target.error) { return @{ ok = $false; error = [string]$target.error } }
     $taskId = [int]$target.taskId
     $reqRel = [string]$target.reqRel
-    # (4) bridge.tasks mapping registration
+    # (4) bridge.tasks mapping registration — persisted HERE (segmented
+    # idempotence, pending_sync philosophy): a later failure (5b graft etc.)
+    # must not lose the mapping; the patrol re-enters from the persisted state
+    # (remark anchor dedups the task, this mapping dedups the registration).
     if (-not $Bridge.tasks.Contains("$taskId")) {
         $Bridge.tasks["$taskId"] = @{
             title         = [string]$der['title']
@@ -10474,6 +10626,7 @@ function Invoke-DeriveRegisterTask {
             stages        = @{}
         }
     }
+    Write-BridgeFile $RunDir $Bridge
     # (5a) acceptance live refresh FIRST (single_exempt/declared run whose PM
     # augmented overview criteria upgrades to planned) — the chain heads grafted
     # right below then carry the criteria anchor (criteria_ref) in node.task, and
@@ -10482,18 +10635,33 @@ function Invoke-DeriveRegisterTask {
     $acc = Update-DeriveAcceptanceOnRegister $Bridge
     $Bridge = $acc.bridge
     $warnings = @($acc.warnings)
-    # (5b) DESIGN chain heads under the settled PM node (idempotent: only missing roles)
+    # (5b) chain heads (idempotent: only missing roles; wake shape materializes
+    # the requirement container first — the old graft-under-the-PM-node semantics
+    # deterministically fails ROLE_LAYER_LOCKED there; each step persists)
     $heads = Repair-DeriveChainHeads -RunDir $RunDir -Bridge $Bridge -Der $der -ParentNode $NodeText -TaskId $taskId -ReqRel $reqRel
     $Bridge = $heads.bridge
     if ($heads.error) { return @{ ok = $false; bridge = $Bridge; error = $heads.error } }
     # (7) derivation bookkeeping + plan-log progress event
     $derivations = @(Get-DerivationSection $Bridge)
+    # absorption join (replan-first window): Set-DerivationAbsorptions only runs
+    # at replan time; a replan that already staged the derived task between
+    # confirm and THIS registration would otherwise leave absorbed=false forever
+    # while the stage gate is already open (misleading replan-again warnings).
+    $planStagedIds = @()
+    $pSec = Get-PlanSection $Bridge
+    if ($null -ne $pSec) {
+        foreach ($st in @($pSec['stages'])) { foreach ($tid in @($st['task_ids'])) { $planStagedIds += [int]$tid } }
+    }
     foreach ($x in $derivations) {
         if ([string]$x['id'] -eq $DerId) {
             $x['status'] = 'registered'
             $x['task_id'] = $taskId
             $x['requirement'] = $reqRel
             $x['registered_at'] = Get-UtcNowIso
+            if ($planStagedIds -contains $taskId -and -not ((Test-PropPresent $x 'absorbed') -and $x['absorbed'] -eq $true)) {
+                $x['absorbed'] = $true
+                $x['absorbed_at'] = Get-UtcNowIso
+            }
         }
     }
     $Bridge['derivations'] = $derivations
@@ -10835,22 +11003,80 @@ function Set-ConflictState {
     return $Entry
 }
 
+function Get-BridgeRunShape {
+    # manifest.json 的 shape（goal-tree start 固化；旧 run 无此字段 = legacy）。
+    # 只读直读先例：Read-TreeFullNodesRaw（桥绝不写引擎状态）。
+    param([string]$RunDir)
+    $p = Join-Path $RunDir "manifest.json"
+    if (-not (Test-Path -LiteralPath $p -PathType Leaf)) { return '' }
+    try {
+        $m = [System.IO.File]::ReadAllText($p, [System.Text.Encoding]::UTF8) | ConvertFrom-Json
+        if ($null -ne $m -and $null -ne $m.shape) { return [string]$m.shape }
+    }
+    catch { }
+    return ''
+}
+
+function Get-NodeSerializeContainer {
+    # wake 形状串行化端点翻译：依赖边只能落在 WBS 容器层（goal-tree 层规则），
+    # 角色级节点翻译为所属容器（parent 一跳）；容器端点原样。$null = 不可翻译
+    # （节点不在树中 / parent 不是容器——如 goal root）。
+    param($NodesById, [string]$NodeId)
+    if (-not $NodesById.Contains($NodeId)) { return $null }
+    $n = $NodesById[$NodeId]
+    if (@('sub', 'accept') -contains [string]$n.type) { return [string]$n.id }
+    $p = [string]$n.parent
+    if ($p -and $NodesById.Contains($p) -and @('sub', 'accept') -contains [string]$NodesById[$p].type) { return $p }
+    return $null
+}
+
 function Set-ConflictSerializeEdges {
-    # 串行化兜底(resolve -Serialize):晚者 depends_on 早者(goal-tree deps add 公开
+    # 串行化兜底(resolve -Serialize)：晚者 depends_on 早者(goal-tree deps add 公开
     # CLI,DAG 校验 + deps-log 审计)——早者 settle 后晚者自动解锁。失败即整体拒绝
     # (登记不半写,冲突保持未决)。
+    # wake 形状（serialize-container-edges 主修,2026-10-26）：goal-tree 层规则只允
+    # 许容器间 depends_on,角色级端点【显式翻译】为所属容器（parent 一跳）——边落
+    # 容器层,槽门继承容器边 => 晚者任务【整链含QA】待早者任务 settle 才可认领（角
+    # 色返工不会撕开并发窗口）；翻译不静默：edges 清单逐条带翻译说明,mode 记入
+    # 条目 serialize 段。同任务两端点（同容器）不建边（自依赖非法,同任务本无并发
+    # 文件重叠）。
     # 任务级同步（serialize-deps-split 主修）：推送门并发排除读 bridge.tasks[].
     # dep_task_ids（Test-TaskDependent 单源）——只写节点级会让 resolve 后推送门重扫
     # 把对手原样重登记（同构 C2/C3…），早者唯一可推节点被自家冲突冻结。此处把同
     # 方向边镜像进任务级（已相关即跳过——含防环：反向任务边在闭包里即视为已串行）。
+    # 返回 @{ mode = node|container; edges = @(逐条说明) }；任何失败经硬化的
+    # Write-ErrorResult 打印 JSON 后退出（@() 收集器内调用同样有输出）。
     param([string]$RunDir, [string]$RunIdText, $Bridge, $Entry, [string]$Earlier)
     $others = @(@($Entry['nodes']) | Where-Object { ([string]$_) -ne $Earlier })
     if ($others.Count -eq 0) {
         Write-ErrorResult "CONFLICT_ENTRY_INVALID" "-Serialize $Earlier needs at least one later counterpart node in $($Entry['id'])" 1
     }
+    $isWake = ((Get-BridgeRunShape $RunDir) -eq 'wake')
     $added = @()
+    $nodesById = @{}
+    $earlierContainer = $null
+    if ($isWake) {
+        foreach ($n in @(Read-TreeFullNodesRaw $RunDir)) { $nodesById[[string]$n.id] = $n }
+        $earlierContainer = Get-NodeSerializeContainer $nodesById $Earlier
+        if ($null -eq $earlierContainer) {
+            Write-ErrorResult "CONFLICT_ENTRY_INVALID" "-Serialize $Earlier cannot map to a WBS container (wake shape serializes whole tasks: the node must be a sub/accept container or a role slot under one) in $($Entry['id'])" 1
+        }
+    }
     foreach ($later in $others) {
-        $r = Invoke-GoalTree @("-Command", "deps", "-DepAction", "add", "-RunId", $RunIdText, "-NodeId", ([string]$later), "-On", $Earlier)
+        if ($isWake) {
+            $laterContainer = Get-NodeSerializeContainer $nodesById ([string]$later)
+            if ($null -eq $laterContainer) {
+                Write-ErrorResult "CONFLICT_ENTRY_INVALID" "serialize counterpart $later cannot map to a WBS container (wake shape serializes whole tasks) in $($Entry['id'])" 1
+            }
+            if ($laterContainer -eq $earlierContainer) {
+                $added += "$later->$Earlier (同任务容器 $laterContainer,不建边)"
+                continue
+            }
+            $r = Invoke-GoalTree @("-Command", "deps", "-DepAction", "add", "-RunId", $RunIdText, "-NodeId", $laterContainer, "-On", $earlierContainer)
+        }
+        else {
+            $r = Invoke-GoalTree @("-Command", "deps", "-DepAction", "add", "-RunId", $RunIdText, "-NodeId", ([string]$later), "-On", $Earlier)
+        }
         if ($r.exit -ne 0 -or $null -eq $r.json -or -not $r.json.success) {
             $depCode = ''
             if ($null -ne $r.json -and $null -ne $r.json.error) { $depCode = [string]$r.json.error.code }
@@ -10859,10 +11085,17 @@ function Set-ConflictSerializeEdges {
             }
             # DEP_EXISTS = 该方向已串行（此前同构条目已写同边）——幂等续行；本条价值
             # 在任务级镜像（旧条目缺它），照写不误（serialize-deps-split 续跑路径）。
-            $added += "$later->$Earlier (已存,幂等)"
+            if ($isWake) { $added += "$later->$Earlier ⇒ $laterContainer depends_on $earlierContainer (已存,幂等)" }
+            else { $added += "$later->$Earlier (已存,幂等)" }
         }
         else {
-            $added += "$later->$Earlier"
+            if ($isWake) {
+                $lt = '?'; $et = '?'
+                $lm = Get-NodeTaskStage $Bridge ([string]$later); if ($null -ne $lm) { $lt = [string][int]$lm.task_id }
+                $em = Get-NodeTaskStage $Bridge $Earlier;       if ($null -ne $em) { $et = [string][int]$em.task_id }
+                $added += "$later->$Earlier ⇒ 容器边 $laterContainer depends_on $earlierContainer (任务#$lt 整链含QA 待 任务#$et settle)"
+            }
+            else { $added += "$later->$Earlier" }
         }
     }
     $earlierMap = Get-NodeTaskStage $Bridge $Earlier
@@ -10886,15 +11119,22 @@ function Set-ConflictSerializeEdges {
             $added += @($taskEdges)
         }
     }
-    return $added
+    return @{ mode = $(if ($isWake) { 'container' } else { 'node' }); edges = @($added) }
 }
 
 function Resolve-ConflictEntry {
-    param([string]$RunDir, $Bridge, $Entry, [string]$RulingText, [string]$SerializeNode)
+    param([string]$RunDir, $Bridge, $Entry, [string]$RulingText, [string]$SerializeNode, [string]$SerializeMode = '', $SerializeEdges = $null)
     $now = Get-UtcNowIso
     $Entry['status'] = "resolved"
     $Entry['ruling'] = [ordered]@{ text = $RulingText; at = $now; by = "planner" }
-    if (-not [string]::IsNullOrWhiteSpace($SerializeNode)) { $Entry['serialize'] = [ordered]@{ earlier = $SerializeNode } }
+    if (-not [string]::IsNullOrWhiteSpace($SerializeNode)) {
+        # serialize 落账留痕（serialize-container-edges）：mode=container（wake 容器
+        # 边,晚者任务整链含QA 待早者任务 settle）/ node（legacy 节点边）；edges =
+        # 实际写入的边清单（翻译对 planner 显式可见,不静默换概念）。
+        $Entry['serialize'] = [ordered]@{ earlier = $SerializeNode }
+        if ($SerializeMode) { $Entry['serialize']['mode'] = $SerializeMode }
+        if ($null -ne $SerializeEdges -and @($SerializeEdges).Count -gt 0) { $Entry['serialize']['edges'] = @($SerializeEdges) }
+    }
     $Entry['updated_at'] = $now
     $hist = @(Convert-ToSafeArray $Entry['history'])
     $hist += ,[ordered]@{ at = $now; action = "resolve"; note = $RulingText }
@@ -11116,7 +11356,12 @@ function Test-ConflictHold {
         if ($entryTasks -notcontains $c.task) { $entryTasks += $c.task }
         foreach ($f in @($c.files)) { if ($entryFiles -notcontains $f) { $entryFiles += $f } }
     }
-    $noteText = "推送门自动登记:变更地图文件重叠($($entryFiles -join ', ')),并发实施节点 [$($entryNodes -join ', ')]——消解经归属划分(首选,reclaim/replan)或串行化(conflict -Action resolve -ConflictId <本条> -Serialize <早者节点>)"
+    $noteText = "推送门自动登记:变更地图文件重叠($($entryFiles -join ', ')),并发实施节点 [$($entryNodes -join ', ')]——消解经归属划分(首选,reclaim/replan)或串行化(conflict -Action resolve -ConflictId <本条> -Serialize <早者节点>"
+    if ((Get-BridgeRunShape $RunDir) -eq 'wake') {
+        # serialize-container-edges：wake 形状串行化语义提前告知（不静默翻译）
+        $noteText += ";wake 形状串行化=任务级依赖(容器边):晚者任务整链(含QA)待早者任务 settle"
+    }
+    $noteText += ")"
     $entry = Add-ConflictEntry -RunDir $RunDir -Bridge $Bridge -Kind 'file' -NodeIds $entryNodes -TaskIds $entryTasks -FilePaths $entryFiles `
         -DetectedByText 'change-map-scan' -StatusText 'open' -EscalationText $null -NoteText $noteText
     return @{ node = $NodeId; reason = "held_by_file_overlap"; conflict = [string]$entry['id']; files = @($entryFiles); nodes = @($entryNodes) }
@@ -11425,7 +11670,7 @@ function New-BridgeConflictOpen {
             run_id    = $RunId
             conflict  = $entry
             report    = ".rdd/goal-trees/$RunId/report/design-conflicts.md"
-            next_step = "冲突已登记($($entry['id']),涉事节点推送门 hold/settle 门拦截)。调和落地 → -Action resolve -ConflictId $($entry['id']) -Ruling '<一致结论>'(文件冲突可 -Serialize <早者节点> 串行化);无法调和 → -Action open -ConflictId $($entry['id']) -ConflictStatus escalated -Escalation '<呈用户的问题>' 上报用户裁决;用户不在场 → -ConflictStatus suspended 挂起涉事链并上报(不阻塞无冲突任务)。硬约束:不得默默二选一。"
+            next_step = "冲突已登记($($entry['id']),涉事节点推送门 hold/settle 门拦截)。调和落地 → -Action resolve -ConflictId $($entry['id']) -Ruling '<一致结论>'(文件冲突可 -Serialize <早者节点> 串行化$(if ((Get-BridgeRunShape $RunDir) -eq 'wake') { ';wake 形状串行化=任务级依赖(容器边),晚者任务整链(含QA)待早者任务 settle' }));无法调和 → -Action open -ConflictId $($entry['id']) -ConflictStatus escalated -Escalation '<呈用户的问题>' 上报用户裁决;用户不在场 → -ConflictStatus suspended 挂起涉事链并上报(不阻塞无冲突任务)。硬约束:不得默默二选一。"
         }
     }
 }
@@ -11443,21 +11688,29 @@ function Resolve-BridgeConflictCmd {
     }
     $ruling = $Ruling
     $serialized = @()
+    $serMode = ''
     if (-not [string]::IsNullOrWhiteSpace($Serialize)) {
         $earlier = $Serialize.Trim()
         if (@(Convert-ToSafeArray $entry['nodes']) -notcontains $earlier) {
             Write-ErrorResult "CONFLICT_ENTRY_INVALID" "-Serialize $earlier is not a node of $($entry['id']) (nodes: $(@(Convert-ToSafeArray $entry['nodes']) -join ', '))" 1
         }
-        $serialized = @(Set-ConflictSerializeEdges $RunDir $RunId $Bridge $entry $earlier)
+        $ser = Set-ConflictSerializeEdges $RunDir $RunId $Bridge $entry $earlier
+        $serialized = @($ser.edges)
+        $serMode = [string]$ser.mode
         if ([string]::IsNullOrWhiteSpace($ruling)) {
             $laterText = (@(Convert-ToSafeArray $entry['nodes']) | Where-Object { ([string]$_) -ne $earlier }) -join ', '
-            $ruling = "串行化消解：$earlier 先行落地,$laterText 待其 settle 后自动解锁(时间错开不构成互斥,故取依赖互斥)"
+            if ($serMode -eq 'container') {
+                $ruling = "串行化消解（任务级,wake 容器边）：$earlier 所属任务先行落地,$laterText 所属任务整链(含QA)待其 settle 后自动解锁(时间错开不构成互斥,故取依赖互斥)"
+            }
+            else {
+                $ruling = "串行化消解：$earlier 先行落地,$laterText 待其 settle 后自动解锁(时间错开不构成互斥,故取依赖互斥)"
+            }
         }
     }
     if ([string]::IsNullOrWhiteSpace($ruling)) {
         Write-ErrorResult "CONFLICT_ENTRY_INVALID" "-Action resolve requires -Ruling <调和一致结论/用户裁决> (or -Serialize <早者节点> for 串行化)" 1
     }
-    $entry = Resolve-ConflictEntry $RunDir $Bridge $entry $ruling $Serialize
+    $entry = Resolve-ConflictEntry $RunDir $Bridge $entry $ruling $Serialize $serMode $serialized
     $ledger = Add-OrchestrationRuling -ArchivePath ([string]$Bridge.archive) -RunIdText $RunId -CommandName 'conflict-resolve' -DecisionText "conflict $($entry['id']) resolved: $ruling" -ReasonText $(if ([string]::IsNullOrWhiteSpace($Note)) { "并行冲突调和（不得默默二选一）" } else { $Note }) -OptionsArr @('调和（一致结论）', '上报用户裁决', '挂起涉事链')
     $res = @{
         success = $true

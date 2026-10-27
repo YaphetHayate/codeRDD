@@ -10,8 +10,12 @@
 # state/claims sidecar precedent).
 #
 # Consumers: scripts/start-role.ps1 (auto-reuse gate + anchor write + reentry
-# tick) and scripts/rdd-flow.ps1 (reject dsh delivery branch + reentry
-# subcommand), both dot-sourcing this file. delivery-bridge.ps1 does NOT
+# tick), scripts/rdd-flow.ps1 (reject dsh delivery branch + reentry
+# subcommand), and scripts/goal-tree.ps1 (dispatch-reuse-from-node: liveness
+# probe only — goal-tree's reentry budget stays RUN-SCOPED in its dispatch
+# log, deliberately NOT this lib's archive-scoped anchor plane; R7 keeps the
+# two anchor systems mutually invisible). start-role/rdd-flow/goal-tree
+# dot-source this file. delivery-bridge.ps1 does NOT
 # (documented invariant: the bridge never dot-sources engine internals --
 # see delivery-bridge.ps1 L3-7/L688/L1089; function contracts below
 # deliberately MIRROR the bridge's same-name semantics and carry one-side

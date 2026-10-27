@@ -86,6 +86,17 @@ param(
     [string]$EmployeeId,
     [switch]$DryRun,
 
+    # dispatch (dispatch-reuse-from-node): re-deliver this node's pointer into
+    # the ALIVE session bound to another node's claims sidecar. Cross-node use:
+    # QA design (done) -> QA verify — the test-case author keeps its context;
+    # self use: -ReuseFrom <本节点> re-prompts the node's own bound session
+    # (pointer-failure re-push / post-reset re-prompt). Node-addressed on
+    # purpose: the planner thinks in NodeIds (the tree's universal address),
+    # the engine resolves the session id from the sidecar (claim truth) and
+    # probes liveness — dead/unknown refuses, a reuse intent never silently
+    # degrades to a fresh session. Absent = byte-identical legacy dispatch.
+    [string]$ReuseFrom,
+
     # conclude / round-end
     [ValidateSet("achieved", "budget_exhausted", "space_exhausted")]
     [string]$Outcome,
@@ -111,6 +122,15 @@ param(
     # routes) — rotation never crosses it. Same raise-only + -UserVerdict gate.
     [ValidateRange(0, 10000)]
     [int]$SetWakeTotalMax = 0,
+    # budget (dispatch-reuse-from-node): the run-level session-reuse ceiling —
+    # how many SUCCESSFUL reuse deliveries one session may receive within this
+    # run (counted from dispatch-log reused_session_id rows; failed deliveries
+    # never tick). The session-side twin of the node-side wake quota: re-entry
+    # piles context into one conversation, so past the ceiling a fresh session
+    # is the honest continuation. Same raise-only + -UserVerdict gate;
+    # 0 = engine default (3).
+    [ValidateRange(0, 1000)]
+    [int]$SetReuseMax = 0,
     [string]$UserVerdict,
 
     # start (wake-model shape — goal-tree-wake-model): 'wake' builds the run in
@@ -167,7 +187,8 @@ goal-tree.cmd — 树管理面 CLI（仅规划者会话；worker 消费面是 go
 命令速览（完整签名、参数字典与前置门见 references/planner-guide.md §二 命令面板）:
   start        -Goal <目标> [-Title <标题>] -RefRoots <引用根,…> [-GoalRoot -GoalFile <f>] [-MaxRounds/-NodeWidth/-MaxNodes -CreatedBy]
   graft        -Parent <n> (-TasksFile <f> | -Task <文本> -Title <t>) [-DependsOn n,n]
-  dispatch     -NodeId <pending节点> -Role <PM|CTO|UX|DEV|QA|EVAL|PSE|AUDITOR> [-SessionLabel -EmployeeId -DryRun]
+  dispatch     -NodeId <pending节点> -Role <PM|CTO|UX|DEV|QA|EVAL|PSE|AUDITOR> [-ReuseFrom <nodeId>] [-SessionLabel -EmployeeId -DryRun]
+               （-ReuseFrom <节点>：指针投进该节点边车绑定的存活会话——跨节点上下文续用/断链重推；死会话/未知活性一律拒）
   settle       -NodeId <n> -Verdict <useful|useless> [-Evidence]
   redo         -NodeId <n> -Worker <角色小写> -FailureRef <失败清单文件>   （打回原持有者原地重做）
   prune        -NodeId <n> [-Reason]                                        （级联剪枝）
@@ -179,7 +200,7 @@ goal-tree.cmd — 树管理面 CLI（仅规划者会话；worker 消费面是 go
   status       [-View summary|dispatches]                                  （对齐态势）
   resume       （断点续跑）· conclude -Outcome <achieved|budget_exhausted|space_exhausted> [-Summary]
   budget       -SetMaxRounds/-SetNodeWidth/-SetMaxNodes <n> -UserVerdict <用户裁决原文>   （只增不减；人工审批硬门）
-budget       -SetWakeMax/-SetWakeTotalMax <n> -UserVerdict <用户裁决原文>   （段/总量唤醒上限，只增不减；人工审批硬门）
+budget       -SetWakeMax/-SetWakeTotalMax/-SetReuseMax <n> -UserVerdict <用户裁决原文>   （唤醒/会话复用上限，只增不减；人工审批硬门）
 rotate       -NodeId <n> -Reason <轮换原因>   （段满轮换：切新段+新同角色会话承接；总量触顶时拒）
 worker 侧: goal-tree-leaf.cmd -Command next|claim|report ...
 "@ 
@@ -233,6 +254,20 @@ $script:GoalTreesRoot = Join-Path $repoRoot ".rdd/goal-trees"
 $script:LockStream = $null
 $script:LockPath = $null
 $script:ScriptDir = $PSScriptRoot
+
+# session-reuse lib (dispatch-reuse-from-node): the liveness probe single
+# source — same probe start-role/rdd-flow use. Fail-soft load: without the lib
+# only the reuse feature refuses cleanly (library-unavailable branch); every
+# other command is untouched. NOTE the reentry budget stays RUN-SCOPED here
+# (dispatch-log derived, see Get-SessionReentryCount) — deliberately NOT this
+# lib's archive-scoped anchor plane (Test-AnchorPlaneTaskScope excludes
+# GoalTreeWorker dispatches, R7: the two anchor systems stay invisible).
+$script:SessionReuseLibLoaded = $false
+$sessionReuseLibPath = Join-Path $PSScriptRoot "lib\session-reuse.ps1"
+if (Test-Path -LiteralPath $sessionReuseLibPath -PathType Leaf) {
+    . $sessionReuseLibPath
+    $script:SessionReuseLibLoaded = $true
+}
 
 # === Engine-CLI invocation (dispatch shells out to start-role) =================
 # Same discipline as delivery-bridge's Invoke-EngineCli: capture stdout + exit
@@ -682,6 +717,11 @@ function Read-ManifestEditable {
             max_nodes  = [int]$m.budget.max_nodes
             wake_max   = if ((Test-PropPresent $m.budget 'wake_max') -and $null -ne $m.budget.wake_max) { [int]$m.budget.wake_max } else { 3 }
             wake_total_max = if ((Test-PropPresent $m.budget 'wake_total_max') -and $null -ne $m.budget.wake_total_max) { [int]$m.budget.wake_total_max } else { 6 }
+            # dispatch-reuse-from-node: session-reuse reentry ceiling (default 3).
+            # MUST ride the reconstruction — budget is rebuilt field-by-field on
+            # every read, a field missing here is silently reset to the engine
+            # default and the raise-only budget gate reads the WRONG ceiling.
+            reuse_max  = if ((Test-PropPresent $m.budget 'reuse_max') -and $null -ne $m.budget.reuse_max) { [int]$m.budget.reuse_max } else { 3 }
         }
         ref_roots      = @(Convert-ToSafeArray $m.ref_roots)
         state          = [string]$m.state
@@ -729,6 +769,10 @@ function Convert-NodeToHashtable {
         reported_at     = if ($Node.reported_at) { [string]$Node.reported_at } else { $null }
         settled_at      = if ($Node.settled_at) { [string]$Node.settled_at } else { $null }
         settled_note    = if ($Node.settled_note) { [string]$Node.settled_note } else { $null }
+        # rearm-repush（fix b）：本节点最近一次回到 pending 的时刻（reset / rotate
+        # 的 done→pending 重开在真实转移时落盘；缺失 = 存量节点 / 从未重臂）。
+        # 桥接推送门对照推送台账的 last_ok_at 判定 already_pushed 是否过期。
+        reset_at        = if ($Node.reset_at) { [string]$Node.reset_at } else { $null }
         pruned_at       = if ($Node.pruned_at) { [string]$Node.pruned_at } else { $null }
         pruned_reason   = if ($Node.pruned_reason) { [string]$Node.pruned_reason } else { $null }
         last_verdict    = if ($Node.last_verdict) { [string]$Node.last_verdict } else { $null }
@@ -2385,6 +2429,11 @@ function Invoke-Reset {
         $target.settled_note = $null
         $target.last_verdict = $null
         $target.last_confidence = $null
+        # rearm-repush（fix b）：pending 世代起点时间戳——桥接推送门用它判定
+        # already_pushed 是否过期（重臂后旧 last_ok_at 不得再压住新轮推送）。
+        # 只有真实转移落盘（pending 幂等 no-op 在上方提前返回，不刷新），
+        # 语义恒为「当前 pending 世代起点」。
+        $target.reset_at = $now
         # wake_count / steal_count / ledger_refs stay: history is the node's own.
 
         Write-TreeFile $RunDir $tree
@@ -2474,6 +2523,10 @@ function Invoke-Rotate {
             $target.settled_note = $null
             $target.last_verdict = $null
             $target.last_confidence = $null
+            # rearm-repush（fix b）：rotate 的 done→pending 重开同样记 pending 世代
+            # 起点（rotate 尾随即强制新会话推送；此戳让崩溃窗口后的补扫也能
+            # 识别过期的 already_pushed）。
+            $target.reset_at = $now
         }
         # 段切换：新世代会话，段内计数重开，跨段总量与 steal_count/ledger_refs 保留。
         $target.segment = $prevSegment + 1
@@ -2802,8 +2855,9 @@ function Invoke-Budget {
     if ($SetMaxNodes -gt 0) { $provided += 'max_nodes' }
     if ($SetWakeMax -gt 0) { $provided += 'wake_max' }
     if ($SetWakeTotalMax -gt 0) { $provided += 'wake_total_max' }
+    if ($SetReuseMax -gt 0) { $provided += 'reuse_max' }
     if ($provided.Count -eq 0) {
-        Write-ErrorResult "BUDGET_TARGET_MISSING" "nothing to extend: pass at least one of -SetMaxRounds / -SetNodeWidth / -SetMaxNodes / -SetWakeMax (raise-only: each value must EXCEED the current ceiling)" 1
+        Write-ErrorResult "BUDGET_TARGET_MISSING" "nothing to extend: pass at least one of -SetMaxRounds / -SetNodeWidth / -SetMaxNodes / -SetWakeMax / -SetWakeTotalMax / -SetReuseMax (raise-only: each value must EXCEED the current ceiling)" 1
     }
 
     $lockInfo = Enter-RunLock $RunDir
@@ -2816,8 +2870,9 @@ function Invoke-Budget {
             max_nodes     = [int]$manifest.budget.max_nodes
             wake_max      = if ($null -ne $manifest.budget.wake_max) { [int]$manifest.budget.wake_max } else { 3 }
             wake_total_max = if ($null -ne $manifest.budget.wake_total_max) { [int]$manifest.budget.wake_total_max } else { 6 }
+            reuse_max     = Get-EffectiveReuseMax $manifest
         }
-        foreach ($pair in @(@('max_rounds', $SetMaxRounds), @('node_width', $SetNodeWidth), @('max_nodes', $SetMaxNodes), @('wake_max', $SetWakeMax), @('wake_total_max', $SetWakeTotalMax))) {
+        foreach ($pair in @(@('max_rounds', $SetMaxRounds), @('node_width', $SetNodeWidth), @('max_nodes', $SetMaxNodes), @('wake_max', $SetWakeMax), @('wake_total_max', $SetWakeTotalMax), @('reuse_max', $SetReuseMax))) {
             $field = [string]$pair[0]
             $val = [int]$pair[1]
             if ($val -le 0) { continue }
@@ -2828,7 +2883,7 @@ function Invoke-Budget {
         }
         Write-ManifestFile $RunDir $manifest
         $roundState = Get-RoundState $RunDir
-        $newBudget = @{ max_rounds = [int]$manifest.budget.max_rounds; node_width = [int]$manifest.budget.node_width; max_nodes = [int]$manifest.budget.max_nodes; wake_max = if ($null -ne $manifest.budget.wake_max) { [int]$manifest.budget.wake_max } else { 3 }; wake_total_max = if ($null -ne $manifest.budget.wake_total_max) { [int]$manifest.budget.wake_total_max } else { 6 } }
+        $newBudget = @{ max_rounds = [int]$manifest.budget.max_rounds; node_width = [int]$manifest.budget.node_width; max_nodes = [int]$manifest.budget.max_nodes; wake_max = if ($null -ne $manifest.budget.wake_max) { [int]$manifest.budget.wake_max } else { 3 }; wake_total_max = if ($null -ne $manifest.budget.wake_total_max) { [int]$manifest.budget.wake_total_max } else { 6 }; reuse_max = Get-EffectiveReuseMax $manifest }
         Add-BudgetLogLine $RunDir @{
             event   = "budget-extend"
             round   = [int]$roundState.last_round
@@ -2846,7 +2901,7 @@ function Invoke-Budget {
                 old       = $old
                 new       = $newBudget
                 approval  = "user verdict recorded verbatim in state/budget-log.jsonl"
-                next_step = "ceilings lifted: graft / round-start unlock automatically; conclude -Outcome budget_exhausted re-arms its honesty check against the new ceilings; raised wake_max applies to every slot still following the run default"
+                next_step = "ceilings lifted: graft / round-start unlock automatically; conclude -Outcome budget_exhausted re-arms its honesty check against the new ceilings; raised wake_max applies to every slot still following the run default; raised reuse_max lets dispatch -ReuseFrom keep re-entering sessions past the old ceiling"
                 lock      = $lockInfo
             }
         }
@@ -3002,7 +3057,7 @@ function Invoke-Status {
             }
         }
 
-        return @{
+        $statusResult = @{
             success = $true
             data    = [ordered]@{
                 run_id         = $RunId
@@ -3046,6 +3101,13 @@ function Invoke-Status {
     finally {
         Exit-RunLock
     }
+    # reuse hint layer (dispatch-reuse-from-node): computed AFTER the lock is
+    # released — probes are HTTP (3s timeout each, hard cap 3 per call) and
+    # status is the planner's highest-frequency command; the run lock must
+    # never wait on them. Fail-soft by construction (Get-ReuseHints returns
+    # @() on any precondition miss — non-dsh shell, missing lib, concluded run).
+    $statusResult.data['reuse_hints'] = @(Get-ReuseHints -RunDir $RunDir -Tree $tree -Manifest $manifest)
+    return $statusResult
 }
 
 # === Command: resume (breakpoint location for a fresh session) ===
@@ -3335,6 +3397,104 @@ function Invoke-Deps {
 # append. Race window between phases is benign: leaf claim remains the
 # serialization point (a second claimer gets NODE_NOT_CLAIMABLE and moves on).
 
+# === dispatch-reuse-from-node helpers =========================================
+# Run-scoped session reuse for the generic tree: the session id lives in the
+# claims sidecar (claim truth, written by the leaf), the reuse ceiling lives in
+# the manifest budget, and the reentry count is DERIVED from the dispatch audit
+# log (single source — no second sidecar to keep in sync). The liveness probe
+# is the shared lib's (same endpoint/verdicts as start-role/rdd-flow).
+
+$script:ReuseDefaultMax = 3
+
+function Get-ClaimSidecarSession {
+    # read-only claims-sidecar session getter: returns the bound dsh session id
+    # or "" (missing/corrupt sidecar degrades to "" = no session — the same
+    # file Update-RedoClaimSidecar writes; read never throws).
+    param([string]$RunDir, [string]$Node)
+    $claimsPath = Join-Path (Get-StateDir $RunDir) ("claims\$Node.json")
+    if (-not (Test-Path -LiteralPath $claimsPath -PathType Leaf)) { return "" }
+    try {
+        $claim = [System.IO.File]::ReadAllText($claimsPath, [System.Text.Encoding]::UTF8) | ConvertFrom-Json
+        if ($claim.PSObject.Properties['dsh_session_id'] -and $claim.dsh_session_id) { return [string]$claim.dsh_session_id }
+    } catch { }
+    return ""
+}
+
+function Get-EffectiveReuseMax {
+    # reuse ceiling resolution: manifest budget.reuse_max first (raise-only via
+    # the budget command), engine default 3 — mirrors Get-EffectiveWakeMax's
+    # two-level shape (node level does not exist here: the ceiling is per RUN,
+    # not per slot, because the reused thing is the SESSION, not the node).
+    param($Manifest)
+    if ($null -ne $Manifest -and (Test-PropPresent $Manifest 'budget') -and $null -ne $Manifest.budget -and (Test-PropPresent $Manifest.budget 'reuse_max') -and $null -ne $Manifest.budget.reuse_max) { return [int]$Manifest.budget.reuse_max }
+    return $script:ReuseDefaultMax
+}
+
+function Get-SessionReentryCount {
+    # run-scoped reentry count: prior SUCCESSFUL reuse deliveries into this
+    # session, derived from dispatch-log reused_session_id rows. The log gains
+    # those rows only after start-role exit 0 (see the audit block in
+    # Invoke-Dispatch), so the count is the success-ticked budget the design
+    # mandates (投递成功后计数，失败不计数) — with zero extra state to persist.
+    param([string]$RunDir, [string]$SessionId)
+    $count = 0
+    foreach ($d in (Read-DispatchLog $RunDir)) {
+        if ($null -eq $d) { continue }
+        if ([string]$d.reused_session_id -eq $SessionId) { $count++ }
+    }
+    return $count
+}
+
+function Get-ReuseHints {
+    # dispatch-reuse-from-node advisory hints (status read face): for each
+    # PENDING work node with a same-role DONE upstream dep whose claims sidecar
+    # binds a session, surface a copyable -ReuseFrom suggestion. Discipline:
+    #   * the deps edge is the tree-layer key for "same work item" — a pending
+    #     QA node declaring its design node is the reuse-worthy shape;
+    #   * probes are HTTP (3s timeout) and status is the planner's
+    #     highest-frequency command, so: candidate filter first (file reads
+    #     only), unique-session probe cache, hard cap 3 probes per call;
+    #   * any probe miss (dead/unknown) degrades to NO hint — advisory never
+    #     blocks, never warns, never throws (fail-soft read face).
+    param([string]$RunDir, $Tree, $Manifest)
+    if ([string]::IsNullOrWhiteSpace($env:DSH_WEB_URL)) { return @() }
+    if (-not $script:SessionReuseLibLoaded) { return @() }
+    if ($null -eq $Manifest -or [string]$Manifest.state -ne 'running') { return @() }
+    $nodesById = @{}
+    foreach ($n in @($Tree.nodes)) { $nodesById[[string]$n.id] = $n }
+    $candidates = @()
+    foreach ($n in @($Tree.nodes)) {
+        if ([string]$n.status -ne 'pending' -or @('goal', 'sub', 'accept') -contains [string]$n.type) { continue }
+        foreach ($dep in (ConvertTo-NodeIdList $n.depends_on)) {
+            $up = $nodesById[$dep]
+            if ($null -eq $up -or [string]$up.status -ne 'done' -or [string]$up.role -ne [string]$n.role) { continue }
+            $sid = Get-ClaimSidecarSession -RunDir $RunDir -Node $dep
+            if ([string]::IsNullOrWhiteSpace($sid)) { continue }
+            $candidates += @{ node = [string]$n.id; source_node = $dep; session_id = $sid }
+            break   # one source per pending node is enough for an advisory
+        }
+    }
+    $hints = @()
+    $aliveBySession = @{}
+    $probes = 0
+    foreach ($c in $candidates) {
+        if ($probes -ge 3) { break }
+        if (-not $aliveBySession.ContainsKey($c.session_id)) {
+            $probes++
+            $live = Get-SessionLivenessProbe -SessionId $c.session_id -RepoRoot $repoRoot
+            $aliveBySession[$c.session_id] = ([string]$live.liveness -eq 'alive')
+        }
+        if (-not $aliveBySession[$c.session_id]) { continue }
+        $hints += [ordered]@{
+            node        = $c.node
+            source_node = $c.source_node
+            session_id  = $c.session_id
+            suggestion  = "goal-tree.cmd -Command dispatch -RunId $RunId -NodeId $($c.node) -ReuseFrom $($c.source_node)"
+        }
+    }
+    return @($hints)
+}
+
 function Invoke-Dispatch {
     param([string]$RunDir)
 
@@ -3412,6 +3572,33 @@ function Invoke-Dispatch {
         } catch {
             $briefFile = ""   # write failed → inline fallback keeps dispatch alive
         }
+
+        # --- reuse resolution (dispatch-reuse-from-node, phase 1: cheap checks
+        #     under the lock; the liveness PROBE is deliberately phase 2 — an
+        #     HTTP call must never extend the run-lock hold). Node-addressed:
+        #     the session id comes from the source node's claims sidecar
+        #     (claim truth), never from CLI text.
+        $reusePlan = $null
+        if (-not [string]::IsNullOrWhiteSpace($ReuseFrom)) {
+            $reuseSrc = Find-Node $tree $ReuseFrom
+            if ($null -eq $reuseSrc) { Write-ErrorResult "REUSE_SOURCE_NOT_FOUND" "-ReuseFrom node not found in this run's tree: $ReuseFrom" 1 }
+            $reuseSession = Get-ClaimSidecarSession -RunDir $RunDir -Node $ReuseFrom
+            if ([string]::IsNullOrWhiteSpace($reuseSession)) {
+                Write-ErrorResult "REUSE_SOURCE_NO_SESSION" "node $ReuseFrom carries no dsh session binding (claims sidecar missing/empty — never claimed, claimed outside a dsh shell, or cleared). Reuse needs a live session to re-enter; dispatch without -ReuseFrom to pull a fresh one." 1
+            }
+            $reuseMax = Get-EffectiveReuseMax $manifest
+            $reentries = Get-SessionReentryCount -RunDir $RunDir -SessionId $reuseSession
+            if (($reentries + 1) -gt $reuseMax) {
+                Write-ErrorResult "REUSE_REENTRY_EXCEEDED" "session $reuseSession has received $reentries reuse deliveries this run (max $reuseMax) — every re-entry piles context into one conversation; past the ceiling a fresh session is the honest continuation. Raise-only escape: goal-tree.cmd -Command budget -RunId $RunId -SetReuseMax <n> -UserVerdict '<用户裁决原文>'" 1
+            }
+            $reusePlan = @{
+                from_node   = $ReuseFrom
+                session_id  = $reuseSession
+                reentries   = $reentries
+                reentry_max = $reuseMax
+                role_match  = ([string]$reuseSrc.role -eq [string]$node.role)
+            }
+        }
     }
     finally {
         Exit-RunLock
@@ -3439,13 +3626,29 @@ function Invoke-Dispatch {
     if (-not [string]::IsNullOrWhiteSpace($EmployeeId)) { $startArgs += @("-EmployeeId", $EmployeeId) }
     if ($DryRun) { $startArgs += @("-DryRun") }
 
+    # --- reuse liveness gate (phase 2, NO lock held): probe BEFORE any
+    #     start-role work — dead/unknown refuses (unknown is never a reuse
+    #     verdict, lib discipline), so a reuse intent never silently degrades
+    #     to a fresh session; the caller reruns without -ReuseFrom instead.
+    #     The delivery itself is start-role -ExistingSessionId (dsh-only; its
+    #     backend gate rejects other modes up front with
+    #     SESSION_REUSE_UNSUPPORTED, which surfaces via DISPATCH_FAILED).
+    if ($null -ne $reusePlan) {
+        $live = if ($script:SessionReuseLibLoaded) { Get-SessionLivenessProbe -SessionId $reusePlan.session_id -RepoRoot $repoRoot } else { @{ liveness = "unknown"; reason = "session-reuse library missing" } }
+        if ([string]$live.liveness -ne "alive") {
+            Write-ErrorResult "REUSE_SESSION_DEAD" "source node $($reusePlan.from_node)'s session $($reusePlan.session_id) is not reusable (probe: $($live.liveness) — $($live.reason)). Rerun without -ReuseFrom to pull a fresh session, or restore that session first." 1
+        }
+        $reusePlan.liveness = [string]$live.liveness
+        $startArgs += @("-ExistingSessionId", $reusePlan.session_id)
+    }
+
     $r = Invoke-EngineCli (Join-Path $script:ScriptDir "start-role.cmd") $startArgs
 
     # --- phase 3: audit append (real dispatches only — dry runs touch nothing)
     if (-not $DryRun) {
         $lockInfo = Enter-RunLock $RunDir
         try {
-            Add-DispatchLogLine $RunDir ([ordered]@{
+            $dispatchEntry = [ordered]@{
                 event  = "dispatch"
                 node   = [string]$NodeId
                 role   = $Role
@@ -3453,7 +3656,16 @@ function Invoke-Dispatch {
                 round  = $round
                 exit   = [int]$r.exit
                 at     = (Get-UtcNowIso)
-            })
+            }
+            # reuse audit (dispatch-reuse-from-node): rows carry the reuse
+            # fields ONLY on success — Get-SessionReentryCount derives the
+            # run-scoped budget from these rows, so a failed delivery must
+            # not tick (投递成功后计数，失败不计数).
+            if ($null -ne $reusePlan -and [int]$r.exit -eq 0) {
+                $dispatchEntry['reused_from_node'] = $reusePlan.from_node
+                $dispatchEntry['reused_session_id'] = $reusePlan.session_id
+            }
+            Add-DispatchLogLine $RunDir $dispatchEntry
         }
         finally {
             Exit-RunLock
@@ -3462,6 +3674,12 @@ function Invoke-Dispatch {
 
     if ($r.exit -ne 0) {
         Write-ErrorResult "DISPATCH_FAILED" "start-role exited $($r.exit): $($r.text)" 1
+    }
+
+    $nextStep = "the dispatched session's first action: goal-tree-leaf.cmd -Command claim -RunId $RunId -NodeId $NodeId -Worker $workerLabel"
+    if ($null -ne $reusePlan) {
+        $roleNote = if ($reusePlan.role_match) { "" } else { "; NOTE: source node role differs from this node's role — verify the reuse intent was meant" }
+        $nextStep = "pointer delivered into existing session $($reusePlan.session_id) (source node $($reusePlan.from_node)$roleNote) — the session continues in place with its prior context; its first action for THIS node: goal-tree-leaf.cmd -Command claim -RunId $RunId -NodeId $NodeId -Worker $workerLabel"
     }
 
     return @{
@@ -3475,8 +3693,9 @@ function Invoke-Dispatch {
             task_brief_file = $briefFile
             round        = $round
             dry_run      = [bool]$DryRun
+            reuse        = $reusePlan
             start_role   = @{ exit = $r.exit; output = $r.text }
-            next_step    = "the dispatched session's first action: goal-tree-leaf.cmd -Command claim -RunId $RunId -NodeId $NodeId -Worker $workerLabel"
+            next_step    = $nextStep
             lock         = $lockInfo
         }
     }

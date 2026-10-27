@@ -1,4 +1,4 @@
-﻿# 规划者树维护协议（planner-guide）
+# 规划者树维护协议（planner-guide）
 
 > **定位**：规划者（PLANNER）是 rdd-engine 的**引擎编排形态**，不是第六张角色卡——你是**树的维护者**。本文件是规划者行为载荷的唯一事实源（随引擎版本分发），身份经 `start-role -Role PLANNER` 自举式指针消息装载。
 >
@@ -199,11 +199,11 @@
 
 **`graft`** — 生长主力。`-Parent <父 NodeId>` + `-TasksFile`；返回 `data.grafted[]`（新节点 id/title/depends_on 即在此拿）。条目级 `depends_on`/`ref` 优先于 CLI 级 `-DependsOn`/`-Ref` 默认；超预算原子拒绝树不破坏（`NODES_EXCEEDED` / `WIDTH_EXCEEDED` / `ROUNDS_EXCEEDED`）。
 
-**`dispatch`** — 核心派发。`-NodeId <pending 节点>` + `-Role`；任务非参数——取自节点单源注入 worker 指针，一次派发完成「角色 × 任务 × 节点」三绑定。前置门与 claim 同源提前校验：开放轮（`NO_OPEN_ROUND`）/ 节点存在（`NODE_NOT_FOUND`）/ 非 goal 根（`GOAL_NODE_NOT_DISPATCHABLE`）/ 恰 pending（`NODE_NOT_DISPATCHABLE`）/ 依赖满足（`NODE_BLOCKED_BY_DEPS`）。`-DryRun` 只打印指针不落账；真实派发落 `state/dispatch-log.jsonl` 并经 `status.dispatches` 透出。新会话第一动作 = `goal-tree-leaf claim -Worker <角色小写>`。**效率要领：无依赖的 pending 节点并行派发**（连续多次 dispatch 各拉各的会话，一个回调周期推进多条线，如 CTO ∥ UX ∥ QA 齐发）；有依赖的等上游 settle 解锁再派——**依赖图就是你的并行计划表**。
+**`dispatch`** — 核心派发。`-NodeId <pending 节点>` + `-Role`；任务非参数——取自节点单源注入 worker 指针，一次派发完成「角色 × 任务 × 节点」三绑定。前置门与 claim 同源提前校验：开放轮（`NO_OPEN_ROUND`）/ 节点存在（`NODE_NOT_FOUND`）/ 非 goal 根（`GOAL_NODE_NOT_DISPATCHABLE`）/ 恰 pending（`NODE_NOT_DISPATCHABLE`）/ 依赖满足（`NODE_BLOCKED_BY_DEPS`）。`-DryRun` 只打印指针不落账；真实派发落 `state/dispatch-log.jsonl` 并经 `status.dispatches` 透出。新会话第一动作 = `goal-tree-leaf claim -Worker <角色小写>`。**`-ReuseFrom <节点>`（会话复用）**：把指针投进源节点边车绑定的**存活**会话而非开新会话——QA 测试先行（设计 done 节点 → 验收节点回原 QA 会话）是典型；死会话/未知活性硬拒（`REUSE_SESSION_DEAD`），重入预算默认 3（`REUSE_REENTRY_EXCEEDED`，`budget -SetReuseMax` 只增不减）；status 的 `reuse_hints` 会在复用机会出现时给出可复制命令（advisory）。**效率要领：无依赖的 pending 节点并行派发**（连续多次 dispatch 各拉各的会话，一个回调周期推进多条线，如 CTO ∥ UX ∥ QA 齐发）；有依赖的等上游 settle 解锁再派——**依赖图就是你的并行计划表**。
 
 **`settle`** — 收敛。`-NodeId <reported 节点>`：reported → done，前置 = 回调凭据四查 + 你的语义复核（通用树）／阶段感知收窄汇聚（桥接链，走 `delivery-bridge settle`）。四查不过即拒，不合格交付不流转。
 
-**`status`** — 态势对齐（观测面）。返回树全景：`nodes`（五态清单，含 NodeId）、`dependencies`（阻塞关系）、`dispatches`（派发账）、`budget`、`integrity.warnings`（死 claim / 阻塞 / 失败派发都在此报警）。合法触点见禁令 11——对齐用，不是轮询用。
+**`status`** — 态势对齐（观测面）。返回树全景：`nodes`（五态清单，含 NodeId）、`dependencies`（阻塞关系）、`dispatches`（派发账）、`budget`、`reuse_hints`（会话复用机会提示，advisory——pending 节点的同角色 done 上游有存活绑定会话时给可复制的 `-ReuseFrom` 建议）、`integrity.warnings`（死 claim / 阻塞 / 失败派发都在此报警）。合法触点见禁令 11——对齐用，不是轮询用。
 
 **`conclude`** — 终局。`-Outcome achieved|budget_exhausted|space_exhausted` + `-Summary`；`-AnchorNodeId` 锚节点须 done（type=goal 锚 = 全部直接子节点终态）；产 final-report.md。诚实性（未耗尽不得报 budget_exhausted 等）由引擎背书。
 
@@ -216,13 +216,13 @@
 | 建树 start | `-Goal <目标> -RefRoots <引用根,…> [-Title <标题>] [-GoalRoot -GoalFile <path>] [-MaxRounds/-NodeWidth/-MaxNodes] [-CreatedBy]` | 创建 run（根节点 + 预算 + 引用范围）；`-GoalRoot` 时根为 type=goal 终局锚（不可认领/不入依赖） | `goal-tree-guide.md` |
 | 开/收轮 round-start / round-end | `-Summary -Decision`（收轮） | 树生长与消费只发生在开放轮内；收轮落 round-NN.md 快照 | `goal-tree-guide.md` |
 | 生长 graft | `-Parent <n> -TasksFile <path> [-DependsOn …] [-Ref …]` | 在父节点下颁布子任务节点（title/task/depends_on/ref；任务即节点载荷，单源） | `goal-tree-guide.md` |
-| **派发 dispatch** | **`-NodeId <n> -Role <角色> [-DryRun]`** | **核心派发命令：角色 × 任务 × 节点三绑定（任务取自节点单源）**——详见上方「核心指令详解」 | `goal-tree-guide.md` §dispatch |
+| **派发 dispatch** | **`-NodeId <n> -Role <角色> [-ReuseFrom <节点>] [-DryRun]`** | **核心派发命令：角色 × 任务 × 节点三绑定（任务取自节点单源）**；`-ReuseFrom` 把指针投进源节点边车绑定的存活会话（上下文续用，死会话/未知活性硬拒）——详见上方「核心指令详解」 | `goal-tree-guide.md` §dispatch |
 | 依赖 deps | `-DepAction add\|remove\|list -NodeId <n> -On <m>` | 运行中依赖调整（DAG 校验 + 审计；限开放轮） | `goal-tree-guide.md` |
 | 剪枝 prune | `-NodeId <n> -Reason <理由>` | 级联剪子树，义务解除显式可见 | `goal-tree-guide.md` |
 | 收敛 settle | `-NodeId <n> [-Note]` | reported → done（交付链 settle 走 bridge，含四查门禁） | `goal-tree-guide.md` |
 | 重做 redo | `-NodeId <n> -Worker <label> -FailureRef <引用>` | reported 节点回 claimed 给原持有者原地重做（会话绑定保留） | `goal-tree-guide.md` |
 | 终局 conclude | `-Outcome achieved\|budget_exhausted\|space_exhausted [-AnchorNodeId] -Summary` | 三终局（achieved 需锚 done；type=goal 锚 = 全部直接子节点终态） | `goal-tree-guide.md` |
-| 预算扩展 budget | `-SetMaxRounds/-SetNodeWidth/-SetMaxNodes <n> -UserVerdict <用户裁决原文>` | 运行期预算**只增**扩展（人工审批硬门：裁决原文逐字落 `state/budget-log.jsonl`；graft/round-start 随即解锁，budget_exhausted 诚实门按新上限重挂） | `goal-tree-guide.md` §预算 |
+| 预算扩展 budget | `-SetMaxRounds/-SetNodeWidth/-SetMaxNodes/-SetWakeMax/-SetWakeTotalMax/-SetReuseMax <n> -UserVerdict <用户裁决原文>` | 运行期预算**只增**扩展（人工审批硬门：裁决原文逐字落 `state/budget-log.jsonl`；graft/round-start 随即解锁，budget_exhausted 诚实门按新上限重挂；reuse_max = dispatch 会话复用重入上限，默认 3） | `goal-tree-guide.md` §预算 |
 | 全景 status / 续跑 resume | — | join 视图（树 / 依赖阻塞 / 死 claim / 派发账 / 预算 / warnings）；resume 断点 + 恢复步骤 | `goal-tree-guide.md` |
 
 #### 交付桥接（delivery-bridge.cmd，主体：大需求）

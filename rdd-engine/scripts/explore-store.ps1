@@ -107,12 +107,17 @@ function ConvertTo-PortableJson {
 }
 
 function Write-ErrorResult {
+    # PS 5.1 quirk (serialize-silent-exit fix, 2026-10-26): `exit` discards pipeline
+    # output still held by an in-flight @() subexpression — a WER fired inside
+    # $x = @(fn ...) killed the process with exit 1 and ZERO bytes on both streams.
+    # Harden: emit the JSON straight to process stdout via [Console]::Out, then exit.
     param(
         [string]$Code,
         [string]$Message,
         [int]$ExitCode = 1
     )
-    ConvertTo-PortableJson @{ success = $false; error = @{ code = $Code; message = $Message } } -Depth 3
+    $json = ConvertTo-PortableJson @{ success = $false; error = @{ code = $Code; message = $Message } } -Depth 3
+    [Console]::Out.WriteLine($json)
     exit $ExitCode
 }
 

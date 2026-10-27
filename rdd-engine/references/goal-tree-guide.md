@@ -156,7 +156,7 @@
 - **手工轮换**：`goal-tree.cmd -Command rotate -RunId <id> -NodeId <n> -Reason <原因>`（planner 提前换会话用——不必等段满；仅交接点可用：claimed/reported 拒 `ROTATE_NOT_AT_HANDOFF`；总量触顶拒 `WAKE_TOTAL_EXCEEDED`）。
 - **旧会话退役**：服务过旧段的会话（roster 行 segment < 节点当前段）claim 拒 `ROTATED_OUT`，复用解析同判排除——上下文新鲜度就是轮换的全部意义。
 
-**运行期预算扩展（planner-budget-extend）**：预算耗尽且工作未完时，可经 `budget` 命令**只增**扩展——`goal-tree.cmd -Command budget -RunId <id> -SetMaxRounds <n> [-SetNodeWidth <n>] [-SetMaxNodes <n>] [-SetWakeMax <n>] [-SetWakeTotalMax <n>] -UserVerdict <用户裁决原文>`。硬门与纪律：
+**运行期预算扩展（planner-budget-extend）**：预算耗尽且工作未完时，可经 `budget` 命令**只增**扩展——`goal-tree.cmd -Command budget -RunId <id> -SetMaxRounds <n> [-SetNodeWidth <n>] [-SetMaxNodes <n>] [-SetWakeMax <n>] [-SetWakeTotalMax <n>] [-SetReuseMax <n>] -UserVerdict <用户裁决原文>`（`-SetReuseMax` = dispatch 会话复用重入上限，默认 3，见 §dispatch 会话复用）。硬门与纪律：
 
 - **人工审批硬门**：`-UserVerdict`（用户裁决原文逐字）就是批准记录本体——无记录不执行（缺省报 `BUDGET_VERDICT_MISSING`；与桥接派生 confirm 同形）。裁决逐字落 `state/budget-log.jsonl`（append-only 审计）。
 - **只增不减**：每个目标值必须**严格大于**现天花板（`BUDGET_RAISE_ONLY`）——mid-run 下调会让在途状态压线、闸门失效。
@@ -259,7 +259,9 @@ worker 的 `report` 必须提交固定核心 schema（引擎机械校验，领�
 
 **审计与可见性**：真实派发（非 `-DryRun`）逐行落 `state/dispatch-log.jsonl`（node/role/worker/round/exit/at），status 新增 `dispatches` 段（total/failed/逐节点末次派发）+ 失败派发告警——这是通用 run 的"谁被派去哪个节点、何时"观测面（桥接 run 的对应物 = bridge pushes 账）。锁为两段式：校验持锁 → 释放后拉会话（dsh HTTP 调用不占 run 锁）→ 短锁记账；并发派发同一节点的竞态由 leaf claim 串行化（后者收 `NODE_NOT_CLAIMABLE` 按 next 清单改领）。
 
-**边界**：桥接 run（`deliver-<归档名>`，promulgate 颁布）不适用本命令——阶段闸门/冲突门/task.json 锚定归 `delivery-bridge dispatch` 承载。`-DryRun` 零副作用（不落审计、节点不动）。CLI/Plus/dsh 三后端经 start-role 自动选择；Plus 需 `-EmployeeId`。
+**会话复用（dispatch-reuse-from-node）**：`-ReuseFrom <nodeId>` 把本节点的工作指针**投进源节点 claims 边车绑定的存活会话**而非开新会话——典型场景是 QA 测试先行（设计阶段写用例的 done 节点 → 验收节点 `-ReuseFrom` 回原 QA 会话，上下文连续）；`-ReuseFrom <本节点>` 则是断链重推 / reset 后重锚的自复用形态。**节点寻址是刻意设计**：会话 id 由引擎从边车（claim 真相）解析、规划者只想 NodeId。门禁链：源节点存在（`REUSE_SOURCE_NOT_FOUND`）→ 边车有 `dsh_session_id`（`REUSE_SOURCE_NO_SESSION`）→ 运行级重入预算（`REUSE_REENTRY_EXCEEDED`——本 run 内该会话成功复用次数已达 `budget.reuse_max`，默认 3，只增不减经 `budget -SetReuseMax` + `-UserVerdict`）→ 探活**仅认 alive**（dead/unknown 一律 `REUSE_SESSION_DEAD`，unknown 永不作复用裁决；复用意图绝不静默降级开新会话）。投递经 start-role `-ExistingSessionId`（仅 dsh 后端，其余后端 `SESSION_REUSE_UNSUPPORTED` 硬拒）；成功才在 dispatch-log 落 `reused_from_node`/`reused_session_id`（失败不计数）。角色与目标节点不同不拒绝，但响应置 `reuse.role_match=false` 并在 next_step 提示核对。status 的 `reuse_hints` 段（advisory，只提示不自动）：pending 节点存在**同角色 done 上游依赖**且其边车绑定存活会话时给出可复制的 `-ReuseFrom` 建议——单次 status 最多探活 3 个（HTTP 探针有成本），任何探测失败静默降级为不提示。
+
+**边界**：桥接 run（`deliver-<归档名>`，promulgate 颁布）不适用本命令——阶段闸门/冲突门/task.json 锚定归 `delivery-bridge dispatch` 承载（桥接面的会话复用走其自身的 task×role 花名册，两套互不可见）。`-DryRun` 零副作用（不落审计、节点不动；复用解析与探照常执行供预览）。CLI/Plus/dsh 三后端经 start-role 自动选择；Plus 需 `-EmployeeId`。
 
 ## 宿主 workflow 扇出模板
 
@@ -317,7 +319,9 @@ await pipeline(pendingNodes, [
 # 派发（planner-tree-dispatch：为 pending 节点拉一个角色会话——角色×任务×节点三绑定；
 # 任务取自节点单源注入 worker 指针；worker label = 角色小写；前置门与 claim 同源；
 # 真实派发（非 -DryRun）落 state/dispatch-log.jsonl 审计，status dispatches 段透出）
-& "$rdd\scripts\goal-tree.cmd" -Command dispatch -RunId <id> -NodeId <nodeId> -Role <PM|CTO|UX|DEV|QA|EVAL|PSE|AUDITOR> [-SessionLabel <标签>] [-EmployeeId <uuid>] [-DryRun]
+& "$rdd\scripts\goal-tree.cmd" -Command dispatch -RunId <id> -NodeId <nodeId> -Role <PM|CTO|UX|DEV|QA|EVAL|PSE|AUDITOR> [-ReuseFrom <nodeId>] [-SessionLabel <标签>] [-EmployeeId <uuid>] [-DryRun]
+#   -ReuseFrom <节点>：指针投进该节点边车绑定的存活会话（跨节点上下文续用 / 断链重推；
+#   死会话/未知活性一律拒；重入预算默认 3，budget -SetReuseMax 只增不减调整）
 
 # 剪枝（级联子树，理由必填，入审计）
 & "$rdd\scripts\goal-tree.cmd" -Command prune -RunId <id> -NodeId <nodeId> -Reason "<证伪/放弃理由>"

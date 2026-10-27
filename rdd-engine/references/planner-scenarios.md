@@ -1,4 +1,4 @@
-﻿# 规划者场景细则（planner-scenarios）
+# 规划者场景细则（planner-scenarios）
 
 > `planner-guide.md` 的场景下沉层：交付编排生命周期 / 交付角色分工 / 长程规划 / 交付回调四查 / 运行产物 / 需求审查门 / 收尾验收 / 并行冲突 / 设计审查 / 纯自动模式 / DEV 质量凭据 / 范围缺口派生。核心命令与硬约束见 planner-guide.md；本文各节仅在对应场景触发时阅读。
 
@@ -221,7 +221,7 @@ worker 完成即经 `goal-tree-leaf.cmd -Command report` 回调**你**（回调�
 | kind | 判定 | 发现途径 | 消解 |
 |------|------|----------|------|
 | `design` | 多 CTO/UX 设计互斥或风格不一致 | 规划者语义判断（评审设计产物） | **调和产出一致结论**（首选）→ `resolve -Ruling`；调和不成 → 上报用户裁决（escalated）；用户不在场 → 挂起涉事链（suspended）并上报 |
-| `file` | 任务变更地图判出同文件重叠（精确路径匹配——保守判定是有意取舍） | 引擎推送门自动登记（亦可人工登记） | **归属划分**（首选：`reclaim rejected-delivery` + replan，让唯一任务承载该文件）/ **串行化**（`resolve -Serialize <早者节点>`：晚者依赖早者，早者 settle 后自动解锁） |
+| `file` | 任务变更地图判出同文件重叠（精确路径匹配——保守判定是有意取舍） | 引擎推送门自动登记（亦可人工登记） | **归属划分**（首选：`reclaim rejected-delivery` + replan，让唯一任务承载该文件）/ **串行化**（`resolve -Serialize <早者节点>`：晚者依赖早者，早者 settle 后自动解锁；**wake 形状落任务容器边**——见下「串行化的两种落边形状」） |
 
 状态机：`open → resolved`｜`open → escalated → resolved`｜`open → suspended`。上报/挂起是条目状态属性（注册表只追加不改写，history 追加）；已 resolved 的裁定变更按**新条目**重开（`CONFLICT_ALREADY_RESOLVED`）。
 
@@ -238,7 +238,12 @@ worker 完成即经 `goal-tree-leaf.cmd -Command report` 回调**你**（回调�
 |------|------|------|
 | 登记 | `-Action open -ConflictKind design\|file -Nodes <n1,n2,...> [-Files <p1,p2,...>] [-Note ...] [-ConflictStatus escalated\|suspended [-Escalation ...]]` | 注册新条目 `C<n>`（递增），涉事节点即刻被门 hold；kind=file 必带 -Files（仓库根相对路径） |
 | 状态属性 | `-Action open -ConflictId <C<n>> -ConflictStatus escalated\|suspended [-Escalation <问题>]` | 上报/挂起留痕（escalated 必带呈用户的问题） |
-| 消解 | `-Action resolve -ConflictId <C<n>> -Ruling '<调和一致结论/用户裁决>' [-Serialize <早者节点>]` | -Serialize 组合 `goal-tree deps add`（失败即整体拒绝、冲突保持未决） |
+| 消解 | `-Action resolve -ConflictId <C<n>> -Ruling '<调和一致结论/用户裁决>' [-Serialize <早者节点>]` | -Serialize 组合 `goal-tree deps add`（失败即整体拒绝、冲突保持未决；失败错误以 JSON 打印，绝不静默退出） |
+
+**串行化的两种落边形状**（serialize-container-edges，2026-10-26）：`-Serialize` 的端点是角色级节点时，边落在哪一层由 run 形状决定，**翻译显式告知、不静默换概念**——
+- **legacy 形状**：节点级边（晚者链头 `depends_on` 早者链头）。
+- **wake 形状**：goal-tree 层规则只允许 WBS 容器间 `depends_on`，角色级端点翻译为所属容器（parent 一跳）——晚者任务**整链（含 QA）**待早者任务 settle 后才可认领（槽门继承容器边）。语义更重是**有意取舍**：若只串 DEV 对，早者 QA 打回返工时晚者已开工，并发窗口被返工撕开、冲突原地复活；整链等待 = 晚者等的是早者**被验收确认**。同任务两端点（同容器）不建边（自依赖非法）。
+- 可见性三触点：冲突登记时 note/next_step 提前标注「串行化=任务级依赖（容器边）」；resolve 返回 `serialized` 逐条列翻译（`n15->n13 ⇒ 容器边 n10 depends_on n2 (任务#4 整链含QA 待 任务#1 settle)`）；条目 `serialize` 段记 `mode=container|node` + `edges` 清单。任务级 `dep_task_ids` 镜像两种形状都照写（推送门防同构重登记单源）。
 
 错误码：`CONFLICT_NOT_FOUND` / `CONFLICT_ALREADY_RESOLVED` / `CONFLICT_ENTRY_INVALID`（kind=file 缺 -Files、resolve 缺 -Ruling/-Serialize、escalated 缺 -Escalation）。全景：status `conflicts` 段（未决入 warnings）+ resume（未决=断点步骤）+ `report/design-conflicts.md` 人读镜像；机器可读单源 = bridge.json `conflicts` 段。
 
@@ -345,7 +350,7 @@ worker 完成即经 `goal-tree-leaf.cmd -Command report` 回调**你**（回调�
 2. **用户确认硬门**：confirm 必带 `-UserVerdict <用户裁决原文>`——裁决原文即确认记录（账本 ruling 条目，decider=user，ref_entry→提议条目）；缺失 → `DERIVE_CONFIRMATION_MISSING`，**不执行**。CLI/Plus 降级路径：规划者会话内呈现提议原文并记录用户裁决（decide checkpoint 同族纪律），再回填 confirm。
 3. **confirm 落地**（顺序契约：**事实永远记录先行**）：账本 ruling 入账 → 状态落 confirmed → 预算预检（保守增量：节点 = owner数+4，goal 根宽度 +2；不足 → `DERIVE_BUDGET_EXCEEDED` **不盲目 graft**，派生卡 confirmed **不可自动重试**——出路 withdraw（获批 `budget` 扩展后可重新 propose→confirm）或另起新 run）→ graft PM 节点（goal 根子节点，node.task 注入判据增补义务与派生上下文）→ plan-log 记 `deviation/scope_derived` → 自动推送 PM 会话起草需求文档。
 4. **PM 产出义务**：新需求文档（requirements/ 下，含验收标准与依赖关系如实标注）+ overview.md 增补需求索引行与「## 整体验收判据」条目——判据经锚点 live 读，验收门自然覆盖派生需求。
-5. **受控入册**（PM 节点 settle）：确认记录防御性复核（无记录拒绝执行）→ 新需求文档定位（citations 中 requirements/*.md，overview 除外；缺失 → `DERIVE_REQUIREMENT_DOC_MISSING`，reclaim 重做 PM 节点）→ **桥代写** `rdd-flow add-task -BridgeRun <runId>`（task.json 单一写入方不破；remark 带 `derivation=DRV<n>` 幂等锚点；任务落 DESIGN 相位）→ bridge.tasks 映射登记 → DESIGN 链头预挂 PM 节点下（depends_on 多锚缝合到各依赖任务活跃节点）→ acceptance 段 live 刷新（single_exempt/declared 且判据已落 → 升级 planned/basis=derived_upgrade）→ plan-log 记 `progress/derivation_registered`。settle 与入册之间中断 → status 巡检幂等自愈（remark 锚点去重，不重复建任务）。
+5. **受控入册**（PM 节点 settle）：确认记录防御性复核（无记录拒绝执行）→ 新需求文档定位（citations 中 requirements/*.md，overview 除外；缺失 → `DERIVE_REQUIREMENT_DOC_MISSING`，reclaim 重做 PM 节点）→ **桥代写** `rdd-flow add-task -BridgeRun <runId>`（task.json 单一写入方不破；remark 带 `derivation=DRV<n>` 幂等锚点；任务落 DESIGN 相位）→ bridge.tasks 映射登记（**即时落盘**——后续步骤失败不丢，巡检重入不重跑已持久化步骤）→ 链头预挂（**wake 缺省形状**：先物化派生任务需求容器 type=sub 挂 goal 根（与既有任务容器同级），依赖边按 serialize-container-edges 同款语义落 WBS 容器层（depends_on = 各依赖任务的容器——已终态依赖即时满足、在途依赖经折叠门 hold 槽位），owners 的 DESIGN 槽挂容器下（duty=stage，与 promulgate 产物同构，bridge.tasks 落 container 映射）；**legacy 形状**：链头挂 PM 节点下，depends_on 多锚缝合到各依赖任务活跃节点；每步分段落盘，只补缺失角色/容器）→ acceptance 段 live 刷新（single_exempt/declared 且判据已落 → 升级 planned/basis=derived_upgrade）→ plan-log 记 `progress/derivation_registered`（现行 plan 阶段已覆盖派生任务时同步标 absorbed——容忍 replan 先行、入册后到的时序窗）。settle 与入册之间中断 → status 巡检幂等自愈（remark 锚点去重，不重复建任务；容器/槽位按 bridge 映射 + 树活性判重，不重复物化）。
 6. **replan 吸收**：registered 未吸收期间派生链头被阶段闸门 hold（`NODE_BLOCKED_BY_GATE`，消息引导 replan——**推送/认领闸门不豁免**，与 replan 覆盖校验白名单方向相反是有意设计）；replan 将派生任务纳入阶段 → absorbed 标记 + 闸门放行。之后与原生任务同轨（DESIGN 收敛 → IMPL → VERIFY）。
 7. **withdraw**：proposed/confirmed 可撤（账本 ruling 留痕零副作用；未 settle 的已 graft PM 节点自动 prune）；registered 不可撤（任务在册，走 `rdd-flow deprecate`）。
 8. **结案硬门**：未完结派生（proposed/confirmed，或 registered 任务未终态）→ `DERIVATION_PENDING` 拒结；withdrawn 永不阻塞。annex 含「需求派生」清单区 + 根目标行「含 N 条 run 中途派生需求并入」口径。

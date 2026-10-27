@@ -21,6 +21,11 @@
 #   T11 non-blocking guarantee: an open file conflict holds ONLY its involved nodes —
 #      a third task without overlap keeps pushing / stays dispatchable
 #      (需求边界: 不阻塞无冲突任务)
+#   T12 wake-shape serialize (serialize-container-edges + serialize-silent-exit fixes,
+#      2026-10-26): role-level endpoints translate EXPLICITLY to WBS container edges
+#      (whole-task dependency incl. QA; guidance text warns the planner up front),
+#      task-level mirror lands, isomorphic re-entry is DEP_EXISTS-idempotent, and
+#      failure paths ALWAYS print JSON (the @()-swallowed exit-1-zero-byte death)
 # Runs the production interpreters (Windows PowerShell 5.1) against a throwaway git repo.
 # Exit code 0 = all green.
 
@@ -401,6 +406,73 @@ try {
     Assert-True ($null -ne $b11.pushes.PSObject.Properties[$h11c]) 'T11 non-overlapping task keeps pushing (open conflict never blocks it)'
     $r = Invoke-Bridge @('-Command', 'dispatch', '-RunId', 'deliver-pc-t11', '-NodeId', $h11c, '-DryRun')
     Assert-True (-not ($r.json.success -eq $false -and $r.json.error.code -eq 'NODE_HELD_BY_CONFLICT')) 'T11 solo node dispatch not held by the conflict gate' ($r.raw)
+
+    # ================= T12: wake-shape serialize (container translation + silent-exit fix) =================
+    # 2026-10-26 deliver-2026-10-26-level-mode-optimization incident: wake runs reject
+    # role-level deps (DEP_LAYER_MISMATCH) and the wrapped WER died silently (exit 1,
+    # 0-byte stdout/stderr). Fix: role endpoints translate EXPLICITLY to owning
+    # containers (parent hop), serialized list + entry.serialize record the
+    # translation, registration guidance warns up front, failures print JSON.
+    $arch12 = New-PcArchive 'pc-t12' $tasks4 $Script:CriteriaBlock
+    Write-DesignDocs $arch12 $tasks4
+    $pf12 = Write-TestPlan (Join-Path $Work 'pc-t12-plan.json') @(@{ id = 'S1'; tasks = @(1, 2) }) @{} -CriteriaRef 'requirements/overview.md#整体验收判据'
+    $r = Invoke-Bridge @('-Command', 'promulgate', '-TaskJson', ($arch12 + '/task.json'), '-PlanFile', $pf12, '-Shape', 'wake')
+    Assert-True ($r.json.success -eq $true) 'T12 promulgate ok (explicit wake shape, push behind the gate)' ($r.raw)
+    $man12 = Get-Content -LiteralPath (Join-Path $Work '.rdd/goal-trees/deliver-pc-t12/manifest.json') -Raw -Encoding UTF8 | ConvertFrom-Json
+    Assert-True ([string]$man12.shape -eq 'wake') 'T12 run manifest pins shape=wake' ($man12 | ConvertTo-Json)
+    $b12 = Read-BridgeJson 'deliver-pc-t12'
+    $h12a = [string]$b12.tasks.'1'.stages.DEV; $h12b = [string]$b12.tasks.'2'.stages.DEV
+    $conf12 = @($b12.conflicts) | Where-Object { [string]$_.kind -eq 'file' } | Select-Object -First 1
+    Assert-True ($null -ne $conf12 -and [string]$conf12.detected_by -eq 'change-map-scan' -and (@($conf12.nodes) -contains $h12a) -and (@($conf12.nodes) -contains $h12b)) 'T12 overlap auto-registered on the wake run (the incident path)' ($b12 | ConvertTo-Json -Depth 6)
+    $serHint = [string]$conf12.note
+    Assert-True ($serHint -match '任务级依赖' -and $serHint -match '整链') 'T12 auto-registration note warns the planner UP FRONT (wake serialize = whole-task dependency, no silent translation)' $serHint
+    $cont12a = [string](Find-TreeNode 'deliver-pc-t12' $h12a).parent
+    $cont12b = [string](Find-TreeNode 'deliver-pc-t12' $h12b).parent
+    Assert-True ($cont12a -and $cont12b -and $cont12a -ne $cont12b -and (([string](Find-TreeNode 'deliver-pc-t12' $cont12a).type) -eq 'sub')) 'T12 wake DEV heads live under distinct WBS containers' "a=$cont12a b=$cont12b"
+    # T12a: resolve -Serialize on the wake run -> container edge + task mirror + explicit report
+    $r = Invoke-Bridge @('-Command', 'conflict', '-RunId', 'deliver-pc-t12', '-Action', 'resolve', '-ConflictId', ([string]$conf12.id), '-Serialize', $h12a)
+    Assert-True ($r.json.success -eq $true) 'T12a resolve -Serialize ok on wake shape (no DEP_LAYER_MISMATCH)' ($r.raw)
+    $ser12 = (@($r.json.data.serialized) -join ' ; ')
+    Assert-True ($ser12 -match [regex]::Escape("$cont12b depends_on $cont12a") -and $ser12 -match '容器边' -and $ser12 -match '整链含QA') 'T12a serialized list reports the container translation explicitly' $ser12
+    Assert-True ([string]$r.json.data.conflict.serialize.mode -eq 'container' -and [string]$r.json.data.conflict.serialize.earlier -eq $h12a) 'T12a entry.serialize keeps mode=container + earlier (audit trail)' ($r.json.data.conflict.serialize | ConvertTo-Json)
+    $nc12 = Find-TreeNode 'deliver-pc-t12' $cont12b
+    Assert-True (@($nc12.depends_on) -contains $cont12a) 'T12a later CONTAINER depends_on earlier container (whole-task edge)'
+    $nh12b = Find-TreeNode 'deliver-pc-t12' $h12b
+    Assert-True (@($nh12b.depends_on) -notcontains $h12a) 'T12a role-level head stays edge-free (wake layer rule respected)'
+    $b12t = Read-BridgeJson 'deliver-pc-t12'
+    Assert-True ((@($b12t.tasks.'2'.dep_task_ids) -contains 1) -and (-not (@($b12t.tasks.'1'.dep_task_ids) -contains 2))) 'T12a task-level mirror lands on the wake run too' ($b12t | ConvertTo-Json -Depth 6)
+    Assert-True (Test-Path -LiteralPath (Join-Path $Work '.rdd/goal-trees/deliver-pc-t12/state/deps-log.jsonl')) 'T12a deps-log.jsonl records the container dep-add'
+    $r = Invoke-Bridge @('-Command', 'dispatch', '-RunId', 'deliver-pc-t12', '-NodeId', $h12a, '-DryRun')
+    Assert-True ($r.json.success -eq $true) 'T12a earlier head push gate releases after resolve (freeze window)' ($r.raw)
+    # T12b: isomorphic re-entry over existing container edges -> DEP_EXISTS idempotent
+    $r = Invoke-Bridge @('-Command', 'conflict', '-RunId', 'deliver-pc-t12', '-Action', 'open', '-ConflictKind', 'file', '-Nodes', ($h12a + ',' + $h12b), '-Files', 'app/core.py', '-Note', '同构重登记（wake 回归注入）')
+    Assert-True ($r.json.success -eq $true) 'T12b isomorphic re-entry registered (C2)' ($r.raw)
+    $nsHint = [string]$r.json.data.next_step
+    Assert-True ($nsHint -match '任务级依赖') 'T12b manual-open next_step carries the wake hint too (every entry point warns)' $nsHint
+    $r = Invoke-Bridge @('-Command', 'conflict', '-RunId', 'deliver-pc-t12', '-Action', 'resolve', '-ConflictId', 'C2', '-Serialize', $h12a)
+    Assert-True ($r.json.success -eq $true -and [string]$r.json.data.conflict.status -eq 'resolved') 'T12b re-serialize resolves over existing edges (DEP_EXISTS idempotent)' ($r.raw)
+    Assert-True ((@($r.json.data.serialized) -join ';') -match '已存') 'T12b idempotent rerun says so explicitly (no silent skip)' ((@($r.json.data.serialized) -join ';'))
+    $nc12b2 = Find-TreeNode 'deliver-pc-t12' $cont12b
+    Assert-True ((@($nc12b2.depends_on) | Where-Object { $_ -eq $cont12a } | Measure-Object).Count -eq 1) 'T12b container edge NOT duplicated'
+    $b12d = Read-BridgeJson 'deliver-pc-t12'
+    $dep12 = @(@($b12d.tasks.'2'.dep_task_ids) | ForEach-Object { [int]$_ })
+    Assert-True ((@($dep12 | Where-Object { $_ -eq 1 }) | Measure-Object).Count -eq 1) 'T12b task mirror NOT duplicated'
+    # T12c: failure paths ALWAYS print JSON — the serialize-silent-exit regression.
+    # Inject a bogus-node entry straight into bridge.json (open CLI would reject it),
+    # then -Serialize a node the tree cannot map: pre-fix this died with exit 1 and
+    # ZERO bytes on both streams (PS 5.1 @()-subexpression output discard).
+    $bj12 = Join-Path $Work '.rdd/goal-trees/deliver-pc-t12/bridge.json'
+    $bi12 = Get-Content -LiteralPath $bj12 -Raw -Encoding UTF8 | ConvertFrom-Json
+    $bi12.conflicts = @($bi12.conflicts) + ([ordered]@{
+        id = 'C77'; kind = 'file'; nodes = @('n999', $h12a); tasks = @(1); files = @('app/core.py')
+        detected_by = 'planner'; status = 'open'; note = 'T12 静默死回归注入'; escalation = $null; ruling = $null; serialize = $null
+        created_at = '2026-10-26T00:00:00Z'; updated_at = '2026-10-26T00:00:00Z'; history = @()
+    })
+    Write-Utf8NoBom $bj12 ($bi12 | ConvertTo-Json -Depth 32)
+    $r = Invoke-Bridge @('-Command', 'conflict', '-RunId', 'deliver-pc-t12', '-Action', 'resolve', '-ConflictId', 'C77', '-Serialize', 'n999')
+    Assert-True ($r.exit -eq 1) 'T12c unmappable serialize fails with exit 1' ("exit=$($r.exit)")
+    Assert-True ($r.json -ne $null -and $r.json.success -eq $false -and $r.json.error.code -eq 'CONFLICT_ENTRY_INVALID') 'T12c failure prints a parseable JSON error (NOT the 0-byte silent death)' ($r.raw)
+    Assert-True ($r.raw.Trim().Length -gt 0 -and $r.raw -match 'cannot map to a WBS container') 'T12c error message explains the wake translation failure' ($r.raw)
 }
 finally {
     Pop-Location
