@@ -2824,6 +2824,47 @@ function Invoke-WakeAcceptanceGraft {
     return @{ ok = $true; node_id = $g.node_id; container = $container }
 }
 
+function Invoke-WakeStageAcceptanceGraft {
+    # wake-model stage-acceptance graft (goal-tree-wake-model §3.2): the
+    # [集成验收·S<k>] QA work node must hang under a container — grafting it at
+    # the goal root deterministically fails ROLE_LAYER_LOCKED (the 1.2.0 wake
+    # flip adapted the final-acceptance chain and the derive chain heads to the
+    # container-first shape but missed THIS path: ap stayed 'planned', every
+    # trigger re-grafted into the same wall, the stage gate never opened).
+    # Mirrors Invoke-WakeAcceptanceGraft with its own bookkeeping slot: one
+    # type=accept container at the goal root, recorded in
+    # plan.stage_accept_container (segmented persist right after creation —
+    # derive-chain-heads paradigm — so a later failure never orphans a second
+    # container), probed live via state/tree.json read-back (containers never
+    # enter the status view work buckets; a pruned container re-materializes).
+    # ap.node still points at the QA slot, so claim/settle/gate recognition
+    # (Get-StageAcceptanceNodeInfo) and the F6 invalidation reclaim are
+    # parent-agnostic and keep working unchanged.
+    param([string]$RunId, [string]$RunDir, $Bridge, $Item)
+    $p = Get-PlanSection $Bridge
+    $container = $null
+    if ($null -ne $p -and (Test-PropPresent $p 'stage_accept_container') -and $p['stage_accept_container']) { $container = [string]$p['stage_accept_container'] }
+    if (-not [string]::IsNullOrWhiteSpace($container)) {
+        $cv = Read-TreeFullNode $RunDir $container
+        if ($null -eq $cv -or [string]$cv.status -eq 'pruned') { $container = $null }
+    }
+    if ([string]::IsNullOrWhiteSpace($container)) {
+        $cItem = @{
+            title = "[分段验收] $($Bridge.goal.title)"
+            task  = "验收容器（type=accept，WBS 层，不可认领）：[集成验收·S<k>] 分段验收角色槽的挂载点（goal-tree-wake-model §3.2）。"
+            type  = "accept"
+        }
+        $gc = Invoke-GraftOne $RunId ([string]$Bridge.goal_root) $cItem
+        if (-not $gc.ok) { return @{ ok = $false; text = $gc.text } }
+        $container = $gc.node_id
+        if ($null -ne $p) { $p['stage_accept_container'] = $container; Write-BridgeFile $RunDir $Bridge | Out-Null }
+    }
+    $Item['duty'] = ([string]$Item['role']).ToLower()
+    $g = Invoke-GraftOne $RunId $container $Item
+    if (-not $g.ok) { return @{ ok = $false; text = $g.text; container = $container } }
+    return @{ ok = $true; node_id = $g.node_id; container = $container }
+}
+
 function Update-AcceptanceChain {
     # Timing-expression state machine (idempotent, rides every auto-dispatch
     # trigger so a crash window self-heals): planned -> graft [集成/联调] when all
@@ -3009,7 +3050,8 @@ function Add-AcceptanceAnnexLines {
 # stage's acceptance point passed; blocked = deterministic NODE_BLOCKED_BY_GATE.
 # Stage acceptance point: stage task_ids all terminal (by TASK lifecycle;
 # non-delivered ids — deprecated / in-tree merged / rejected-back — are exempt)
-# -> graft tree-level [集成验收·S<k>] (role=QA under the goal root, k<K) /
+# -> graft tree-level [集成验收·S<k>] (role=QA; legacy: goal-root child, wake:
+# under the plan stage-accept container per goal-tree-wake-model §3.2, k<K) /
 # bind the R1 accept node (k=K) / auto-pass (k=K without a whole-requirement
 # chain) -> node settled -> passed. Rollback/reclaim/reset of a covered task
 # rolls the acceptance wave back to planned (防闸门虚开) and re-verification
@@ -3395,7 +3437,8 @@ function Test-StageTasksTerminal {
 }
 
 function New-StageAcceptanceSpec {
-    # [集成验收·S<k>] node spec: role=QA tree-level node under the goal root,
+    # [集成验收·S<k>] node spec: role=QA tree-level work node (legacy: goal-root
+    # child; wake: under the plan.stage_accept_container — §3.2 container rule),
     # task text carries the criteria subset + runnable slice (真实执行 evidence
     # asks for the slice run result in extras.verification).
     param($Stage, [string]$ReqRel, [string]$RunIdText)
@@ -3458,7 +3501,17 @@ function Update-OneStageAcceptance {
     $ap = $Stage['acceptance_point']
     if (([string]$ap['status']) -eq 'planned') {
         $spec = New-StageAcceptanceSpec $Stage (Get-PlanStageReqRel $Bridge $Stage) ([string]$Bridge.run_id)
-        $g = Invoke-GraftOne ([string]$Bridge.run_id) ([string]$Bridge.goal_root) $spec.item
+        $g = $null
+        if (Test-WakeShapeBridge $Bridge) {
+            # wake 形状（goal-tree-wake-model §3.2）：QA 工单必须挂容器下——直接挂
+            # goal 根必撞 ROLE_LAYER_LOCKED（1.2.0 形状翻转漏改点；终局验收链与派生
+            # 链头同款均已容器先行）。分段验收容器先物化，ap.node 语义不变。
+            $wg = Invoke-WakeStageAcceptanceGraft ([string]$Bridge.run_id) $RunDir $Bridge $spec.item
+            if ($wg.ok) { $g = @{ ok = $true; node_id = $wg.node_id } } else { $g = @{ ok = $false; text = $wg.text } }
+        }
+        else {
+            $g = Invoke-GraftOne ([string]$Bridge.run_id) ([string]$Bridge.goal_root) $spec.item
+        }
         if (-not $g.ok) { return @{ bridge = $Bridge; grafted = $null; error = "stage $($Stage['id']) acceptance graft failed (retries on next trigger): $($g.text)" } }   # 失败经 chain_error 透出（r1-chain-silent-stall ①）
         $b = Set-PlanAcceptanceState $RunDir $Bridge $Stage 'grafted' $g.node_id 'acceptance_grafted' @{ title = $spec.title; slice = [string]$ap['slice'] }
         return @{ bridge = $b; grafted = @{ node = $g.node_id; title = $spec.title; stage = [string]$Stage['id'] } }
@@ -3515,9 +3568,11 @@ function Get-StageAcceptanceNodeInfo {
 
 function Remove-InvalidatedAcceptanceNode {
     # 失效回收 (F6): an invalidation wave unbinds an acceptance point — its old
-    # [集成验收·S<k>] node must give the goal-root child slot back (goal-tree
+    # [集成验收·S<k>] node must give its child slot back (goal-tree
     # counts only ACTIVE children toward node_width), otherwise every re-graft
     # stacks one more slot and the [整体验收] graft turns WIDTH_EXCEEDED forever.
+    # (Legacy: the slot is a goal-root child; wake: a child of the plan
+    # stage-accept container — the reclaim below is parent-agnostic either way.)
     # The R1 terminal-chain nodes ([集成/联调]/[整体验收]) are REUSED by the final
     # stage acceptance point (末阶段复用 R1 终局链的节点) and are never reclaimed
     # here — reuse keeps that stage at ≤1 active slot without touching the chain.
@@ -3543,8 +3598,9 @@ function Reset-PlanStageAcceptance {
     # stage roll their acceptance point back to planned (node unbound; a later
     # re-verification re-grafts a fresh node). Records acceptance_invalidated.
     # The unbound node is reclaimed BEFORE the rollback (失效回收, F6): prune
-    # frees its goal-root child slot so the re-graft REUSES the slot instead of
-    # stacking one more (「每非末段验收点 ≤1 活跃 goal-root 子位」不变量).
+    # frees its child slot so the re-graft REUSES the slot instead of
+    # stacking one more (legacy:「每非末段验收点 ≤1 活跃 goal-root 子位」不变量;
+    # wake: same invariant one layer down, under the plan stage-accept container).
     param([string]$RunDir, $Bridge, [int]$TaskId, [string]$Trigger, [string]$ReasonText)
     $p = Get-PlanSection $Bridge
     if ($null -eq $p) { return $false }
@@ -5996,7 +6052,11 @@ function Get-PromulgateBudget {
     # node_width budget = goal-root children: the chain heads + the two
     # tree-level acceptance nodes (overall-delivery width formula +2 — the 2/3
     # task-count WIDTH_EXCEEDED regression) + (K-1) stage acceptance nodes
-    # (long-task-planning: they hang on the goal root too; K=1 adds zero);
+    # (long-task-planning; K=1 adds zero). Wake shape: the (K-1) stage slots
+    # host the SINGLE plan.stage_accept_container instead (its [集成验收·S<k>]
+    # slots hang under it) — 1 container ≤ K-1 reserved slots for every K ≥ 2,
+    # so the formula is wake-exact without branching; legacy keeps one slot per
+    # node.
     # node budget keeps per-task ×5 + 6 slack + (K-1). Explicit -NodeWidth /
     # -MaxNodes always win.
     param($Plan, [int]$StageCount = 1)

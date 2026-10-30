@@ -121,7 +121,7 @@ PM 归档（longTask 信号触发）→ start-role -Role PLANNER -TaskJson ...�
 1. 读 overview「## 整体验收判据」+ 各需求「依赖关系」，按**交付批次**划分阶段：被依赖的基础/独立需求在前（S1），依赖它们的后续需求其后（S2…）；K=1（单阶段）合法且行为等价旧版。
 2. 每条交付任务恰在**一个**阶段（`PLAN_FILE_INVALID`：全覆盖、无幽灵 id；不交付的 deprecated/树内合并/驳回回流豁免）。
 3. `batches` = 阶段内可并行批次：依赖边不得落在同一批次（`PLAN_BATCH_INVALID`）、依赖不得落后于被依赖者所在阶段（`PLAN_ORDER_INVALID`；同阶段合法，批次管细序）。
-4. 每阶段 `acceptance_point`：从整体验收判据选该阶段应可验证的**子集** + 一个可运行切片形态（缺一 → `PLAN_FILE_INVALID`）。k<K 的验收点在阶段任务全部终态时自动 graft `[集成验收·S<k>]`（role=QA）；末阶段绑定 R1 `[整体验收]` 节点。
+4. 每阶段 `acceptance_point`：从整体验收判据选该阶段应可验证的**子集** + 一个可运行切片形态（缺一 → `PLAN_FILE_INVALID`）。k<K 的验收点在阶段任务全部终态时自动 graft `[集成验收·S<k>]`（role=QA）；末阶段绑定 R1 `[整体验收]` 节点。挂载点由树形状决定：**wake**（缺省）挂引擎自动物化的分段验收容器 `type=accept` 下——`plan.stage_accept_container` 记账、逐阶段复用（K≥2 才产生，单阶段计划零额外节点）；**legacy** 挂目标根。这是引擎 1.2.0 形状翻转的容器先行适配面——QA 槽必须挂容器下（goal-tree §3.2，挂根报 `ROLE_LAYER_LOCKED`），节点 id 语义与闸门/失效回收不受挂载点影响，**PlanFile 契约零变化**。
 
 **阶段闸门（只增不减）**：任务推送/认领要求其之前所有阶段的 acceptance_point 均 `passed`（未过闸 → `NODE_BLOCKED_BY_GATE`，**无 Force 旁路**——出路只有 settle 对应 `[集成验收·S<k>]` 或 replan 重划阶段）。回退/回收/replan 波及已验收阶段时，引擎自动失效该阶段及之后的验收点（防闸门虚开）。偏差由引擎在五个观测点自动记账（settle / reclaim / rollback / status 巡检 / replan），修正只走 `replan -RunId <id> -PlanFile <修订版> -Reason <偏差>`（`-Reason` 必填；run 已结案或无 plan 段报 `REPLAN_NOT_ACTIVE`）。
 
@@ -206,7 +206,7 @@ worker 完成即经 `goal-tree-leaf.cmd -Command report` 回调**你**（回调�
 
 **判据流动**：promulgate 校验非空 → 判据引用注入 goal 根与每个节点 task（派发记录检验点，指针 brief 同步携带）→ 设计文档 frontmatter `acceptance_ref` 引用对齐（CTO/UX 模板同构字段）。
 
-**验收链机制（时机表达）**：全部子任务节点终态 → 自动 graft `[集成/联调]`（DEV，树级工作节点：真实串联各模块数据/调用跑通原始需求整体场景，**不是各模块独立跑通子验收**）→ 其 settle → graft `[整体验收]`（QA，对照判据逐条核验真实链路）→ 其 settle 记录结论。两节点挂目标根、不绑 TaskId（claim 跳过 flow 侧、settle 终态即止、自动推送照常）。bridge.json 顶层 `acceptance` 段全程占位可见。
+**验收链机制（时机表达）**：全部子任务节点终态 → 自动 graft `[集成/联调]`（DEV，树级工作节点：真实串联各模块数据/调用跑通原始需求整体场景，**不是各模块独立跑通子验收**）→ 其 settle → graft `[整体验收]`（QA，对照判据逐条核验真实链路）→ 其 settle 记录结论。两节点不绑 TaskId（claim 跳过 flow 侧、settle 终态即止、自动推送照常）；挂载点：**wake**（缺省）挂 `[验收]` `type=accept` 容器下（`acceptance.chain_container` 记账，创建一次逐节点复用），**legacy** 挂目标根。bridge.json 顶层 `acceptance` 段全程占位可见。
 
 **结论落点**：`tests/integration-acceptance.md` 单文件三区——§1 集成/联调记录（引用账本条目不复制，指向 `[集成/联调]` 节点回调 citations）/ §2 判据逐条核验表（借「覆盖子需求映射」定位失败点到责任任务链）/ §3 总结论（**结论必须可判**：一行『总结论：通过』或『总结论：不通过』）。`[整体验收]` settle 时解析 §3 落 `acceptance.conclusion`；不可判时 conclude 报 `ACCEPTANCE_PENDING`，补写 §3 后重试（验收节点无需重做）。
 
@@ -404,6 +404,7 @@ worker 完成即经 `goal-tree-leaf.cmd -Command report` 回调**你**（回调�
 | promulgate 报 `CONVENTIONS_MISSING` | DESIGN 并行链头 ≥2 缺架构约定——产出 `report/architecture-conventions.md` 后补 `-ConventionsFile` |
 | promulgate 报 `PLAN_MISSING`/`PLAN_FILE_INVALID`/`PLAN_ORDER_INVALID`/`PLAN_BATCH_INVALID` | 按 §长程规划与滚动追踪 的规划方法产出/修正 PlanFile（建树前零残留） |
 | claim/dispatch 报 `NODE_BLOCKED_BY_GATE` | settle 对应 `[集成验收·S<k>]` 开闸或 `replan` 重划阶段；**无 Force 旁路** |
+| graft 报 `ROLE_LAYER_LOCKED` / `GRAFT_LAYER_INVALID`（wake 形状） | wake 的层级纪律：**工作工单（带 role）只能挂容器下**（挂目标根必拒），角色槽由引擎物化——规划者手动 graft 只应挂容器（type=sub/accept，挂根/容器/PM 槽下、不带 role）；改挂到对应任务容器，或先物化容器再往里挂槽 |
 | claim/dispatch 报 `NODE_BLOCKED_BY_DESIGN_REVIEW` | 等设计裁定 pass（新链 `design-review -Action submit`；legacy settle 审查节点；fail 自动重做波）或 `replan`；见 §设计汇聚审查 |
 | 设计审查证据被拒 `SETTLE_EVIDENCE_REJECTED`（DesignReviewFile 契约） | 新链：按问题清单修复 DesignReviewFile 后重新 `design-review -Action submit`（状态仍 `ready`）；legacy：AUDITOR 会话按 `rdd-auditor/references/design-review.md` 修复重报，会话死走 `reclaim` |
 | 新链 submit 报 `DESIGN_REVIEW_NOT_READY` | 状态非 `ready`（提前/重复提交，或 fail 波进行中）——查 `design-review -Action status`，待 `ready` 再审 |

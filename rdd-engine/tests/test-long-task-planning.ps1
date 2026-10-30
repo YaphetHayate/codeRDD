@@ -22,6 +22,10 @@
 #   L13 (F6 回归) 失效回收: 失效波 prune 旧验收点节点（pruned_reason 审计留痕）+ re-graft
 #       复用 goal-root 子位——多轮失效波不累积子位，[整体验收] graft 不再 WIDTH_EXCEEDED，
 #       末阶段复用 R1 终局链节点同守「≤1 活跃子位」不变量，run 可收口
+#   L14 (wake 回归) 分段验收容器先行: wake 形状 ≥2 阶段 → S1 终态 → [集成验收·S1] 挂
+#       plan.stage_accept_container（type=accept）下而非 goal 根（修复前该 graft 恒
+#       ROLE_LAYER_LOCKED → 验收点停留 planned 反复重试 → 阶段闸门永不开）；claim 上下文 /
+#       settle 通过 / 闸门放行 / 末阶段自动通过 / conclude 全链路照旧
 # Runs the production interpreters (Windows PowerShell 5.1) against a throwaway git repo.
 # Exit code 0 = all green.
 
@@ -565,6 +569,52 @@ try {
     Assert-True ($after3 -eq $baseChildren + 2) 'L13 末阶段失效波后子位仍不累积（5 活跃 = 预算）' ("base=$baseChildren after=$after3")
     $r = Invoke-Bridge @('-Command', 'conclude', '-RunId', 'deliver-lp-l13', '-Summary', 'L13 失效回收后 run 可收口')
     Assert-True ($r.json.success -eq $true -and $r.json.data.outcome -eq 'achieved') 'L13 conclude achieved（失效波后 run 可收口）' ($r.raw)
+
+    # ================= L14 (wake 回归) : 分段验收容器先行（ROLE_LAYER_LOCKED 修复） =================
+    # 1.2.0 wake 形状翻转漏改点：[集成验收·S<k>] 曾按 legacy 旧写法直接挂 goal 根 →
+    # goal-tree §3.2 确定性拒绝（ROLE_LAYER_LOCKED）→ 验收点停留 planned 每次触发重试
+    # 同一堵墙 → 阶段闸门永不开、后续阶段全部 NODE_BLOCKED_BY_GATE。修复后 wake 分支先
+    # 物化 type=accept 分段验收容器（plan.stage_accept_container 记账 + 探活复用），
+    # QA 槽挂容器下；ap.node 语义不变，claim/settle/闸门识别（Get-StageAcceptanceNodeInfo）
+    # 全链路零改动。
+    $arch14 = New-Archive 'lp-l14' '[{"title":"L14a","requirement":"requirements/t1.md","currentOwners":["QA"],"designDocs":[]},{"title":"L14b","requirement":"requirements/t2.md","currentOwners":["QA"],"designDocs":[]}]' $Script:DeclaredBlock
+    $pf14 = Write-TestPlan (Join-Path $Work 'lp-l14-plan.json') @(@{ id = 'S1'; tasks = @(1) }, @{ id = 'S2'; tasks = @(2) }) @{}
+    $r = Invoke-Bridge @('-Command', 'promulgate', '-TaskJson', ($arch14 + '/task.json'), '-PlanFile', $pf14, '-NoPush', '-Shape', 'wake')
+    Assert-True ($r.json.success -eq $true) 'L14 promulgate ok (wake shape, 2-stage plan)' ($r.raw)
+    $b = Read-BridgeJson 'deliver-lp-l14'
+    Assert-True ([string]$b.shape -eq 'wake') 'L14 bridge shape = wake'
+    $root14 = [string]$b.goal_root
+    $w14a = [string]$b.tasks.'1'.stages.QA; $w14b = [string]$b.tasks.'2'.stages.QA
+    # 闸门预检（wake 同构）：S2 任务只认 S1 验收点放行
+    $r = Invoke-Bridge @('-Command', 'claim', '-RunId', 'deliver-lp-l14', '-NodeId', $w14b, '-Role', 'QA')
+    Assert-True ($r.json.success -eq $false -and $r.json.error.code -eq 'NODE_BLOCKED_BY_GATE') 'L14 wake gate pre-check: S2 task blocked behind closed S1 gate' ($r.raw)
+    Do-Deliver 'deliver-lp-l14' $w14a 'QA' "$arch14/requirements/t1.md"
+    $null = Do-Settle 'deliver-lp-l14' $w14a
+    $b = Read-BridgeJson 'deliver-lp-l14'
+    $sa14 = [string]$b.plan.stages[0].acceptance_point.node
+    Assert-True ([string]$b.plan.stages[0].acceptance_point.status -eq 'grafted' -and $sa14 -ne '') 'L14 wake [集成验收·S1] grafted on stage terminality（修复前恒 ROLE_LAYER_LOCKED 失败）' ("node=$sa14")
+    $nSa14 = Find-TreeNode 'deliver-lp-l14' $sa14
+    $cont14 = if ($nSa14) { Find-TreeNode 'deliver-lp-l14' ([string]$nSa14.parent) } else { $null }
+    Assert-True ($null -ne $nSa14 -and [string]$nSa14.parent -ne $root14 -and $null -ne $cont14 -and [string]$cont14.type -eq 'accept') 'L14 分段验收节点挂 accept 容器下（不再直接挂 goal 根）' ("parent=$($nSa14.parent) parentType=$($cont14.type)")
+    Assert-True ([string]$b.plan.stage_accept_container -eq [string]$nSa14.parent) 'L14 plan.stage_accept_container 记账与实际挂点一致'
+    $r = Invoke-Bridge @('-Command', 'claim', '-RunId', 'deliver-lp-l14', '-NodeId', $sa14, '-Role', 'QA')
+    Assert-True ($r.json.success -eq $true -and [string]$r.json.data.acceptance.kind -eq 'stage_acceptance' -and [string]$r.json.data.acceptance.stage_id -eq 'S1') 'L14 wake 分段验收 claim 照常携带 stage_acceptance 上下文' ($r.raw)
+    $cb14 = New-Cb $sa14 "$arch14/requirements/t1.md"
+    $null = Invoke-Leaf @('-Command', 'report', '-RunId', 'deliver-lp-l14', '-Worker', 'QA', '-CallbackFile', $cb14)
+    $r = Do-Settle 'deliver-lp-l14' $sa14
+    Assert-True ($r.json.success -eq $true) 'L14 wake 分段验收 settle ok' ($r.raw)
+    $b = Read-BridgeJson 'deliver-lp-l14'
+    Assert-True ([string]$b.plan.stages[0].acceptance_point.status -eq 'passed') 'L14 wake S1 验收点 passed（闸门开启）'
+    $r = Invoke-Bridge @('-Command', 'claim', '-RunId', 'deliver-lp-l14', '-NodeId', $w14b, '-Role', 'QA')
+    Assert-True ($r.json.success -eq $true) 'L14 wake 闸门开 → S2 任务可认领' ($r.raw)
+    $cb14b = New-Cb $w14b "$arch14/requirements/t2.md"
+    $null = Invoke-Leaf @('-Command', 'report', '-RunId', 'deliver-lp-l14', '-Worker', 'QA', '-CallbackFile', $cb14b)
+    $r = Do-Settle 'deliver-lp-l14' $w14b
+    Assert-True ($r.json.success -eq $true) 'L14 wake S2 任务 settle ok' ($r.raw)
+    $b = Read-BridgeJson 'deliver-lp-l14'
+    Assert-True ([string]$b.plan.stages[1].acceptance_point.status -eq 'passed') 'L14 wake 末阶段自动通过（无整体验收链豁免）'
+    $r = Invoke-Bridge @('-Command', 'conclude', '-RunId', 'deliver-lp-l14', '-Summary', 'L14 wake 分段验收全链路收口')
+    Assert-True ($r.json.success -eq $true -and $r.json.data.outcome -eq 'achieved') 'L14 conclude achieved（wake 分段验收不再卡死工程）' ($r.raw)
 }
 finally {
     Pop-Location
